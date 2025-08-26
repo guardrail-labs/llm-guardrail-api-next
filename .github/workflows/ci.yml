@@ -9,6 +9,7 @@ jobs:
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_NO_CACHE_DIR: "1"
+      PYTHONPATH: app
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
