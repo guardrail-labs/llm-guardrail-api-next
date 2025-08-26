@@ -1,0 +1,31 @@
+import os
+import importlib
+from fastapi.testclient import TestClient
+
+
+def _make_client():
+    os.environ["API_KEY"] = "unit-test-key"
+    import app.config as cfg
+    importlib.reload(cfg)
+    import app.main as main
+    importlib.reload(main)
+    return TestClient(main.build_app())
+
+
+def test_guardrail_requires_api_key():
+    client = _make_client()
+    r = client.post("/guardrail", json={"prompt": "hi"})
+    assert r.status_code == 401
+    assert r.json()["detail"] == "Missing API key"
+
+
+def test_guardrail_accepts_x_api_key():
+    client = _make_client()
+    r = client.post("/guardrail", json={"prompt": "hi"}, headers={"X-API-Key": "unit-test-key"})
+    assert r.status_code == 200
+
+
+def test_guardrail_accepts_bearer_token():
+    client = _make_client()
+    r = client.post("/guardrail", json={"prompt": "hi"}, headers={"Authorization": "Bearer unit-test-key"})
+    assert r.status_code == 200
