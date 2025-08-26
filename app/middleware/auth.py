@@ -2,6 +2,7 @@ import hmac
 from typing import List, Optional
 
 from fastapi import Header, HTTPException
+
 from app.config import Settings
 
 
@@ -37,7 +38,7 @@ def _extract_presented_key(
     if authorization:
         auth = authorization.strip()
         if auth.lower().startswith(bearer_prefix.lower()):
-            return auth[len(bearer_prefix) :].strip()
+            return auth[len(bearer_prefix):].strip()
 
     return None
 
@@ -47,7 +48,11 @@ async def require_api_key(
     authorization: Optional[str] = Header(default=None),
 ):
     s = Settings()  # read prefix dynamically (supports future config)
-    presented = _extract_presented_key(x_api_key, authorization, bearer_prefix=s.AUTH_BEARER_PREFIX)
+    presented = _extract_presented_key(
+        x_api_key,
+        authorization,
+        bearer_prefix=s.AUTH_BEARER_PREFIX,
+    )
 
     if not presented:
         raise HTTPException(status_code=401, detail="Missing API key")
