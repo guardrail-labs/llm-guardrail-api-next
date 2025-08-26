@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # App
     APP_ENV: str = Field(default="dev")
     APP_NAME: str = Field(default="llm-guardrail-api-next")
+    APP_VERSION: str = Field(default="0.3.0")
     LOG_LEVEL: str = Field(default="INFO")
     PORT: int = Field(default=8080)
 
@@ -22,7 +23,6 @@ class Settings(BaseSettings):
     VERIFIER_MODE: str = Field(default="never")  # "auto" | "never"
 
     # Security (API key)
-    # Use either API_KEY (single) OR API_KEYS (comma-separated) to configure allowed keys.
     API_KEY: Optional[str] = Field(default=None)
     API_KEYS: Optional[str] = Field(default=None)
 

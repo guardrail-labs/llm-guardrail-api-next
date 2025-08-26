@@ -1,0 +1,31 @@
+{
+  "info": {
+    "name": "LLM Guardrail API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "d5a7d3f0-0f00-4d1f-9a7f-111111111111"
+  },
+  "item": [
+    {
+      "name": "POST /guardrail",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "X-API-Key", "value": "{{apiKey}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/guardrail",
+          "host": ["{{baseUrl}}"],
+          "path": ["guardrail"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"prompt\": \"Hello, world!\"\n}"
+        }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "apiKey", "value": "dev-local-key" }
+  ]
+}
