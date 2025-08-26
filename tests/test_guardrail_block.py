@@ -6,10 +6,12 @@ from fastapi.testclient import TestClient
 
 def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
+
     import app.config as cfg
     importlib.reload(cfg)
     import app.main as main
     importlib.reload(main)
+
     return TestClient(main.build_app())
 
 
@@ -25,7 +27,6 @@ def test_guardrail_blocks_prompt_injection_phrase():
 
 def test_guardrail_blocks_secret_pattern():
     client = _make_client()
-    # obvious test-only key pattern
     payload = {"prompt": "use this key sk-1234567890abcdefghijklmnop for testing"}
     r = client.post("/guardrail", json=payload, headers={"X-API-Key": "unit-test-key"})
     assert r.status_code == 200
