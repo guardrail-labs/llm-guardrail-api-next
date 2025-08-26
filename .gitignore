@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+dist/
+build/
+
+# Editors
+.vscode/
+.idea/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
