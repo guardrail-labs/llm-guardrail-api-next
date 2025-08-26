@@ -42,5 +42,5 @@ def _check_size(ingress: GuardrailRequest) -> None:
     dependencies=[Depends(_check_size)],
 )
 def guard(ingress: GuardrailRequest) -> GuardrailResponse:
-    # If we get here, size has already been validated by the dependency.
+    # Size already validated by dependency.
     return evaluate_and_apply(ingress.prompt)
