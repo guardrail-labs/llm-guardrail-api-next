@@ -2,10 +2,10 @@ from pathlib import Path
 from typing import List
 import uuid
 
-import yaml
 from pydantic import BaseModel
+import yaml
 
-from app.services.upipe import Decision, analyze
+from app.services.upipe import analyze, Decision
 from app.telemetry import metrics as tmetrics
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
