@@ -18,14 +18,13 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
     },
     summary="Evaluate a prompt against guardrail rules",
 )
-
-def guard(ingress: GuardrailRequest) -> GuardrailResponse:  # type: ignore[override]
-    if len(ingress.prompt) > settings.MAX_PROMPT_CHARS:
+def guard(ingress: GuardrailRequest) -> GuardrailResponse:
+    max_chars = int(settings.MAX_PROMPT_CHARS)
+    if len(ingress.prompt) > max_chars:
         raise HTTPException(
             status_code=413,
-            detail=f"Prompt too large (max {settings.MAX_PROMPT_CHARS} chars)",
+            detail=f"Prompt too large (max {max_chars} chars)",
         )
 
     outcome = evaluate_and_apply(ingress.prompt)
     return outcome
-
