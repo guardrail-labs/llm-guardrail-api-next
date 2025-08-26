@@ -5,7 +5,7 @@ from uuid import uuid4
 import yaml
 from pydantic import BaseModel
 
-from app.services.upipe import analyze, Decision
+from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
