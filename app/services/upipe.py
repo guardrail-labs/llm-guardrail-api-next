@@ -60,27 +60,34 @@ def analyze(text: str) -> List[Decision]:
     # 1) Prompt-injection phrases
     for p in _PI_PHRASES:
         if p in t:
-            decs.append(Decision(
-                rule_id="pi:prompt_injection",
-                category="prompt_injection",
-                rationale=f"Matched injection phrase: '{p}'",
-            ))
+            decs.append(
+                Decision(
+                    rule_id="pi:prompt_injection",
+                    category="prompt_injection",
+                    rationale=f"Matched injection phrase: '{p}'",
+                )
+            )
             break
 
     # 2) Secrets
-    if _RE_OPENAI.search(text) or _RE_AWS_AKID.search(text) or ("-----BEGIN " in text and " PRIVATE KEY-----" in text):
-        decs.append(Decision(
-            rule_id="secrets:api_key_like",
-            category="secrets",
-            rationale="Detected key-like pattern (OpenAI/AWS/private key header)",
-        ))
+    has_private_key_header = "-----BEGIN " in text and " PRIVATE KEY-----" in text
+    if _RE_OPENAI.search(text) or _RE_AWS_AKID.search(text) or has_private_key_header:
+        decs.append(
+            Decision(
+                rule_id="secrets:api_key_like",
+                category="secrets",
+                rationale="Detected key-like pattern (OpenAI/AWS/private key header)",
+            )
+        )
 
     # 3) Encoded blobs
     if _has_long_base64_blob(text) or _has_long_hex_blob(text):
-        decs.append(Decision(
-            rule_id="payload:encoded_blob",
-            category="payload",
-            rationale="Detected long base64/hex blob",
-        ))
+        decs.append(
+            Decision(
+                rule_id="payload:encoded_blob",
+                category="payload",
+                rationale="Detected long base64/hex blob",
+            )
+        )
 
     return decs
