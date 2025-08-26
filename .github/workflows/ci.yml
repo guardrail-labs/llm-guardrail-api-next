@@ -9,16 +9,32 @@ jobs:
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_NO_CACHE_DIR: "1"
-      PYTHONPATH: app
+      # IMPORTANT: point to the REPO ROOT so "import app" resolves
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Debug env (paths)
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          python3 -V
+          python3 - <<'PY'
+          import sys, os, pathlib
+          print("cwd:", os.getcwd())
+          print("sys.path[0]:", sys.path[0])
+          print("First 5 sys.path entries:", sys.path[:5])
+          print("Has app/__init__.py? ", (pathlib.Path("app")/"__init__.py").exists())
+          PY
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           check-latest: true
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+
       - name: Run tests
         run: pytest -q
