@@ -6,10 +6,12 @@ from fastapi.testclient import TestClient
 
 def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
+
     import app.config as cfg
     importlib.reload(cfg)
     import app.main as main
     importlib.reload(main)
+
     return TestClient(main.build_app())
 
 
