@@ -27,5 +27,9 @@ def test_guardrail_accepts_x_api_key():
 
 def test_guardrail_accepts_bearer_token():
     client = _make_client()
-    r = client.post("/guardrail", json={"prompt": "hi"}, headers={"Authorization": "Bearer unit-test-key"})
+    r = client.post(
+        "/guardrail",
+        json={"prompt": "hi"},
+        headers={"Authorization": "Bearer unit-test-key"},
+    )
     assert r.status_code == 200
