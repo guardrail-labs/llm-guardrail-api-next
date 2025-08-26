@@ -2,29 +2,56 @@ import uuid
 import yaml
 from pathlib import Path
 from pydantic import BaseModel
+from typing import List
+
 from app.services.upipe import analyze, Decision
+from app.telemetry import metrics as tmetrics
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
 _rules = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
 
+
 class Outcome(BaseModel):
     request_id: str
-    decision: str
+    decision: str  # "allow" | "block"
     reason: str
-    rule_hits: list[str]
+    rule_hits: List[str]
     transformed_text: str
     policy_version: str
 
+def _final_decision(decisions: List[Decision]) -> str:
+    # For now, any detected high-severity rule ⇒ block.
+    return "block" if decisions else "allow"
+
+
+def _compose_reason(decisions: List[Decision]) -> str:
+    if not decisions:
+        return "No risk signals detected"
+    ids = ", ".join(sorted({d.rule_id for d in decisions}))
+    return f"High-risk rules matched: {ids}"
+
+
 def evaluate_and_apply(text: str) -> Outcome:
-    # 1) analyze → rule candidates
-    decisions: list[Decision] = analyze(text)
+    # 1) Analyze
+    decisions: List[Decision] = analyze(text)
 
-    # 2) trivial policy: always allow (starter)
-    rule_hits = [d.rule_id for d in decisions] if decisions else ["allow-all"]
-    decision = "allow"
-    reason = "Starter policy allows all; replace with real policy."
-    transformed_text = text  # no-op
+    # 2) Compute final decision
+    decision = _final_decision(decisions)
+    rule_hits = [d.rule_id for d in decisions] if decisions else []
+    reason = _compose_reason(decisions)
 
+    # 3) Transform (no-op for now)
+    transformed_text = text
+
+    # 4) Metrics
+    try:
+        tmetrics.inc_decision(decision)
+        tmetrics.inc_rule_hits(rule_hits)
+    except Exception:
+        # Metrics should never break the API
+        pass
+
+    # 5) Outcome
     return Outcome(
         request_id=str(uuid.uuid4()),
         decision=decision,

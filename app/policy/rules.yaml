@@ -1,6 +1,23 @@
-version: 1
-description: "Starter ruleset — expand with real heuristics."
+version: 2
+description: "Basic guardrail rules for prompt injection, secrets, and encoded blobs."
 rules:
-  - id: "allow-all"
-    when: "true"
-    action: "allow"
+  - id: "pi:prompt_injection"
+    category: "prompt_injection"
+    severity: "high"
+    examples:
+      - "ignore previous instructions"
+      - "reveal system prompt"
+
+  - id: "secrets:api_key_like"
+    category: "secrets"
+    severity: "high"
+    examples:
+      - "sk-..."
+      - "AKIA..."
+      - "-----BEGIN PRIVATE KEY-----"
+
+  - id: "payload:encoded_blob"
+    category: "payload"
+    severity: "high"
+    examples:
+      - "long base64/hex blob"
