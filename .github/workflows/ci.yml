@@ -5,7 +5,7 @@ on:
 
 jobs:
   lint:
-    name: Ruff (lint & format check)
+    name: Ruff (auto-fix + lint)
     runs-on: ubuntu-latest
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -13,6 +13,8 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -20,13 +22,16 @@ jobs:
       - name: Install ruff
         run: |
           python -m pip install --upgrade pip
-          pip install ruff>=0.5.0
-      - name: Ruff check
-        run: |
-          ruff check --output-format=github .
-      - name: Ruff format (verify only)
-        run: |
-          ruff format --check .
+          pip install "ruff>=0.5.0"
+      # Apply import sorting & lint auto-fixes (isort/pycodestyle where possible)
+      - name: Ruff check (apply fixes)
+        run: ruff check --fix .
+      # Apply formatter (PEP 8 spacing, blank lines, EOF newline, line endings)
+      - name: Ruff format (apply)
+        run: ruff format .
+      # Final pass to surface non-fixable issues in PR annotations
+      - name: Ruff check (report)
+        run: ruff check --output-format=github .
 
   typecheck:
     name: Mypy (type check)
@@ -46,8 +51,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install "mypy>=1.10.0" "types-PyYAML>=6.0.12.20240808"
       - name: Run mypy on app/
-        run: |
-          mypy app
+        run: mypy app
 
   test:
     name: Tests (pytest)
