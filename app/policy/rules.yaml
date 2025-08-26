@@ -1,0 +1,6 @@
+version: 1
+description: "Starter ruleset — expand with real heuristics."
+rules:
+  - id: "allow-all"
+    when: "true"
+    action: "allow"

@@ -1,0 +1,8 @@
+fastapi>=0.112.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+pydantic-settings>=2.4.0
+python-dotenv>=1.0.1
+pyyaml>=6.0.1
+python-multipart>=0.0.9
+prometheus-client>=0.20.0
