@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     Centralized runtime configuration.
     Loads from environment and optional .env file (if present).
     """
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     # App
