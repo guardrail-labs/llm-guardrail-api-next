@@ -1,4 +1,5 @@
 """Health endpoint."""
+
 from fastapi import APIRouter
 
 
