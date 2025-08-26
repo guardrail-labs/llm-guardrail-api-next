@@ -1,12 +1,12 @@
-import uuid
 from pathlib import Path
 from typing import List
+from uuid import uuid4
 
 import yaml
 from pydantic import BaseModel
 
-from app.telemetry import metrics as tmetrics
 from app.services.upipe import analyze, Decision
+from app.telemetry import metrics as tmetrics
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
 _rules = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
@@ -55,7 +55,7 @@ def evaluate_and_apply(text: str) -> Outcome:
 
     # 5) Outcome
     return Outcome(
-        request_id=str(uuid.uuid4()),
+        request_id=str(uuid4()),
         decision=decision,
         reason=reason,
         rule_hits=rule_hits,
