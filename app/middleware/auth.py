@@ -2,24 +2,32 @@ import hmac
 from typing import List, Optional
 
 from fastapi import Header, HTTPException
-from app.config import settings
+from app.config import Settings
 
 
 def _configured_keys() -> List[str]:
     """
-    Collect configured API keys from either API_KEYS (comma-separated) or API_KEY (single).
+    Read keys at call-time so tests/CI can set env before each run.
+    Supports either:
+      - API_KEY=<single>
+      - API_KEYS=<comma,separated,list>
     """
+    s = Settings()  # fresh read from env each call
     keys: List[str] = []
-    if settings.API_KEYS:
-        keys.extend([k.strip() for k in settings.API_KEYS.split(",") if k.strip()])
-    if settings.API_KEY:
-        keys.append(settings.API_KEY.strip())
+    if s.API_KEYS:
+        keys.extend([k.strip() for k in s.API_KEYS.split(",") if k.strip()])
+    if s.API_KEY:
+        keys.append(s.API_KEY.strip())
     return keys
 
 
-def _extract_presented_key(x_api_key: Optional[str], authorization: Optional[str]) -> Optional[str]:
+def _extract_presented_key(
+    x_api_key: Optional[str],
+    authorization: Optional[str],
+    bearer_prefix: str,
+) -> Optional[str]:
     """
-    Extract presented credential from either:
+    Accept either:
       - X-API-Key: <key>
       - Authorization: Bearer <key>
     """
@@ -28,9 +36,8 @@ def _extract_presented_key(x_api_key: Optional[str], authorization: Optional[str
 
     if authorization:
         auth = authorization.strip()
-        prefix = settings.AUTH_BEARER_PREFIX
-        if auth.lower().startswith(prefix.lower()):
-            return auth[len(prefix):].strip()
+        if auth.lower().startswith(bearer_prefix.lower()):
+            return auth[len(bearer_prefix) :].strip()
 
     return None
 
@@ -39,18 +46,15 @@ async def require_api_key(
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
-    """
-    FastAPI dependency that enforces a valid API key.
-    - Returns 401 on missing/invalid key.
-    - Returns 500 if the server is misconfigured (no keys configured).
-    """
-    presented = _extract_presented_key(x_api_key, authorization)
+    s = Settings()  # read prefix dynamically (supports future config)
+    presented = _extract_presented_key(x_api_key, authorization, bearer_prefix=s.AUTH_BEARER_PREFIX)
+
     if not presented:
         raise HTTPException(status_code=401, detail="Missing API key")
 
     keys = _configured_keys()
     if not keys:
-        # Misconfiguration: no keys configured on the server
+        # Misconfiguration: no keys on server
         raise HTTPException(status_code=500, detail="Server misconfigured: API key not set")
 
     for configured in keys:
