@@ -30,5 +30,15 @@ class Settings(BaseSettings):
     API_KEY_HEADER_NAME: str = Field(default="X-API-Key")
     AUTH_BEARER_PREFIX: str = Field(default="Bearer ")
 
+    # Redaction controls
+    REDACT_SECRETS: bool = Field(default=True, description="Mask known secret patterns")
+    REDACT_OPENAI_MASK: str = Field(default="[REDACTED:OPENAI_KEY]")
+    REDACT_AWS_AKID_MASK: str = Field(default="[REDACTED:AWS_ACCESS_KEY_ID]")
+    REDACT_PEM_MASK: str = Field(default="[REDACTED:PRIVATE_KEY]")
+
+    # Prompt-size limits (characters)
+    MAX_PROMPT_CHARS: int = Field(default=16000)
+
 
 settings = Settings()
+

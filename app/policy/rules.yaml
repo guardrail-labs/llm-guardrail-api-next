@@ -1,5 +1,5 @@
-version: 2
-description: "Basic guardrail rules for prompt injection, secrets, and encoded blobs."
+version: 3
+description: "Guardrail rules for prompt injection, secrets, and encoded blobs; v3 adds redaction behavior."
 rules:
   - id: "pi:prompt_injection"
     category: "prompt_injection"

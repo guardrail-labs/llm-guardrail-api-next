@@ -5,6 +5,8 @@ from uuid import uuid4
 import yaml
 from pydantic import BaseModel
 
+from app.config import settings
+from app.services.redact import redact
 from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
 
@@ -33,6 +35,27 @@ def _compose_reason(decisions: List[Decision]) -> str:
     return f"High-risk rules matched: {ids}"
 
 
+def _maybe_redact(text: str, decisions: List[Decision]) -> str:
+    if not settings.REDACT_SECRETS:
+        return text
+
+    # If any secret-like rule hits OR proactively when enabled, redact known shapes
+    result = redact(
+        text,
+        openai_mask=settings.REDACT_OPENAI_MASK,
+        aws_mask=settings.REDACT_AWS_AKID_MASK,
+        pem_mask=settings.REDACT_PEM_MASK,
+    )
+
+    for kind in result.kinds:
+        try:
+            tmetrics.inc_redaction(kind)
+        except Exception:
+            pass
+
+    return result.text
+
+
 def evaluate_and_apply(text: str) -> Outcome:
     # 1) Analyze
     decisions: List[Decision] = analyze(text)
@@ -42,8 +65,8 @@ def evaluate_and_apply(text: str) -> Outcome:
     rule_hits = [d.rule_id for d in decisions] if decisions else []
     reason = _compose_reason(decisions)
 
-    # 3) Transform (no-op for now)
-    transformed_text = text
+    # 3) Transform (redact secrets if enabled)
+    transformed_text = _maybe_redact(text, decisions)
 
     # 4) Metrics
     try:
@@ -62,3 +85,4 @@ def evaluate_and_apply(text: str) -> Outcome:
         transformed_text=transformed_text,
         policy_version=str(_rules.get("version", "1")),
     )
+
