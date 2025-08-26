@@ -1,5 +1,6 @@
-import os
 import importlib
+import os
+
 from fastapi.testclient import TestClient
 
 
@@ -19,7 +20,7 @@ def test_guardrail_blocks_prompt_injection_phrase():
     assert r.status_code == 200
     body = r.json()
     assert body["decision"] == "block"
-    assert any("pi:prompt_injection" == rid for rid in body["rule_hits"])  # contains rule id
+    assert any("pi:prompt_injection" == rid for rid in body["rule_hits"])
 
 
 def test_guardrail_blocks_secret_pattern():
@@ -30,7 +31,7 @@ def test_guardrail_blocks_secret_pattern():
     assert r.status_code == 200
     body = r.json()
     assert body["decision"] == "block"
-    assert any("secrets:api_key_like" == rid for rid in body["rule_hits"])  # contains rule id
+    assert any("secrets:api_key_like" == rid for rid in body["rule_hits"])
 
 
 def test_guardrail_blocks_long_base64_blob():
@@ -41,4 +42,4 @@ def test_guardrail_blocks_long_base64_blob():
     assert r.status_code == 200
     body = r.json()
     assert body["decision"] == "block"
-    assert any("payload:encoded_blob" == rid for rid in body["rule_hits"])  # contains rule id
+    assert any("payload:encoded_blob" == rid for rid in body["rule_hits"])
