@@ -17,3 +17,5 @@ ignore = []
 known-first-party = ["app", "tests"]
 combine-as-imports = true
 
+[lint.per-file-ignores]
+"app/routes/health.py" = ["I001"]
