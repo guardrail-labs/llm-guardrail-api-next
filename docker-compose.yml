@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    image: llm-guardrail-api-next:local
+    environment:
+      - API_KEY=dev-local-key
+      # You can also use API_KEYS=key1,key2
+      - LOG_LEVEL=INFO
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
