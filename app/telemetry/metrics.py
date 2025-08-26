@@ -42,6 +42,13 @@ REDACTIONS = Counter(
     registry=_registry,
 )
 
+# Rate limit rejections
+RATE_LIMITED = Counter(
+    "guardrail_rate_limited_total",
+    "Total requests rejected due to rate limiting",
+    registry=_registry,
+)
+
 # Latency for /guardrail in seconds
 LATENCY = Histogram(
     "guardrail_latency_seconds",
@@ -63,6 +70,10 @@ def inc_redaction(kind: str) -> None:
     REDACTIONS.labels(kind=kind).inc()
 
 
+def inc_rate_limited() -> None:
+    RATE_LIMITED.inc()
+
+
 def setup_metrics(app: FastAPI) -> None:
     @app.middleware("http")
     async def metrics_middleware(request: Request, call_next):
@@ -77,4 +88,3 @@ def setup_metrics(app: FastAPI) -> None:
     def metrics() -> Response:
         data = generate_latest(_registry)
         return Response(content=data, media_type=CONTENT_TYPE_LATEST)
-
