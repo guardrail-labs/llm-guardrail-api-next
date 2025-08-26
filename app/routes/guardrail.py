@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.config import settings
+from app.config import Settings
 from app.middleware.auth import require_api_key
 from app.schemas import ErrorResponse, GuardrailRequest, GuardrailResponse
 from app.services.policy import evaluate_and_apply
@@ -19,7 +19,9 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
     summary="Evaluate a prompt against guardrail rules",
 )
 def guard(ingress: GuardrailRequest) -> GuardrailResponse:
-    max_chars = int(settings.MAX_PROMPT_CHARS)
+    # Read env-driven settings per request so tests (and runtime) can override via env
+    s = Settings()
+    max_chars = int(s.MAX_PROMPT_CHARS)
     if len(ingress.prompt) > max_chars:
         raise HTTPException(
             status_code=413,
