@@ -1,5 +1,6 @@
-import os
 import importlib
+import os
+
 from fastapi.testclient import TestClient
 
 
@@ -8,9 +9,9 @@ def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
 
     # Reload config/main so settings pick up the env var before app build
-    import app.config as cfg
+    import app.config as cfg  # noqa: WPS433 (local import in function)
     importlib.reload(cfg)
-    import app.main as main
+    import app.main as main  # noqa: WPS433
     importlib.reload(main)
 
     return TestClient(main.build_app())
@@ -21,7 +22,6 @@ def test_guardrail_allows_by_default():
     payload = {"prompt": "Hello, world!"}
 
     # Include the API key (either header form is accepted)
-    # Option 1: X-API-Key header
     r = client.post("/guardrail", json=payload, headers={"X-API-Key": "unit-test-key"})
     assert r.status_code == 200
     body = r.json()
@@ -29,7 +29,6 @@ def test_guardrail_allows_by_default():
     assert isinstance(body["request_id"], str)
     assert "policy_version" in body
 
-    # Option 2 (also valid): Bearer token
     r2 = client.post(
         "/guardrail",
         json=payload,
