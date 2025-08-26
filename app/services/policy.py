@@ -1,10 +1,11 @@
-import uuid
-import yaml
 from pathlib import Path
-from pydantic import BaseModel
+import uuid
 from typing import List
 
-from app.services.upipe import analyze, Decision
+from pydantic import BaseModel
+import yaml
+
+from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
@@ -18,6 +19,7 @@ class Outcome(BaseModel):
     rule_hits: List[str]
     transformed_text: str
     policy_version: str
+
 
 def _final_decision(decisions: List[Decision]) -> str:
     # For now, any detected high-severity rule ⇒ block.
