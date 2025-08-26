@@ -1,6 +1,8 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.middleware.ratelimit import RateLimitMiddleware
 from app.routes.guardrail import router as guardrail_router
 from app.routes.health import router as health_router
 from app.telemetry.logging import setup_logging
@@ -10,7 +12,7 @@ from app.telemetry.metrics import setup_metrics
 def build_app() -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
-        version=getattr(settings, "APP_VERSION", "0.3.0"),
+        version=settings.APP_VERSION,
         description=(
             "LLM Guardrail API — secure-by-default gateway that evaluates prompts/output "
             "against basic heuristics (injection, secrets, encoded blobs)."
@@ -19,6 +21,22 @@ def build_app() -> FastAPI:
         license_info={"name": "MIT"},
     )
 
+    # CORS
+    origins = ["*"] if settings.CORS_ALLOW_ORIGINS.strip() == "*" else [
+        o.strip() for o in settings.CORS_ALLOW_ORIGINS.split(",") if o.strip()
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Rate limiting (outer middleware)
+    app.add_middleware(RateLimitMiddleware)
+
+    # Routers
     app.include_router(health_router, tags=["health"])
     app.include_router(guardrail_router, tags=["guardrail"])
 

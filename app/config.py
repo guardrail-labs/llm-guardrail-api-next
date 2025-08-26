@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     API_KEY: Optional[str] = Field(default=None)
     API_KEYS: Optional[str] = Field(default=None)
 
-    # Header names (kept simple for now)
+    # Header names
     API_KEY_HEADER_NAME: str = Field(default="X-API-Key")
     AUTH_BEARER_PREFIX: str = Field(default="Bearer ")
 
@@ -38,6 +38,14 @@ class Settings(BaseSettings):
 
     # Prompt-size limits (characters)
     MAX_PROMPT_CHARS: int = Field(default=16000)
+
+    # Rate limit (per API key/IP)
+    RATE_LIMIT_ENABLED: bool = Field(default=False)
+    RATE_LIMIT_PER_MINUTE: int = Field(default=60)
+    RATE_LIMIT_BURST: int = Field(default=60)
+
+    # CORS
+    CORS_ALLOW_ORIGINS: str = Field(default="*")  # comma-separated or "*"
 
 
 settings = Settings()
