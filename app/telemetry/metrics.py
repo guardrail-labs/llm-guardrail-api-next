@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Response
-from prometheus_client import CollectorRegistry, CONTENT_TYPE_LATEST, generate_latest
-from prometheus_client import Counter
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
 
 _registry = CollectorRegistry(auto_describe=True)
 
