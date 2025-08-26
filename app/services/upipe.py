@@ -6,8 +6,8 @@ UPIPE: Unified pipeline with lightweight detectors.
 
 No external deps — stdlib only.
 """
-import re
 from dataclasses import dataclass
+import re
 from typing import List
 
 
