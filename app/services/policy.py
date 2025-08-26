@@ -1,12 +1,12 @@
+import uuid
 from pathlib import Path
 from typing import List
-import uuid
 
-from pydantic import BaseModel
 import yaml
+from pydantic import BaseModel
 
-from app.services.upipe import analyze, Decision
 from app.telemetry import metrics as tmetrics
+from app.services.upipe import analyze, Decision
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
 _rules = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
