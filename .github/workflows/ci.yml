@@ -9,7 +9,7 @@ jobs:
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_NO_CACHE_DIR: "1"
-      # IMPORTANT: point to the REPO ROOT so "import app" resolves
+      # IMPORTANT: repo root on sys.path so "import app" resolves
       PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +21,8 @@ jobs:
           python3 - <<'PY'
           import sys, os, pathlib
           print("cwd:", os.getcwd())
-          print("sys.path[0]:", sys.path[0])
-          print("First 5 sys.path entries:", sys.path[:5])
-          print("Has app/__init__.py? ", (pathlib.Path("app")/"__init__.py").exists())
+          print("sys.path[:5]:", sys.path[:5])
+          print("has app/__init__.py?", (pathlib.Path("app")/"__init__.py").exists())
           PY
 
       - uses: actions/setup-python@v5
