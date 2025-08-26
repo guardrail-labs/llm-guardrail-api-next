@@ -19,7 +19,8 @@ def _ensure_logger() -> logging.Logger:
     global _configured
     logger = logging.getLogger(_LOGGER_NAME)
     logger.setLevel(logging.INFO)
-    logger.propagate = False  # don't duplicate to root
+    # IMPORTANT: allow propagation so pytest's caplog can capture records
+    logger.propagate = True
 
     if _configured:
         return logger
@@ -27,6 +28,8 @@ def _ensure_logger() -> logging.Logger:
     s = Settings()
     formatter = logging.Formatter("%(message)s")
 
+    # Type as generic Handler so mypy accepts both branches
+    handler: logging.Handler
     if s.AUDIT_LOG_FILE:
         handler = RotatingFileHandler(
             filename=s.AUDIT_LOG_FILE,
@@ -95,4 +98,3 @@ def emit_decision_event(
     except Exception:
         # Never let audit logging break the request path
         pass
-
