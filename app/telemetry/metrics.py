@@ -49,6 +49,13 @@ RATE_LIMITED = Counter(
     registry=_registry,
 )
 
+# Audit events emitted
+AUDIT_EVENTS = Counter(
+    "guardrail_audit_events_total",
+    "Total audit events emitted",
+    registry=_registry,
+)
+
 # Latency for /guardrail in seconds
 LATENCY = Histogram(
     "guardrail_latency_seconds",
@@ -74,6 +81,10 @@ def inc_rate_limited() -> None:
     RATE_LIMITED.inc()
 
 
+def inc_audit_event() -> None:
+    AUDIT_EVENTS.inc()
+
+
 def setup_metrics(app: FastAPI) -> None:
     @app.middleware("http")
     async def metrics_middleware(request: Request, call_next):
@@ -88,3 +99,4 @@ def setup_metrics(app: FastAPI) -> None:
     def metrics() -> Response:
         data = generate_latest(_registry)
         return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+

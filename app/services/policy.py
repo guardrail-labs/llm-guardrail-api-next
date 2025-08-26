@@ -9,6 +9,7 @@ from app.config import settings
 from app.services.redact import redact
 from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
+from app.telemetry.audit import emit_decision_event
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
 _rules = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
@@ -24,7 +25,6 @@ class Outcome(BaseModel):
 
 
 def _final_decision(decisions: List[Decision]) -> str:
-    # For now, any detected high-severity rule ⇒ block.
     return "block" if decisions else "allow"
 
 
@@ -35,28 +35,27 @@ def _compose_reason(decisions: List[Decision]) -> str:
     return f"High-risk rules matched: {ids}"
 
 
-def _maybe_redact(text: str, decisions: List[Decision]) -> str:
+def _maybe_redact(text: str) -> str:
     if not settings.REDACT_SECRETS:
         return text
-
-    # If any secret-like rule hits OR proactively when enabled, redact known shapes
     result = redact(
         text,
         openai_mask=settings.REDACT_OPENAI_MASK,
         aws_mask=settings.REDACT_AWS_AKID_MASK,
         pem_mask=settings.REDACT_PEM_MASK,
     )
-
     for kind in result.kinds:
         try:
             tmetrics.inc_redaction(kind)
         except Exception:
             pass
-
     return result.text
 
 
 def evaluate_and_apply(text: str) -> Outcome:
+    # Generate request id early so audit can reference it
+    rid = str(uuid4())
+
     # 1) Analyze
     decisions: List[Decision] = analyze(text)
 
@@ -66,23 +65,38 @@ def evaluate_and_apply(text: str) -> Outcome:
     reason = _compose_reason(decisions)
 
     # 3) Transform (redact secrets if enabled)
-    transformed_text = _maybe_redact(text, decisions)
+    transformed_text = _maybe_redact(text)
 
     # 4) Metrics
     try:
         tmetrics.inc_decision(decision)
         tmetrics.inc_rule_hits(rule_hits)
     except Exception:
-        # Metrics should never break the API
         pass
 
     # 5) Outcome
-    return Outcome(
-        request_id=str(uuid4()),
+    outcome = Outcome(
+        request_id=rid,
         decision=decision,
         reason=reason,
         rule_hits=rule_hits,
         transformed_text=transformed_text,
         policy_version=str(_rules.get("version", "1")),
     )
+
+    # 6) Audit (sampled JSON event)
+    try:
+        emit_decision_event(
+            request_id=rid,
+            decision=decision,
+            rule_hits=rule_hits,
+            reason=reason,
+            transformed_text=transformed_text,
+            policy_version=outcome.policy_version,
+            prompt_len=len(text),
+        )
+    except Exception:
+        pass
+
+    return outcome
 
