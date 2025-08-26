@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # CORS
     CORS_ALLOW_ORIGINS: str = Field(default="*")  # comma-separated or "*"
 
+    # Audit logging
+    AUDIT_ENABLED: bool = Field(default=False)
+    AUDIT_SAMPLE_RATE: float = Field(default=0.10)  # 0.0..1.0
+    AUDIT_MAX_TEXT_CHARS: int = Field(default=512)
+    AUDIT_LOG_FILE: Optional[str] = Field(default=None)
+    AUDIT_LOG_MAX_BYTES: int = Field(default=10 * 1024 * 1024)  # 10 MiB
+    AUDIT_LOG_BACKUPS: int = Field(default=5)
+
 
 settings = Settings()
 
