@@ -9,9 +9,9 @@ def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
 
     # Reload config/main so settings pick up the env var before app build
-    import app.config as cfg  # noqa: WPS433 (local import in function)
+    import app.config as cfg
     importlib.reload(cfg)
-    import app.main as main  # noqa: WPS433
+    import app.main as main
     importlib.reload(main)
 
     return TestClient(main.build_app())
