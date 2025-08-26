@@ -1,9 +1,9 @@
 from pathlib import Path
-import uuid
 from typing import List
+import uuid
 
-from pydantic import BaseModel
 import yaml
+from pydantic import BaseModel
 
 from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
