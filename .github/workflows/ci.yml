@@ -41,10 +41,10 @@ jobs:
         with:
           python-version: "3.11"
           check-latest: true
-      - name: Install mypy + runtime stubs
+      - name: Install mypy + yaml stubs
         run: |
           python -m pip install --upgrade pip
-          pip install mypy>=1.10.0
+          pip install "mypy>=1.10.0" "types-PyYAML>=6.0.12.20240808"
       - name: Run mypy on app/
         run: |
           mypy app
@@ -68,4 +68,3 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest -q
-
