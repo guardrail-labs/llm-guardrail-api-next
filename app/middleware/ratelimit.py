@@ -35,11 +35,11 @@ def _extract_presented_key(request: Request) -> Tuple[str, str]:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app) -> None:  # type: ignore[override]
+    def __init__(self, app) -> None:
         super().__init__(app)
         s = Settings()  # read env at app-build time
 
-        # Config (Pydantic converts "true"/"1"/etc. to bool for us)
+        # Config (Pydantic converts truthy strings to bool)
         self.enabled: bool = bool(s.RATE_LIMIT_ENABLED)
         self.per_minute: int = int(s.RATE_LIMIT_PER_MINUTE)
         self.burst: int = int(s.RATE_LIMIT_BURST or self.per_minute)
