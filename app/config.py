@@ -1,6 +1,7 @@
+from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -27,5 +28,6 @@ class Settings(BaseSettings):
     # Header names (kept simple for now)
     API_KEY_HEADER_NAME: str = Field(default="X-API-Key")
     AUTH_BEARER_PREFIX: str = Field(default="Bearer ")
+
 
 settings = Settings()
