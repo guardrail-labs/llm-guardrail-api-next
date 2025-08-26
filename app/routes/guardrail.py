@@ -4,8 +4,6 @@ from pydantic import BaseModel
 from app.middleware.auth import require_api_key
 from app.services.policy import evaluate_and_apply
 
-
-# Enforce API key for all routes in this router
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
