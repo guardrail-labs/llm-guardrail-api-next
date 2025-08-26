@@ -1,6 +1,6 @@
 from time import monotonic
 
-from fastapi import FastAPI, Response, Request
+from fastapi import FastAPI, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -34,6 +34,14 @@ RULE_HITS = Counter(
     registry=_registry,
 )
 
+# Secret redactions
+REDACTIONS = Counter(
+    "guardrail_redactions_total",
+    "Total secret redactions by kind",
+    ["kind"],
+    registry=_registry,
+)
+
 # Latency for /guardrail in seconds
 LATENCY = Histogram(
     "guardrail_latency_seconds",
@@ -51,6 +59,10 @@ def inc_rule_hits(rule_ids: list[str]) -> None:
         RULE_HITS.labels(rule_id=rid).inc()
 
 
+def inc_redaction(kind: str) -> None:
+    REDACTIONS.labels(kind=kind).inc()
+
+
 def setup_metrics(app: FastAPI) -> None:
     @app.middleware("http")
     async def metrics_middleware(request: Request, call_next):
@@ -65,3 +77,4 @@ def setup_metrics(app: FastAPI) -> None:
     def metrics() -> Response:
         data = generate_latest(_registry)
         return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
