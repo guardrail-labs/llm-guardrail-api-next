@@ -4,10 +4,10 @@ from fastapi.testclient import TestClient
 
 
 def _make_client():
-    # Provide a key to the app for tests
+    # Provide an API key for the app during tests
     os.environ["API_KEY"] = "unit-test-key"
 
-    # Reload config and main so they pick up the env var
+    # Reload config/main so settings pick up the env var before app build
     import app.config as cfg
     importlib.reload(cfg)
     import app.main as main
@@ -19,10 +19,20 @@ def _make_client():
 def test_guardrail_allows_by_default():
     client = _make_client()
     payload = {"prompt": "Hello, world!"}
-    # Provide key via header (accepted header #1)
+
+    # Include the API key (either header form is accepted)
+    # Option 1: X-API-Key header
     r = client.post("/guardrail", json=payload, headers={"X-API-Key": "unit-test-key"})
     assert r.status_code == 200
     body = r.json()
     assert body["decision"] == "allow"
     assert isinstance(body["request_id"], str)
     assert "policy_version" in body
+
+    # Option 2 (also valid): Bearer token
+    r2 = client.post(
+        "/guardrail",
+        json=payload,
+        headers={"Authorization": "Bearer unit-test-key"},
+    )
+    assert r2.status_code == 200
