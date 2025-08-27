@@ -1,100 +1,73 @@
-"""Structured audit logging with sampling and optional file rotation."""
 from __future__ import annotations
 
 import json
 import logging
 import os
-import random
-from logging.handlers import RotatingFileHandler
-from typing import Any, Dict
-
-from app.config import Settings
-from app.telemetry.metrics import inc_audit_event
-
-_LOGGER_NAME = "guardrail_audit"
-_configured = False
+from typing import Iterable
 
 
-def _ensure_logger() -> logging.Logger:
-    global _configured
-    logger = logging.getLogger(_LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-    # IMPORTANT: allow propagation so pytest's caplog can capture records
-    logger.propagate = True
-
-    if _configured:
-        return logger
-
-    s = Settings()
-    formatter = logging.Formatter("%(message)s")
-
-    # Type as generic Handler so mypy accepts both branches
-    handler: logging.Handler
-    if s.AUDIT_LOG_FILE:
-        handler = RotatingFileHandler(
-            filename=s.AUDIT_LOG_FILE,
-            maxBytes=int(s.AUDIT_LOG_MAX_BYTES),
-            backupCount=int(s.AUDIT_LOG_BACKUPS),
-            encoding="utf-8",
-        )
-    else:
-        handler = logging.StreamHandler()
-
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-
-    _configured = True
-    return logger
+_AUDIT_LOGGER_NAME = "guardrail_audit"
+_logger = logging.getLogger(_AUDIT_LOGGER_NAME)
+_logger.setLevel(logging.INFO)
 
 
-def _should_sample(rate: float) -> bool:
-    if rate <= 0.0:
-        return False
-    if rate >= 1.0:
-        return True
-    return random.random() < rate
+def _truthy(v: str | None) -> bool:
+    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def emit_decision_event(
     *,
     request_id: str,
     decision: str,
-    rule_hits: list[str],
+    rule_hits: Iterable[str],
     reason: str,
-    transformed_text: str,
     policy_version: str,
-    prompt_len: int,
+    prompt_text: str,
 ) -> None:
-    """Emit a single JSON line audit event if enabled and sampled."""
-    s = Settings()
-
-    if not s.AUDIT_ENABLED:
+    """Emit a single-line JSON audit record. Honors:
+    - AUDIT_ENABLED (default: false)
+    - AUDIT_SAMPLE_RATE (0.0..1.0, default: 1.0)
+    - AUDIT_MAX_TEXT_CHARS (default: 128) -> truncates snippet
+    - SERVICE_NAME (default: llm-guardrail-api-next)
+    - ENV (default: dev)
+    """
+    if not _truthy(os.getenv("AUDIT_ENABLED", "false")):
         return
-    if not _should_sample(float(s.AUDIT_SAMPLE_RATE)):
-        return
-
-    max_chars = int(s.AUDIT_MAX_TEXT_CHARS)
-    snippet = transformed_text[:max_chars]
-    redacted = snippet != transformed_text and len(transformed_text) > max_chars
-
-    payload: Dict[str, Any] = {
-        "event": "guardrail_decision",
-        "request_id": request_id,
-        "decision": decision,
-        "rule_hits": sorted(rule_hits),
-        "reason": reason,
-        "policy_version": policy_version,
-        "prompt_len": prompt_len,
-        "snippet_len": len(snippet),
-        "snippet": snippet,
-        "snippet_truncated": redacted,
-        "service": Settings().APP_NAME,
-        "env": os.environ.get("APP_ENV", "dev"),
-    }
 
     try:
-        _ensure_logger().info(json.dumps(payload, ensure_ascii=False))
-        inc_audit_event()
+        sample_rate = float(os.getenv("AUDIT_SAMPLE_RATE", "1.0"))
     except Exception:
-        # Never let audit logging break the request path
-        pass
+        sample_rate = 1.0
+
+    # Cheap sampling without importing random if always-on
+    if sample_rate < 1.0:
+        import random
+
+        if random.random() > sample_rate:
+            return
+
+    try:
+        max_chars = int(os.getenv("AUDIT_MAX_TEXT_CHARS", "128"))
+    except Exception:
+        max_chars = 128
+
+    snippet_full = prompt_text or ""
+    snippet = snippet_full[:max_chars]
+    snippet_truncated = len(snippet_full) > max_chars
+
+    payload = {
+        "event": "guardrail_decision",
+        "request_id": request_id,
+        "decision": str(decision),
+        "rule_hits": list(rule_hits),
+        "reason": str(reason),
+        "policy_version": str(policy_version),
+        "prompt_len": len(snippet_full),
+        "snippet_len": len(snippet),
+        "snippet": snippet,
+        "snippet_truncated": snippet_truncated,
+        "service": os.getenv("SERVICE_NAME", "llm-guardrail-api-next"),
+        "env": os.getenv("ENV", "dev"),
+    }
+
+    _logger.info(json.dumps(payload))

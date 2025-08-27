@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from app.middleware.auth import require_api_key
 from app.services.policy_loader import get_policy, reload_now
 
 # No prefix; use absolute paths in decorators to avoid surprises
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter()
 
 
 @router.get("/policy/version")

@@ -19,7 +19,7 @@ def test_cors_allows_origin_header_on_simple_get():
     os.environ["CORS_ALLOW_ORIGINS"] = "http://example.com"
     client = _make_client()
 
-    r = client.get("/healthz", headers={"Origin": "http://example.com"})
+    r = client.get("/health", headers={"Origin": "http://example.com"})
     assert r.status_code == 200
     # CORS middleware echoes the origin when specifically allowed
     assert r.headers.get("access-control-allow-origin") == "http://example.com"

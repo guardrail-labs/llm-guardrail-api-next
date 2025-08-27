@@ -1,103 +1,345 @@
-from typing import List
-from uuid import uuid4
+from __future__ import annotations
 
-from pydantic import BaseModel
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, List, Tuple
 
-from app.config import settings
-from app.services.policy_loader import get_policy
-from app.services.redact import redact
-from app.services.upipe import Decision, analyze
-from app.telemetry import metrics as tmetrics
+import yaml
 from app.telemetry.audit import emit_decision_event
 
+# ---- settings (defensive import with fallback) --------------------------------
+try:
+    from app.settings import get_settings as _external_get_settings
+except Exception:  # pragma: no cover
+    _external_get_settings = None
 
-class Outcome(BaseModel):
-    request_id: str
+
+def get_settings() -> Any:
+    """
+    Lightweight getter that always reflects current environment.
+    If an external settings provider exists, call it; otherwise read os.environ.
+    """
+    if _external_get_settings is not None:
+        return _external_get_settings()
+
+    class _Shim:
+        def __getattr__(self, name: str) -> Any:
+            return os.environ.get(name)
+
+    return _Shim()
+
+
+# -------------------------
+# Rule loading & compilation
+# -------------------------
+
+# Default rules with IDs aligned to tests
+_DEFAULT_RULES_YAML = """\
+version: "3"
+
+rules:
+  - id: payload:encoded_blob
+    description: Detect long base64-like blobs
+    regex: '/^[A-Za-z0-9+/=]{128,}$/'
+    decision: block
+
+  - id: secrets:api_key_like
+    description: OpenAI-like API key
+    regex: '/sk-[A-Za-z0-9]{16,}/'
+    decision: block
+
+  - id: secret:aws_access_key_id
+    description: AWS Access Key ID
+    regex: '/AKIA[0-9A-Z]{16}/'
+    decision: block
+
+  - id: secret:private_key_block
+    description: Private key PEM block markers
+    regex: '/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/'
+    decision: block
+
+  - id: pi:prompt_injection
+    description: Common prompt-injection phrase
+    regex: '/ignore\\s+(?:all\\s+)?previous\\s+(?:instructions|directions)/i'
+    decision: block
+"""
+
+
+def _compile_rule_pattern(
+    raw: str, flags_list: Iterable[str] | None = None
+) -> re.Pattern[str]:
+    """
+    Accept either /pattern/flags or a bare pattern string plus flags list.
+    Supports i, m, s flags.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return re.compile(r"(?!x)")  # never matches
+
+    if len(raw) >= 2 and raw[0] == "/" and raw.rfind("/") > 0:
+        last = raw.rfind("/")
+        pat = raw[1:last]
+        flag_str = raw[last + 1 :]
+        flags = 0
+        for ch in flag_str:
+            if ch == "i":
+                flags |= re.IGNORECASE
+            elif ch == "m":
+                flags |= re.MULTILINE
+            elif ch == "s":
+                flags |= re.DOTALL
+        return re.compile(pat, flags)
+
+    flags = 0
+    for ch in (flags_list or []):
+        if ch == "i":
+            flags |= re.IGNORECASE
+        elif ch == "m":
+            flags |= re.MULTILINE
+        elif ch == "s":
+            flags |= re.DOTALL
+    return re.compile(raw, flags)
+
+
+@dataclass
+class CompiledRule:
+    id: str
+    description: str
     decision: str  # "allow" | "block"
-    reason: str
-    rule_hits: List[str]
-    transformed_text: str
-    policy_version: str
+    regex: re.Pattern[str]
 
 
-def _final_decision(any_hits: bool) -> str:
-    return "block" if any_hits else "allow"
+_policy_rules: List[CompiledRule] | None = None
+_policy_version: str = "3"
+_rules_path: Path | None = None
+_last_mtime: float = 0.0
+
+# redaction counter for metrics
+_redactions_total: int = 0
 
 
-def _compose_reason(rule_ids: List[str]) -> str:
-    if not rule_ids:
-        return "No risk signals detected"
-    ids = ", ".join(sorted(set(rule_ids)))
-    return f"High-risk rules matched: {ids}"
+def _policy_path_from_settings() -> Path:
+    s = get_settings()
+    path_str = (
+        getattr(s, "POLICY_RULES_PATH", None)
+        or getattr(s, "POLICY_PATH", None)
+        or str(Path(__file__).with_name("rules.yaml"))
+    )
+    return Path(path_str)
+
+
+def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_DEFAULT_RULES_YAML, encoding="utf-8")
+
+    txt = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(txt) or {}
+    version = str(data.get("version", "3"))
+
+    compiled: List[CompiledRule] = []
+
+    # New-style "rules" list (decision-bearing)
+    for item in data.get("rules", []) or []:
+        rid = str(item.get("id", "") or "").strip() or "unnamed"
+        desc = str(item.get("description", "") or "")
+        decision = str(item.get("decision", "block") or "block").lower()
+        raw = str(item.get("regex") or item.get("pattern") or "")
+        rx = _compile_rule_pattern(raw)
+        compiled.append(
+            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
+        )
+
+    # Back-compat test format: "deny" -> implicit block; flags as list
+    for item in data.get("deny", []) or []:
+        rid = str(item.get("id", "") or "").strip() or "unnamed"
+        pat = str(item.get("pattern", "") or "")
+        flags = item.get("flags") or []
+        rx = _compile_rule_pattern(pat, flags)
+        compiled.append(
+            CompiledRule(
+                id=f"policy:deny:{rid}",
+                description="deny rule",
+                decision="block",
+                regex=rx,
+            )
+        )
+
+    mtime = path.stat().st_mtime
+    return compiled, version, mtime
+
+
+def _ensure_loaded() -> None:
+    """
+    Ensure rules are loaded and reflect current env:
+    - If POLICY_RULES_PATH changed since last load, reload from the new path.
+    - If POLICY_AUTORELOAD=true and file mtime increased, reload.
+    """
+    global _policy_rules, _policy_version, _rules_path, _last_mtime
+
+    current_path = _policy_path_from_settings()
+
+    # First load or env-path change => load now
+    if _policy_rules is None or _rules_path is None or current_path != _rules_path:
+        _rules_path = current_path
+        _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
+        return
+
+    s = get_settings()
+    auto = str(
+        getattr(s, "POLICY_AUTORELOAD", None)
+        or getattr(s, "POLICY_AUTO_RELOAD", "false")
+    ).lower() in ("1", "true", "yes")
+
+    if auto and _rules_path.exists():
+        try:
+            mtime = _rules_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if mtime > _last_mtime:
+            _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
+
+
+def reload_rules() -> dict[str, Any]:
+    global _policy_rules, _policy_version, _last_mtime, _rules_path
+    _rules_path = _policy_path_from_settings()
+    _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
+    return {
+        "policy_version": _policy_version,
+        "rules_loaded": len(_policy_rules or []),
+    }
+
+
+# Back-compat name
+def force_reload() -> dict[str, Any]:
+    return reload_rules()
+
+
+# -------------
+# Redaction pass
+# -------------
+_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
+    (
+        re.compile(
+            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        ),
+        "[REDACTED:PRIVATE_KEY]",
+    ),
+]
+
+# Always-on secret rules (independent of YAML), IDs match tests
+_BUILTIN_SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("secrets:api_key_like", re.compile(r"sk-[A-Za-z0-9]{16,}")),
+    ("secret:aws_access_key_id", re.compile(r"AKIA[0-9A-Z]{16}")),
+    (
+        "secret:private_key_block",
+        re.compile(
+            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        ),
+    ),
+]
 
 
 def _maybe_redact(text: str) -> str:
-    if not settings.REDACT_SECRETS:
+    global _redactions_total
+    s = get_settings()
+    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not enabled:
         return text
-    result = redact(
-        text,
-        openai_mask=settings.REDACT_OPENAI_MASK,
-        aws_mask=settings.REDACT_AWS_AKID_MASK,
-        pem_mask=settings.REDACT_PEM_MASK,
-    )
-    for kind in result.kinds:
+    out = text
+    before = out
+    for pat, repl in _REDACTIONS:
+        out = pat.sub(repl, out)
+    if out != before:
+        _redactions_total += 1
+    return out
+
+
+def get_redactions_total() -> int:
+    return _redactions_total
+
+
+# ----------
+# Evaluation
+# ----------
+def analyze(text: str) -> tuple[str, list[str], str]:
+    """
+    Returns (decision, rule_hits, reason).
+    Decision is "block" if any rule triggers with decision=block; else "allow".
+    """
+    _ensure_loaded()
+    rules = _policy_rules or []
+
+    hits: list[str] = []
+
+    # Always enforce built-in secret hits first
+    for rid, pat in _BUILTIN_SECRET_RULES:
         try:
-            tmetrics.inc_redaction(kind)
-        except Exception:
-            pass
-    return result.text
+            if pat.search(text):
+                hits.append(rid)
+        except re.error:
+            continue
+
+    # External rules from YAML file
+    for r in rules:
+        try:
+            if r.regex.search(text):
+                hits.append(r.id)
+        except re.error:
+            continue
+
+    if hits:
+        uniq = list(dict.fromkeys(hits))  # stable de-dupe
+        return "block", uniq, f"High-risk rules matched: {', '.join(uniq)}"
+    return "allow", [], "No risk signals detected"
 
 
-def evaluate_and_apply(text: str) -> Outcome:
-    rid = str(uuid4())
+def evaluate_and_apply(text: str, request_id: str = "") -> dict[str, Any]:
+    """
+    Main entry point used by routes. Applies policy and redactions, emits audit.
+    """
+    _ensure_loaded()
+    s = get_settings()
 
-    # Load current policy (hot-reload if enabled)
-    blob = get_policy()
+    # Optional soft size limit (hard 413 is enforced at route layer)
+    max_chars_soft = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
+    if max_chars_soft and len(text) > max_chars_soft:
+        decision, rule_hits, reason = (
+            "block",
+            ["payload:size_limit"],
+            "Prompt exceeds maximum allowed size",
+        )
+    else:
+        decision, rule_hits, reason = analyze(text)
 
-    # 1) Analyze via uPipe (builtin heuristics)
-    pipe_decisions: List[Decision] = analyze(text)
-    rule_ids: List[str] = [d.rule_id for d in pipe_decisions]
+    transformed = _maybe_redact(text)
 
-    # 2) Evaluate policy-driven deny regex (from rules.yaml)
-    for rid_cfg, pattern in blob.deny_compiled:
-        if pattern.search(text):
-            rule_ids.append(f"policy:deny:{rid_cfg}")
-
-    any_hits = bool(rule_ids)
-
-    # 3) Transform (redact secrets if enabled)
-    transformed_text = _maybe_redact(text)
-
-    # 4) Metrics
-    try:
-        tmetrics.inc_decision(_final_decision(any_hits))
-        tmetrics.inc_rule_hits(rule_ids)
-    except Exception:
-        pass
-
-    # 5) Outcome
-    outcome = Outcome(
-        request_id=rid,
-        decision=_final_decision(any_hits),
-        reason=_compose_reason(rule_ids),
-        rule_hits=rule_ids,
-        transformed_text=transformed_text,
-        policy_version=str(blob.version),
-    )
-
-    # 6) Audit (sampled JSON event)
     try:
         emit_decision_event(
-            request_id=rid,
-            decision=outcome.decision,
-            rule_hits=rule_ids,
-            reason=outcome.reason,
-            transformed_text=transformed_text,
-            policy_version=outcome.policy_version,
-            prompt_len=len(text),
+            decision=decision,
+            rule_hits=list(rule_hits),
+            reason=reason,
+            policy_version=str(_policy_version),
+            prompt_text=text,
+            request_id=request_id,
         )
     except Exception:
+        # telemetry failures are non-fatal
         pass
 
-    return outcome
-
+    return {
+        "decision": decision,
+        "rule_hits": list(rule_hits),
+        "reason": reason,
+        "policy_version": str(_policy_version),
+        "transformed_text": transformed,
+        "request_id": request_id,
+    }

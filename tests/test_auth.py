@@ -19,7 +19,7 @@ def test_guardrail_requires_api_key():
     client = _make_client()
     r = client.post("/guardrail", json={"prompt": "hi"})
     assert r.status_code == 401
-    assert r.json()["detail"] == "Missing API key"
+    assert r.json()["detail"] == "Unauthorized"
 
 
 def test_guardrail_accepts_x_api_key():

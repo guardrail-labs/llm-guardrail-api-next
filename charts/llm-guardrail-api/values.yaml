@@ -1,15 +1,13 @@
-# ----- Global / image -----
 image:
   repository: ghcr.io/wesmilam/llm-guardrail-api-next
   tag: latest
   pullPolicy: IfNotPresent
 
-imagePullSecrets: []   # e.g. [{ name: my-regcred }]
+imagePullSecrets: []
 
 nameOverride: ""
 fullnameOverride: ""
 
-# ----- Pod basics -----
 replicaCount: 2
 
 podAnnotations:
@@ -40,9 +38,8 @@ ingress:
       paths:
         - path: /
           pathType: Prefix
-  tls: []   # e.g. [{ secretName: guardrail-tls, hosts: [guardrail.example.com] }]
+  tls: []
 
-# ----- Resources / autoscaling / disruptions -----
 resources:
   requests:
     cpu: 100m
@@ -56,13 +53,11 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
-  # targetMemoryUtilizationPercentage: 70
 
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
-# ----- Rules (ConfigMap) -----
 rules:
   version: "3"
   inline: |
@@ -86,10 +81,19 @@ rules:
         pattern: "(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16,}|BEGIN PRIVATE KEY|END PRIVATE KEY)"
         action: "block"
 
-# ----- Environment configuration -----
+# ---- Auth / Env ----
 env:
-  # Security
+  # API key (used in api_key mode)
   API_KEY: "change-me-prod-key"
+
+  # Auth mode
+  AUTH_MODE: "api_key"          # "api_key" or "jwt"
+
+  # JWT (use either JWKS/RS256 or HS256)
+  JWT_JWKS_URL: ""
+  JWT_ISSUER: ""
+  JWT_AUDIENCE: ""
+  JWT_HS256_SECRET: ""
 
   # Policy
   POLICY_AUTORELOAD: "true"
@@ -109,19 +113,20 @@ env:
   RATE_LIMIT_ENABLED: "false"
   RATE_LIMIT_PER_MINUTE: "120"
   RATE_LIMIT_BURST: "120"
+  RATE_LIMIT_BACKEND: "memory"   # memory | redis
+  REDIS_URL: ""                  # e.g. redis://redis:6379/0
 
   # Metrics / tracing
   METRICS_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
-envFrom: []  # e.g. [{ secretRef: { name: extra-secrets } }]
+envFrom: []
 
-# Node scheduling
 nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
 
-# Extra volumes / mounts if needed
 extraVolumes: []
 extraVolumeMounts: []
+

@@ -1,69 +1,65 @@
-import hmac
-from typing import List, Optional
+from __future__ import annotations
 
-from fastapi import Header, HTTPException
+from fastapi import Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import Settings
+from app.config import get_settings
+
+# Public endpoints (no API key required)
+_PUBLIC_PATHS = {
+    "/health",
+    "/metrics",
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
+}
+_PUBLIC_PREFIXES = ("/static/",)
+
+# Only these prefixes require auth by default
+_PROTECTED_PREFIXES = ("/guardrail", "/admin")
 
 
-def _configured_keys() -> List[str]:
+class APIKeyAuthMiddleware(BaseHTTPMiddleware):
     """
-    Read keys at call-time so tests/CI can set env before each run.
-    Supports either:
-      - API_KEY=<single>
-      - API_KEYS=<comma,separated,list>
+    Require an API key only for protected paths.
+    Accepts either 'X-API-Key' or 'Authorization: Bearer <key>'.
     """
-    s = Settings()  # fresh read from env each call
-    keys: List[str] = []
-    if s.API_KEYS:
-        keys.extend([k.strip() for k in s.API_KEYS.split(",") if k.strip()])
-    if s.API_KEY:
-        keys.append(s.API_KEY.strip())
-    return keys
 
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self.s = get_settings()
 
-def _extract_presented_key(
-    x_api_key: Optional[str],
-    authorization: Optional[str],
-    bearer_prefix: str,
-) -> Optional[str]:
-    """
-    Accept either:
-      - X-API-Key: <key>
-      - Authorization: Bearer <key>
-    """
-    if x_api_key and x_api_key.strip():
-        return x_api_key.strip()
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
 
-    if authorization:
-        auth = authorization.strip()
-        if auth.lower().startswith(bearer_prefix.lower()):
-            return auth[len(bearer_prefix):].strip()
+        # Unprotected paths
+        if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+            return await call_next(request)
 
-    return None
+        # Only protect selected prefixes
+        if not path.startswith(_PROTECTED_PREFIXES):
+            return await call_next(request)
 
+        if not self._authorized(request):
+            # Let the global error handler format the body
+            raise StarletteHTTPException(status_code=401, detail="unauthorized")
 
-async def require_api_key(
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
-):
-    s = Settings()  # read prefix dynamically (supports future config)
-    presented = _extract_presented_key(
-        x_api_key,
-        authorization,
-        bearer_prefix=s.AUTH_BEARER_PREFIX,
-    )
+        return await call_next(request)
 
-    if not presented:
-        raise HTTPException(status_code=401, detail="Missing API key")
+    def _authorized(self, request: Request) -> bool:
+        expected = getattr(self.s, "API_KEY", None)
+        if not expected:
+            return True  # No key configured -> auth disabled
 
-    keys = _configured_keys()
-    if not keys:
-        # Misconfiguration: no keys on server
-        raise HTTPException(status_code=500, detail="Server misconfigured: API key not set")
+        header_key = request.headers.get("X-API-Key")
+        if header_key and header_key == expected:
+            return True
 
-    for configured in keys:
-        if hmac.compare_digest(presented, configured):
-            return  # success
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth.split(" ", 1)[1].strip()
+            if token == expected:
+                return True
 
-    raise HTTPException(status_code=401, detail="Invalid API key")
+        return False

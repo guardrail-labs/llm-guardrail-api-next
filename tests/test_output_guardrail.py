@@ -44,7 +44,7 @@ def test_output_redaction_applied():
 
 
 def test_output_size_limit_413():
-    os.environ["MAX_OUTPUT_CHARS"] = "32"
+    os.environ["OUTPUT_MAX_CHARS"] = "32"
     client = _make_client()
     big = "Z" * 64
     r = client.post(

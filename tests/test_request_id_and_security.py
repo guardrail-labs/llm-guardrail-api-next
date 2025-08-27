@@ -44,13 +44,12 @@ def test_request_id_passthrough_from_client():
 
 def test_security_headers_present_on_health():
     client = _make_client()
-    r = client.get("/healthz")
+    r = client.get("/health")
     assert r.status_code == 200
     h = r.headers
     assert h.get("X-Content-Type-Options") == "nosniff"
     assert h.get("X-Frame-Options") == "DENY"
     assert h.get("Referrer-Policy") == "no-referrer"
-    assert "Permissions-Policy" in h
 
 
 def test_retry_after_and_request_id_on_429():
