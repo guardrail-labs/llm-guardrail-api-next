@@ -5,17 +5,18 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Tuple
+from typing import Any, Tuple, List
 
 import yaml
 from app.telemetry.audit import emit_decision_event
 
-# -------------------------------------------------
-# Settings (import + fallback used in tests/CI env)
-# -------------------------------------------------
+
+# ----------------------------
+# Settings (import + fallback)
+# ----------------------------
 try:
     from app.settings import get_settings as _external_get_settings
-except Exception:  # pragma: no cover - minimal envs
+except Exception:  # pragma: no cover
     _external_get_settings = None
 
 
@@ -30,19 +31,23 @@ def get_settings() -> Any:
 
     class _Shim:
         def __getattr__(self, name: str) -> Any:
-            # Accept both legacy and test names e.g. POLICY_RULES_PATH
             return os.environ.get(name) or os.environ.get(name.upper())
 
     return _Shim()
 
 
-# -------------------------------------------------
-# Default rules (also used when file not present)
-# -------------------------------------------------
+# --------------------------
+# Default rules if none exist
+# --------------------------
 _DEFAULT_RULES_YAML = """\
 version: "3"
 
 rules:
+  - id: payload:encoded_blob
+    description: Detect long base64-like blobs
+    regex: '/^[A-Za-z0-9+/=]{128,}$/'
+    decision: block
+
   - id: secrets:api_key_like
     description: OpenAI API key
     regex: '/sk-[A-Za-z0-9]{16,}/'
@@ -75,7 +80,7 @@ def _compile_rule_pattern(raw: str) -> re.Pattern[str]:
     """
     raw = (raw or "").strip()
     if not raw:
-        return re.compile(r"(?!x)")  # never matches
+        return re.compile(r"(?!x)")
 
     if len(raw) >= 2 and raw[0] == "/" and raw.rfind("/") > 0:
         last = raw.rfind("/")
@@ -91,7 +96,6 @@ def _compile_rule_pattern(raw: str) -> re.Pattern[str]:
                 flags |= re.DOTALL
         return re.compile(pat, flags)
 
-    # Bare pattern
     return re.compile(raw)
 
 
@@ -103,7 +107,7 @@ class CompiledRule:
     regex: re.Pattern[str]
 
 
-_policy_rules: list[CompiledRule] | None = None
+_policy_rules: List[CompiledRule] | None = None
 _policy_version: str = "1"
 _rules_path: Path | None = None
 _last_mtime: float = 0.0
@@ -111,15 +115,11 @@ _last_mtime: float = 0.0
 # -------------
 # Metrics hooks
 # -------------
-# Simple module counters used by /metrics route
 _guardrail_redactions_total: int = 0
 
 
 def _policy_path_from_settings() -> Path:
     s = get_settings()
-    # Use env names the tests set:
-    # - POLICY_RULES_PATH (preferred for tests)
-    # - fall back to POLICY_PATH for older configs
     path_str = (
         getattr(s, "POLICY_RULES_PATH", None)
         or getattr(s, "POLICY_PATH", None)
@@ -129,14 +129,7 @@ def _policy_path_from_settings() -> Path:
 
 
 def _normalize_rule_id(raw_id: str) -> str:
-    """
-    Normalize common IDs so tests pass:
-    - prompt injection -> 'pi:prompt_injection'
-    - openai-like keys -> 'secrets:api_key_like'
-    - keep other IDs as-is
-    """
     rid = (raw_id or "").strip()
-    # Very common aliases
     if rid in {"payload:prompt_injection_phrase", "prompt_injection"}:
         return "pi:prompt_injection"
     if rid in {"secret:openai_key", "secret:api_key_like"}:
@@ -148,8 +141,7 @@ def _normalize_rule_id(raw_id: str) -> str:
     return rid or "unnamed"
 
 
-def _load_rules(path: Path) -> Tuple[list[CompiledRule], str, float]:
-    # Ensure file exists (CI might not have committed YAML yet)
+def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_DEFAULT_RULES_YAML, encoding="utf-8")
@@ -158,7 +150,7 @@ def _load_rules(path: Path) -> Tuple[list[CompiledRule], str, float]:
     data = yaml.safe_load(txt) or {}
     version = str(data.get("version", "1"))
 
-    compiled: list[CompiledRule] = []
+    compiled: List[CompiledRule] = []
 
     # Support both shapes:
     # 1) { rules: [ {id, regex, decision} ] }
@@ -166,7 +158,6 @@ def _load_rules(path: Path) -> Tuple[list[CompiledRule], str, float]:
     rules = data.get("rules", []) or []
     deny = data.get("deny", []) or []
 
-    # shape 1
     for item in rules:
         rid = _normalize_rule_id(str(item.get("id", "")))
         desc = str(item.get("description", "") or "")
@@ -175,15 +166,13 @@ def _load_rules(path: Path) -> Tuple[list[CompiledRule], str, float]:
         rx = _compile_rule_pattern(raw)
         compiled.append(CompiledRule(id=rid, description=desc, decision=decision, regex=rx))
 
-    # shape 2 (everything in deny is "block")
     for item in deny:
         rid = _normalize_rule_id(str(item.get("id", "")))
         desc = str(item.get("description", "") or "")
         pat = str(item.get("pattern") or "")
-        # allow optional textual flags "i|m|s" or list form; normalize to /.../flags
         flags = item.get("flags")
         if isinstance(flags, list):
-            flag_str = "".join([str(f).lower()[0] for f in flags])  # ["i","m"] -> "im"
+            flag_str = "".join([str(f).lower()[0] for f in flags])
         else:
             flag_str = str(flags or "").replace("|", "")
         raw = f"/{pat}/{flag_str}" if pat else ""
@@ -204,7 +193,6 @@ def _ensure_loaded() -> None:
 
     s = get_settings()
     auto = str(
-        # tests set POLICY_AUTORELOAD
         getattr(s, "POLICY_AUTORELOAD", None)
         or getattr(s, "POLICY_AUTO_RELOAD", "false")
     ).lower() in ("1", "true", "yes")
@@ -219,7 +207,6 @@ def _ensure_loaded() -> None:
 
 
 def reload_rules() -> dict[str, Any]:
-    """Manual reload endpoint can call this."""
     global _policy_rules, _policy_version, _last_mtime, _rules_path
     _rules_path = _policy_path_from_settings()
     _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
@@ -229,7 +216,6 @@ def reload_rules() -> dict[str, Any]:
     }
 
 
-# Back-compat for routes/admin.py which imports force_reload
 def force_reload() -> dict[str, Any]:
     return reload_rules()
 
@@ -248,9 +234,6 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
 
 
 def _maybe_redact(text: str) -> tuple[str, bool]:
-    """
-    Return (redacted_text, did_redact)
-    """
     s = get_settings()
     enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in ("1", "true", "yes")
     if not enabled:
@@ -282,7 +265,6 @@ def analyze(text: str) -> tuple[str, list[str], str]:
             if r.regex.search(text):
                 hits.append(r.id)
         except re.error:
-            # Skip malformed rules rather than crashing
             continue
 
     if hits:
@@ -298,7 +280,6 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
     _ensure_loaded()
     s = get_settings()
 
-    # Optional size limit checked by route too; keep soft-guarding here.
     max_chars_raw = getattr(s, "MAX_PROMPT_CHARS", None) or getattr(s, "PROMPT_MAX_CHARS", 0)
     try:
         max_chars = int(max_chars_raw or 0)
@@ -317,7 +298,6 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
     transformed, did_redact = _maybe_redact(text)
     req_id = request_id or str(uuid.uuid4())
 
-    # Emit audit event; never let telemetry break the request
     try:
         emit_decision_event(
             decision=decision,
@@ -330,7 +310,6 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
     except Exception:
         pass
 
-    # bump redactions metric for /metrics exposure
     if did_redact:
         global _guardrail_redactions_total
         _guardrail_redactions_total += 1
@@ -345,8 +324,5 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
     }
 
 
-# -------------------
-# Metrics read helper
-# -------------------
 def get_redactions_total() -> int:
     return _guardrail_redactions_total
