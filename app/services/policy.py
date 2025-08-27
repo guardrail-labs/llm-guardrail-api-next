@@ -2,8 +2,12 @@ from typing import List
 from uuid import uuid4
 
 from pydantic import BaseModel
+from uuid import uuid4
+from typing import List
 
-from app.config import settings
+from pydantic import BaseModel
+
+from app.config import get_settings
 from app.services.policy_loader import get_policy
 from app.services.redact import redact
 from app.services.upipe import Decision, analyze
@@ -32,13 +36,14 @@ def _compose_reason(rule_ids: List[str]) -> str:
 
 
 def _maybe_redact(text: str) -> str:
-    if not settings.REDACT_SECRETS:
+    s = get_settings()
+    if not s.REDACT_SECRETS:
         return text
     result = redact(
         text,
-        openai_mask=settings.REDACT_OPENAI_MASK,
-        aws_mask=settings.REDACT_AWS_AKID_MASK,
-        pem_mask=settings.REDACT_PEM_MASK,
+        openai_mask="[REDACTED:OPENAI_KEY]",
+        aws_mask="[REDACTED:AWS_ACCESS_KEY_ID]",
+        pem_mask="[REDACTED:PRIVATE_KEY]",
     )
     for kind in result.kinds:
         try:

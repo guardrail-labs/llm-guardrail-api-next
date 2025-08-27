@@ -41,13 +41,26 @@ spec:
                 secretKeyRef:
                   name: {{ include "llm-guardrail-api.fullname" . }}-secrets
                   key: API_KEY
-            {{- /* Flatten the rest of env entries except API_KEY which is in the Secret */}}
+
+            - name: AUTH_MODE
+              value: {{ .Values.env.AUTH_MODE | quote }}
+
+            - name: JWT_JWKS_URL
+              value: {{ .Values.env.JWT_JWKS_URL | quote }}
+            - name: JWT_ISSUER
+              value: {{ .Values.env.JWT_ISSUER | quote }}
+            - name: JWT_AUDIENCE
+              value: {{ .Values.env.JWT_AUDIENCE | quote }}
+            - name: JWT_HS256_SECRET
+              value: {{ .Values.env.JWT_HS256_SECRET | quote }}
+
             - name: POLICY_AUTORELOAD
               value: {{ .Values.env.POLICY_AUTORELOAD | quote }}
             - name: MAX_PROMPT_CHARS
               value: {{ .Values.env.MAX_PROMPT_CHARS | quote }}
             - name: OUTPUT_MAX_CHARS
               value: {{ .Values.env.OUTPUT_MAX_CHARS | quote }}
+
             - name: REDACT_SECRETS
               value: {{ .Values.env.REDACT_SECRETS | quote }}
             - name: AUDIT_ENABLED
@@ -56,12 +69,18 @@ spec:
               value: {{ .Values.env.AUDIT_SAMPLE_RATE | quote }}
             - name: AUDIT_MAX_TEXT_CHARS
               value: {{ .Values.env.AUDIT_MAX_TEXT_CHARS | quote }}
+
             - name: RATE_LIMIT_ENABLED
               value: {{ .Values.env.RATE_LIMIT_ENABLED | quote }}
             - name: RATE_LIMIT_PER_MINUTE
               value: {{ .Values.env.RATE_LIMIT_PER_MINUTE | quote }}
             - name: RATE_LIMIT_BURST
               value: {{ .Values.env.RATE_LIMIT_BURST | quote }}
+            - name: RATE_LIMIT_BACKEND
+              value: {{ .Values.env.RATE_LIMIT_BACKEND | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.env.REDIS_URL | quote }}
+
             - name: METRICS_ENABLED
               value: {{ .Values.env.METRICS_ENABLED | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

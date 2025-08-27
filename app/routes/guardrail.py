@@ -1,12 +1,10 @@
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
-
-from app.middleware.auth import require_api_key
 from app.schemas import ErrorResponse, GuardrailRequest, GuardrailResponse
 from app.services.policy import evaluate_and_apply
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter()
 
 
 def _resolve_max_chars() -> int:

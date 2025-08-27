@@ -2,7 +2,6 @@ version: "3.9"
 
 services:
   guardrail:
-    # Build locally for painless dev, and also tag the image.
     build:
       context: .
       dockerfile: Dockerfile
@@ -20,4 +19,15 @@ services:
       POLICY_AUTORELOAD: "true"
     volumes:
       - ./rules.yaml:/etc/guardrail/rules.yaml:ro
+    depends_on:
+      - redis
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: guardrail-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+

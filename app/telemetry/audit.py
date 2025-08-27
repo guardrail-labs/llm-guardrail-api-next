@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
-from logging.handlers import RotatingFileHandler
 from typing import Any, Dict
 
-from app.config import Settings
+from app.config import ServiceInfo, get_settings
 from app.telemetry.metrics import inc_audit_event
 
 _LOGGER_NAME = "guardrail_audit"
@@ -19,30 +17,14 @@ def _ensure_logger() -> logging.Logger:
     global _configured
     logger = logging.getLogger(_LOGGER_NAME)
     logger.setLevel(logging.INFO)
-    # IMPORTANT: allow propagation so pytest's caplog can capture records
     logger.propagate = True
 
     if _configured:
         return logger
 
-    s = Settings()
-    formatter = logging.Formatter("%(message)s")
-
-    # Type as generic Handler so mypy accepts both branches
-    handler: logging.Handler
-    if s.AUDIT_LOG_FILE:
-        handler = RotatingFileHandler(
-            filename=s.AUDIT_LOG_FILE,
-            maxBytes=int(s.AUDIT_LOG_MAX_BYTES),
-            backupCount=int(s.AUDIT_LOG_BACKUPS),
-            encoding="utf-8",
-        )
-    else:
-        handler = logging.StreamHandler()
-
-    handler.setFormatter(formatter)
+    handler: logging.Handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
-
     _configured = True
     return logger
 
@@ -66,7 +48,7 @@ def emit_decision_event(
     prompt_len: int,
 ) -> None:
     """Emit a single JSON line audit event if enabled and sampled."""
-    s = Settings()
+    s = get_settings()
 
     if not s.AUDIT_ENABLED:
         return
@@ -88,8 +70,8 @@ def emit_decision_event(
         "snippet_len": len(snippet),
         "snippet": snippet,
         "snippet_truncated": redacted,
-        "service": Settings().APP_NAME,
-        "env": os.environ.get("APP_ENV", "dev"),
+        "service": ServiceInfo().service,
+        "env": ServiceInfo().env,
     }
 
     try:

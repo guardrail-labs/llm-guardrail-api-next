@@ -1,81 +1,127 @@
-"""Simple token-bucket rate limiter (in-memory)."""
 from __future__ import annotations
 
+import asyncio
 import time
-import uuid
-from typing import Tuple
+from typing import Optional
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from app.config import Settings
+from app.config import get_settings
 from app.telemetry.metrics import inc_rate_limited
 
-
-def _now() -> float:
-    return time.monotonic()
-
-
-def _extract_presented_key(request: Request) -> Tuple[str, str]:
-    x_api_key = request.headers.get("X-API-Key")
-    if x_api_key:
-        return "api_key", x_api_key
-
-    auth = request.headers.get("Authorization")
-    if auth and auth.lower().startswith("bearer "):
-        return "api_key", auth[7:].strip()
-
-    client_ip = request.client.host if request.client else "unknown"
-    return "ip", client_ip
+try:
+    # redis-py 5.x asyncio client (optional)
+    from redis import asyncio as aioredis  # type: ignore[import-not-found]
+except Exception:  # noqa: BLE001
+    aioredis = None  # type: ignore[assignment]
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app) -> None:
+    """
+    Token-bucket rate limiting with optional Redis backend.
+
+    Keys by API key (preferred) or client IP. Defaults to disabled.
+    """
+
+    def __init__(self, app) -> None:  # type: ignore[override]
         super().__init__(app)
-        s = Settings()
-        self.enabled: bool = bool(s.RATE_LIMIT_ENABLED)
-        self.per_minute: int = int(s.RATE_LIMIT_PER_MINUTE)
-        self.burst: int = int(s.RATE_LIMIT_BURST or self.per_minute)
-        self.tokens_per_sec: float = self.per_minute / 60.0
-        self._buckets: dict[str, tuple[float, float]] = {}
+        s = get_settings()
+        self.enabled: bool = bool(str(s.__dict__.get("RATE_LIMIT_ENABLED", False)).lower() in ("1", "true", "yes"))
+        self.per_minute: int = int(getattr(s, "RATE_LIMIT_PER_MINUTE", 60))
+        self.burst: int = int(getattr(s, "RATE_LIMIT_BURST", self.per_minute))
+        self.backend: str = getattr(s, "RATE_LIMIT_BACKEND", "memory")
+        self.redis_url: Optional[str] = getattr(s, "REDIS_URL", None)
+
+        # Memory store: key -> (tokens, last_ts)
+        self._mem: dict[str, tuple[float, float]] = {}
+
+        # Redis
+        self._redis = None
+        if self.enabled and self.backend == "redis" and self.redis_url and aioredis:
+            self._redis = aioredis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+
+        # Refill rate tokens per second
+        self._refill = self.per_minute / 60.0
+
+        # Mutex for in-memory updates
+        self._lock = asyncio.Lock()
 
     async def dispatch(self, request: Request, call_next):
-        # Limit all guardrail endpoints
-        if not self.enabled or not request.url.path.startswith("/guardrail"):
+        if not self.enabled:
             return await call_next(request)
 
-        _, key_value = _extract_presented_key(request)
-        now = _now()
+        key = self._rate_key(request)
+        allowed = await self._consume_token(key)
 
-        tokens, last = self._buckets.get(key_value, (float(self.burst), now))
-        elapsed = max(0.0, now - last)
-        tokens = min(self.burst, tokens + elapsed * self.tokens_per_sec)
+        if not allowed:
+            inc_rate_limited()
+            return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
 
-        if tokens < 1.0:
+        return await call_next(request)
+
+    def _rate_key(self, request: Request) -> str:
+        # Prefer API key scoping; fallback to remote IP
+        api_key = request.headers.get("X-API-Key")
+        if not api_key:
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                api_key = auth.split(" ", 1)[1].strip()
+        if api_key:
+            return f"ratelimit:api:{api_key}"
+        ip = request.client.host if request.client else "unknown"
+        return f"ratelimit:ip:{ip}"
+
+    async def _consume_token(self, key: str) -> bool:
+        now = time.time()
+        if self._redis:
+            return await self._consume_token_redis(key, now)
+        return await self._consume_token_memory(key, now)
+
+    async def _consume_token_memory(self, key: str, now: float) -> bool:
+        async with self._lock:
+            tokens, last_ts = self._mem.get(key, (float(self.burst), now))
+            # Refill tokens
+            tokens = min(self.burst, tokens + (now - last_ts) * self._refill)
+            if tokens >= 1.0:
+                tokens -= 1.0
+                self._mem[key] = (tokens, now)
+                return True
+            else:
+                self._mem[key] = (tokens, now)
+                return False
+
+    async def _consume_token_redis(self, key: str, now: float) -> bool:
+        # Stored as two fields in a hash: tokens, ts
+        # Use a simple LUA-less algorithm with WATCH/MULTI to keep it readable;
+        # here we keep it best-effort without strict atomicity guarantees.
+        assert self._redis is not None
+        pipe = self._redis.pipeline()
+        try:
+            # Get current
+            pipe.hget(key, "tokens")
+            pipe.hget(key, "ts")
+            tokens_s, ts_s = await pipe.execute()
+            tokens = float(tokens_s) if tokens_s is not None else float(self.burst)
+            last_ts = float(ts_s) if ts_s is not None else now
+            # Refill
+            tokens = min(self.burst, tokens + (now - last_ts) * self._refill)
+            if tokens >= 1.0:
+                tokens -= 1.0
+                pipe.hset(key, mapping={"tokens": tokens, "ts": now})
+                # TTL 2 minutes to auto-expire idle buckets
+                pipe.expire(key, 120)
+                await pipe.execute()
+                return True
+            else:
+                pipe.hset(key, mapping={"tokens": tokens, "ts": now})
+                pipe.expire(key, 120)
+                await pipe.execute()
+                return False
+        finally:
             try:
-                inc_rate_limited()
-            except Exception:
+                await pipe.close()
+            except Exception:  # noqa: BLE001
                 pass
 
-            # Retry-After seconds
-            deficit = 1.0 - tokens
-            retry_after = max(1, int(deficit / self.tokens_per_sec + 0.999))
-
-            rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-            resp = JSONResponse(
-                status_code=429,
-                content={
-                    "detail": "Rate limit exceeded",
-                    "code": "rate_limited",
-                    "retry_after": retry_after,
-                    "request_id": rid,
-                },
-            )
-            resp.headers["Retry-After"] = str(retry_after)
-            resp.headers["X-Request-ID"] = rid
-            return resp
-
-        tokens -= 1.0
-        self._buckets[key_value] = (tokens, now)
-        return await call_next(request)

@@ -1,16 +1,14 @@
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
-
-from app.middleware.auth import require_api_key
 from app.schemas import ErrorResponse, GuardrailOutputRequest, GuardrailResponse
 from app.services.policy import evaluate_and_apply
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+router = APIRouter()
 
 
 def _resolve_max_output_chars() -> int:
-    v = os.environ.get("MAX_OUTPUT_CHARS")
+    v = os.environ.get("OUTPUT_MAX_CHARS")
     if v is not None:
         try:
             return int(v)
