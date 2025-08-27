@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Tuple
@@ -36,7 +35,7 @@ def get_settings() -> Any:
 # Rule loading & compilation
 # -------------------------
 
-# Make default rules' IDs align with tests
+# Default rules with IDs aligned to tests
 _DEFAULT_RULES_YAML = """\
 version: "3"
 
@@ -123,7 +122,6 @@ _redactions_total: int = 0
 
 def _policy_path_from_settings() -> Path:
     s = get_settings()
-    # Support both env names used by tests and earlier code
     path_str = (
         getattr(s, "POLICY_RULES_PATH", None)
         or getattr(s, "POLICY_PATH", None)
@@ -143,7 +141,7 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
 
     compiled: List[CompiledRule] = []
 
-    # New-style "rules" list (already decision-bearing)
+    # New-style "rules" list (decision-bearing)
     for item in data.get("rules", []) or []:
         rid = str(item.get("id", "") or "").strip() or "unnamed"
         desc = str(item.get("description", "") or "")
@@ -208,7 +206,10 @@ def reload_rules() -> dict[str, Any]:
     global _policy_rules, _policy_version, _last_mtime, _rules_path
     _rules_path = _policy_path_from_settings()
     _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-    return {"policy_version": _policy_version, "rules_loaded": len(_policy_rules or [])}
+    return {
+        "policy_version": _policy_version,
+        "rules_loaded": len(_policy_rules or []),
+    }
 
 
 # Back-compat name
@@ -227,6 +228,18 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
             r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
         ),
         "[REDACTED:PRIVATE_KEY]",
+    ),
+]
+
+# Always-on secret rules (independent of YAML), IDs match tests
+_BUILTIN_SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
+    ("secrets:api_key_like", re.compile(r"sk-[A-Za-z0-9]{16,}")),
+    ("secret:aws_access_key_id", re.compile(r"AKIA[0-9A-Z]{16}")),
+    (
+        "secret:private_key_block",
+        re.compile(
+            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        ),
     ),
 ]
 
@@ -266,6 +279,16 @@ def analyze(text: str) -> tuple[str, list[str], str]:
     rules = _policy_rules or []
 
     hits: list[str] = []
+
+    # Always enforce built-in secret hits first
+    for rid, pat in _BUILTIN_SECRET_RULES:
+        try:
+            if pat.search(text):
+                hits.append(rid)
+        except re.error:
+            continue
+
+    # External rules from YAML file
     for r in rules:
         try:
             if r.regex.search(text):
@@ -274,7 +297,8 @@ def analyze(text: str) -> tuple[str, list[str], str]:
             continue
 
     if hits:
-        return "block", hits, f"High-risk rules matched: {', '.join(hits)}"
+        uniq = list(dict.fromkeys(hits))  # stable de-dupe
+        return "block", uniq, f"High-risk rules matched: {', '.join(uniq)}"
     return "allow", [], "No risk signals detected"
 
 
@@ -308,6 +332,7 @@ def evaluate_and_apply(text: str, request_id: str = "") -> dict[str, Any]:
             request_id=request_id,
         )
     except Exception:
+        # telemetry failures are non-fatal
         pass
 
     return {
