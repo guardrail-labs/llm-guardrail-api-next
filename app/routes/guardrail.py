@@ -8,7 +8,11 @@ from typing import Dict, Tuple, cast
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 
-from app.routes.schema import GuardrailRequest, GuardrailResponse, OutputGuardrailRequest
+from app.routes.schema import (
+    GuardrailRequest,
+    GuardrailResponse,
+    OutputGuardrailRequest,
+)
 from app.services.policy import evaluate_and_apply, get_settings
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -35,10 +39,6 @@ def get_decisions_total() -> int:
 class Bucket:
     tokens: float
     last: float
-
-
-# Kept for type reference; actual buckets are stored on app.state
-_buckets: Dict[str, Bucket] = {}
 
 
 def _int_env(v) -> int:
@@ -72,6 +72,16 @@ def _is_authorized(request: Request) -> bool:
     return False
 
 
+def _bucket_store(request: Request) -> Dict[str, Bucket]:
+    """
+    Typed accessor for rate buckets stored on app.state.
+    Ensures each app/TestClient gets a fresh store.
+    """
+    if not hasattr(request.app.state, "rate_buckets"):
+        request.app.state.rate_buckets = {}
+    return cast(Dict[str, Bucket], request.app.state.rate_buckets)
+
+
 def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
     s = get_settings()
     enabled = str(getattr(s, "RATE_LIMIT_ENABLED", "false")).lower() in (
@@ -88,14 +98,7 @@ def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
         # misconfigured -> don't limit
         return True, 0
 
-    # Buckets are stored per-app to avoid cross-test bleed
-    if not hasattr(request.app.state, "rate_buckets"):
-        request.app.state.rate_buckets = {}  # type: ignore[attr-defined]
-    buckets: Dict[str, Bucket] = cast(
-        Dict[str, Bucket], request.app.state.rate_buckets  # type: ignore[attr-defined]
-    )
-
-    # Use API key if present; otherwise Authorization; client IP; then global
+    # Use API key if present; otherwise client IP; finally a global key
     key = (
         request.headers.get("X-API-Key")
         or request.headers.get("Authorization")
@@ -104,10 +107,11 @@ def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
     )
 
     rate_per_sec = per_min / 60.0
-    b = buckets.get(key)
+    store = _bucket_store(request)
+    b = store.get(key)
     if b is None:
         b = Bucket(tokens=float(burst), last=now)
-        buckets[key] = b
+        store[key] = b
     else:
         elapsed = max(0.0, now - b.last)
         b.tokens = min(float(burst), b.tokens + elapsed * rate_per_sec)
@@ -123,7 +127,7 @@ def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
     return False, retry_after
 
 
-@router.post("", response_model=GuardrailResponse)
+@router.post("")
 def guard(
     ingress: GuardrailRequest, request: Request, s=Depends(get_settings)
 ) -> JSONResponse:
@@ -167,6 +171,7 @@ def guard(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
                 "code": "rate_limited",
+                "detail": "Rate limit exceeded",
                 "retry_after": retry_after,
                 "request_id": req_id,
             },
@@ -179,10 +184,9 @@ def guard(
     payload = evaluate_and_apply(ingress.prompt, request_id=req_id)
     _decisions_total += 1
 
-    resp = JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content=GuardrailResponse(**payload).model_dump(),
-    )
+    # Build response content with pydantic model_dump(), wrapped to keep lines short
+    content = GuardrailResponse(**payload).model_dump()
+    resp = JSONResponse(status_code=status.HTTP_200_OK, content=content)
     _attach_request_id(resp, req_id)
     _security_headers(resp)
     return resp
