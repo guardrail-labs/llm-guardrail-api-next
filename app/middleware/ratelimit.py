@@ -18,6 +18,10 @@ except Exception:  # noqa: BLE001
     aioredis = None  # type: ignore[assignment]
 
 
+def _truthy(val: object) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Token-bucket rate limiting with optional Redis backend.
@@ -25,10 +29,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Keys by API key (preferred) or client IP. Defaults to disabled.
     """
 
-    def __init__(self, app) -> None:  # type: ignore[override]
+    def __init__(self, app) -> None:
         super().__init__(app)
         s = get_settings()
-        self.enabled: bool = bool(str(s.__dict__.get("RATE_LIMIT_ENABLED", False)).lower() in ("1", "true", "yes"))
+
+        raw_enabled = s.__dict__.get("RATE_LIMIT_ENABLED", False)
+        self.enabled: bool = bool(_truthy(raw_enabled))
+
         self.per_minute: int = int(getattr(s, "RATE_LIMIT_PER_MINUTE", 60))
         self.burst: int = int(getattr(s, "RATE_LIMIT_BURST", self.per_minute))
         self.backend: str = getattr(s, "RATE_LIMIT_BACKEND", "memory")
@@ -37,10 +44,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Memory store: key -> (tokens, last_ts)
         self._mem: dict[str, tuple[float, float]] = {}
 
-        # Redis
+        # Redis client (optional)
         self._redis = None
         if self.enabled and self.backend == "redis" and self.redis_url and aioredis:
-            self._redis = aioredis.from_url(self.redis_url, encoding="utf-8", decode_responses=True)
+            self._redis = aioredis.from_url(
+                self.redis_url, encoding="utf-8", decode_responses=True
+            )
 
         # Refill rate tokens per second
         self._refill = self.per_minute / 60.0
@@ -88,14 +97,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 tokens -= 1.0
                 self._mem[key] = (tokens, now)
                 return True
-            else:
-                self._mem[key] = (tokens, now)
-                return False
+            self._mem[key] = (tokens, now)
+            return False
 
     async def _consume_token_redis(self, key: str, now: float) -> bool:
-        # Stored as two fields in a hash: tokens, ts
-        # Use a simple LUA-less algorithm with WATCH/MULTI to keep it readable;
-        # here we keep it best-effort without strict atomicity guarantees.
         assert self._redis is not None
         pipe = self._redis.pipeline()
         try:
@@ -110,18 +115,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if tokens >= 1.0:
                 tokens -= 1.0
                 pipe.hset(key, mapping={"tokens": tokens, "ts": now})
-                # TTL 2 minutes to auto-expire idle buckets
-                pipe.expire(key, 120)
+                pipe.expire(key, 120)  # auto-expire idle buckets
                 await pipe.execute()
                 return True
-            else:
-                pipe.hset(key, mapping={"tokens": tokens, "ts": now})
-                pipe.expire(key, 120)
-                await pipe.execute()
-                return False
+
+            pipe.hset(key, mapping={"tokens": tokens, "ts": now})
+            pipe.expire(key, 120)
+            await pipe.execute()
+            return False
         finally:
             try:
                 await pipe.close()
             except Exception:  # noqa: BLE001
                 pass
-
