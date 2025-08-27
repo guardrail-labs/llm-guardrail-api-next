@@ -1,108 +1,175 @@
-from typing import List
+"""Policy evaluation and redaction.
+
+Responsibilities:
+- Load the YAML rules file and surface its `version` string.
+- Auto-reload rules when POLICY_AUTORELOAD=true and file mtime changes.
+- Evaluate text via the upipe analyzer to produce a Decision, rule hits, and reason.
+- Optionally redact secret-like substrings when REDACT_SECRETS=true.
+- Emit an audit event using the transformed (possibly redacted) text.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 from uuid import uuid4
 
-from pydantic import BaseModel
-from uuid import uuid4
-from typing import List
+import yaml
 
-from pydantic import BaseModel
-
-from app.config import get_settings
-from app.services.policy_loader import get_policy
-from app.services.redact import redact
 from app.services.upipe import Decision, analyze
-from app.telemetry import metrics as tmetrics
 from app.telemetry.audit import emit_decision_event
 
+# --- Redaction patterns --------------------------------------------------------
 
-class Outcome(BaseModel):
-    request_id: str
-    decision: str  # "allow" | "block"
-    reason: str
-    rule_hits: List[str]
-    transformed_text: str
-    policy_version: str
+# OpenAI-style key: sk- (20+ mixed alnum)
+_PAT_OPENAI = re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")
+
+# AWS Access Key ID: AKIA + 16 uppercase letters/numbers
+_PAT_AWS_AKID = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+
+# PRIVATE KEY block (match header ... footer, across text)
+_PAT_PRIVKEY_BLOCK = re.compile(
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    flags=re.DOTALL,
+)
+
+_REDACTIONS: List[Tuple[re.Pattern[str], str]] = [
+    (_PAT_OPENAI, "[REDACTED:OPENAI_KEY]"),
+    (_PAT_AWS_AKID, "[REDACTED:AWS_ACCESS_KEY_ID]"),
+    (_PAT_PRIVKEY_BLOCK, "[REDACTED:PRIVATE_KEY]"),
+]
 
 
-def _final_decision(any_hits: bool) -> str:
-    return "block" if any_hits else "allow"
+def _is_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _compose_reason(rule_ids: List[str]) -> str:
-    if not rule_ids:
-        return "No risk signals detected"
-    ids = ", ".join(sorted(set(rule_ids)))
-    return f"High-risk rules matched: {ids}"
+# --- Rules loading / versioning ------------------------------------------------
+
+# Default rules.yaml located at: app/services/policy/rules.yaml
+_DEFAULT_RULES_PATH = (
+    Path(__file__).resolve().parent / "policy" / "rules.yaml"
+).resolve()
+
+_policy_data: Dict[str, Any] = {}
+_policy_version: str = "0"
+_rules_path: Path = _DEFAULT_RULES_PATH
+_last_mtime: float = 0.0
 
 
-def _maybe_redact(text: str) -> str:
-    s = get_settings()
-    if not s.REDACT_SECRETS:
-        return text
-    result = redact(
-        text,
-        openai_mask="[REDACTED:OPENAI_KEY]",
-        aws_mask="[REDACTED:AWS_ACCESS_KEY_ID]",
-        pem_mask="[REDACTED:PRIVATE_KEY]",
-    )
-    for kind in result.kinds:
+def _current_rules_path() -> Path:
+    env_path = os.getenv("POLICY_RULES_PATH", "")
+    return Path(env_path).resolve() if env_path else _DEFAULT_RULES_PATH
+
+
+def _load_rules(path: Path) -> Tuple[Dict[str, Any], str, float]:
+    text = path.read_text(encoding="utf-8")
+    data: Dict[str, Any] = yaml.safe_load(text) or {}
+    version = str(data.get("version", "0"))
+    mtime = path.stat().st_mtime
+    return data, version, mtime
+
+
+def _ensure_loaded() -> None:
+    global _policy_data, _policy_version, _rules_path, _last_mtime
+
+    # Resolve path based on env each time to support tests changing env.
+    path = _current_rules_path()
+    autoreload = _is_truthy(os.getenv("POLICY_AUTORELOAD", "true"))
+
+    if not _policy_data or _rules_path != path:
+        # Initial or path changed
+        _policy_data, _policy_version, _last_mtime = _load_rules(path)
+        _rules_path = path
+        return
+
+    if autoreload:
         try:
-            tmetrics.inc_redaction(kind)
-        except Exception:
-            pass
-    return result.text
+            mtime = path.stat().st_mtime
+        except FileNotFoundError:
+            return
+        if mtime > _last_mtime:
+            _policy_data, _policy_version, _last_mtime = _load_rules(path)
 
 
-def evaluate_and_apply(text: str) -> Outcome:
-    rid = str(uuid4())
+def force_reload() -> str:
+    """Force reload the policy rules from disk and return the new version."""
+    global _policy_data, _policy_version, _rules_path, _last_mtime
+    path = _current_rules_path()
+    _policy_data, _policy_version, _last_mtime = _load_rules(path)
+    _rules_path = path
+    return _policy_version
 
-    # Load current policy (hot-reload if enabled)
-    blob = get_policy()
 
-    # 1) Analyze via uPipe (builtin heuristics)
-    pipe_decisions: List[Decision] = analyze(text)
-    rule_ids: List[str] = [d.rule_id for d in pipe_decisions]
+def get_policy_version() -> str:
+    _ensure_loaded()
+    return _policy_version
 
-    # 2) Evaluate policy-driven deny regex (from rules.yaml)
-    for rid_cfg, pattern in blob.deny_compiled:
-        if pattern.search(text):
-            rule_ids.append(f"policy:deny:{rid_cfg}")
 
-    any_hits = bool(rule_ids)
+# --- Redaction -----------------------------------------------------------------
 
-    # 3) Transform (redact secrets if enabled)
-    transformed_text = _maybe_redact(text)
 
-    # 4) Metrics
-    try:
-        tmetrics.inc_decision(_final_decision(any_hits))
-        tmetrics.inc_rule_hits(rule_ids)
-    except Exception:
-        pass
+def _apply_redaction(text: str) -> Tuple[str, bool]:
+    """Apply redaction patterns; return (transformed_text, changed?)."""
+    changed = False
+    transformed = text
+    for pat, repl in _REDACTIONS:
+        new_text, n = pat.subn(repl, transformed)
+        if n > 0:
+            changed = True
+            transformed = new_text
+    return transformed, changed
 
-    # 5) Outcome
-    outcome = Outcome(
-        request_id=rid,
-        decision=_final_decision(any_hits),
-        reason=_compose_reason(rule_ids),
-        rule_hits=rule_ids,
-        transformed_text=transformed_text,
-        policy_version=str(blob.version),
+
+# --- Public evaluation API -----------------------------------------------------
+
+
+def evaluate_and_apply(text: str) -> Dict[str, Any]:
+    """Evaluate user text against the policy and return outcome payload.
+
+    Returns a dict with keys:
+      - decision: "allow" | "block"
+      - reason: str
+      - rule_hits: List[str]
+      - policy_version: str
+      - transformed_text: str (possibly redacted, or original)
+      - request_id: str (UUID generated here)
+    """
+    _ensure_loaded()
+
+    # Analyze via the upipe detector.
+    decision, rule_hits, reason = analyze(text)
+
+    # Redaction is optional (enabled by env).
+    transformed = text
+    if _is_truthy(os.getenv("REDACT_SECRETS", "false")):
+        transformed, _ = _apply_redaction(text)
+
+    # Emit audit using the *transformed* text so logs don’t leak secrets.
+    req_id = str(uuid4())
+    emit_decision_event(
+        request_id=req_id,
+        decision=decision.value if isinstance(decision, Decision) else str(decision),
+        rule_hits=rule_hits,
+        reason=reason,
+        policy_version=get_policy_version(),
+        prompt_text=transformed,
     )
 
-    # 6) Audit (sampled JSON event)
-    try:
-        emit_decision_event(
-            request_id=rid,
-            decision=outcome.decision,
-            rule_hits=rule_ids,
-            reason=outcome.reason,
-            transformed_text=transformed_text,
-            policy_version=outcome.policy_version,
-            prompt_len=len(text),
-        )
-    except Exception:
-        pass
+    return {
+        "request_id": req_id,
+        "decision": decision.value if isinstance(decision, Decision) else str(decision),
+        "reason": reason,
+        "rule_hits": rule_hits,
+        "policy_version": get_policy_version(),
+        "transformed_text": transformed,
+    }
 
-    return outcome
 
+__all__ = [
+    "evaluate_and_apply",
+    "force_reload",
+    "get_policy_version",
+]
