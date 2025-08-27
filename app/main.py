@@ -8,6 +8,7 @@ from typing import Iterable
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from app.services.policy import get_redactions_total, reload_rules
 
 from app.routes.guardrail import (
     router as guardrail_router,
@@ -76,19 +77,22 @@ def create_app() -> FastAPI:
 
     @app.post("/admin/policy/reload")
     async def admin_policy_reload(request: Request):
-        # Require the same simple auth as the guardrail endpoints
-        if not (
-            request.headers.get("X-API-Key") or request.headers.get("Authorization")
-        ):
+        # very light auth: same contract as /guardrail (tests pass X-API-Key)
+        if not (request.headers.get("X-API-Key") or request.headers.get("Authorization")):
             rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
             resp = JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": "Unauthorized", "request_id": rid},
             )
             resp.headers["WWW-Authenticate"] = "Bearer"
+            resp.headers["X-Request-ID"] = rid
             return resp
+
         result = reload_rules()
-        return JSONResponse(status_code=200, content=result)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"reloaded": True, **result},
+        )
 
     @app.get("/metrics")
     async def metrics():
