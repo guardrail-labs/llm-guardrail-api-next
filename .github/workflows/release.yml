@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'   # run only on version tags, e.g. v0.1.0
+      - 'v*.*.*'  # run only on version tags like v0.1.0
 
 permissions:
   contents: read
@@ -14,10 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-push-release:
+  build_and_push_release:
     runs-on: ubuntu-latest
     # Only run if required secrets are present
-    if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    if: ${{ secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +31,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -48,9 +48,9 @@ jobs:
           platforms: linux/amd64
           provenance: false
 
-  no-secrets-skip:
+  skip_no_secrets:
     runs-on: ubuntu-latest
-    if: ${{ !(secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '') }}
+    if: ${{ !(secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN) }}
     steps:
-      - name: Skip (missing Docker secrets)
-        run: echo "Skipping release build: set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets to enable."
+      - name: Skip
+        run: echo "Skipping: Docker secrets not set."
