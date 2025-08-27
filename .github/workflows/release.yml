@@ -1,69 +1,94 @@
-name: Release
+name: Release (tag → GHCR + GitHub Release)
 
 on:
   push:
     tags:
-      - "v*.*.*"   # e.g. v0.2.0
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+      - "v*.*.*"
 
 permissions:
-  contents: read
-  packages: write
+  contents: write   # create GitHub Release
+  packages: write   # push to GHCR
 
 jobs:
-  docker:
-    name: build-and-push
+  release:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 30
 
-      - name: Set up Docker Buildx
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=llm-guardrail-api-next
+            org.opencontainers.image.description=LLM Guardrail API (FastAPI) with policy, redaction, limits, metrics, and admin endpoints.
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image name & tags
-        id: meta
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"              # vX.Y.Z
-          REPO_LC="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
-          IMAGE="ghcr.io/${REPO_LC}"
+      - name: Build & Push (multi-arch)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            VCS_REF=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
 
-          VERSION="${TAG#v}"                    # X.Y.Z
-          MAJOR="${VERSION%%.*}"                # X
-          MINOR="${VERSION#*.}"                 # Y.Z -> cut to Y
-          MINOR="${MINOR%%.*}"
+      - name: Generate SBOM (CycloneDX) and upload artifact
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          artifact-name: sbom-${{ github.ref_name }}.cdx.json
+          format: cyclonedx-json
 
-          echo "image=$IMAGE"       >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
-          echo "major=$MAJOR"       >> "$GITHUB_OUTPUT"
-          echo "minor=$MINOR"       >> "$GITHUB_OUTPUT"
+      - name: Trivy scan (image)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          format: sarif
+          output: trivy-${{ github.ref_name }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0" # non-blocking
 
-      - name: Build and push (linux/amd64)
-        run: |
-          IMAGE="${{ steps.meta.outputs.image }}"
-          TAG="${{ steps.meta.outputs.tag }}"
-          VERSION="${{ steps.meta.outputs.version }}"
-          MAJOR="${{ steps.meta.outputs.major }}"
-          MINOR="${{ steps.meta.outputs.minor }}"
+      - name: Upload Trivy SARIF as artifact (no Code Scanning)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-${{ github.ref_name }}.sarif
+          path: trivy-${{ github.ref_name }}.sarif
+          retention-days: 30
 
-          docker buildx build \
-            --platform linux/amd64 \
-            --build-arg BUILD_VERSION="$VERSION" \
-            --build-arg VCS_REF="${GITHUB_SHA}" \
-            --build-arg BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            -t "$IMAGE:$TAG" \
-            -t "$IMAGE:v$MAJOR.$MINOR" \
-            -t "$IMAGE:v$MAJOR" \
-            -t "$IMAGE:latest" \
-            --push .
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            sbom-${{ github.ref_name }}.cdx.json

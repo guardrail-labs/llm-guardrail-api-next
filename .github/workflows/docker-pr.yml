@@ -1,0 +1,75 @@
+name: Docker (PR verify)
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.title=llm-guardrail-api-next
+            org.opencontainers.image.description=PR ephemeral build
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=pr-${{ github.event.number }}
+
+      # Build (no push), single-arch, and LOAD into local Docker daemon
+      - name: Build (load locally)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            VERSION=pr-${{ github.event.number }}
+            VCS_REF=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Save image as tar (for scan)
+        run: |
+          TAG="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+          echo "Saving $TAG to pr-image.tar"
+          docker image save -o pr-image.tar "$TAG"
+
+      - name: Trivy scan (tar)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          input: pr-image.tar
+          format: sarif
+          output: trivy-pr-${{ github.event.number }}.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "0"  # non-blocking on PRs
+
+      - name: Upload Trivy SARIF as artifact (no Code Scanning)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-pr-${{ github.event.number }}.sarif
+          path: trivy-pr-${{ github.event.number }}.sarif
+          retention-days: 7
