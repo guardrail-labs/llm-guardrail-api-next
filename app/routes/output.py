@@ -1,41 +1,24 @@
-import os
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from app.schemas import ErrorResponse, GuardrailOutputRequest, GuardrailResponse
+from fastapi import APIRouter, Depends
+from fastapi import HTTPException, status
+
+from app.routes.schema import OutputGuardrailRequest, GuardrailResponse  # keep your existing schema path
 from app.services.policy import evaluate_and_apply
+from app.config import get_settings
 
-router = APIRouter()
-
-
-def _resolve_max_output_chars() -> int:
-    v = os.environ.get("OUTPUT_MAX_CHARS")
-    if v is not None:
-        try:
-            return int(v)
-        except ValueError:
-            pass
-    return 16000  # default
+router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
 
-def _check_size(ingress: GuardrailOutputRequest) -> None:
-    max_chars = _resolve_max_output_chars()
-    if len(ingress.output) > max_chars:
+@router.post("/output", response_model=GuardrailResponse)
+def guard_output(ingress: OutputGuardrailRequest, s=Depends(get_settings)) -> GuardrailResponse:
+    # MAX_OUTPUT_CHARS enforcement (413) happens at the route boundary
+    max_chars = int(getattr(s, "MAX_OUTPUT_CHARS", 0) or 0)
+    if max_chars and len(ingress.output) > max_chars:
         raise HTTPException(
-            status_code=413,
-            detail=f"Output too large (max {max_chars} chars)",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Output too large",
         )
 
-
-@router.post(
-    "/guardrail/output",
-    response_model=GuardrailResponse,
-    responses={
-        401: {"model": ErrorResponse, "description": "Missing or invalid API key"},
-        413: {"model": ErrorResponse, "description": "Payload too large"},
-        500: {"model": ErrorResponse, "description": "Server misconfiguration"},
-    },
-    summary="Evaluate a model output against guardrail rules",
-    dependencies=[Depends(_check_size)],
-)
-def guard_output(ingress: GuardrailOutputRequest) -> GuardrailResponse:
-    return evaluate_and_apply(ingress.output)
+    payload = evaluate_and_apply(ingress.output)
+    return GuardrailResponse(**payload)
