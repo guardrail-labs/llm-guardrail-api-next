@@ -92,4 +92,3 @@ def setup_metrics(app: FastAPI) -> None:
     def metrics() -> Response:
         data = generate_latest(_registry)
         return Response(content=data, media_type=CONTENT_TYPE_LATEST)
-

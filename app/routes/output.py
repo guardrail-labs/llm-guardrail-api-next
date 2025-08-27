@@ -16,8 +16,7 @@ def _resolve_max_output_chars() -> int:
             return int(v)
         except ValueError:
             pass
-    # default matches config default
-    return 16000
+    return 16000  # default
 
 
 def _check_size(ingress: GuardrailOutputRequest) -> None:
@@ -42,4 +41,3 @@ def _check_size(ingress: GuardrailOutputRequest) -> None:
 )
 def guard_output(ingress: GuardrailOutputRequest) -> GuardrailResponse:
     return evaluate_and_apply(ingress.output)
-

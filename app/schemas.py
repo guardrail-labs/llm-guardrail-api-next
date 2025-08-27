@@ -23,4 +23,3 @@ class GuardrailResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
-
