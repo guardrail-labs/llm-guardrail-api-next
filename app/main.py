@@ -1,65 +1,42 @@
-import os
+from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.middleware.auth import AuthMiddleware
-from app.middleware.ratelimit import RateLimitMiddleware
+from app.middleware.auth import APIKeyAuthMiddleware  # renamed class
 from app.middleware.headers import SecurityHeadersMiddleware
+from app.middleware.ratelimit import RateLimitMiddleware
+from app.telemetry.logging import json_access_log
+from app.telemetry.metrics import metrics_middleware, metrics_route
+from app.telemetry.tracing import TracingMiddleware
 from app.routes.guardrail import router as guardrail_router
-from app.routes.health import router as health_router
 from app.routes.output import router as output_router
-from app.routes.policy_admin import router as policy_router
-from app.telemetry.errors import register_error_handlers
-from app.telemetry.logging import setup_logging
-from app.telemetry.metrics import setup_metrics
-from app.telemetry.tracing import RequestIDMiddleware
+from app.routes.health import router as health_router
+from app.routes.admin import router as admin_router
 
 
 def build_app() -> FastAPI:
-    _ = get_settings()  # ensure settings loaded
-    app = FastAPI(
-        title="llm-guardrail-api-next",
-        version="0.3.0",
-        description=(
-            "LLM Guardrail API — secure-by-default gateway that evaluates prompts/output "
-            "against basic heuristics (injection, secrets, encoded blobs)."
-        ),
-        contact={"name": "Maintainers", "url": "https://github.com"},
-        license_info={"name": "MIT"},
-    )
+    s = get_settings()
+    app = FastAPI(title="llm-guardrail-api-next")
 
-    origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "*")
-    origins = ["*"] if origins_env.strip() == "*" else [
-        o.strip() for o in origins_env.split(",") if o.strip()
-    ]
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Observability + security middlewares
-    app.add_middleware(RequestIDMiddleware)   # sets/echoes X-Request-ID
-    app.add_middleware(AuthMiddleware)
-    app.add_middleware(RateLimitMiddleware)
+    # Middleware order: logging/metrics/security/ratelimit/tracing, then auth last
+    app.middleware("http")(json_access_log)
+    app.middleware("http")(metrics_middleware)
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(TracingMiddleware)
 
-    # Routers
-    app.include_router(health_router, tags=["health"])
-    app.include_router(guardrail_router, tags=["guardrail"])
-    app.include_router(output_router, tags=["guardrail"])
-    app.include_router(policy_router, tags=["policy"])  # admin endpoints
+    # Auth (configured to allowlist /health and /metrics internally)
+    app.add_middleware(APIKeyAuthMiddleware)
 
-    # Metrics & structured request logging
-    setup_metrics(app)
-    setup_logging(app)
+    # Routes
+    app.include_router(health_router)
+    app.include_router(guardrail_router)
+    app.include_router(output_router)
+    app.include_router(admin_router)
 
-    # Global JSON error handlers
-    register_error_handlers(app)
+    # Metrics endpoint
+    app.add_route("/metrics", metrics_route, methods=["GET"])
 
     return app
 
