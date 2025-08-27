@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO")
     PORT: int = Field(default=8080)
 
-    # Guardrail / verifier (placeholder for future expansion)
+    # Guardrail / verifier
     VERIFIER_MODE: str = Field(default="never")  # "auto" | "never"
 
     # Security (API key)
@@ -36,8 +36,9 @@ class Settings(BaseSettings):
     REDACT_AWS_AKID_MASK: str = Field(default="[REDACTED:AWS_ACCESS_KEY_ID]")
     REDACT_PEM_MASK: str = Field(default="[REDACTED:PRIVATE_KEY]")
 
-    # Prompt-size limits (characters)
+    # Size limits (characters)
     MAX_PROMPT_CHARS: int = Field(default=16000)
+    MAX_OUTPUT_CHARS: int = Field(default=16000)
 
     # Rate limit (per API key/IP)
     RATE_LIMIT_ENABLED: bool = Field(default=False)

@@ -6,7 +6,7 @@ from app.middleware.ratelimit import RateLimitMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.routes.guardrail import router as guardrail_router
 from app.routes.health import router as health_router
-from app.routes.policy_admin import router as policy_router
+from app.routes.output import router as output_router
 from app.telemetry.logging import setup_logging
 from app.telemetry.metrics import setup_metrics
 from app.telemetry.tracing import RequestIDMiddleware
@@ -24,7 +24,6 @@ def build_app() -> FastAPI:
         license_info={"name": "MIT"},
     )
 
-    # CORS
     origins = ["*"] if settings.CORS_ALLOW_ORIGINS.strip() == "*" else [
         o.strip() for o in settings.CORS_ALLOW_ORIGINS.split(",") if o.strip()
     ]
@@ -36,17 +35,14 @@ def build_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Observability + security middlewares
-    app.add_middleware(RequestIDMiddleware)        # echo/generate X-Request-ID
-    app.add_middleware(RateLimitMiddleware)        # 429 with Retry-After
-    app.add_middleware(SecurityHeadersMiddleware)  # secure defaults
+    app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
 
-    # Routers
     app.include_router(health_router, tags=["health"])
     app.include_router(guardrail_router, tags=["guardrail"])
-    app.include_router(policy_router, tags=["policy"])
+    app.include_router(output_router, tags=["guardrail"])
 
-    # Metrics & structured request logging
     setup_metrics(app)
     setup_logging(app)
 

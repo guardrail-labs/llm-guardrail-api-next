@@ -11,14 +11,12 @@ from prometheus_client import (
 
 _registry = CollectorRegistry(auto_describe=True)
 
-# Requests hitting /guardrail
 REQUESTS = Counter(
     "guardrail_requests_total",
     "Total guardrail requests",
     registry=_registry,
 )
 
-# Decisions emitted by policy
 DECISIONS = Counter(
     "guardrail_decisions_total",
     "Total decisions by type",
@@ -26,7 +24,6 @@ DECISIONS = Counter(
     registry=_registry,
 )
 
-# Individual rule hits
 RULE_HITS = Counter(
     "guardrail_rule_hits_total",
     "Total rule hits by rule_id",
@@ -34,7 +31,6 @@ RULE_HITS = Counter(
     registry=_registry,
 )
 
-# Secret redactions
 REDACTIONS = Counter(
     "guardrail_redactions_total",
     "Total secret redactions by kind",
@@ -42,24 +38,21 @@ REDACTIONS = Counter(
     registry=_registry,
 )
 
-# Rate limit rejections
 RATE_LIMITED = Counter(
     "guardrail_rate_limited_total",
     "Total requests rejected due to rate limiting",
     registry=_registry,
 )
 
-# Audit events emitted
 AUDIT_EVENTS = Counter(
     "guardrail_audit_events_total",
     "Total audit events emitted",
     registry=_registry,
 )
 
-# Latency for /guardrail in seconds
 LATENCY = Histogram(
     "guardrail_latency_seconds",
-    "Latency of /guardrail requests in seconds",
+    "Latency of /guardrail* requests in seconds",
     registry=_registry,
 )
 
@@ -90,7 +83,7 @@ def setup_metrics(app: FastAPI) -> None:
     async def metrics_middleware(request: Request, call_next):
         start = monotonic()
         response = await call_next(request)
-        if request.url.path == "/guardrail":
+        if request.url.path.startswith("/guardrail"):
             REQUESTS.inc()
             LATENCY.observe(monotonic() - start)
         return response
