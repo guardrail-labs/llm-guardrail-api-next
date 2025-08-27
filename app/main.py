@@ -37,8 +37,8 @@ def build_app() -> FastAPI:
     )
 
     # Observability + security middlewares
-    app.add_middleware(RequestIDMiddleware)
-    app.add_middleware(RateLimitMiddleware)        # applies to /guardrail*
+    app.add_middleware(RequestIDMiddleware)   # sets/echoes X-Request-ID
+    app.add_middleware(RateLimitMiddleware)   # applies to /guardrail*
     app.add_middleware(SecurityHeadersMiddleware)
 
     # Routers
