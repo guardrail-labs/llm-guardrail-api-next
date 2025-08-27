@@ -9,6 +9,7 @@ permissions:
   contents: write        # create release
   packages: write        # push to GHCR
   security-events: write # upload SARIF
+  actions: read          # sarif uploader needs workflow-run read
 
 jobs:
   release:
@@ -34,7 +35,6 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
-
           labels: |
             org.opencontainers.image.title=llm-guardrail-api-next
             org.opencontainers.image.description=LLM Guardrail API (FastAPI) with policy, redaction, limits, metrics, and admin endpoints.
@@ -93,4 +93,3 @@ jobs:
           generate_release_notes: true
           files: |
             sbom-${{ github.ref_name }}.cdx.json
-
