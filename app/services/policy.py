@@ -150,7 +150,9 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
         decision = str(item.get("decision", "block") or "block").lower()
         raw = str(item.get("regex") or item.get("pattern") or "")
         rx = _compile_rule_pattern(raw)
-        compiled.append(CompiledRule(id=rid, description=desc, decision=decision, regex=rx))
+        compiled.append(
+            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
+        )
 
     # Back-compat test format: "deny" -> implicit block; flags as list
     for item in data.get("deny", []) or []:
@@ -189,7 +191,8 @@ def _ensure_loaded() -> None:
 
     s = get_settings()
     auto = str(
-        getattr(s, "POLICY_AUTORELOAD", None) or getattr(s, "POLICY_AUTO_RELOAD", "false")
+        getattr(s, "POLICY_AUTORELOAD", None)
+        or getattr(s, "POLICY_AUTO_RELOAD", "false")
     ).lower() in ("1", "true", "yes")
 
     if auto and _rules_path.exists():
@@ -219,14 +222,23 @@ def force_reload() -> dict[str, Any]:
 _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
-    (re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"), "[REDACTED:PRIVATE_KEY]"),
+    (
+        re.compile(
+            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        ),
+        "[REDACTED:PRIVATE_KEY]",
+    ),
 ]
 
 
 def _maybe_redact(text: str) -> str:
     global _redactions_total
     s = get_settings()
-    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in ("1", "true", "yes")
+    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if not enabled:
         return text
     out = text
