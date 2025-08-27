@@ -2,43 +2,39 @@ from __future__ import annotations
 
 import os
 import re
-import uuid
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Tuple, List
+from typing import Any, Iterable, List, Tuple
 
 import yaml
-from app.telemetry.audit import emit_decision_event
 
-
-# ----------------------------
-# Settings (import + fallback)
-# ----------------------------
+# ---- settings (defensive import with fallback) --------------------------------
 try:
-    from app.settings import get_settings as _external_get_settings
+    from app.settings import get_settings as _external_get_settings  # type: ignore
 except Exception:  # pragma: no cover
-    _external_get_settings = None
+    _external_get_settings = None  # type: ignore[assignment]
 
 
 def get_settings() -> Any:
-    """
-    Return project settings if available; otherwise a minimal env-backed shim.
-    The shim exposes attributes by looking up environment variables of
-    the same uppercase name (returns None if not set).
-    """
     if _external_get_settings is not None:
         return _external_get_settings()
 
     class _Shim:
         def __getattr__(self, name: str) -> Any:
-            return os.environ.get(name) or os.environ.get(name.upper())
+            return os.environ.get(name)
 
     return _Shim()
 
 
-# --------------------------
-# Default rules if none exist
-# --------------------------
+# ---- telemetry ----------------------------------------------------------------
+from app.telemetry.audit import emit_decision_event  # type: ignore[import-not-found]
+
+
+# -------------------------
+# Rule loading & compilation
+# -------------------------
+
 _DEFAULT_RULES_YAML = """\
 version: "3"
 
@@ -48,39 +44,37 @@ rules:
     regex: '/^[A-Za-z0-9+/=]{128,}$/'
     decision: block
 
-  - id: secrets:api_key_like
+  - id: secret:openai_key
     description: OpenAI API key
     regex: '/sk-[A-Za-z0-9]{16,}/'
     decision: block
 
-  - id: secrets:aws_access_key_id
+  - id: secret:aws_access_key_id
     description: AWS Access Key ID
     regex: '/AKIA[0-9A-Z]{16}/'
     decision: block
 
-  - id: secrets:private_key_block
+  - id: secret:private_key_block
     description: Private key PEM block markers
     regex: '/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/'
     decision: block
 
-  - id: pi:prompt_injection
+  - id: payload:prompt_injection_phrase
     description: Common prompt-injection phrase
     regex: '/ignore\\s+(?:all\\s+)?previous\\s+(?:instructions|directions)/i'
     decision: block
 """
 
 
-# -------------------------
-# Rule loading & compilation
-# -------------------------
-def _compile_rule_pattern(raw: str) -> re.Pattern[str]:
+def _compile_rule_pattern(raw: str, flags_list: Iterable[str] | None = None
+                          ) -> re.Pattern[str]:
     """
-    Accept either /pattern/flags or a bare pattern string.
+    Accept either /pattern/flags or a bare pattern string plus flags list.
     Supports i, m, s flags.
     """
     raw = (raw or "").strip()
     if not raw:
-        return re.compile(r"(?!x)")
+        return re.compile(r"(?!x)")  # never matches
 
     if len(raw) >= 2 and raw[0] == "/" and raw.rfind("/") > 0:
         last = raw.rfind("/")
@@ -96,7 +90,15 @@ def _compile_rule_pattern(raw: str) -> re.Pattern[str]:
                 flags |= re.DOTALL
         return re.compile(pat, flags)
 
-    return re.compile(raw)
+    flags = 0
+    for ch in (flags_list or []):
+        if ch == "i":
+            flags |= re.IGNORECASE
+        elif ch == "m":
+            flags |= re.MULTILINE
+        elif ch == "s":
+            flags |= re.DOTALL
+    return re.compile(raw, flags)
 
 
 @dataclass
@@ -108,37 +110,23 @@ class CompiledRule:
 
 
 _policy_rules: List[CompiledRule] | None = None
-_policy_version: str = "1"
+_policy_version: str = "3"
 _rules_path: Path | None = None
 _last_mtime: float = 0.0
 
-# -------------
-# Metrics hooks
-# -------------
-_guardrail_redactions_total: int = 0
+# redaction counter for metrics
+_redactions_total: int = 0
 
 
 def _policy_path_from_settings() -> Path:
     s = get_settings()
+    # Support both env names used by tests and earlier code
     path_str = (
         getattr(s, "POLICY_RULES_PATH", None)
         or getattr(s, "POLICY_PATH", None)
         or str(Path(__file__).with_name("rules.yaml"))
     )
     return Path(path_str)
-
-
-def _normalize_rule_id(raw_id: str) -> str:
-    rid = (raw_id or "").strip()
-    if rid in {"payload:prompt_injection_phrase", "prompt_injection"}:
-        return "pi:prompt_injection"
-    if rid in {"secret:openai_key", "secret:api_key_like"}:
-        return "secrets:api_key_like"
-    if rid in {"secret:aws_access_key_id"}:
-        return "secrets:aws_access_key_id"
-    if rid in {"secret:private_key_block"}:
-        return "secrets:private_key_block"
-    return rid or "unnamed"
 
 
 def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
@@ -148,36 +136,35 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
 
     txt = path.read_text(encoding="utf-8")
     data = yaml.safe_load(txt) or {}
-    version = str(data.get("version", "1"))
+    version = str(data.get("version", "3"))
 
     compiled: List[CompiledRule] = []
 
-    # Support both shapes:
-    # 1) { rules: [ {id, regex, decision} ] }
-    # 2) { deny: [ {id, pattern, flags?} ] }  (tests write this)
-    rules = data.get("rules", []) or []
-    deny = data.get("deny", []) or []
-
-    for item in rules:
-        rid = _normalize_rule_id(str(item.get("id", "")))
+    # New-style "rules" list (already decision-bearing)
+    for item in data.get("rules", []) or []:
+        rid = str(item.get("id", "") or "").strip() or "unnamed"
         desc = str(item.get("description", "") or "")
         decision = str(item.get("decision", "block") or "block").lower()
         raw = str(item.get("regex") or item.get("pattern") or "")
         rx = _compile_rule_pattern(raw)
-        compiled.append(CompiledRule(id=rid, description=desc, decision=decision, regex=rx))
+        compiled.append(
+            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
+        )
 
-    for item in deny:
-        rid = _normalize_rule_id(str(item.get("id", "")))
-        desc = str(item.get("description", "") or "")
-        pat = str(item.get("pattern") or "")
-        flags = item.get("flags")
-        if isinstance(flags, list):
-            flag_str = "".join([str(f).lower()[0] for f in flags])
-        else:
-            flag_str = str(flags or "").replace("|", "")
-        raw = f"/{pat}/{flag_str}" if pat else ""
-        rx = _compile_rule_pattern(raw)
-        compiled.append(CompiledRule(id=rid, description=desc, decision="block", regex=rx))
+    # Back-compat test format: "deny" -> implicit block; flags as list
+    for item in data.get("deny", []) or []:
+        rid = str(item.get("id", "") or "").strip() or "unnamed"
+        pat = str(item.get("pattern", "") or "")
+        flags = item.get("flags") or []
+        rx = _compile_rule_pattern(pat, flags)
+        compiled.append(
+            CompiledRule(
+                id=f"policy:deny:{rid}",
+                description="deny rule",
+                decision="block",
+                regex=rx,
+            )
+        )
 
     mtime = path.stat().st_mtime
     return compiled, version, mtime
@@ -196,7 +183,6 @@ def _ensure_loaded() -> None:
         getattr(s, "POLICY_AUTORELOAD", None)
         or getattr(s, "POLICY_AUTO_RELOAD", "false")
     ).lower() in ("1", "true", "yes")
-
     if auto and _rules_path and _rules_path.exists():
         try:
             mtime = _rules_path.stat().st_mtime
@@ -210,12 +196,10 @@ def reload_rules() -> dict[str, Any]:
     global _policy_rules, _policy_version, _last_mtime, _rules_path
     _rules_path = _policy_path_from_settings()
     _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-    return {
-        "policy_version": _policy_version,
-        "rules_loaded": len(_policy_rules or []),
-    }
+    return {"policy_version": _policy_version, "rules_loaded": len(_policy_rules or [])}
 
 
+# Back-compat name
 def force_reload() -> dict[str, Any]:
     return reload_rules()
 
@@ -233,19 +217,27 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def _maybe_redact(text: str) -> tuple[str, bool]:
+def _maybe_redact(text: str) -> str:
+    global _redactions_total
     s = get_settings()
-    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in ("1", "true", "yes")
+    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if not enabled:
-        return text, False
+        return text
     out = text
-    did = False
+    before = out
     for pat, repl in _REDACTIONS:
-        new = pat.sub(repl, out)
-        if new != out:
-            did = True
-        out = new
-    return out, did
+        out = pat.sub(repl, out)
+    if out != before:
+        _redactions_total += 1
+    return out
+
+
+def get_redactions_total() -> int:
+    return _redactions_total
 
 
 # ----------
@@ -272,20 +264,15 @@ def analyze(text: str) -> tuple[str, list[str], str]:
     return "allow", [], "No risk signals detected"
 
 
-def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str, Any]:
+def evaluate_and_apply(text: str, request_id: str = "") -> dict[str, Any]:
     """
-    Main entry point used by routes. Applies policy and redactions,
-    emits audit. Always includes 'request_id' in the returned payload.
+    Main entry point used by routes. Applies policy and redactions, emits audit.
     """
     _ensure_loaded()
     s = get_settings()
 
-    max_chars_raw = getattr(s, "MAX_PROMPT_CHARS", None) or getattr(s, "PROMPT_MAX_CHARS", 0)
-    try:
-        max_chars = int(max_chars_raw or 0)
-    except (TypeError, ValueError):
-        max_chars = 0
-
+    # Optional soft size limit (hard 413 is enforced at route layer)
+    max_chars = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
     if max_chars and len(text) > max_chars:
         decision, rule_hits, reason = (
             "block",
@@ -295,8 +282,7 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
     else:
         decision, rule_hits, reason = analyze(text)
 
-    transformed, did_redact = _maybe_redact(text)
-    req_id = request_id or str(uuid.uuid4())
+    transformed = _maybe_redact(text)
 
     try:
         emit_decision_event(
@@ -305,14 +291,10 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
             reason=reason,
             policy_version=str(_policy_version),
             prompt_text=text,
-            request_id=req_id,
+            request_id=request_id,
         )
     except Exception:
         pass
-
-    if did_redact:
-        global _guardrail_redactions_total
-        _guardrail_redactions_total += 1
 
     return {
         "decision": decision,
@@ -320,9 +302,5 @@ def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str,
         "reason": reason,
         "policy_version": str(_policy_version),
         "transformed_text": transformed,
-        "request_id": req_id,
+        "request_id": request_id,
     }
-
-
-def get_redactions_total() -> int:
-    return _guardrail_redactions_total
