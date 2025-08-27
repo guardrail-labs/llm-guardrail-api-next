@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardrail-api
+  namespace: guardrail
+  labels:
+    app: guardrail-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: guardrail-api
+  template:
+    metadata:
+      labels:
+        app: guardrail-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/wesmilam/llm-guardrail-api-next:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: guardrail-secrets
+                  key: API_KEY
+
+            - name: POLICY_AUTORELOAD
+              value: "true"
+            - name: POLICY_RULES_PATH
+              value: "/etc/guardrail/rules.yaml"
+
+            - name: REDACT_SECRETS
+              value: "true"
+            - name: MAX_PROMPT_CHARS
+              value: "20000"
+            - name: OUTPUT_MAX_CHARS
+              value: "20000"
+
+            - name: RATE_LIMIT_ENABLED
+              value: "false"
+            - name: RATE_LIMIT_PER_MINUTE
+              value: "120"
+            - name: RATE_LIMIT_BURST
+              value: "120"
+
+            - name: METRICS_ENABLED
+              value: "true"
+
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/guardrail
+              readOnly: true
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            initialDelaySeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 5
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+      volumes:
+        - name: rules
+          configMap:
+            name: guardrail-rules
+            items:
+              - key: rules.yaml
+                path: rules.yaml

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: guardrail-rules
+  namespace: guardrail
+data:
+  rules.yaml: |
+    version: "3"
+    rules:
+      - id: "payload:prompt_injection_phrase"
+        description: "Block obvious prompt injection"
+        type: "regex"
+        pattern: "(?i)ignore previous instructions|reveal system prompt"
+        action: "block"
+
+      - id: "payload:encoded_blob"
+        description: "Suspicious long base64-like run"
+        type: "regex"
+        pattern: "^[A-Za-z0-9+/=]{128,}$"
+        action: "block"
+
+      - id: "payload:secret_tokens"
+        description: "Common API key patterns"
+        type: "regex"
+        pattern: "(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16,}|BEGIN PRIVATE KEY|END PRIVATE KEY)"
+        action: "block"
