@@ -21,3 +21,8 @@ rules:
     severity: "high"
     examples:
       - "long base64/hex blob"
+
+# deny:
+#   - id: block_phrase
+#     pattern: "(?i)do not allow this"
+#     flags: ["i"]   # i=IGNORECASE, m=MULTILINE, s=DOTALL

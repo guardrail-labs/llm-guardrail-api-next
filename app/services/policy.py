@@ -20,14 +20,14 @@ class Outcome(BaseModel):
     policy_version: str
 
 
-def _final_decision(decisions: List[Decision]) -> str:
-    return "block" if decisions else "allow"
+def _final_decision(any_hits: bool) -> str:
+    return "block" if any_hits else "allow"
 
 
-def _compose_reason(decisions: List[Decision]) -> str:
-    if not decisions:
+def _compose_reason(rule_ids: List[str]) -> str:
+    if not rule_ids:
         return "No risk signals detected"
-    ids = ", ".join(sorted({d.rule_id for d in decisions}))
+    ids = ", ".join(sorted(set(rule_ids)))
     return f"High-risk rules matched: {ids}"
 
 
@@ -53,33 +53,34 @@ def evaluate_and_apply(text: str) -> Outcome:
 
     # Load current policy (hot-reload if enabled)
     blob = get_policy()
-    rules = blob.rules
-    _ = rules  # reserved for future policy execution; currently uPipe drives decisions
 
-    # 1) Analyze
-    decisions: List[Decision] = analyze(text)
+    # 1) Analyze via uPipe (builtin heuristics)
+    pipe_decisions: List[Decision] = analyze(text)
+    rule_ids: List[str] = [d.rule_id for d in pipe_decisions]
 
-    # 2) Compute final decision
-    decision = _final_decision(decisions)
-    rule_hits = [d.rule_id for d in decisions] if decisions else []
-    reason = _compose_reason(decisions)
+    # 2) Evaluate policy-driven deny regex (from rules.yaml)
+    for rid_cfg, pattern in blob.deny_compiled:
+        if pattern.search(text):
+            rule_ids.append(f"policy:deny:{rid_cfg}")
+
+    any_hits = bool(rule_ids)
 
     # 3) Transform (redact secrets if enabled)
     transformed_text = _maybe_redact(text)
 
     # 4) Metrics
     try:
-        tmetrics.inc_decision(decision)
-        tmetrics.inc_rule_hits(rule_hits)
+        tmetrics.inc_decision(_final_decision(any_hits))
+        tmetrics.inc_rule_hits(rule_ids)
     except Exception:
         pass
 
     # 5) Outcome
     outcome = Outcome(
         request_id=rid,
-        decision=decision,
-        reason=reason,
-        rule_hits=rule_hits,
+        decision=_final_decision(any_hits),
+        reason=_compose_reason(rule_ids),
+        rule_hits=rule_ids,
         transformed_text=transformed_text,
         policy_version=str(blob.version),
     )
@@ -88,9 +89,9 @@ def evaluate_and_apply(text: str) -> Outcome:
     try:
         emit_decision_event(
             request_id=rid,
-            decision=decision,
-            rule_hits=rule_hits,
-            reason=reason,
+            decision=outcome.decision,
+            rule_hits=rule_ids,
+            reason=outcome.reason,
             transformed_text=transformed_text,
             policy_version=outcome.policy_version,
             prompt_len=len(text),

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Pattern, Tuple
 
 import yaml
 
@@ -15,6 +16,8 @@ class PolicyBlob:
     version: str
     path: str
     mtime: float
+    # List of (rule_id, compiled_pattern)
+    deny_compiled: List[Tuple[str, Pattern[str]]]
 
 
 _cache: Dict[str, PolicyBlob] = {}
@@ -30,14 +33,52 @@ def _resolve_path() -> str:
     return path or _default_path()
 
 
+def _flag_bits(flags: List[str] | None) -> int:
+    """Translate YAML flags like ['i','m','s'] into re flags."""
+    if not flags:
+        return 0
+    mapping = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
+    bits = 0
+    for f in flags:
+        if f in mapping:
+            bits |= mapping[f]
+    return bits
+
+
+def _compile_deny(rules: dict) -> List[Tuple[str, Pattern[str]]]:
+    out: List[Tuple[str, Pattern[str]]] = []
+    deny = rules.get("deny", [])
+    if not isinstance(deny, list):
+        return out
+    for item in deny:
+        if not isinstance(item, dict):
+            continue
+        rid = str(item.get("id", "")).strip() or "unnamed"
+        pat = str(item.get("pattern", ""))
+        flags = _flag_bits(item.get("flags"))
+        try:
+            cp = re.compile(pat, flags)
+            out.append((rid, cp))
+        except re.error:
+            # Skip invalid regex; policy authors can fix in file
+            continue
+    return out
+
+
 def _load_from_disk(path: str) -> PolicyBlob:
     p = Path(path)
     text = p.read_text(encoding="utf-8")
     rules = yaml.safe_load(text) or {}
     mtime = p.stat().st_mtime
-    # Prefer explicit version; otherwise use mtime as a monotonic-ish fallback
     version = str(rules.get("version", int(mtime)))
-    return PolicyBlob(rules=rules, version=version, path=str(p), mtime=mtime)
+    deny_compiled = _compile_deny(rules)
+    return PolicyBlob(
+        rules=rules,
+        version=version,
+        path=str(p),
+        mtime=mtime,
+        deny_compiled=deny_compiled,
+    )
 
 
 def get_policy() -> PolicyBlob:
