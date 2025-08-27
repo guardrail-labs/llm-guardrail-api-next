@@ -13,7 +13,7 @@ from app.routes.schema import (
     GuardrailResponse,
     OutputGuardrailRequest,
 )
-from app.services.policy import evaluate_and_apply, get_settings
+from app.services.policy import _maybe_redact, evaluate_and_apply, get_settings
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -134,7 +134,7 @@ def guard(
     global _requests_total, _decisions_total
     _requests_total += 1
 
-    req_id = _extract_request_id(request)
+    req_id = ingress.request_id or _extract_request_id(request)
 
     # Robust limit parsing (413 enforced here)
     max_chars = _int_env(
@@ -187,6 +187,35 @@ def guard(
     # Build response content with pydantic model_dump(), wrapped to keep lines short
     content = GuardrailResponse(**payload).model_dump()
     resp = JSONResponse(status_code=status.HTTP_200_OK, content=content)
+    _attach_request_id(resp, req_id)
+    _security_headers(resp)
+    return resp
+
+
+@router.post("/evaluate")
+def guard_evaluate(
+    ingress: GuardrailRequest, request: Request, s=Depends(get_settings)
+) -> JSONResponse:
+    global _requests_total, _decisions_total
+    _requests_total += 1
+
+    req_id = ingress.request_id or _extract_request_id(request)
+
+    redacted = _maybe_redact(ingress.prompt)
+    payload = evaluate_and_apply(redacted, request_id=req_id)
+    _decisions_total += 1
+
+    decisions: list[dict[str, str]] = []
+    if redacted != ingress.prompt:
+        decisions.append({"type": "redaction"})
+
+    resp_body = {
+        "request_id": req_id,
+        "action": payload["decision"],
+        "decisions": decisions,
+        "transformed_text": payload["transformed_text"],
+    }
+    resp = JSONResponse(status_code=status.HTTP_200_OK, content=resp_body)
     _attach_request_id(resp, req_id)
     _security_headers(resp)
     return resp

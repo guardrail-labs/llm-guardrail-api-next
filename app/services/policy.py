@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Tuple
 
 import yaml
+
 from app.telemetry.audit import emit_decision_event
 
 # ---- settings (defensive import with fallback) --------------------------------
@@ -212,6 +213,11 @@ def reload_rules() -> dict[str, Any]:
     }
 
 
+def current_rules_version() -> str:
+    _ensure_loaded()
+    return str(_policy_version)
+
+
 # Back-compat name
 def force_reload() -> dict[str, Any]:
     return reload_rules()
@@ -247,7 +253,7 @@ _BUILTIN_SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
 def _maybe_redact(text: str) -> str:
     global _redactions_total
     s = get_settings()
-    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in (
+    enabled = str(getattr(s, "REDACT_SECRETS", None) or "true").lower() in (
         "1",
         "true",
         "yes",
