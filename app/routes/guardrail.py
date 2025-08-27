@@ -5,12 +5,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 
-from app.config import get_settings
 from app.routes.schema import GuardrailRequest, GuardrailResponse, OutputGuardrailRequest
-from app.services.policy import evaluate_and_apply
+from app.services.policy import evaluate_and_apply, get_settings
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -49,8 +48,7 @@ def _int_env(v) -> int:
 
 
 def _extract_request_id(request: Request) -> str:
-    rid = (request.headers.get("X-Request-ID")
-           or request.headers.get("x-request-id"))
+    rid = request.headers.get("X-Request-ID") or request.headers.get("x-request-id")
     return rid or str(uuid.uuid4())
 
 
@@ -75,11 +73,7 @@ def _is_authorized(request: Request) -> bool:
 
 def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
     s = get_settings()
-    enabled = str(getattr(s, "RATE_LIMIT_ENABLED", "false")).lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    enabled = str(getattr(s, "RATE_LIMIT_ENABLED", "false")).lower() in ("1", "true", "yes")
     if not enabled:
         return True, 0
 
@@ -90,10 +84,12 @@ def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
         return True, 0
 
     # Use API key if present; otherwise client IP; finally a global key
-    key = (request.headers.get("X-API-Key")
-           or request.headers.get("Authorization")
-           or request.client.host
-           or "global")
+    key = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("Authorization")
+        or (request.client.host if request.client else None)
+        or "global"
+    )
 
     rate_per_sec = per_min / 60.0
     b = _buckets.get(key)
@@ -116,18 +112,14 @@ def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
 
 
 @router.post("", response_model=GuardrailResponse)
-def guard(ingress: GuardrailRequest,
-          request: Request,
-          s=Depends(get_settings)) -> GuardrailResponse:
+def guard(ingress: GuardrailRequest, request: Request, s=Depends(get_settings)) -> JSONResponse:
     global _requests_total, _decisions_total
     _requests_total += 1
 
     req_id = _extract_request_id(request)
 
     # Robust limit parsing (413 enforced here)
-    max_chars = _int_env(
-        getattr(s, "MAX_PROMPT_CHARS", None) or getattr(s, "PROMPT_MAX_CHARS", 0)
-    )
+    max_chars = _int_env(getattr(s, "MAX_PROMPT_CHARS", None) or getattr(s, "PROMPT_MAX_CHARS", 0))
     if max_chars and len(ingress.prompt) > max_chars:
         resp = JSONResponse(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -139,7 +131,7 @@ def guard(ingress: GuardrailRequest,
         )
         _attach_request_id(resp, req_id)
         _security_headers(resp)
-        return resp  # type: ignore[return-value]
+        return resp
 
     # Require API key (401 unless disabled entirely)
     if not _is_authorized(request):
@@ -150,40 +142,31 @@ def guard(ingress: GuardrailRequest,
         resp.headers["WWW-Authenticate"] = "Bearer"
         _attach_request_id(resp, req_id)
         _security_headers(resp)
-        return resp  # type: ignore[return-value]
+        return resp
 
     # Rate limit check
     ok, retry_after = _rate_limit(request, time.time())
     if not ok:
         resp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "code": "rate_limited",
-                "retry_after": retry_after,
-                "request_id": req_id,
-            },
+            content={"code": "rate_limited", "retry_after": retry_after, "request_id": req_id},
         )
         resp.headers["Retry-After"] = str(retry_after)
         _attach_request_id(resp, req_id)
         _security_headers(resp)
-        return resp  # type: ignore[return-value]
+        return resp
 
     payload = evaluate_and_apply(ingress.prompt, request_id=req_id)
     _decisions_total += 1
 
-    resp = JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content=GuardrailResponse(**payload).model_dump(),
-    )
+    resp = JSONResponse(status_code=status.HTTP_200_OK, content=GuardrailResponse(**payload).model_dump())
     _attach_request_id(resp, req_id)
     _security_headers(resp)
-    return resp  # type: ignore[return-value]
+    return resp
 
 
 @router.post("/output")
-def guard_output(ingress: OutputGuardrailRequest,
-                 request: Request,
-                 s=Depends(get_settings)) -> JSONResponse:
+def guard_output(ingress: OutputGuardrailRequest, request: Request, s=Depends(get_settings)) -> JSONResponse:
     req_id = _extract_request_id(request)
 
     # Require auth for parity with main endpoint
@@ -202,11 +185,7 @@ def guard_output(ingress: OutputGuardrailRequest,
     if output_max and len(ingress.output) > output_max:
         resp = JSONResponse(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            content={
-                "code": "too_large",
-                "detail": "Output too large",
-                "request_id": req_id,
-            },
+            content={"code": "too_large", "detail": "Output too large", "request_id": req_id},
         )
         _attach_request_id(resp, req_id)
         _security_headers(resp)
