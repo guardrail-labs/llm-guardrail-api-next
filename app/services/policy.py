@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import yaml
 
-from app.services.upipe import Decision, analyze
+from app.services.upipe import Decision, analyze  # Decision is a str/Literal alias
 from app.telemetry.audit import emit_decision_event
 
 # --- Redaction patterns --------------------------------------------------------
@@ -48,7 +48,6 @@ def _is_truthy(value: str | None) -> bool:
 
 # --- Rules loading / versioning ------------------------------------------------
 
-# Default rules.yaml located at: app/services/policy/rules.yaml
 _DEFAULT_RULES_PATH = (
     Path(__file__).resolve().parent / "policy" / "rules.yaml"
 ).resolve()
@@ -75,12 +74,10 @@ def _load_rules(path: Path) -> Tuple[Dict[str, Any], str, float]:
 def _ensure_loaded() -> None:
     global _policy_data, _policy_version, _rules_path, _last_mtime
 
-    # Resolve path based on env each time to support tests changing env.
     path = _current_rules_path()
     autoreload = _is_truthy(os.getenv("POLICY_AUTORELOAD", "true"))
 
     if not _policy_data or _rules_path != path:
-        # Initial or path changed
         _policy_data, _policy_version, _last_mtime = _load_rules(path)
         _rules_path = path
         return
@@ -140,6 +137,7 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
     _ensure_loaded()
 
     # Analyze via the upipe detector.
+    # decision: Decision (Literal["allow","block"]), rule_hits: List[str], reason: str
     decision, rule_hits, reason = analyze(text)
 
     # Redaction is optional (enabled by env).
@@ -147,22 +145,22 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
     if _is_truthy(os.getenv("REDACT_SECRETS", "false")):
         transformed, _ = _apply_redaction(text)
 
-    # Emit audit using the *transformed* text so logs don’t leak secrets.
+    # Emit audit using the transformed text so logs don’t leak secrets.
     req_id = str(uuid4())
     emit_decision_event(
         request_id=req_id,
-        decision=decision.value if isinstance(decision, Decision) else str(decision),
-        rule_hits=rule_hits,
-        reason=reason,
+        decision=str(decision),        # Decision is a str/Literal alias
+        rule_hits=list(rule_hits),     # ensure Iterable[str]
+        reason=str(reason),
         policy_version=get_policy_version(),
         prompt_text=transformed,
     )
 
     return {
         "request_id": req_id,
-        "decision": decision.value if isinstance(decision, Decision) else str(decision),
-        "reason": reason,
-        "rule_hits": rule_hits,
+        "decision": str(decision),
+        "reason": str(reason),
+        "rule_hits": list(rule_hits),
         "policy_version": get_policy_version(),
         "transformed_text": transformed,
     }
