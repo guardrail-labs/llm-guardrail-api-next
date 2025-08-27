@@ -1,3 +1,4 @@
+# app/main.py
 from __future__ import annotations
 
 import os
@@ -5,10 +6,9 @@ import time
 import uuid
 from typing import Iterable
 
-from fastapi import FastAPI, Request, status, Depends
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
-from app.services.policy import get_redactions_total, reload_rules
 
 from app.routes.guardrail import (
     router as guardrail_router,
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
-        # Attach simple latency (used only to expose histogram presence in metrics)
+        # Attach simple latency for tests/metrics
         resp.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
         return resp
 
@@ -77,8 +77,11 @@ def create_app() -> FastAPI:
 
     @app.post("/admin/policy/reload")
     async def admin_policy_reload(request: Request):
-        # very light auth: same contract as /guardrail (tests pass X-API-Key)
-        if not (request.headers.get("X-API-Key") or request.headers.get("Authorization")):
+        # Same lightweight auth contract as /guardrail
+        if not (
+            request.headers.get("X-API-Key")
+            or request.headers.get("Authorization")
+        ):
             rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
             resp = JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -88,11 +91,15 @@ def create_app() -> FastAPI:
             resp.headers["X-Request-ID"] = rid
             return resp
 
-        result = reload_rules()
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={"reloaded": True, **result},
-        )
+        info = reload_rules()
+        # Test expects {"reloaded": True, "version": "<current_version>"}.
+        # Keep existing fields too to avoid regressions.
+        payload = {
+            "reloaded": True,
+            "version": str(info.get("policy_version", "")),
+            **info,
+        }
+        return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
 
     @app.get("/metrics")
     async def metrics():
@@ -113,7 +120,6 @@ def create_app() -> FastAPI:
         # Minimal histogram (tests only check *_count presence)
         lines.append("# HELP guardrail_latency_seconds Request latency histogram.")
         lines.append("# TYPE guardrail_latency_seconds histogram")
-        # Provide a coherent count and a tiny sum so Prometheus-format is valid enough for tests
         decisions = max(0, get_decisions_total())
         latency_sum = decisions * 0.001
         lines.append(f"guardrail_latency_seconds_count {decisions}")
