@@ -1,0 +1,16 @@
+Thanks for installing {{ include "llm-guardrail-api.name" . }}!
+
+1) Get the Service URL:
+   kubectl get svc {{ include "llm-guardrail-api.fullname" . }} -o wide
+
+2) If Ingress is enabled, add a hosts entry or set up DNS:
+   Host(s): {{- range .Values.ingress.hosts }} {{ .host }} {{- end }}
+
+3) Health check:
+   curl -s http://<svc-ip-or-ingress>/health | jq .
+
+4) Test guardrail:
+   curl -s -X POST http://<svc-or-ingress>/guardrail \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: <your-api-key>" \
+     -d '{"prompt":"hello"}' | jq .

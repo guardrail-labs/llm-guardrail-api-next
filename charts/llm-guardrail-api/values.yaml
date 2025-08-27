@@ -1,0 +1,127 @@
+# ----- Global / image -----
+image:
+  repository: ghcr.io/wesmilam/llm-guardrail-api-next
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []   # e.g. [{ name: my-regcred }]
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ----- Pod basics -----
+replicaCount: 2
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: guardrail.localtest.me
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []   # e.g. [{ secretName: guardrail-tls, hosts: [guardrail.example.com] }]
+
+# ----- Resources / autoscaling / disruptions -----
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  # targetMemoryUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ----- Rules (ConfigMap) -----
+rules:
+  version: "3"
+  inline: |
+    version: "3"
+    rules:
+      - id: "payload:prompt_injection_phrase"
+        description: "Block obvious prompt injection"
+        type: "regex"
+        pattern: "(?i)ignore previous instructions|reveal system prompt"
+        action: "block"
+
+      - id: "payload:encoded_blob"
+        description: "Suspicious long base64-like run"
+        type: "regex"
+        pattern: "^[A-Za-z0-9+/=]{128,}$"
+        action: "block"
+
+      - id: "payload:secret_tokens"
+        description: "Common API key patterns"
+        type: "regex"
+        pattern: "(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16,}|BEGIN PRIVATE KEY|END PRIVATE KEY)"
+        action: "block"
+
+# ----- Environment configuration -----
+env:
+  # Security
+  API_KEY: "change-me-prod-key"
+
+  # Policy
+  POLICY_AUTORELOAD: "true"
+  POLICY_RULES_PATH: "/etc/guardrail/rules.yaml"
+
+  # Limits
+  MAX_PROMPT_CHARS: "20000"
+  OUTPUT_MAX_CHARS: "20000"
+
+  # Redaction & Audit
+  REDACT_SECRETS: "true"
+  AUDIT_ENABLED: "true"
+  AUDIT_SAMPLE_RATE: "0.2"
+  AUDIT_MAX_TEXT_CHARS: "200"
+
+  # Rate limit
+  RATE_LIMIT_ENABLED: "false"
+  RATE_LIMIT_PER_MINUTE: "120"
+  RATE_LIMIT_BURST: "120"
+
+  # Metrics / tracing
+  METRICS_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+
+envFrom: []  # e.g. [{ secretRef: { name: extra-secrets } }]
+
+# Node scheduling
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# Extra volumes / mounts if needed
+extraVolumes: []
+extraVolumeMounts: []

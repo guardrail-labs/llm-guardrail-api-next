@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-guardrail-api.fullname" . }}
+  labels:
+    {{- include "llm-guardrail-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "llm-guardrail-api.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "llm-guardrail-api.fullname" . }}
+        {{- include "llm-guardrail-api.labels" . | nindent 8 }}
+      annotations:
+        {{- range $k, $v := .Values.podAnnotations }}
+        {{ $k }}: {{ $v | quote }}
+        {{- end }}
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ default (include "llm-guardrail-api.fullname" .) .Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+          env:
+            - name: POLICY_RULES_PATH
+              value: {{ .Values.env.POLICY_RULES_PATH | quote }}
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "llm-guardrail-api.fullname" . }}-secrets
+                  key: API_KEY
+            {{- /* Flatten the rest of env entries except API_KEY which is in the Secret */}}
+            - name: POLICY_AUTORELOAD
+              value: {{ .Values.env.POLICY_AUTORELOAD | quote }}
+            - name: MAX_PROMPT_CHARS
+              value: {{ .Values.env.MAX_PROMPT_CHARS | quote }}
+            - name: OUTPUT_MAX_CHARS
+              value: {{ .Values.env.OUTPUT_MAX_CHARS | quote }}
+            - name: REDACT_SECRETS
+              value: {{ .Values.env.REDACT_SECRETS | quote }}
+            - name: AUDIT_ENABLED
+              value: {{ .Values.env.AUDIT_ENABLED | quote }}
+            - name: AUDIT_SAMPLE_RATE
+              value: {{ .Values.env.AUDIT_SAMPLE_RATE | quote }}
+            - name: AUDIT_MAX_TEXT_CHARS
+              value: {{ .Values.env.AUDIT_MAX_TEXT_CHARS | quote }}
+            - name: RATE_LIMIT_ENABLED
+              value: {{ .Values.env.RATE_LIMIT_ENABLED | quote }}
+            - name: RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.env.RATE_LIMIT_PER_MINUTE | quote }}
+            - name: RATE_LIMIT_BURST
+              value: {{ .Values.env.RATE_LIMIT_BURST | quote }}
+            - name: METRICS_ENABLED
+              value: {{ .Values.env.METRICS_ENABLED | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.env.OTEL_EXPORTER_OTLP_ENDPOINT | quote }}
+          {{- if .Values.envFrom }}
+          envFrom:
+            {{- toYaml .Values.envFrom | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/guardrail
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            initialDelaySeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: rules
+          configMap:
+            name: {{ include "llm-guardrail-api.fullname" . }}-rules
+            items:
+              - key: rules.yaml
+                path: rules.yaml
+      {{- if .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- end }}
+      {{- if .Values.tolerations }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      {{- end }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- end }}
+      {{- if .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      {{- end }}
