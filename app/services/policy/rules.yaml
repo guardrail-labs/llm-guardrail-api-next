@@ -1,0 +1,33 @@
+version: "3"
+
+# Minimal default rules used by tests
+rules:
+  - id: payload:encoded_blob
+    description: Detect long base64-like blobs
+    # Matches strings made only of base64 chars, length >=128.
+    # "A"*200 in the tests will hit this.
+    regex: '^[A-Za-z0-9+/=]{128,}$'
+    pattern: '^[A-Za-z0-9+/=]{128,}$'
+    decision: block
+    action: block
+
+  - id: secret:openai_key
+    description: OpenAI API key
+    regex: 'sk-[A-Za-z0-9]{16,}'
+    pattern: 'sk-[A-Za-z0-9]{16,}'
+    decision: block
+    action: block
+
+  - id: secret:aws_access_key_id
+    description: AWS Access Key ID
+    regex: 'AKIA[0-9A-Z]{16}'
+    pattern: 'AKIA[0-9A-Z]{16}'
+    decision: block
+    action: block
+
+  - id: secret:private_key_block
+    description: Private key PEM block markers
+    regex: '-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----'
+    pattern: '-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----'
+    decision: block
+    action: block
