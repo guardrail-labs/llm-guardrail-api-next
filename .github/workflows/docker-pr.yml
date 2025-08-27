@@ -9,6 +9,10 @@ permissions:
   security-events: write
   actions: read
 
+env:
+  # Flip to true by setting a repository Variable named CODE_SCANNING_ENABLED=true
+  CODE_SCANNING_ENABLED: ${{ vars.CODE_SCANNING_ENABLED || 'false' }}
+
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
@@ -70,10 +74,11 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"  # non-blocking on PRs
 
-      # Upload SARIF (skip on forks; tolerate repos without code scanning enabled)
+      # Upload SARIF only if:
+      #  - PR originates from same repo (not a fork)
+      #  - and repo variable CODE_SCANNING_ENABLED == 'true'
       - name: Upload Trivy SARIF
-        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ env.CODE_SCANNING_ENABLED == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
         uses: github/codeql-action/upload-sarif@v3
-        continue-on-error: true
         with:
           sarif_file: trivy-pr-${{ github.event.number }}.sarif
