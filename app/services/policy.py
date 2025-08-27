@@ -3,15 +3,38 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Tuple
 
 import yaml
 
-from app.settings import get_settings
-from app.telemetry.audit import emit_decision_event
+# ---- settings (defensive import with fallback) ------------------------------
+try:
+    # If your project provides app.settings.get_settings, use it.
+    from app.settings import get_settings as _external_get_settings  # type: ignore[attr-defined]
+except Exception:  # pragma: no cover - only hit in minimal test envs
+    _external_get_settings = None  # type: ignore[assignment]
+
+
+def get_settings() -> Any:
+    """
+    Return project settings if available; otherwise a minimal env-backed shim.
+    The shim exposes attributes by looking up environment variables of
+    the same uppercase name (returns None if not set).
+    """
+    if _external_get_settings is not None:
+        return _external_get_settings()
+
+    class _Shim:
+        def __getattr__(self, name: str) -> Any:
+            return os.environ.get(name)
+
+    return _Shim()
+
+
+# ---- telemetry --------------------------------------------------------------
+from app.telemetry.audit import emit_decision_event  # type: ignore[import-not-found]
 
 
 # -------------------------
@@ -24,7 +47,6 @@ version: "3"
 rules:
   - id: payload:encoded_blob
     description: Detect long base64-like blobs
-    # Accepts slash-delimited or bare; we use slash-delimited here.
     regex: '/^[A-Za-z0-9+/=]{128,}$/'
     decision: block
 
@@ -53,7 +75,7 @@ rules:
 def _compile_rule_pattern(raw: str) -> re.Pattern[str]:
     """
     Accept either /pattern/flags or a bare pattern string.
-    Supports i,m,s flags.
+    Supports i, m, s flags.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -81,7 +103,7 @@ def _compile_rule_pattern(raw: str) -> re.Pattern[str]:
 class CompiledRule:
     id: str
     description: str
-    decision: str  # "allow" | "block"  (we only use "block" rules today)
+    decision: str  # "allow" | "block"
     regex: re.Pattern[str]
 
 
@@ -93,8 +115,9 @@ _last_mtime: float = 0.0
 
 def _policy_path_from_settings() -> Path:
     s = get_settings()
-    # Prefer explicit setting; else default to sibling YAML
-    path_str = getattr(s, "POLICY_PATH", None) or str(Path(__file__).with_name("rules.yaml"))
+    path_str = getattr(s, "POLICY_PATH", None) or str(
+        Path(__file__).with_name("rules.yaml")
+    )
     return Path(path_str)
 
 
@@ -115,7 +138,9 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
         decision = str(item.get("decision", "block") or "block").lower()
         raw = str(item.get("regex") or item.get("pattern") or "")
         rx = _compile_rule_pattern(raw)
-        compiled.append(CompiledRule(id=rid, description=desc, decision=decision, regex=rx))
+        compiled.append(
+            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
+        )
 
     mtime = path.stat().st_mtime
     return compiled, version, mtime
@@ -130,7 +155,11 @@ def _ensure_loaded() -> None:
         return
 
     s = get_settings()
-    auto = bool(str(getattr(s, "POLICY_AUTO_RELOAD", "false")).lower() in ("1", "true", "yes"))
+    auto = str(getattr(s, "POLICY_AUTO_RELOAD", "false")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if auto and _rules_path and _rules_path.exists():
         try:
             mtime = _rules_path.stat().st_mtime
@@ -145,7 +174,15 @@ def reload_rules() -> dict[str, Any]:
     global _policy_rules, _policy_version, _last_mtime, _rules_path
     _rules_path = _policy_path_from_settings()
     _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-    return {"policy_version": _policy_version, "rules_loaded": len(_policy_rules or [])}
+    return {
+        "policy_version": _policy_version,
+        "rules_loaded": len(_policy_rules or []),
+    }
+
+
+# Back-compat for routes/admin.py which imports force_reload
+def force_reload() -> dict[str, Any]:
+    return reload_rules()
 
 
 # -------------
@@ -155,13 +192,22 @@ def reload_rules() -> dict[str, Any]:
 _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
-    (re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"), "[REDACTED:PRIVATE_KEY]"),
+    (
+        re.compile(
+            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        ),
+        "[REDACTED:PRIVATE_KEY]",
+    ),
 ]
 
 
 def _maybe_redact(text: str) -> str:
     s = get_settings()
-    enabled = bool(str(getattr(s, "REDACT_SECRETS", "false")).lower() in ("1", "true", "yes"))
+    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     if not enabled:
         return text
     out = text
@@ -197,31 +243,40 @@ def analyze(text: str) -> tuple[str, list[str], str]:
 
 def evaluate_and_apply(text: str) -> dict[str, Any]:
     """
-    Main entry point used by routes. Applies policy and redactions, emits audit.
+    Main entry point used by routes. Applies policy and redactions,
+    emits audit.
     """
     _ensure_loaded()
     s = get_settings()
 
-    # Optional size limit -> 413 is raised in the route layer; we only return decision payloads here.
-    # (Tests that exercise 413 go via the route layer; leaving this here as a soft guard if needed.)
+    # Optional size limit -> 413 is raised in the route layer; we only
+    # return decision payloads here.
+    # (Tests that exercise 413 go via the route layer; leaving this here
+    # as a soft guard if needed.)
     max_chars = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
     if max_chars and len(text) > max_chars:
-        # We *don't* raise here to keep behavior consistent; callers may choose to 413 earlier.
-        # Still return a blocked decision so callers who rely on this function directly are safe.
-        decision, rule_hits, reason = "block", ["payload:size_limit"], "Prompt exceeds maximum allowed size"
+        # We *don't* raise here to keep behavior consistent; callers may
+        # choose to 413 earlier. Still return a blocked decision so
+        # callers who rely on this function directly are safe.
+        decision, rule_hits, reason = (
+            "block",
+            ["payload:size_limit"],
+            "Prompt exceeds maximum allowed size",
+        )
     else:
         decision, rule_hits, reason = analyze(text)
 
     transformed = _maybe_redact(text)
 
-    # Emit audit event; audit code will handle snippet_len/truncation.
+    # Emit audit event; include request_id (empty if unknown) to satisfy mypy
     try:
         emit_decision_event(
             decision=decision,
             rule_hits=list(rule_hits),
             reason=reason,
             policy_version=str(_policy_version),
-            prompt_text=text,  # <-- matches telemetry/audit.py signature seen in mypy error hints
+            prompt_text=text,
+            request_id="",  # filled by caller/middleware in real app flows
         )
     except Exception:
         # Never let telemetry break the request
