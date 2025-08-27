@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -11,13 +12,10 @@ from starlette.responses import JSONResponse
 from app.config import get_settings
 from app.telemetry.metrics import inc_rate_limited
 
-# Optional Redis import with clean typing (no mypy ignores).
-try:  # pragma: no cover - import path varies by env
-    from redis import asyncio as _redis_asyncio  # type: ignore[no-redef]
-except Exception:  # pragma: no cover
-    _redis_asyncio = None
-
-aioredis: Any | None = _redis_asyncio  # used at runtime if available
+if TYPE_CHECKING:  # Only for type checking; no runtime dependency
+    from redis.asyncio import Redis as RedisClient  # pragma: no cover
+else:
+    RedisClient = Any  # fallback type for annotations
 
 
 def _truthy(val: object) -> bool:
@@ -44,18 +42,34 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Memory store: key -> (tokens, last_ts)
         self._mem: dict[str, tuple[float, float]] = {}
 
-        # Redis client (optional)
-        self._redis = None
-        if self.enabled and self.backend == "redis" and self.redis_url and aioredis:
-            self._redis = aioredis.from_url(  # type: ignore[call-arg]
-                self.redis_url, encoding="utf-8", decode_responses=True
-            )
+        # Optional Redis client
+        self._redis: Optional[RedisClient] = None
+        if self.enabled and self.backend == "redis" and self.redis_url:
+            redis_asyncio = self._try_import_redis_asyncio()
+            if redis_asyncio is not None:
+                self._redis = cast(
+                    RedisClient,
+                    redis_asyncio.from_url(
+                        self.redis_url, encoding="utf-8", decode_responses=True
+                    ),
+                )
 
-        # Refill rate tokens per second
+        # Refill rate: tokens per second
         self._refill = self.per_minute / 60.0
 
         # Mutex for in-memory updates
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _try_import_redis_asyncio() -> Any | None:
+        """
+        Import `redis.asyncio` dynamically to avoid a hard runtime dependency
+        when Redis is not used. Returns the module or None.
+        """
+        try:  # pragma: no cover - import path varies by env
+            return importlib.import_module("redis.asyncio")
+        except Exception:
+            return None
 
     async def dispatch(self, request: Request, call_next):
         if not self.enabled:
