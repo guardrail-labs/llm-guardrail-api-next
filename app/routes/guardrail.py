@@ -1,43 +1,25 @@
-import os
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from app.schemas import ErrorResponse, GuardrailRequest, GuardrailResponse
+from fastapi import APIRouter, Depends
+from fastapi import HTTPException, status
+
+from app.routes.schema import GuardrailRequest, GuardrailResponse  # keep your existing schema path
 from app.services.policy import evaluate_and_apply
+from app.config import get_settings
 
-router = APIRouter()
-
-
-def _resolve_max_chars() -> int:
-    """Prefer live env (so tests/runtime overrides work); fallback to a safe default."""
-    v = os.environ.get("MAX_PROMPT_CHARS")
-    if v is not None:
-        try:
-            return int(v)
-        except ValueError:
-            pass
-    return 16000
+router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
 
-def _check_size(ingress: GuardrailRequest) -> None:
-    max_chars = _resolve_max_chars()
-    if len(ingress.prompt) > max_chars:
+@router.post("", response_model=GuardrailResponse)
+def guard(ingress: GuardrailRequest, s=Depends(get_settings)) -> GuardrailResponse:
+    # MAX_PROMPT_CHARS enforcement (413) happens at the route boundary
+    max_chars = int(getattr(s, "MAX_PROMPT_CHARS", 0) or 0)
+    if max_chars and len(ingress.prompt) > max_chars:
         raise HTTPException(
-            status_code=413,
-            detail=f"Prompt too large (max {max_chars} chars)",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Prompt too large",
         )
 
-
-@router.post(
-    "/guardrail",
-    response_model=GuardrailResponse,
-    responses={
-        401: {"model": ErrorResponse, "description": "Missing or invalid API key"},
-        413: {"model": ErrorResponse, "description": "Payload too large"},
-        500: {"model": ErrorResponse, "description": "Server misconfiguration"},
-    },
-    summary="Evaluate a prompt against guardrail rules",
-    dependencies=[Depends(_check_size)],
-)
-def guard(ingress: GuardrailRequest) -> GuardrailResponse:
-    # Size already validated by dependency.
-    return evaluate_and_apply(ingress.prompt)
+    payload = evaluate_and_apply(ingress.prompt)
+    # Satisfy mypy: return the annotated model, not a raw dict
+    return GuardrailResponse(**payload)
