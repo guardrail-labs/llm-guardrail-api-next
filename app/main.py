@@ -11,11 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.routes.guardrail import (
-    router as guardrail_router,
-    get_requests_total,
     get_decisions_total,
+    get_requests_total,
+    router as guardrail_router,
 )
 from app.services.policy import get_redactions_total, reload_rules
+from app.telemetry.audit import get_audit_events_total
 
 
 def _get_origins_from_env() -> Iterable[str]:
@@ -79,8 +80,7 @@ def create_app() -> FastAPI:
     async def admin_policy_reload(request: Request):
         # Same lightweight auth contract as /guardrail
         if not (
-            request.headers.get("X-API-Key")
-            or request.headers.get("Authorization")
+            request.headers.get("X-API-Key") or request.headers.get("Authorization")
         ):
             rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
             resp = JSONResponse(
@@ -116,6 +116,10 @@ def create_app() -> FastAPI:
         lines.append("# HELP guardrail_redactions_total Total redactions applied.")
         lines.append("# TYPE guardrail_redactions_total counter")
         lines.append(f"guardrail_redactions_total {get_redactions_total()}")
+
+        lines.append("# HELP guardrail_audit_events_total Total audit events emitted.")
+        lines.append("# TYPE guardrail_audit_events_total counter")
+        lines.append(f"guardrail_audit_events_total {get_audit_events_total()}")
 
         # Minimal histogram (tests only check *_count presence)
         lines.append("# HELP guardrail_latency_seconds Request latency histogram.")
