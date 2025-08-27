@@ -5,10 +5,13 @@ import logging
 import os
 from typing import Iterable
 
-
 _AUDIT_LOGGER_NAME = "guardrail_audit"
 _logger = logging.getLogger(_AUDIT_LOGGER_NAME)
 _logger.setLevel(logging.INFO)
+
+# Simple counter for Prometheus-style metrics.
+# Incremented each time an audit event is actually emitted.
+_audit_events_total: int = 0
 
 
 def _truthy(v: str | None) -> bool:
@@ -71,3 +74,10 @@ def emit_decision_event(
     }
 
     _logger.info(json.dumps(payload))
+    global _audit_events_total
+    _audit_events_total += 1
+
+
+def get_audit_events_total() -> int:
+    """Return the number of audit events emitted so far."""
+    return _audit_events_total
