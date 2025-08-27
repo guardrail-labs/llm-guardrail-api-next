@@ -14,7 +14,7 @@ from app.routes.guardrail import (
     get_requests_total,
     get_decisions_total,
 )
-from app.services.policy import get_redactions_total
+from app.services.policy import get_redactions_total, reload_rules
 
 
 def _get_origins_from_env() -> Iterable[str]:
@@ -73,6 +73,22 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.post("/admin/policy/reload")
+    async def admin_policy_reload(request: Request):
+        # Require the same simple auth as the guardrail endpoints
+        if not (
+            request.headers.get("X-API-Key") or request.headers.get("Authorization")
+        ):
+            rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+            resp = JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Unauthorized", "request_id": rid},
+            )
+            resp.headers["WWW-Authenticate"] = "Bearer"
+            return resp
+        result = reload_rules()
+        return JSONResponse(status_code=200, content=result)
 
     @app.get("/metrics")
     async def metrics():
