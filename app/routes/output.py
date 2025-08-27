@@ -1,4 +1,3 @@
-# app/routes/output.py
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
