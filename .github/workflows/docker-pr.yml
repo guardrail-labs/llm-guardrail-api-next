@@ -6,12 +6,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
-  actions: read
-
-env:
-  # Flip to true by setting a repository Variable named CODE_SCANNING_ENABLED=true
-  CODE_SCANNING_ENABLED: ${{ vars.CODE_SCANNING_ENABLED || 'false' }}
 
 jobs:
   build-and-scan:
@@ -54,7 +48,6 @@ jobs:
           build-args: |
             VERSION=pr-${{ github.event.number }}
             VCS_REF=${{ github.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.labels.org.opencontainers.image.created }}
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
 
@@ -74,11 +67,9 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"  # non-blocking on PRs
 
-      # Upload SARIF only if:
-      #  - PR originates from same repo (not a fork)
-      #  - and repo variable CODE_SCANNING_ENABLED == 'true'
-      - name: Upload Trivy SARIF
-        if: ${{ env.CODE_SCANNING_ENABLED == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy SARIF as artifact (no Code Scanning)
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: trivy-pr-${{ github.event.number }}.sarif
+          name: trivy-pr-${{ github.event.number }}.sarif
+          path: trivy-pr-${{ github.event.number }}.sarif
+          retention-days: 7
