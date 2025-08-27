@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Iterable
 
-from app.config import get_settings
 
-logger = logging.getLogger("guardrail_audit")
+_AUDIT_LOGGER_NAME = "guardrail_audit"
+_logger = logging.getLogger(_AUDIT_LOGGER_NAME)
+_logger.setLevel(logging.INFO)
+
+
+def _truthy(v: str | None) -> bool:
+    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def emit_decision_event(
@@ -18,27 +24,50 @@ def emit_decision_event(
     policy_version: str,
     prompt_text: str,
 ) -> None:
+    """Emit a single-line JSON audit record. Honors:
+    - AUDIT_ENABLED (default: false)
+    - AUDIT_SAMPLE_RATE (0.0..1.0, default: 1.0)
+    - AUDIT_MAX_TEXT_CHARS (default: 128) -> truncates snippet
+    - SERVICE_NAME (default: llm-guardrail-api-next)
+    - ENV (default: dev)
     """
-    Emit a single JSON audit line with a bounded snippet from the prompt text.
-    Respects AUDIT_MAX_TEXT_CHARS from settings.
-    """
-    s = get_settings()
-    max_chars = int(getattr(s, "AUDIT_MAX_TEXT_CHARS", 200))
-    snippet = prompt_text[: max(0, max_chars)]
-    truncated = len(prompt_text) > max_chars
+    if not _truthy(os.getenv("AUDIT_ENABLED", "false")):
+        return
 
-    event = {
+    try:
+        sample_rate = float(os.getenv("AUDIT_SAMPLE_RATE", "1.0"))
+    except Exception:
+        sample_rate = 1.0
+
+    # Cheap sampling without importing random if always-on
+    if sample_rate < 1.0:
+        import random
+
+        if random.random() > sample_rate:
+            return
+
+    try:
+        max_chars = int(os.getenv("AUDIT_MAX_TEXT_CHARS", "128"))
+    except Exception:
+        max_chars = 128
+
+    snippet_full = prompt_text or ""
+    snippet = snippet_full[:max_chars]
+    snippet_truncated = len(snippet_full) > max_chars
+
+    payload = {
         "event": "guardrail_decision",
         "request_id": request_id,
-        "decision": decision,
+        "decision": str(decision),
         "rule_hits": list(rule_hits),
-        "reason": reason,
-        "policy_version": policy_version,
-        "prompt_len": len(prompt_text),
+        "reason": str(reason),
+        "policy_version": str(policy_version),
+        "prompt_len": len(snippet_full),
         "snippet_len": len(snippet),
         "snippet": snippet,
-        "snippet_truncated": truncated,
-        "service": getattr(s, "SERVICE_NAME", "llm-guardrail-api-next"),
-        "env": getattr(s, "ENV", "dev"),
+        "snippet_truncated": snippet_truncated,
+        "service": os.getenv("SERVICE_NAME", "llm-guardrail-api-next"),
+        "env": os.getenv("ENV", "dev"),
     }
-    logger.info(json.dumps(event, ensure_ascii=False))
+
+    _logger.info(json.dumps(payload))
