@@ -63,7 +63,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             retry_after = max(1, int(deficit / self.tokens_per_sec + 0.999))
 
             rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-            resp = JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+            resp = JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "Rate limit exceeded",
+                    "code": "rate_limited",
+                    "retry_after": retry_after,
+                    "request_id": rid,
+                },
+            )
             resp.headers["Retry-After"] = str(retry_after)
             resp.headers["X-Request-ID"] = rid
             return resp
@@ -71,4 +79,3 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         tokens -= 1.0
         self._buckets[key_value] = (tokens, now)
         return await call_next(request)
-

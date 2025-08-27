@@ -23,3 +23,5 @@ class GuardrailResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
+    code: Optional[str] = None
+    request_id: Optional[str] = None

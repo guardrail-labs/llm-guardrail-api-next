@@ -8,6 +8,7 @@ from app.routes.guardrail import router as guardrail_router
 from app.routes.health import router as health_router
 from app.routes.output import router as output_router
 from app.routes.policy_admin import router as policy_router
+from app.telemetry.errors import register_error_handlers
 from app.telemetry.logging import setup_logging
 from app.telemetry.metrics import setup_metrics
 from app.telemetry.tracing import RequestIDMiddleware
@@ -50,6 +51,9 @@ def build_app() -> FastAPI:
     # Metrics & structured request logging
     setup_metrics(app)
     setup_logging(app)
+
+    # Global JSON error handlers
+    register_error_handlers(app)
 
     return app
 
