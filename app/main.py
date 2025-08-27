@@ -45,7 +45,7 @@ def build_app() -> FastAPI:
     app.include_router(health_router, tags=["health"])
     app.include_router(guardrail_router, tags=["guardrail"])
     app.include_router(output_router, tags=["guardrail"])
-    app.include_router(policy_router, tags=["policy"])  # <-- restore admin endpoints
+    app.include_router(policy_router, tags=["policy"])  # admin endpoints
 
     # Metrics & structured request logging
     setup_metrics(app)
