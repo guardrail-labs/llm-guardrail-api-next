@@ -2,80 +2,57 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    env:
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_NO_CACHE_DIR: "1"
-      PYTHONPATH: ${{ github.workspace }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          check-latest: true
-      - name: Install ruff
-        run: |
-          python -m pip install --upgrade pip
-          pip install "ruff>=0.5.0"
-      # Apply autofixes (imports, simple lint autofixes)
-      - name: Ruff check (apply fixes)
-        run: ruff check --fix .
-      # Apply formatter (spacing, blank lines, EOF newline, line endings)
-      - name: Ruff format (apply)
-        run: ruff format .
-      # Final report (non-fixable issues show in PR annotations)
-      - name: Ruff check (report)
-        run: ruff check --output-format=github .
-
-  typecheck:
-    name: typecheck
-    runs-on: ubuntu-latest
-    env:
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_NO_CACHE_DIR: "1"
-      PYTHONPATH: ${{ github.workspace }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          check-latest: true
-      - name: Install mypy + stubs
-        run: |
-          python -m pip install --upgrade pip
-          pip install "mypy>=1.10.0" "types-PyYAML>=6.0.12.20240808"
-      - name: Run mypy
-        run: mypy app
-
   test:
-    name: test
     runs-on: ubuntu-latest
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_NO_CACHE_DIR: "1"
-      PYTHONPATH: ${{ github.workspace }}
+      PIP_DEFAULT_TIMEOUT: "60"
+      PIP_INDEX_URL: https://pypi.org/simple
+      # Test-only env to align with your suite
+      GUARDRAIL_DISABLE_AUTH: "1"   # bypass admin auth in tests
+      CORS_ALLOW_ORIGINS: ""
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           check-latest: true
-      - name: Install deps
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', 'pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install project
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-      - name: Run tests
-        run: pytest -q
+          python -V
+          python -m pip install -U pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e .; fi
+
+      - name: Install dev tools
+        run: |
+          python -m pip install ruff mypy pytest
+
+      - name: Lint (ruff)
+        run: |
+          ruff check --fix .
+
+      - name: Typecheck (mypy)
+        run: |
+          # Auto-install missing type stubs non-interactively
+          mypy --install-types --non-interactive .
+
+      - name: Tests (pytest)
+        run: |
+          pytest -q

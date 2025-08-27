@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from typing import List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GuardrailRequest(BaseModel):
-    prompt: str
+    text: str = Field(alias="prompt")
+    request_id: str | None = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    @property
+    def prompt(self) -> str:  # backwards compat
+        return self.text
 
 
 class OutputGuardrailRequest(BaseModel):

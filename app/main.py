@@ -15,9 +15,10 @@ from app.routes.guardrail import (
     get_requests_total,
     router as guardrail_router,
 )
-from app.services.policy import get_redactions_total, reload_rules
+from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 
+# Test-only bypass for admin auth (enabled in CI/tests via env)
 TEST_AUTH_BYPASS = os.getenv("GUARDRAIL_DISABLE_AUTH") == "1"
 
 
@@ -76,19 +77,18 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        # Keep your existing telemetry imports; we just surface them here.
+        # Include "ok": True (smoke test + dashboards), keep your original "status"
         return {
-            "ok": True,  # <-- satisfies the smoke test
-            "status": "ok",  # keep your original field for backward-compat
+            "ok": True,
+            "status": "ok",
             "requests_total": get_requests_total(),
             "decisions_total": get_decisions_total(),
-            # Optional but helpful in dashboards; omit if you don't have it exposed:
-            # "redactions_total": get_redactions_total(),
+            "rules_version": current_rules_version(),
         }
 
     @app.post("/admin/policy/reload")
     async def admin_policy_reload(request: Request):
-        # Same lightweight auth contract as /guardrail
+        # Same lightweight auth contract as /guardrail; bypass in tests/CI
         if not TEST_AUTH_BYPASS and not (
             request.headers.get("X-API-Key") or request.headers.get("Authorization")
         ):
@@ -102,11 +102,10 @@ def create_app() -> FastAPI:
             return resp
 
         info = reload_rules()
-        # Test expects {"reloaded": True, "version": "<current_version>"}.
-        # Keep existing fields too to avoid regressions.
+        # Keep shape stable; include test-required keys and existing fields
         payload = {
             "reloaded": True,
-            "version": str(info.get("policy_version", "")),
+            "version": str(info.get("policy_version", info.get("version", ""))),
             **info,
         }
         return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
@@ -150,3 +149,4 @@ def build_app() -> FastAPI:
 
 
 app = create_app()
+
