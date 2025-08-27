@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  guardrail:
+    # Build locally for painless dev, and also tag the image.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "dev"
+        VCS_REF: "local"
+    image: llm-guardrail-api:dev
+    container_name: llm-guardrail-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      POLICY_RULES_PATH: /etc/guardrail/rules.yaml
+      POLICY_AUTORELOAD: "true"
+    volumes:
+      - ./rules.yaml:/etc/guardrail/rules.yaml:ro
+    restart: unless-stopped
