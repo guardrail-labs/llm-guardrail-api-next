@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Tuple
 
 from fastapi import Request
@@ -63,12 +64,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         tokens = min(self.burst, tokens + elapsed * self.tokens_per_sec)
 
         if tokens < 1.0:
-            # Out of tokens: record metric and reject
+            # Compute a conservative Retry-After in whole seconds
+            deficit = 1.0 - tokens
+            retry_after = max(1, int(deficit / self.tokens_per_sec + 0.999))
+
+            # Record metric and reject with headers
             try:
                 inc_rate_limited()
             except Exception:
                 pass
-            return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+
+            rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+            resp = JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+            )
+            resp.headers["Retry-After"] = str(retry_after)
+            resp.headers["X-Request-ID"] = rid
+            return resp
 
         # Consume one token and proceed
         tokens -= 1.0

@@ -3,10 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.middleware.ratelimit import RateLimitMiddleware
+from app.middleware.security import SecurityHeadersMiddleware
 from app.routes.guardrail import router as guardrail_router
 from app.routes.health import router as health_router
 from app.telemetry.logging import setup_logging
 from app.telemetry.metrics import setup_metrics
+from app.telemetry.tracing import RequestIDMiddleware
 
 
 def build_app() -> FastAPI:
@@ -33,14 +35,16 @@ def build_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Rate limiting (outer middleware)
-    app.add_middleware(RateLimitMiddleware)
+    # Observability + security middlewares
+    app.add_middleware(RequestIDMiddleware)        # echo/generate X-Request-ID
+    app.add_middleware(RateLimitMiddleware)        # 429 with Retry-After
+    app.add_middleware(SecurityHeadersMiddleware)  # secure defaults
 
     # Routers
     app.include_router(health_router, tags=["health"])
     app.include_router(guardrail_router, tags=["guardrail"])
 
-    # Observability
+    # Metrics & structured request logging
     setup_metrics(app)
     setup_logging(app)
 
