@@ -29,8 +29,14 @@ def test_output_smoke_allows_200():
 def test_output_redaction_applied():
     os.environ["REDACT_SECRETS"] = "true"
     client = _make_client()
-    payload = {"output": "leak: sk-1234567890abcdefghijklmnop and -----BEGIN PRIVATE KEY-----"}
-    r = client.post("/guardrail/output", json=payload, headers={"X-API-Key": "unit-test-key"})
+    payload = {
+        "output": "leak: sk-1234567890abcdefghijklmnop and -----BEGIN PRIVATE KEY-----"
+    }
+    r = client.post(
+        "/guardrail/output",
+        json=payload,
+        headers={"X-API-Key": "unit-test-key"},
+    )
     assert r.status_code == 200
     tx = r.json()["transformed_text"]
     assert "sk-1234" not in tx
@@ -41,6 +47,10 @@ def test_output_size_limit_413():
     os.environ["MAX_OUTPUT_CHARS"] = "32"
     client = _make_client()
     big = "Z" * 64
-    r = client.post("/guardrail/output", json={"output": big}, headers={"X-API-Key": "unit-test-key"})
+    r = client.post(
+        "/guardrail/output",
+        json={"output": big},
+        headers={"X-API-Key": "unit-test-key"},
+    )
     assert r.status_code == 413
     assert "Output too large" in r.json().get("detail", "")
