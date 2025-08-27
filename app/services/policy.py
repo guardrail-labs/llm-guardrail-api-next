@@ -1,19 +1,14 @@
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 from uuid import uuid4
 
-import yaml
 from pydantic import BaseModel
 
 from app.config import settings
+from app.services.policy_loader import get_policy
 from app.services.redact import redact
 from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
 from app.telemetry.audit import emit_decision_event
-from app.telemetry.tracing import get_request_id
-
-_RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
-_rules = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
 
 
 class Outcome(BaseModel):
@@ -53,9 +48,13 @@ def _maybe_redact(text: str) -> str:
     return result.text
 
 
-def evaluate_and_apply(text: str, request_id: Optional[str] = None) -> Outcome:
-    # Prefer an existing request id from middleware; generate if absent
-    rid = request_id or get_request_id() or str(uuid4())
+def evaluate_and_apply(text: str) -> Outcome:
+    rid = str(uuid4())
+
+    # Load current policy (hot-reload if enabled)
+    blob = get_policy()
+    rules = blob.rules
+    _ = rules  # reserved for future policy execution; currently uPipe drives decisions
 
     # 1) Analyze
     decisions: List[Decision] = analyze(text)
@@ -82,7 +81,7 @@ def evaluate_and_apply(text: str, request_id: Optional[str] = None) -> Outcome:
         reason=reason,
         rule_hits=rule_hits,
         transformed_text=transformed_text,
-        policy_version=str(_rules.get("version", "1")),
+        policy_version=str(blob.version),
     )
 
     # 6) Audit (sampled JSON event)
@@ -100,3 +99,4 @@ def evaluate_and_apply(text: str, request_id: Optional[str] = None) -> Outcome:
         pass
 
     return outcome
+

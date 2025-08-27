@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     AUDIT_LOG_MAX_BYTES: int = Field(default=10 * 1024 * 1024)  # 10 MiB
     AUDIT_LOG_BACKUPS: int = Field(default=5)
 
+    # Policy hot-reload / path
+    POLICY_AUTORELOAD: bool = Field(default=True)
+    POLICY_RULES_PATH: Optional[str] = Field(default=None)
+
 
 settings = Settings()
 
