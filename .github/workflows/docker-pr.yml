@@ -70,9 +70,10 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"  # non-blocking on PRs
 
-      # Upload SARIF (skip on forked PRs where token lacks perms)
+      # Upload SARIF (skip on forks; tolerate repos without code scanning enabled)
       - name: Upload Trivy SARIF
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
         with:
           sarif_file: trivy-pr-${{ github.event.number }}.sarif
