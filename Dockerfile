@@ -1,40 +1,47 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+# Build args for OCI labels
+ARG VERSION=dev
+ARG VCS_REF=unknown
+ARG BUILD_DATE
 
-# Optional build metadata (from release workflow)
-ARG BUILD_VERSION=dev
-ARG VCS_REF=dev
-ARG BUILD_DATE=dev
-
-LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
+# OCI labels
+LABEL org.opencontainers.image.title="llm-guardrail-api-next" \
+      org.opencontainers.image.description="LLM Guardrail API (FastAPI) with policy, redaction, limits, metrics, and admin endpoints." \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
-      org.opencontainers.image.title="llm-guardrail-api-next"
+      org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
 
+# Prevents Python from writing pyc files / unbuffered output
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Workdir
 WORKDIR /app
 
-# Install runtime dependencies
-COPY requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r /app/requirements.txt
+# System deps (curl for health checks in containers, tini as init)
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    curl tini \
+ && rm -rf /var/lib/apt/lists/*
 
-# Copy application code (only what's needed at runtime)
-COPY app /app/app
+# Install deps
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Non-root user (best practice)
-RUN set -eux; \
-    groupadd -r appuser && useradd -r -g appuser appuser && \
-    chown -R appuser:appuser /app
+# Copy source
+COPY . .
+
+# Non-root user for runtime
+RUN useradd -u 10001 -ms /bin/bash appuser
 USER appuser
 
-EXPOSE 8080
-ENV PORT=8080
+EXPOSE 8000
 
-# Start the API
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Use tini as PID 1 for signal handling
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default command: uvicorn
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
