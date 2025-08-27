@@ -1,44 +1,43 @@
+"""Structured request logging (JSON) that respects X-Request-ID."""
+from __future__ import annotations
+
 import json
 import logging
-from uuid import uuid4
+import uuid
+from typing import Any, Dict
 
 from fastapi import FastAPI, Request
 
+from app.telemetry.tracing import get_request_id
+
+_LOGGER_NAME = "guardrail"
+
 
 def setup_logging(app: FastAPI) -> None:
-    """
-    - Adds a request-id to every response as X-Request-ID
-    - Emits a single JSON log for /guardrail requests
-    """
-    logger = logging.getLogger("guardrail")
+    logger = logging.getLogger(_LOGGER_NAME)
     logger.setLevel(logging.INFO)
 
-    # Avoid duplicate handlers if build_app() is called more than once in tests
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-
     @app.middleware("http")
-    async def request_id_and_logging(request: Request, call_next):
-        rid = str(uuid4())
-        request.state.request_id = rid
+    async def json_access_log(request: Request, call_next):
+        # Prefer the RequestIDMiddleware value; fall back to caller header; finally generate.
+        rid = get_request_id() or request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
         response = await call_next(request)
-        response.headers["X-Request-ID"] = rid
 
-        if request.url.path == "/guardrail":
-            try:
-                payload = {
-                    "event": "guardrail_request",
-                    "request_id": rid,
-                    "method": request.method,
-                    "path": str(request.url.path),
-                    "status_code": response.status_code,
-                }
-                logger.info(json.dumps(payload))
-            except Exception:
-                # Logging must never break the request
-                pass
+        # IMPORTANT: do NOT set/overwrite X-Request-ID here.
+        # RequestIDMiddleware is the single source of truth for the response header.
+
+        record: Dict[str, Any] = {
+            "event": "guardrail_request",
+            "request_id": rid,
+            "method": request.method,
+            "path": str(request.url.path),
+            "status_code": response.status_code,
+        }
+        try:
+            logger.info(json.dumps(record, ensure_ascii=False))
+        except Exception:
+            # Logging must never break the response path
+            pass
 
         return response
