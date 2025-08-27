@@ -6,13 +6,8 @@ on:
       - "v*.*.*"
 
 permissions:
-  contents: write        # create release
-  packages: write        # push to GHCR
-  security-events: write # upload SARIF
-  actions: read          # required by SARIF uploader
-
-env:
-  CODE_SCANNING_ENABLED: ${{ vars.CODE_SCANNING_ENABLED || 'false' }}
+  contents: write   # create GitHub Release
+  packages: write   # push to GHCR
 
 jobs:
   release:
@@ -63,11 +58,10 @@ jobs:
           build-args: |
             VERSION=${{ github.ref_name }}
             VCS_REF=${{ github.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.labels.org.opencontainers.image.created }}
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
 
-      - name: Generate SBOM (CycloneDX)
+      - name: Generate SBOM (CycloneDX) and upload artifact
         uses: anchore/sbom-action@v0
         with:
           image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
@@ -82,13 +76,14 @@ jobs:
           output: trivy-${{ github.ref_name }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: "0" # non-blocking for releases
+          exit-code: "0" # non-blocking
 
-      - name: Upload Trivy SARIF
-        if: ${{ env.CODE_SCANNING_ENABLED == 'true' }}
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy SARIF as artifact (no Code Scanning)
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: trivy-${{ github.ref_name }}.sarif
+          name: trivy-${{ github.ref_name }}.sarif
+          path: trivy-${{ github.ref_name }}.sarif
+          retention-days: 30
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
