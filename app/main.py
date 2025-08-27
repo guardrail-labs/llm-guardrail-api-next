@@ -76,11 +76,9 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/admin/policy/reload")
-    async def admin_policy_reload(request: Request, s=Depends(get_settings)):
-        # Require same auth semantics as /guardrail
-        api_key = request.headers.get("X-API-Key")
-        auth = request.headers.get("Authorization")
-        if not (api_key or auth):
+    async def admin_policy_reload(request: Request):
+        # very light auth: same contract as /guardrail (tests pass X-API-Key)
+        if not (request.headers.get("X-API-Key") or request.headers.get("Authorization")):
             rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
             resp = JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -90,9 +88,11 @@ def create_app() -> FastAPI:
             resp.headers["X-Request-ID"] = rid
             return resp
 
-        info = reload_rules()
-        # Response shape required by tests
-        return {"reloaded": True, "version": str(info.get("policy_version", ""))}
+        result = reload_rules()
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"reloaded": True, **result},
+        )
 
     @app.get("/metrics")
     async def metrics():
