@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
 
 import yaml
@@ -10,6 +10,7 @@ from app.services.redact import redact
 from app.services.upipe import Decision, analyze
 from app.telemetry import metrics as tmetrics
 from app.telemetry.audit import emit_decision_event
+from app.telemetry.tracing import get_request_id
 
 _RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
 _rules = yaml.safe_load(_RULES_PATH.read_text(encoding="utf-8"))
@@ -52,9 +53,9 @@ def _maybe_redact(text: str) -> str:
     return result.text
 
 
-def evaluate_and_apply(text: str) -> Outcome:
-    # Generate request id early so audit can reference it
-    rid = str(uuid4())
+def evaluate_and_apply(text: str, request_id: Optional[str] = None) -> Outcome:
+    # Prefer an existing request id from middleware; generate if absent
+    rid = request_id or get_request_id() or str(uuid4())
 
     # 1) Analyze
     decisions: List[Decision] = analyze(text)
@@ -99,4 +100,3 @@ def evaluate_and_apply(text: str) -> Outcome:
         pass
 
     return outcome
-
