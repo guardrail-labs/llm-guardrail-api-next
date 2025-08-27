@@ -8,15 +8,20 @@ from pathlib import Path
 from typing import Any, Iterable, List, Tuple
 
 import yaml
+from app.telemetry.audit import emit_decision_event
 
 # ---- settings (defensive import with fallback) --------------------------------
 try:
-    from app.settings import get_settings as _external_get_settings  # type: ignore
+    from app.settings import get_settings as _external_get_settings
 except Exception:  # pragma: no cover
-    _external_get_settings = None  # type: ignore[assignment]
+    _external_get_settings = None
 
 
 def get_settings() -> Any:
+    """
+    Lightweight getter that always reflects current environment.
+    If an external settings provider exists, call it; otherwise read os.environ.
+    """
     if _external_get_settings is not None:
         return _external_get_settings()
 
@@ -27,14 +32,11 @@ def get_settings() -> Any:
     return _Shim()
 
 
-# ---- telemetry ----------------------------------------------------------------
-from app.telemetry.audit import emit_decision_event  # type: ignore[import-not-found]
-
-
 # -------------------------
 # Rule loading & compilation
 # -------------------------
 
+# Make default rules' IDs align with tests
 _DEFAULT_RULES_YAML = """\
 version: "3"
 
@@ -44,8 +46,8 @@ rules:
     regex: '/^[A-Za-z0-9+/=]{128,}$/'
     decision: block
 
-  - id: secret:openai_key
-    description: OpenAI API key
+  - id: secrets:api_key_like
+    description: OpenAI-like API key
     regex: '/sk-[A-Za-z0-9]{16,}/'
     decision: block
 
@@ -59,15 +61,16 @@ rules:
     regex: '/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/'
     decision: block
 
-  - id: payload:prompt_injection_phrase
+  - id: pi:prompt_injection
     description: Common prompt-injection phrase
     regex: '/ignore\\s+(?:all\\s+)?previous\\s+(?:instructions|directions)/i'
     decision: block
 """
 
 
-def _compile_rule_pattern(raw: str, flags_list: Iterable[str] | None = None
-                          ) -> re.Pattern[str]:
+def _compile_rule_pattern(
+    raw: str, flags_list: Iterable[str] | None = None
+) -> re.Pattern[str]:
     """
     Accept either /pattern/flags or a bare pattern string plus flags list.
     Supports i, m, s flags.
@@ -147,9 +150,7 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
         decision = str(item.get("decision", "block") or "block").lower()
         raw = str(item.get("regex") or item.get("pattern") or "")
         rx = _compile_rule_pattern(raw)
-        compiled.append(
-            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
-        )
+        compiled.append(CompiledRule(id=rid, description=desc, decision=decision, regex=rx))
 
     # Back-compat test format: "deny" -> implicit block; flags as list
     for item in data.get("deny", []) or []:
@@ -171,19 +172,27 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
 
 
 def _ensure_loaded() -> None:
+    """
+    Ensure rules are loaded and reflect current env:
+    - If POLICY_RULES_PATH changed since last load, reload from the new path.
+    - If POLICY_AUTORELOAD=true and file mtime increased, reload.
+    """
     global _policy_rules, _policy_version, _rules_path, _last_mtime
 
-    if _policy_rules is None:
-        _rules_path = _policy_path_from_settings()
+    current_path = _policy_path_from_settings()
+
+    # First load or env-path change => load now
+    if _policy_rules is None or _rules_path is None or current_path != _rules_path:
+        _rules_path = current_path
         _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
         return
 
     s = get_settings()
     auto = str(
-        getattr(s, "POLICY_AUTORELOAD", None)
-        or getattr(s, "POLICY_AUTO_RELOAD", "false")
+        getattr(s, "POLICY_AUTORELOAD", None) or getattr(s, "POLICY_AUTO_RELOAD", "false")
     ).lower() in ("1", "true", "yes")
-    if auto and _rules_path and _rules_path.exists():
+
+    if auto and _rules_path.exists():
         try:
             mtime = _rules_path.stat().st_mtime
         except OSError:
@@ -210,21 +219,14 @@ def force_reload() -> dict[str, Any]:
 _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
-    (
-        re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"),
-        "[REDACTED:PRIVATE_KEY]",
-    ),
+    (re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"), "[REDACTED:PRIVATE_KEY]"),
 ]
 
 
 def _maybe_redact(text: str) -> str:
     global _redactions_total
     s = get_settings()
-    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    enabled = str(getattr(s, "REDACT_SECRETS", "false")).lower() in ("1", "true", "yes")
     if not enabled:
         return text
     out = text
@@ -272,8 +274,8 @@ def evaluate_and_apply(text: str, request_id: str = "") -> dict[str, Any]:
     s = get_settings()
 
     # Optional soft size limit (hard 413 is enforced at route layer)
-    max_chars = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
-    if max_chars and len(text) > max_chars:
+    max_chars_soft = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
+    if max_chars_soft and len(text) > max_chars_soft:
         decision, rule_hits, reason = (
             "block",
             ["payload:size_limit"],
