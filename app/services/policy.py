@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import yaml
 
-from app.services.upipe import analyze  # treat returns as dynamic
+from app.services.upipe import analyze  # returns a tuple-like (decision, hits, reason)
 from app.telemetry.audit import emit_decision_event
 
 # --- Redaction patterns --------------------------------------------------------
@@ -111,8 +111,8 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
     """
     _ensure_loaded()
 
-    # Treat `analyze` results dynamically to keep mypy happy regardless of its signature.
-    res = analyze(text)  # type: ignore[no-redef]
+    # Treat `analyze` results dynamically to remain robust to signature changes.
+    res = analyze(text)
     decision = str(res[0])
     hits_raw = res[1]
     reason = str(res[2])
@@ -121,7 +121,6 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
     if isinstance(hits_raw, (list, tuple, set)):
         rule_hits = [str(h) for h in hits_raw]
     else:
-        # Fallback: single hit or unknown type
         rule_hits = [str(hits_raw)] if hits_raw is not None else []
 
     transformed = text
