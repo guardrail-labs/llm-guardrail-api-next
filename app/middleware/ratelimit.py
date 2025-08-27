@@ -6,16 +6,16 @@ import time
 from typing import TYPE_CHECKING, Any, Optional, cast
 
 from fastapi import Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
 
 from app.config import get_settings
 from app.telemetry.metrics import inc_rate_limited
 
-if TYPE_CHECKING:  # Only for type checking; no runtime dependency
-    from redis.asyncio import Redis as RedisClient  # pragma: no cover
+if TYPE_CHECKING:  # pragma: no cover
+    from redis.asyncio import Redis as RedisClient
 else:
-    RedisClient = Any  # fallback type for annotations
+    RedisClient = Any
 
 
 def _truthy(val: object) -> bool:
@@ -25,8 +25,7 @@ def _truthy(val: object) -> bool:
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Token-bucket rate limiting with optional Redis backend.
-
-    Keys by API key (preferred) or client IP. Defaults to disabled.
+    Keys by API key (preferred) or client IP.
     """
 
     def __init__(self, app) -> None:
@@ -39,34 +38,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.backend: str = getattr(s, "RATE_LIMIT_BACKEND", "memory")
         self.redis_url: Optional[str] = getattr(s, "REDIS_URL", None)
 
-        # Memory store: key -> (tokens, last_ts)
         self._mem: dict[str, tuple[float, float]] = {}
-
-        # Optional Redis client
         self._redis: Optional[RedisClient] = None
         if self.enabled and self.backend == "redis" and self.redis_url:
-            redis_asyncio = self._try_import_redis_asyncio()
-            if redis_asyncio is not None:
+            mod = self._try_import_redis_asyncio()
+            if mod is not None:
                 self._redis = cast(
                     RedisClient,
-                    redis_asyncio.from_url(
-                        self.redis_url, encoding="utf-8", decode_responses=True
-                    ),
+                    mod.from_url(self.redis_url, encoding="utf-8", decode_responses=True),
                 )
 
-        # Refill rate: tokens per second
         self._refill = self.per_minute / 60.0
-
-        # Mutex for in-memory updates
         self._lock = asyncio.Lock()
 
     @staticmethod
     def _try_import_redis_asyncio() -> Any | None:
-        """
-        Import `redis.asyncio` dynamically to avoid a hard runtime dependency
-        when Redis is not used. Returns the module or None.
-        """
-        try:  # pragma: no cover - import path varies by env
+        try:  # pragma: no cover
             return importlib.import_module("redis.asyncio")
         except Exception:
             return None
@@ -75,17 +62,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not self.enabled:
             return await call_next(request)
 
+        path = request.url.path
+        # Do not rate-limit clearly public endpoints
+        if path in {"/health", "/metrics"}:
+            return await call_next(request)
+
         key = self._rate_key(request)
         allowed = await self._consume_token(key)
-
         if not allowed:
             inc_rate_limited()
-            return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
+            # Let global error handler format JSON and X-Request-ID.
+            # Provide Retry-After to satisfy tests and clients.
+            raise StarletteHTTPException(
+                status_code=429,
+                detail="rate_limited",
+                headers={"Retry-After": "30"},
+            )
 
         return await call_next(request)
 
     def _rate_key(self, request: Request) -> str:
-        # Prefer API key scoping; fallback to remote IP
         api_key = request.headers.get("X-API-Key")
         if not api_key:
             auth = request.headers.get("Authorization", "")
@@ -105,7 +101,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def _consume_token_memory(self, key: str, now: float) -> bool:
         async with self._lock:
             tokens, last_ts = self._mem.get(key, (float(self.burst), now))
-            # Refill tokens
             tokens = min(self.burst, tokens + (now - last_ts) * self._refill)
             if tokens >= 1.0:
                 tokens -= 1.0
@@ -118,18 +113,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         assert self._redis is not None
         pipe = self._redis.pipeline()
         try:
-            # Get current
             pipe.hget(key, "tokens")
             pipe.hget(key, "ts")
             tokens_s, ts_s = await pipe.execute()
             tokens = float(tokens_s) if tokens_s is not None else float(self.burst)
             last_ts = float(ts_s) if ts_s is not None else now
-            # Refill
+
             tokens = min(self.burst, tokens + (now - last_ts) * self._refill)
             if tokens >= 1.0:
                 tokens -= 1.0
                 pipe.hset(key, mapping={"tokens": tokens, "ts": now})
-                pipe.expire(key, 120)  # auto-expire idle buckets
+                pipe.expire(key, 120)
                 await pipe.execute()
                 return True
 
