@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   security-events: write
+  actions: read
 
 jobs:
   build-and-scan:
@@ -53,7 +54,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
 
-      # Save the loaded image to a tarball for scanning (pick the first tag)
       - name: Save image as tar (for scan)
         run: |
           TAG="$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
@@ -68,9 +68,11 @@ jobs:
           output: trivy-pr-${{ github.event.number }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: "0"  # non-blocking on PRs
+          exit-code: "0"
 
+      # Upload SARIF (skip on forked PRs where token lacks perms)
       - name: Upload Trivy SARIF
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-pr-${{ github.event.number }}.sarif
