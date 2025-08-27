@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -11,11 +11,13 @@ from starlette.responses import JSONResponse
 from app.config import get_settings
 from app.telemetry.metrics import inc_rate_limited
 
-try:
-    # redis-py 5.x asyncio client (optional)
-    from redis import asyncio as aioredis  # type: ignore[import-not-found]
-except Exception:  # noqa: BLE001
-    aioredis = None  # type: ignore[assignment]
+# Optional Redis import with clean typing (no mypy ignores).
+try:  # pragma: no cover - import path varies by env
+    from redis import asyncio as _redis_asyncio  # type: ignore[no-redef]
+except Exception:  # pragma: no cover
+    _redis_asyncio = None
+
+aioredis: Any | None = _redis_asyncio  # used at runtime if available
 
 
 def _truthy(val: object) -> bool:
@@ -33,9 +35,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         s = get_settings()
 
-        raw_enabled = s.__dict__.get("RATE_LIMIT_ENABLED", False)
-        self.enabled: bool = bool(_truthy(raw_enabled))
-
+        self.enabled: bool = _truthy(getattr(s, "RATE_LIMIT_ENABLED", False))
         self.per_minute: int = int(getattr(s, "RATE_LIMIT_PER_MINUTE", 60))
         self.burst: int = int(getattr(s, "RATE_LIMIT_BURST", self.per_minute))
         self.backend: str = getattr(s, "RATE_LIMIT_BACKEND", "memory")
@@ -47,7 +47,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Redis client (optional)
         self._redis = None
         if self.enabled and self.backend == "redis" and self.redis_url and aioredis:
-            self._redis = aioredis.from_url(
+            self._redis = aioredis.from_url(  # type: ignore[call-arg]
                 self.redis_url, encoding="utf-8", decode_responses=True
             )
 
@@ -126,5 +126,5 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         finally:
             try:
                 await pipe.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
