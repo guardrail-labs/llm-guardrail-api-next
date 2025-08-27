@@ -68,7 +68,7 @@ jobs:
           output: trivy-pr-${{ github.event.number }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: "0"
+          exit-code: "0"  # non-blocking on PRs
 
       # Upload SARIF (skip on forked PRs where token lacks perms)
       - name: Upload Trivy SARIF
