@@ -1,20 +1,24 @@
-# app/services/policy.py
 from __future__ import annotations
 
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Tuple
+from typing import Any, Tuple
 
 import yaml
+from app.telemetry.audit import emit_decision_event
 
-# ---- settings (defensive import with fallback) ------------------------------
+# -------------------------
+# Settings (import + fallback)
+# -------------------------
+
 try:
-    # If your project provides app.settings.get_settings, use it.
-    from app.settings import get_settings as _external_get_settings  # type: ignore[attr-defined]
+    # Preferred: project-provided settings
+    from app.settings import get_settings as _external_get_settings
 except Exception:  # pragma: no cover - only hit in minimal test envs
-    _external_get_settings = None  # type: ignore[assignment]
+    _external_get_settings = None
 
 
 def get_settings() -> Any:
@@ -31,10 +35,6 @@ def get_settings() -> Any:
             return os.environ.get(name)
 
     return _Shim()
-
-
-# ---- telemetry --------------------------------------------------------------
-from app.telemetry.audit import emit_decision_event  # type: ignore[import-not-found]
 
 
 # -------------------------
@@ -107,7 +107,7 @@ class CompiledRule:
     regex: re.Pattern[str]
 
 
-_policy_rules: List[CompiledRule] | None = None
+_policy_rules: list[CompiledRule] | None = None
 _policy_version: str = "1"
 _rules_path: Path | None = None
 _last_mtime: float = 0.0
@@ -121,7 +121,7 @@ def _policy_path_from_settings() -> Path:
     return Path(path_str)
 
 
-def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
+def _load_rules(path: Path) -> Tuple[list[CompiledRule], str, float]:
     # Ensure file exists (CI might not have committed YAML yet)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,7 @@ def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
     data = yaml.safe_load(txt) or {}
     version = str(data.get("version", "1"))
 
-    compiled: List[CompiledRule] = []
+    compiled: list[CompiledRule] = []
     for item in data.get("rules", []) or []:
         rid = str(item.get("id", "") or "").strip() or "unnamed"
         desc = str(item.get("description", "") or "")
@@ -193,9 +193,7 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
     (
-        re.compile(
-            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        ),
+        re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"),
         "[REDACTED:PRIVATE_KEY]",
     ),
 ]
@@ -241,23 +239,18 @@ def analyze(text: str) -> tuple[str, list[str], str]:
     return "allow", [], "No risk signals detected"
 
 
-def evaluate_and_apply(text: str) -> dict[str, Any]:
+def evaluate_and_apply(text: str, *, request_id: str | None = None) -> dict[str, Any]:
     """
     Main entry point used by routes. Applies policy and redactions,
-    emits audit.
+    emits audit. Always includes 'request_id' in the returned payload.
     """
     _ensure_loaded()
     s = get_settings()
 
     # Optional size limit -> 413 is raised in the route layer; we only
-    # return decision payloads here.
-    # (Tests that exercise 413 go via the route layer; leaving this here
-    # as a soft guard if needed.)
+    # return decision payloads here (tests that exercise 413 go via the route).
     max_chars = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
     if max_chars and len(text) > max_chars:
-        # We *don't* raise here to keep behavior consistent; callers may
-        # choose to 413 earlier. Still return a blocked decision so
-        # callers who rely on this function directly are safe.
         decision, rule_hits, reason = (
             "block",
             ["payload:size_limit"],
@@ -267,8 +260,9 @@ def evaluate_and_apply(text: str) -> dict[str, Any]:
         decision, rule_hits, reason = analyze(text)
 
     transformed = _maybe_redact(text)
+    req_id = request_id or str(uuid.uuid4())
 
-    # Emit audit event; include request_id (empty if unknown) to satisfy mypy
+    # Emit audit event; never let telemetry break the request
     try:
         emit_decision_event(
             decision=decision,
@@ -276,10 +270,9 @@ def evaluate_and_apply(text: str) -> dict[str, Any]:
             reason=reason,
             policy_version=str(_policy_version),
             prompt_text=text,
-            request_id="",  # filled by caller/middleware in real app flows
+            request_id=req_id,
         )
     except Exception:
-        # Never let telemetry break the request
         pass
 
     return {
@@ -288,4 +281,5 @@ def evaluate_and_apply(text: str) -> dict[str, Any]:
         "reason": reason,
         "policy_version": str(_policy_version),
         "transformed_text": transformed,
+        "request_id": req_id,
     }
