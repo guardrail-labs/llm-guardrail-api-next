@@ -19,32 +19,32 @@ jobs:
         id: gate
         shell: bash
         run: |
-          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" && -n "${{ secrets.DOCKERHUB_TOKEN }}" ]]; then
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           else
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Skip (missing Docker secrets)
-        if: steps.gate.outputs.proceed == 'false'
-        run: echo "Skipping: set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets to enable."
+        if: ${{ steps.gate.outputs.proceed == 'false' }}
+        run: echo "Skipping:set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets to enable."
 
       - uses: actions/checkout@v4
-        if: steps.gate.outputs.proceed == 'true'
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
 
       - name: Set up Docker Buildx
-        if: steps.gate.outputs.proceed == 'true'
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: steps.gate.outputs.proceed == 'true'
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push edge image
-        if: steps.gate.outputs.proceed == 'true'
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         uses: docker/build-push-action@v6
         with:
           context: .
