@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -11,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.services.detectors import evaluate_prompt
-from app.services.policy import apply_policies, current_rules_version
+from app.services.policy import current_rules_version
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -19,8 +20,10 @@ router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 _requests_total = 0
 _decisions_total = 0
 
+# Rate limiting state
 _RATE_LOCK = threading.RLock()
-_BUCKETS: Dict[str, List[float]] = {}  # per-client rolling window timestamps
+_BUCKETS: Dict[str, List[float]] = {}          # per-client rolling window timestamps
+_LAST_RATE_CFG: Tuple[bool, int, int] = (False, 60, 60)
 
 
 def get_requests_total() -> float:
@@ -36,15 +39,15 @@ def _client_key(request: Request) -> str:
 
 
 def _bucket_for(key: str) -> List[float]:
-    lst = _BUCKETS.get(key)
-    if lst is None:
-        lst = []
-        _BUCKETS[key] = lst
-    return lst
+    win = _BUCKETS.get(key)
+    if win is None:
+        win = []
+        _BUCKETS[key] = win
+    return win
 
 
 def _rate_cfg() -> Tuple[bool, int, int]:
-    # Default disabled in tests unless explicitly enabled
+    # Default disabled; tests enable per-case via env.
     enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
     per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
     burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
@@ -52,9 +55,19 @@ def _rate_cfg() -> Tuple[bool, int, int]:
 
 
 def _rate_limit_check(request: Request) -> bool:
-    enabled, _per_min, burst = _rate_cfg()
+    """Return True if request is allowed, False if rate-limited."""
+    global _LAST_RATE_CFG
+    cfg = _rate_cfg()
+    # If the config changed between tests, reset windows to avoid bleed-over.
+    if cfg != _LAST_RATE_CFG:
+        with _RATE_LOCK:
+            _BUCKETS.clear()
+            _LAST_RATE_CFG = cfg
+
+    enabled, _per_min, burst = cfg
     if not enabled:
         return True
+
     now = time.time()
     key = _client_key(request)
     with _RATE_LOCK:
@@ -68,6 +81,7 @@ def _rate_limit_check(request: Request) -> bool:
 
 
 def _need_auth(request: Request) -> bool:
+    # Either header is accepted by tests.
     return not (
         request.headers.get("x-api-key") or request.headers.get("authorization")
     )
@@ -78,6 +92,7 @@ def _req_id(request: Request) -> str:
 
 
 def _audit_maybe(prompt: str, rid: str) -> None:
+    """Emit a JSON log line to logger 'guardrail_audit' with a truncated snippet."""
     if (os.environ.get("AUDIT_ENABLED") or "false").lower() != "true":
         return
     try:
@@ -85,23 +100,54 @@ def _audit_maybe(prompt: str, rid: str) -> None:
     except Exception:
         max_chars = 64
     snippet = prompt[:max_chars]
-    logging.getLogger("guardrail_audit").info(
-        "audit event",
-        extra={"request_id": rid, "snippet": snippet},
-    )
+    event = {"request_id": rid, "snippet": snippet}
+    logging.getLogger("guardrail_audit").info(json.dumps(event))
+
+
+def _read_json_payload(payload: Dict[str, Any]) -> Tuple[str, str]:
+    text = str(payload.get("text", ""))
+    request_id = payload.get("request_id") or str(uuid.uuid4())
+    return text, request_id
+
+
+async def _read_multipart_payload(
+    request: Request,
+) -> Tuple[str, str, List[Dict[str, Any]]]:
+    """
+    Accepts fields: text?, image?, audio?, file? (repeatable).
+    Produces unified text by appending placeholders for each uploaded asset.
+    """
+    form = await request.form()
+    text = str(form.get("text") or "")
+    request_id = str(form.get("request_id") or str(uuid.uuid4()))
+    decisions: List[Dict[str, Any]] = []
+
+    def append_files(kind: str) -> None:
+        nonlocal text
+        items = form.getlist(kind)
+        for f in items:
+            filename = getattr(f, "filename", "upload")
+            text += f" [{kind.upper()}:{filename}]"
+            decisions.append({"type": "normalized", "tag": kind, "filename": filename})
+
+    for kind in ("image", "audio", "file"):
+        append_files(kind)
+
+    return text, request_id, decisions
 
 
 @router.post("/")
 async def guardrail_root(request: Request):
     """
-    Legacy inbound guardrail used by tests.
+    Legacy ingress guardrail.
 
     JSON body: {"prompt": "..."}
 
-    - 401 when no auth header, with {"detail": "Unauthorized"}
-    - 413 with {"code": "payload_too_large", "request_id": ...}
-    - 429 with {"code": "too_many_requests", "request_id": ...} and Retry-After
-    - 200 with {"decision": "allow|block", "transformed_text": "...", ...}
+    - 401: {"detail": "Unauthorized"}
+    - 413: {"code": "payload_too_large", "request_id": ...}
+    - 429: {"code": "too_many_requests", "request_id": ...} + Retry-After
+    - 200: {"decision": "allow|block", "transformed_text": "...", "rule_hits": [...],
+            "policy_version": "...", "request_id": "..."}
     """
     global _requests_total, _decisions_total
 
@@ -112,7 +158,6 @@ async def guardrail_root(request: Request):
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
         )
 
-    # Rate limiting: on 429 the tests expect status 429 and Retry-After header
     if not _rate_limit_check(request):
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -124,15 +169,12 @@ async def guardrail_root(request: Request):
         payload = await request.json()
     except Exception:
         payload = {}
-
     prompt = str(payload.get("prompt", ""))
 
-    # Size check: tests expect status 413 with "payload_too_large" code
     try:
         max_chars = int(os.environ.get("MAX_PROMPT_CHARS") or "0")
     except Exception:
         max_chars = 0
-
     if max_chars and len(prompt) > max_chars:
         return JSONResponse(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -141,20 +183,22 @@ async def guardrail_root(request: Request):
 
     _requests_total += 1
 
-    # Apply policies, then map to legacy allow/block semantics
-    res = apply_policies(prompt)
-    hits = {h.get("tag") for h in res.get("hits", [])}
-    decision = "block" if {"unsafe", "gray", "secrets"} & hits else "allow"
-    transformed = res.get("sanitized_text", prompt)
+    # Use detectors for rule_hits and transformed text; map to legacy "block".
+    det = evaluate_prompt(prompt)
+    action = str(det.get("action", "allow"))
+    decision = "block" if action != "allow" else "allow"
+    transformed = det.get("transformed_text", prompt)
+    rule_hits = list(det.get("rule_hits", []))
 
     _decisions_total += 1
 
-    # Audit logging (sampled via env; tests turn it on to 100%)
+    # Audit log line
     _audit_maybe(prompt, rid)
 
     return {
         "decision": decision,
         "transformed_text": transformed,
+        "rule_hits": rule_hits,
         "policy_version": current_rules_version(),
         "request_id": rid,
     }
@@ -163,12 +207,12 @@ async def guardrail_root(request: Request):
 @router.post("/evaluate")
 async def evaluate(request: Request) -> Dict[str, Any]:
     """
-    Backward-compatible:
+    Backward-compatible evaluate:
 
       - JSON: {"text": "...", "request_id": "...?"}
       - Multipart: fields: text?, image?, audio?, file? (repeatable)
 
-    Returns detector/policy decision (sanitize/deny/clarify/allow) and extras.
+    Returns detectors/decisions and possible redactions.
     """
     global _requests_total, _decisions_total
 
@@ -197,42 +241,19 @@ async def evaluate(request: Request) -> Dict[str, Any]:
     det = evaluate_prompt(text)
     decisions.extend(det.get("decisions", []))
 
+    # If text changed, surface a redaction decision for tests.
+    xformed = det.get("transformed_text", text)
+    if xformed != text:
+        decisions.append({"type": "redaction", "changed": True})
+
     _decisions_total += 1
 
     body: Dict[str, Any] = {
         "request_id": request_id,
         "action": det.get("action", "allow"),
-        "transformed_text": det.get("transformed_text", text),
+        "transformed_text": xformed,
         "decisions": decisions,
         "risk_score": det.get("risk_score", 0),
         "rule_hits": det.get("rule_hits", []),
     }
     return body
-
-
-def _read_json_payload(payload: Dict[str, Any]) -> Tuple[str, str]:
-    text = str(payload.get("text", ""))
-    request_id = payload.get("request_id") or str(uuid.uuid4())
-    return text, request_id
-
-
-async def _read_multipart_payload(
-    request: Request,
-) -> Tuple[str, str, List[Dict[str, Any]]]:
-    form = await request.form()
-    text = str(form.get("text") or "")
-    request_id = str(form.get("request_id") or str(uuid.uuid4()))
-    decisions: List[Dict[str, Any]] = []
-
-    def append_files(kind: str) -> None:
-        nonlocal text
-        items = form.getlist(kind)
-        for f in items:
-            filename = getattr(f, "filename", "upload")
-            text += f" [{kind.upper()}:{filename}]"
-            decisions.append({"type": "normalized", "tag": kind, "filename": filename})
-
-    for kind in ("image", "audio", "file"):
-        append_files(kind)
-
-    return text, request_id, decisions
