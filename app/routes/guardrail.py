@@ -167,7 +167,8 @@ async def guardrail_root(request: Request) -> Any:
 
     - 401: {"detail": "Unauthorized"}
     - 413: {"code": "payload_too_large", "request_id": ...}
-    - 429: {"code": "rate_limited", "detail": "Rate limit exceeded", "retry_after": 60, "request_id": ...}
+    - 429: {"code": "rate_limited", "detail": "Rate limit exceeded",
+            "retry_after": 60, "request_id": ...}
     - 200: {
         "decision": "allow|block",
         "transformed_text": "...",
