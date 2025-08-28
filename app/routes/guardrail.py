@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from app.services.detectors import evaluate_prompt
 from app.services.policy import apply_policies, current_rules_version
@@ -34,6 +35,14 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _bucket_for(key: str) -> List[float]:
+    lst = _BUCKETS.get(key)
+    if lst is None:
+        lst = []
+        _BUCKETS[key] = lst
+    return lst
+
+
 def _rate_cfg() -> Tuple[bool, int, int]:
     # Default disabled in tests unless explicitly enabled
     enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
@@ -58,14 +67,6 @@ def _rate_limit_check(request: Request) -> bool:
         return True
 
 
-def _bucket_for(key: str) -> List[float]:
-    lst = _BUCKETS.get(key)
-    if lst is None:
-        lst = []
-        _BUCKETS[key] = lst
-    return lst
-
-
 def _need_auth(request: Request) -> bool:
     return not (
         request.headers.get("x-api-key") or request.headers.get("authorization")
@@ -84,7 +85,6 @@ def _audit_maybe(prompt: str, rid: str) -> None:
     except Exception:
         max_chars = 64
     snippet = prompt[:max_chars]
-    # Keep it simple; tests only check that something is emitted on this logger
     logging.getLogger("guardrail_audit").info(
         "audit event",
         extra={"request_id": rid, "snippet": snippet},
@@ -92,13 +92,15 @@ def _audit_maybe(prompt: str, rid: str) -> None:
 
 
 @router.post("/")
-async def guardrail_root(request: Request) -> Dict[str, Any]:
+async def guardrail_root(request: Request):
     """
     Legacy inbound guardrail used by tests.
+
     JSON body: {"prompt": "..."}
+
     - 401 when no auth header, with {"detail": "Unauthorized"}
     - 413 with {"code": "payload_too_large", "request_id": ...}
-    - 429 with {"code": "too_many_requests", "request_id": ...}
+    - 429 with {"code": "too_many_requests", "request_id": ...} and Retry-After
     - 200 with {"decision": "allow|block", "transformed_text": "...", ...}
     """
     global _requests_total, _decisions_total
@@ -106,16 +108,17 @@ async def guardrail_root(request: Request) -> Dict[str, Any]:
     rid = _req_id(request)
 
     if _need_auth(request):
-        # Tests expect this exact shape
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
         )
 
+    # Rate limiting: on 429 the tests expect status 429 and Retry-After header
     if not _rate_limit_check(request):
-        return {
-            "code": "too_many_requests",
-            "request_id": rid,
-        }
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"code": "too_many_requests", "request_id": rid},
+            headers={"Retry-After": "60"},
+        )
 
     try:
         payload = await request.json()
@@ -124,16 +127,17 @@ async def guardrail_root(request: Request) -> Dict[str, Any]:
 
     prompt = str(payload.get("prompt", ""))
 
+    # Size check: tests expect status 413 with "payload_too_large" code
     try:
         max_chars = int(os.environ.get("MAX_PROMPT_CHARS") or "0")
     except Exception:
         max_chars = 0
 
     if max_chars and len(prompt) > max_chars:
-        return {
-            "code": "payload_too_large",
-            "request_id": rid,
-        }
+        return JSONResponse(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            content={"code": "payload_too_large", "request_id": rid},
+        )
 
     _requests_total += 1
 
@@ -160,8 +164,10 @@ async def guardrail_root(request: Request) -> Dict[str, Any]:
 async def evaluate(request: Request) -> Dict[str, Any]:
     """
     Backward-compatible:
+
       - JSON: {"text": "...", "request_id": "...?"}
       - Multipart: fields: text?, image?, audio?, file? (repeatable)
+
     Returns detector/policy decision (sanitize/deny/clarify/allow) and extras.
     """
     global _requests_total, _decisions_total
@@ -193,7 +199,6 @@ async def evaluate(request: Request) -> Dict[str, Any]:
 
     _decisions_total += 1
 
-    # Use detector/policy action directly (tests expect true action values)
     body: Dict[str, Any] = {
         "request_id": request_id,
         "action": det.get("action", "allow"),
