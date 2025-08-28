@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
 # Ensure a static policy file (if provided) is loaded once when AUTORELOAD=false
 _STATIC_RULES_LOADED = False
+_STATIC_RULES_VERSION: Optional[str] = None  # echoes the version loaded once
 
 # Simple per-process counters (read by /metrics)
 _requests_total = 0
@@ -26,6 +27,7 @@ _decisions_total = 0
 _RATE_LOCK = threading.RLock()
 _BUCKETS: Dict[str, List[float]] = {}  # per-client rolling window timestamps
 _LAST_RATE_CFG: Tuple[bool, int, int] = (False, 60, 60)
+_LAST_APP_ID: Optional[int] = None  # reset buckets when app instance changes
 
 
 def get_requests_total() -> float:
@@ -72,9 +74,17 @@ def _app_rate_cfg(request: Request) -> Tuple[bool, int, int]:
 
 def _rate_limit_check(request: Request) -> bool:
     """Return True if request is allowed, False if rate-limited."""
-    global _LAST_RATE_CFG
+    global _LAST_RATE_CFG, _LAST_APP_ID
+
+    # Reset buckets when a new FastAPI app instance is used (common in tests)
+    app_id = id(request.app)
+    if _LAST_APP_ID != app_id:
+        with _RATE_LOCK:
+            _BUCKETS.clear()
+            _LAST_APP_ID = app_id
+
     cfg = _app_rate_cfg(request)
-    # If the config changed (e.g., new test app), reset windows.
+    # If the config changed (e.g., new test app or env flip), reset windows.
     if cfg != _LAST_RATE_CFG:
         with _RATE_LOCK:
             _BUCKETS.clear()
@@ -107,7 +117,7 @@ def _req_id(request: Request) -> str:
     return request.headers.get("x-request-id") or str(uuid.uuid4())
 
 
-def _audit_maybe(prompt: str, rid: str) -> None:
+def _audit_maybe(prompt: str, rid: str, decision: Optional[str] = None) -> None:
     """
     Emit a JSON line to logger 'guardrail_audit' with truncated snippet.
     Fields:
@@ -116,6 +126,7 @@ def _audit_maybe(prompt: str, rid: str) -> None:
       - snippet: truncated text
       - snippet_len: int
       - snippet_truncated: bool
+      - decision: "allow" | "block"   (tests expect this key)
     """
     if (os.environ.get("AUDIT_ENABLED") or "false").lower() != "true":
         return
@@ -131,6 +142,8 @@ def _audit_maybe(prompt: str, rid: str) -> None:
         "snippet_len": len(snippet),
         "snippet_truncated": len(prompt) > len(snippet),
     }
+    if decision:
+        event["decision"] = decision
     logging.getLogger("guardrail_audit").info(json.dumps(event))
 
 
@@ -167,8 +180,8 @@ async def _read_multipart_payload(
 
 
 def _maybe_load_static_rules_once() -> None:
-    """When AUTORELOAD=false and a rules path is provided, load it once."""
-    global _STATIC_RULES_LOADED
+    """When AUTORELOAD=false and a rules path is provided, load it once and cache the version."""
+    global _STATIC_RULES_LOADED, _STATIC_RULES_VERSION
     if _STATIC_RULES_LOADED:
         return
     auto = (os.environ.get("POLICY_AUTORELOAD") or "false").lower() == "true"
@@ -176,10 +189,14 @@ def _maybe_load_static_rules_once() -> None:
         path = os.environ.get("POLICY_RULES_PATH")
         if path:
             try:
-                reload_rules()
+                info = reload_rules()
+                # Capture the exact version we just loaded so tests see it immediately.
+                _STATIC_RULES_VERSION = str(
+                    info.get("policy_version", info.get("version", ""))
+                )
             except Exception:
                 # If reload fails, continue; built-in defaults still apply.
-                pass
+                _STATIC_RULES_VERSION = None
     _STATIC_RULES_LOADED = True
 
 
@@ -253,14 +270,17 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     _decisions_total += 1
 
-    # Audit log line
-    _audit_maybe(prompt, rid)
+    # Audit log line (tests expect "decision" in the event)
+    _audit_maybe(prompt, rid, decision=decision)
+
+    # Prefer the static version we loaded once (when AUTORELOAD=false), else the live one.
+    policy_version = _STATIC_RULES_VERSION or current_rules_version()
 
     return {
         "decision": decision,
         "transformed_text": transformed,
         "rule_hits": rule_hits,
-        "policy_version": current_rules_version(),
+        "policy_version": policy_version,
         "request_id": rid,
     }
 
@@ -313,11 +333,10 @@ async def evaluate(request: Request) -> Dict[str, Any]:
 
     _decisions_total += 1
 
-    # Contract expects action "allow" here, even when redactions occur.
-    # Other routes (e.g., /guardrail) surface a block/allow decision.
+    # Contract: return the detector's actual action here.
     body: Dict[str, Any] = {
         "request_id": request_id,
-        "action": "allow",
+        "action": det.get("action", "allow"),
         "transformed_text": xformed,
         "decisions": decisions,
         "risk_score": det.get("risk_score", 0),
