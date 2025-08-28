@@ -15,6 +15,7 @@ from app.routes.guardrail import (
     get_requests_total,
     router as guardrail_router,
 )
+from app.routes.output import router as output_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 
@@ -83,7 +84,7 @@ def create_app() -> FastAPI:
             "status": "ok",
             "requests_total": get_requests_total(),
             "decisions_total": get_decisions_total(),
-            "rules_version": current_rules_version(),
+            "rules_version": current_rules_version(),  # returns str
         }
 
     @app.post("/admin/policy/reload")
@@ -101,14 +102,8 @@ def create_app() -> FastAPI:
             resp.headers["X-Request-ID"] = rid
             return resp
 
-        info = reload_rules()
-        # Keep shape stable; include test-required keys and existing fields
-        payload = {
-            "reloaded": True,
-            "version": str(info.get("policy_version", info.get("version", ""))),
-            **info,
-        }
-        return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
+        info = reload_rules()  # already includes: reloaded, version (str), rules_loaded, etc.
+        return JSONResponse(status_code=status.HTTP_200_OK, content=info)
 
     @app.get("/metrics")
     async def metrics():
@@ -140,7 +135,10 @@ def create_app() -> FastAPI:
 
         return PlainTextResponse("\n".join(lines) + "\n")
 
+    # Mount routers
     app.include_router(guardrail_router)
+    app.include_router(output_router)
+
     return app
 
 
@@ -149,4 +147,3 @@ def build_app() -> FastAPI:
 
 
 app = create_app()
-
