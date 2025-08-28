@@ -134,9 +134,9 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
 
 
 def _maybe_autoreload() -> None:
-   +    """If POLICY_AUTORELOAD=true, reload when the file mtime changes.
-+    Also recompile when rules are not yet loaded.
-+    """
+    """If POLICY_AUTORELOAD=true, reload when the file mtime changes.
+    Also recompile when rules are not yet loaded.
+    """
     auto = (_env("POLICY_AUTORELOAD") or "false").lower() == "true"
     if not auto:
         return
