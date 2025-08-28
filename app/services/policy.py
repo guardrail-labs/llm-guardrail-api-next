@@ -42,11 +42,17 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
           flags: ["i"]
     Uses PyYAML if available; falls back to a naive parser for the limited test fixture shape.
     """
-    try:
-        import yaml
-        with path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-            return data if isinstance(data, dict) else {}
+try:
+    import yaml
+except Exception:
+    return {}
+
+try:
+    with path.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+        return raw if isinstance(raw, dict) else {}
+except Exception:
+    return {}
     except Exception:
         # Naive fallback: extract version and a single deny item (pattern + flags)
         text = path.read_text(encoding="utf-8")
