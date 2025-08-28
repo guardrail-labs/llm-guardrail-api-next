@@ -1,351 +1,162 @@
 from __future__ import annotations
 
-import os
 import re
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Iterable, List, Tuple
+import threading
+from typing import Dict, List, Pattern, Tuple, Any
 
-import yaml
+# Thread-safe counters and rule storage
+_RULE_LOCK = threading.RLock()
+_REDACTIONS_TOTAL = 0.0
+_RULES_VERSION = "1"
 
-from app.telemetry.audit import emit_decision_event
+# Compiled rule caches (filled by _compile_rules)
+_RULES: Dict[str, List[Pattern[str]]] = {
+    "secrets": [],
+    "unsafe": [],
+    "gray": [],
+}
+# Redaction patterns: (compiled_regex, replacement_label)
+_REDACTIONS: List[Tuple[Pattern[str], str]] = []
 
-# ---- settings (defensive import with fallback) --------------------------------
-try:
-    from app.settings import get_settings as _external_get_settings
-except Exception:  # pragma: no cover
-    _external_get_settings = None
 
-
-def get_settings() -> Any:
+def _compile_rules() -> None:
     """
-    Lightweight getter that always reflects current environment.
-    If an external settings provider exists, call it; otherwise read os.environ.
+    Compile in-memory rules. No YAML or external deps in base.
+    Enterprise repo can override/extend this module.
     """
-    if _external_get_settings is not None:
-        return _external_get_settings()
+    global _RULES, _REDACTIONS
+    with _RULE_LOCK:
+        # --- Secrets (sample subset) ---
+        secrets: List[Pattern[str]] = [
+            re.compile(r"sk-[A-Za-z0-9]{16,}"),             # OpenAI-style key
+            re.compile(r"AKIA[0-9A-Z]{16}"),                # AWS access key id
+        ]
+        pk_marker = r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        secrets.append(re.compile(pk_marker))
 
-    class _Shim:
-        def __getattr__(self, name: str) -> Any:
-            return os.environ.get(name)
+        # --- Unsafe (clear policy violations / wrongdoing intent) ---
+        unsafe: List[Pattern[str]] = [
+            re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I),
+            re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I),
+        ]
 
-    return _Shim()
+        # --- Gray area (likely jailbreaks / intent unclear) ---
+        gray: List[Pattern[str]] = [
+            re.compile(r"\bignore\s+previous\s+instructions\b", re.I),
+            re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I),
+            re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I),
+        ]
 
+        _RULES = {"secrets": secrets, "unsafe": unsafe, "gray": gray}
 
-# -------------------------
-# Rule loading & compilation
-# -------------------------
-
-# Default rules with IDs aligned to tests
-_DEFAULT_RULES_YAML = """\
-version: "3"
-
-rules:
-  - id: payload:encoded_blob
-    description: Detect long base64-like blobs
-    regex: '/^[A-Za-z0-9+/=]{128,}$/'
-    decision: block
-
-  - id: secrets:api_key_like
-    description: OpenAI-like API key
-    regex: '/sk-[A-Za-z0-9]{16,}/'
-    decision: block
-
-  - id: secret:aws_access_key_id
-    description: AWS Access Key ID
-    regex: '/AKIA[0-9A-Z]{16}/'
-    decision: block
-
-  - id: secret:private_key_block
-    description: Private key PEM block markers
-    regex: '/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/'
-    decision: block
-
-  - id: pi:prompt_injection
-    description: Common prompt-injection phrase
-    regex: '/ignore\\s+(?:all\\s+)?previous\\s+(?:instructions|directions)/i'
-    decision: block
-"""
+        # Redactions: map to labels for auditability
+        _REDACTIONS = [
+            (re.compile(r"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ"), "[REDACTED:OPENAI_KEY]"),
+            (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
+            (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
+            (re.compile(pk_marker), "[REDACTED:PRIVATE_KEY]"),
+        ]
 
 
-def _compile_rule_pattern(
-    raw: str, flags_list: Iterable[str] | None = None
-) -> re.Pattern[str]:
-    """
-    Accept either /pattern/flags or a bare pattern string plus flags list.
-    Supports i, m, s flags.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        return re.compile(r"(?!x)")  # never matches
-
-    if len(raw) >= 2 and raw[0] == "/" and raw.rfind("/") > 0:
-        last = raw.rfind("/")
-        pat = raw[1:last]
-        flag_str = raw[last + 1 :]
-        flags = 0
-        for ch in flag_str:
-            if ch == "i":
-                flags |= re.IGNORECASE
-            elif ch == "m":
-                flags |= re.MULTILINE
-            elif ch == "s":
-                flags |= re.DOTALL
-        return re.compile(pat, flags)
-
-    flags = 0
-    for ch in (flags_list or []):
-        if ch == "i":
-            flags |= re.IGNORECASE
-        elif ch == "m":
-            flags |= re.MULTILINE
-        elif ch == "s":
-            flags |= re.DOTALL
-    return re.compile(raw, flags)
+# Initial compile on import
+_compile_rules()
 
 
-@dataclass
-class CompiledRule:
-    id: str
-    description: str
-    decision: str  # "allow" | "block"
-    regex: re.Pattern[str]
+def reload_rules() -> Dict[str, Any]:
+    """Recompile rules. Kept for backward-compat with callers."""
+    _compile_rules()
+    loaded = sum(len(v) for v in _RULES.values())
+    return {"policy_version": _RULES_VERSION, "rules_loaded": loaded}
 
 
-_policy_rules: List[CompiledRule] | None = None
-_policy_version: str = "3"
-_rules_path: Path | None = None
-_last_mtime: float = 0.0
-
-# redaction counter for metrics
-_redactions_total: int = 0
+# Some code may import this older alias.
+force_reload = reload_rules
 
 
-def _policy_path_from_settings() -> Path:
-    s = get_settings()
-    path_str = (
-        getattr(s, "POLICY_RULES_PATH", None)
-        or getattr(s, "POLICY_PATH", None)
-        or str(Path(__file__).with_name("rules.yaml"))
-    )
-    return Path(path_str)
-
-
-def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_DEFAULT_RULES_YAML, encoding="utf-8")
-
-    txt = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(txt) or {}
-    version = str(data.get("version", "3"))
-
-    compiled: List[CompiledRule] = []
-
-    # New-style "rules" list (decision-bearing)
-    for item in data.get("rules", []) or []:
-        rid = str(item.get("id", "") or "").strip() or "unnamed"
-        desc = str(item.get("description", "") or "")
-        decision = str(item.get("decision", "block") or "block").lower()
-        raw = str(item.get("regex") or item.get("pattern") or "")
-        rx = _compile_rule_pattern(raw)
-        compiled.append(
-            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
-        )
-
-    # Back-compat test format: "deny" -> implicit block; flags as list
-    for item in data.get("deny", []) or []:
-        rid = str(item.get("id", "") or "").strip() or "unnamed"
-        pat = str(item.get("pattern", "") or "")
-        flags = item.get("flags") or []
-        rx = _compile_rule_pattern(pat, flags)
-        compiled.append(
-            CompiledRule(
-                id=f"policy:deny:{rid}",
-                description="deny rule",
-                decision="block",
-                regex=rx,
-            )
-        )
-
-    mtime = path.stat().st_mtime
-    return compiled, version, mtime
-
-
-def _ensure_loaded() -> None:
-    """
-    Ensure rules are loaded and reflect current env:
-    - If POLICY_RULES_PATH changed since last load, reload from the new path.
-    - If POLICY_AUTORELOAD=true and file mtime increased, reload.
-    """
-    global _policy_rules, _policy_version, _rules_path, _last_mtime
-
-    current_path = _policy_path_from_settings()
-
-    # First load or env-path change => load now
-    if _policy_rules is None or _rules_path is None or current_path != _rules_path:
-        _rules_path = current_path
-        _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-        return
-
-    s = get_settings()
-    auto = str(
-        getattr(s, "POLICY_AUTORELOAD", None)
-        or getattr(s, "POLICY_AUTO_RELOAD", "false")
-    ).lower() in ("1", "true", "yes")
-
-    if auto and _rules_path.exists():
-        try:
-            mtime = _rules_path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        if mtime > _last_mtime:
-            _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-
-
-def reload_rules() -> dict[str, Any]:
-    global _policy_rules, _policy_version, _last_mtime, _rules_path
-    _rules_path = _policy_path_from_settings()
-    _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-    return {
-        "policy_version": _policy_version,
-        "rules_loaded": len(_policy_rules or []),
-    }
+def get_redactions_total() -> float:
+    return float(_REDACTIONS_TOTAL)
 
 
 def current_rules_version() -> str:
-    _ensure_loaded()
-    return str(_policy_version)
+    return _RULES_VERSION
 
 
-# Back-compat name
-def force_reload() -> dict[str, Any]:
-    return reload_rules()
-
-
-# -------------
-# Redaction pass
-# -------------
-_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
-    (
-        re.compile(
-            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        ),
-        "[REDACTED:PRIVATE_KEY]",
-    ),
-]
-
-# Always-on secret rules (independent of YAML), IDs match tests
-_BUILTIN_SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
-    ("secrets:api_key_like", re.compile(r"sk-[A-Za-z0-9]{16,}")),
-    ("secret:aws_access_key_id", re.compile(r"AKIA[0-9A-Z]{16}")),
-    (
-        "secret:private_key_block",
-        re.compile(
-            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        ),
-    ),
-]
-
-
-def _maybe_redact(text: str) -> str:
-    global _redactions_total
-    s = get_settings()
-    enabled = str(getattr(s, "REDACT_SECRETS", None) or "true").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    if not enabled:
-        return text
+def _apply_redactions(text: str) -> Tuple[str, int]:
+    """Apply redaction patterns to text; return (sanitized_text, count)."""
+    global _REDACTIONS_TOTAL
+    count = 0
     out = text
-    before = out
-    for pat, repl in _REDACTIONS:
-        out = pat.sub(repl, out)
-    if out != before:
-        _redactions_total += 1
-    return out
+    for rx, label in _REDACTIONS:
+        # Replace all occurrences while keeping line length reasonable
+        new = re.sub(rx, label, out)
+        if new != out:
+            # naive count increment: if changed, count at least one
+            count += 1
+            out = new
+    if count:
+        with _RULE_LOCK:
+            _REDACTIONS_TOTAL += float(count)
+    return out, count
 
 
-def get_redactions_total() -> int:
-    return _redactions_total
+def rule_hits(text: str) -> List[Dict[str, Any]]:
+    """Return a list of rule hits with lightweight tagging."""
+    hits: List[Dict[str, Any]] = []
+    for tag, patterns in _RULES.items():
+        for rx in patterns:
+            if rx.search(text):
+                hits.append({"tag": tag, "pattern": rx.pattern})
+    return hits
 
 
-# ----------
-# Evaluation
-# ----------
-def analyze(text: str) -> tuple[str, list[str], str]:
+def score_and_decide(
+    text: str, hits: List[Dict[str, Any]]
+) -> Tuple[str, int]:
     """
-    Returns (decision, rule_hits, reason).
-    Decision is "block" if any rule triggers with decision=block; else "allow".
+    Simple scoring heuristic:
+      - unsafe hit: +100 (deny)
+      - secret hit: +50 (sanitize)
+      - gray hit: +40 (clarify if no unsafe)
+    Decision order:
+      1) unsafe -> deny
+      2) secrets only -> sanitize
+      3) gray -> clarify
+      4) else -> allow
+    Returns (action, risk_score)
     """
-    _ensure_loaded()
-    rules = _policy_rules or []
+    score = 0
+    tags = {h.get("tag") for h in hits}
 
-    hits: list[str] = []
+    if "unsafe" in tags:
+        score += 100
+        return "deny", score
 
-    # Always enforce built-in secret hits first
-    for rid, pat in _BUILTIN_SECRET_RULES:
-        try:
-            if pat.search(text):
-                hits.append(rid)
-        except re.error:
-            continue
+    if "secrets" in tags:
+        score += 50
+        return "sanitize", score
 
-    # External rules from YAML file
-    for r in rules:
-        try:
-            if r.regex.search(text):
-                hits.append(r.id)
-        except re.error:
-            continue
+    if "gray" in tags:
+        score += 40
+        return "clarify", score
 
-    if hits:
-        uniq = list(dict.fromkeys(hits))  # stable de-dupe
-        return "block", uniq, f"High-risk rules matched: {', '.join(uniq)}"
-    return "allow", [], "No risk signals detected"
+    return "allow", score
 
 
-def evaluate_and_apply(text: str, request_id: str = "") -> dict[str, Any]:
+def apply_policies(text: str) -> Dict[str, Any]:
     """
-    Main entry point used by routes. Applies policy and redactions, emits audit.
+    Full ingress policy pass for base:
+      - detect rule hits
+      - score & choose action
+      - apply redactions (if any)
     """
-    _ensure_loaded()
-    s = get_settings()
-
-    # Optional soft size limit (hard 413 is enforced at route layer)
-    max_chars_soft = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
-    if max_chars_soft and len(text) > max_chars_soft:
-        decision, rule_hits, reason = (
-            "block",
-            ["payload:size_limit"],
-            "Prompt exceeds maximum allowed size",
-        )
-    else:
-        decision, rule_hits, reason = analyze(text)
-
-    transformed = _maybe_redact(text)
-
-    try:
-        emit_decision_event(
-            decision=decision,
-            rule_hits=list(rule_hits),
-            reason=reason,
-            policy_version=str(_policy_version),
-            prompt_text=text,
-            request_id=request_id,
-        )
-    except Exception:
-        # telemetry failures are non-fatal
-        pass
-
+    hits = rule_hits(text)
+    action, risk = score_and_decide(text, hits)
+    sanitized, redactions = _apply_redactions(text)
     return {
-        "decision": decision,
-        "rule_hits": list(rule_hits),
-        "reason": reason,
-        "policy_version": str(_policy_version),
-        "transformed_text": transformed,
-        "request_id": request_id,
+        "action": action,
+        "risk_score": risk,
+        "sanitized_text": sanitized,
+        "redactions": redactions,
+        "hits": hits,
     }
+
