@@ -20,6 +20,33 @@ def _env_int(name: str, default: int = 0) -> int:
         return default
 
 
+def _flatten_rule_hits(raw: Any) -> List[str]:
+    """
+    Convert mixed rule-hit shapes into a list[str] for the response model:
+      - dicts -> prefer id/pattern/tag, else stringified
+      - strings -> as-is
+      - other -> str(value)
+    """
+    out: List[str] = []
+    if not isinstance(raw, list):
+        return out
+    for h in raw:
+        if isinstance(h, dict):
+            s = (
+                h.get("id")
+                or h.get("pattern")
+                or h.get("tag")
+                or h.get("name")
+                or str(h)
+            )
+            out.append(str(s))
+        elif isinstance(h, str):
+            out.append(h)
+        else:
+            out.append(str(h))
+    return out
+
+
 @router.post("/output", response_model=GuardrailResponse)
 def guard_output(
     ingress: OutputGuardrailRequest, s=Depends(get_settings)
@@ -45,14 +72,10 @@ def guard_output(
 
     redact = (os.environ.get("REDACT_SECRETS") or "false").lower() == "true"
 
-    transformed: str
-    rule_hits: List[Dict[str, Any]]
-    reason: str
-
     if redact:
         res = evaluate_and_apply(ingress.output)
         transformed = res.get("transformed_text", ingress.output)
-        rule_hits = list(res.get("rule_hits", []))
+        rule_hits = _flatten_rule_hits(res.get("rule_hits", []))
         reason = "redacted" if int(res.get("redactions", 0) or 0) > 0 else ""
     else:
         transformed = ingress.output
@@ -65,5 +88,5 @@ def guard_output(
         request_id=req_id,
         reason=reason,
         rule_hits=rule_hits,
-        policy_version=current_rules_version(),
+        policy_version=str(current_rules_version()),
     )
