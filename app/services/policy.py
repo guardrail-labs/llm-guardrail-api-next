@@ -241,4 +241,4 @@ def reload_rules() -> Dict[str, Any]:
 
 
 # Some code may import this older alias.
-force_relo_
+force_reload = reload_rules
