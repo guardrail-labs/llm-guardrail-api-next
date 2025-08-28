@@ -17,51 +17,30 @@ jobs:
   build_and_push_release:
     runs-on: ubuntu-latest
     steps:
-      - name: Gate on secrets
-        id: gate
-        shell: bash
-        run: |
-          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Skip (missing Docker secrets)
-        if: ${{ steps.gate.outputs.proceed == 'false' }}
-        run: echo "Skipping:set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets to enable."
-
       - uses: actions/checkout@v4
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-
-      - name: Derive version from tag
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
-        id: ver
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF##*/}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push release image
-        if: ${{ steps.gate.outputs.proceed == 'true' }}
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/llm-guardrail-api:${{ steps.ver.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/llm-guardrail-api:${{ github.ref_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/llm-guardrail-api:latest
           platforms: linux/amd64
           provenance: false
+
+      - name: Skip (missing Docker secrets)
+        if: ${{ secrets.DOCKERHUB_USERNAME == '' || secrets.DOCKERHUB_TOKEN == '' }}
+        run: echo "Skipping:set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets to enable."
