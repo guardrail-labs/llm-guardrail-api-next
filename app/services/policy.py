@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import Dict, List, Pattern, Tuple, Any
+from typing import Any, Dict, List, Pattern, Tuple
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
 _REDACTIONS_TOTAL = 0.0
+
+# Versioning for rules; incremented on (re)compile
+_RULES_VERSION = 1
 
 # Compiled rule caches (filled by _compile_rules)
 _RULES: Dict[str, List[Pattern[str]]] = {
@@ -23,7 +26,7 @@ def _compile_rules() -> None:
     Compile in-memory rules. No YAML or external deps in base.
     Enterprise repo can override/extend this module.
     """
-    global _RULES, _REDACTIONS
+    global _RULES, _REDACTIONS, _RULES_VERSION
     with _RULE_LOCK:
         # --- Secrets (sample subset) ---
         secrets: List[Pattern[str]] = [
@@ -56,15 +59,31 @@ def _compile_rules() -> None:
             (re.compile(pk_marker), "[REDACTED:PRIVATE_KEY]"),
         ]
 
+        # bump version whenever we (re)compile rules
+        _RULES_VERSION += 1
+
 
 # Initial compile on import
 _compile_rules()
 
 
-def reload_rules() -> int:
-    """Recompile rules. Kept for backward-compat with callers."""
+def current_rules_version() -> int:
+    """Return a monotonic integer indicating the current rules version."""
+    return int(_RULES_VERSION)
+
+
+def reload_rules() -> Dict[str, Any]:
+    """
+    Recompile rules and return metadata as a dict.
+    (Main expects a dict it can `.get(...)` and `**`-unpack.)
+    """
     _compile_rules()
-    return sum(len(v) for v in _RULES.values())
+    return {
+        "policy_version": current_rules_version(),
+        "version": current_rules_version(),  # alias for older callers
+        "rules_count": sum(len(v) for v in _RULES.values()),
+        "redaction_patterns": len(_REDACTIONS),
+    }
 
 
 # Some code may import this older alias.
