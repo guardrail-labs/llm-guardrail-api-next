@@ -43,7 +43,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     Uses PyYAML if available; falls back to a naive parser for the limited test fixture shape.
     """
     try:
-        import yaml  # type: ignore
+        import yaml
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             return data if isinstance(data, dict) else {}
