@@ -59,7 +59,10 @@ def _rate_limit_remaining(request: Request) -> int:
 
 def _need_auth(request: Request) -> bool:
     # Either X-API-Key or Authorization is required by tests
-    return not (request.headers.get("x-api-key") or request.headers.get("authorization"))
+    return not (
+        request.headers.get("x-api-key")
+        or request.headers.get("authorization")
+    )
 
 
 def _req_id(request: Request) -> str:
@@ -83,7 +86,9 @@ def _read_json_payload(payload: Dict[str, Any]) -> Tuple[str, str]:
     return text, request_id
 
 
-async def _read_multipart_payload(request: Request) -> Tuple[str, str, List[Dict[str, Any]]]:
+async def _read_multipart_payload(
+    request: Request,
+) -> Tuple[str, str, List[Dict[str, Any]]]:
     """
     Accepts fields:
       - text: optional str
@@ -101,7 +106,9 @@ async def _read_multipart_payload(request: Request) -> Tuple[str, str, List[Dict
         for f in items:
             filename = getattr(f, "filename", "upload")
             text += f" [{kind.upper()}:{filename}]"
-            decisions.append({"type": "normalized", "tag": kind, "filename": filename})
+            decisions.append(
+                {"type": "normalized", "tag": kind, "filename": filename}
+            )
 
     for kind in ("image", "audio", "file"):
         append_files(kind)
@@ -109,9 +116,9 @@ async def _read_multipart_payload(request: Request) -> Tuple[str, str, List[Dict
     return text, request_id, decisions
 
 
-# ---------- New: legacy root guardrail endpoint ----------
+# ---------- Legacy root guardrail endpoint ----------
 
-@router.post("")
+@router.post("/")
 async def guardrail_root(request: Request) -> Response:
     """
     Legacy inbound guardrail used heavily in tests.
@@ -127,7 +134,11 @@ async def guardrail_root(request: Request) -> Response:
     # Auth check
     if _need_auth(request):
         body = _json_error(401, rid, "Missing API key or Authorization")
-        resp = Response(content=json.dumps(body), media_type="application/json", status_code=status.HTTP_401_UNAUTHORIZED)
+        resp = Response(
+            content=json.dumps(body),
+            media_type="application/json",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
         resp.headers["X-Request-ID"] = rid
         return resp
 
@@ -135,7 +146,11 @@ async def guardrail_root(request: Request) -> Response:
     remaining = _rate_limit_remaining(request)
     if remaining == 0:
         body = _json_error(429, rid, "Rate limit exceeded")
-        resp = Response(content=json.dumps(body), media_type="application/json", status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+        resp = Response(
+            content=json.dumps(body),
+            media_type="application/json",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
         resp.headers["Retry-After"] = "60"
         resp.headers["X-Request-ID"] = rid
         return resp
@@ -151,7 +166,11 @@ async def guardrail_root(request: Request) -> Response:
     max_chars = _size_limit("MAX_PROMPT_CHARS")
     if max_chars and len(prompt) > max_chars:
         body = _json_error(413, rid, "Prompt too large")
-        resp = Response(content=json.dumps(body), media_type="application/json", status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+        resp = Response(
+            content=json.dumps(body),
+            media_type="application/json",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
         resp.headers["X-Request-ID"] = rid
         return resp
 
@@ -168,7 +187,9 @@ async def guardrail_root(request: Request) -> Response:
 
     decisions: List[Dict[str, Any]] = []
     for h in res.get("hits", []):
-        decisions.append({"type": "rule_hit", "tag": h.get("tag"), "pattern": h.get("pattern")})
+        decisions.append(
+            {"type": "rule_hit", "tag": h.get("tag"), "pattern": h.get("pattern")}
+        )
     if redactions:
         decisions.append({"type": "redaction", "changed": True, "count": redactions})
 
@@ -180,12 +201,16 @@ async def guardrail_root(request: Request) -> Response:
 
     _decisions_total += 1
 
-    resp = Response(content=json.dumps(body), media_type="application/json", status_code=status.HTTP_200_OK)
+    resp = Response(
+        content=json.dumps(body),
+        media_type="application/json",
+        status_code=status.HTTP_200_OK,
+    )
     resp.headers["X-Request-ID"] = rid
     return resp
 
 
-# ---------- Existing: evaluate stays, but action must be "allow" ----------
+# ---------- Evaluate endpoint (always "allow") ----------
 
 @router.post("/evaluate")
 async def evaluate(request: Request) -> Dict[str, Any]:
@@ -204,7 +229,9 @@ async def evaluate(request: Request) -> Dict[str, Any]:
 
     if content_type.startswith("application/json"):
         payload = await request.json()
-        text, request_id = _read_json_payload(payload if isinstance(payload, dict) else {})
+        text, request_id = _read_json_payload(
+            payload if isinstance(payload, dict) else {}
+        )
     elif content_type.startswith("multipart/form-data"):
         text, request_id, norm_decisions = await _read_multipart_payload(request)
         decisions.extend(norm_decisions)
@@ -212,7 +239,9 @@ async def evaluate(request: Request) -> Dict[str, Any]:
         # Be forgiving: try JSON, else treat as empty
         try:
             payload = await request.json()
-            text, request_id = _read_json_payload(payload if isinstance(payload, dict) else {})
+            text, request_id = _read_json_payload(
+                payload if isinstance(payload, dict) else {}
+            )
         except Exception:
             text, request_id = "", str(uuid.uuid4())
 
