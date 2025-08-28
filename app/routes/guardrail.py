@@ -133,9 +133,9 @@ async def guardrail_root(request: Request) -> Response:
 
     # Auth check
     if _need_auth(request):
-        body = _json_error(401, rid, "Missing API key or Authorization")
+        err_body = _json_error(401, rid, "Missing API key or Authorization")
         resp = Response(
-            content=json.dumps(body),
+            content=json.dumps(err_body),
             media_type="application/json",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
@@ -145,9 +145,9 @@ async def guardrail_root(request: Request) -> Response:
     # Rate limiting
     remaining = _rate_limit_remaining(request)
     if remaining == 0:
-        body = _json_error(429, rid, "Rate limit exceeded")
+        err_body = _json_error(429, rid, "Rate limit exceeded")
         resp = Response(
-            content=json.dumps(body),
+            content=json.dumps(err_body),
             media_type="application/json",
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
@@ -165,9 +165,9 @@ async def guardrail_root(request: Request) -> Response:
     # Size check
     max_chars = _size_limit("MAX_PROMPT_CHARS")
     if max_chars and len(prompt) > max_chars:
-        body = _json_error(413, rid, "Prompt too large")
+        err_body = _json_error(413, rid, "Prompt too large")
         resp = Response(
-            content=json.dumps(body),
+            content=json.dumps(err_body),
             media_type="application/json",
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         )
@@ -193,7 +193,7 @@ async def guardrail_root(request: Request) -> Response:
     if redactions:
         decisions.append({"type": "redaction", "changed": True, "count": redactions})
 
-    body: Dict[str, Any] = {
+    resp_body: Dict[str, Any] = {
         "action": action,
         "transformed_text": transformed,
         "decisions": decisions,
@@ -202,7 +202,7 @@ async def guardrail_root(request: Request) -> Response:
     _decisions_total += 1
 
     resp = Response(
-        content=json.dumps(body),
+        content=json.dumps(resp_body),
         media_type="application/json",
         status_code=status.HTTP_200_OK,
     )
@@ -252,7 +252,7 @@ async def evaluate(request: Request) -> Dict[str, Any]:
     _decisions_total += 1
 
     # Force allow for this specific endpoint's contract
-    body: Dict[str, Any] = {
+    return {
         "request_id": request_id,
         "action": "allow",
         "transformed_text": det.get("transformed_text", text),
@@ -260,4 +260,3 @@ async def evaluate(request: Request) -> Dict[str, Any]:
         "risk_score": det.get("risk_score", 0),
         "rule_hits": det.get("rule_hits", []),
     }
-    return body
