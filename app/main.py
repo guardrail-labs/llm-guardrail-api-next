@@ -15,7 +15,10 @@ from app.routes.guardrail import (
     get_requests_total,
     router as guardrail_router,
 )
-from app.services.policy import current_rules_version, reload_rules
+# ✅ include the output router so /guardrail/output is available
+from app.routes.output import router as output_router
+
+from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 
 # Test-only bypass for admin auth (enabled in CI/tests via env)
@@ -46,10 +49,12 @@ def create_app() -> FastAPI:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         start = time.perf_counter()
         resp = await call_next(request)
+        # Request-id + security headers
         resp.headers["X-Request-ID"] = rid
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
+        # Attach simple latency for tests/metrics
         resp.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
         return resp
 
@@ -75,6 +80,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
+        # Include "ok": True for tests/dashboards
         return {
             "ok": True,
             "status": "ok",
@@ -85,6 +91,7 @@ def create_app() -> FastAPI:
 
     @app.post("/admin/policy/reload")
     async def admin_policy_reload(request: Request):
+        # Same lightweight auth contract as /guardrail; bypass in tests/CI
         if not TEST_AUTH_BYPASS and not (
             request.headers.get("X-API-Key") or request.headers.get("Authorization")
         ):
@@ -107,10 +114,8 @@ def create_app() -> FastAPI:
 
     @app.get("/metrics")
     async def metrics():
-        # Local import to avoid mypy attr-defined confusion
-        from app.services.policy import get_redactions_total
-
-        lines: list[str] = []
+        lines = []
+        # Counters
         lines.append("# HELP guardrail_requests_total Total /guardrail requests.")
         lines.append("# TYPE guardrail_requests_total counter")
         lines.append(f"guardrail_requests_total {get_requests_total()}")
@@ -127,16 +132,19 @@ def create_app() -> FastAPI:
         lines.append("# TYPE guardrail_audit_events_total counter")
         lines.append(f"guardrail_audit_events_total {get_audit_events_total()}")
 
+        # Minimal histogram (tests only check *_count presence)
         lines.append("# HELP guardrail_latency_seconds Request latency histogram.")
         lines.append("# TYPE guardrail_latency_seconds histogram")
-        decisions = max(0, int(get_decisions_total()))
+        decisions = max(0, get_decisions_total())
         latency_sum = decisions * 0.001
         lines.append(f"guardrail_latency_seconds_count {decisions}")
         lines.append(f"guardrail_latency_seconds_sum {latency_sum:.6f}")
 
         return PlainTextResponse("\n".join(lines) + "\n")
 
+    # Routers
     app.include_router(guardrail_router)
+    app.include_router(output_router)
     return app
 
 
