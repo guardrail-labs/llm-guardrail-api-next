@@ -16,13 +16,14 @@ concurrency:
 jobs:
   build_and_push_release:
     runs-on: ubuntu-latest
-    # Only run if required secrets are present
-    if: ${{ secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN }}
+    # Run only when Docker Hub secrets exist
+    if: ${{ (secrets.DOCKERHUB_USERNAME != '') && (secrets.DOCKERHUB_TOKEN != '') }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Derive version from tag
         id: ver
+        shell: bash
         run: |
           TAG="${GITHUB_REF##*/}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -47,10 +48,3 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/llm-guardrail-api:latest
           platforms: linux/amd64
           provenance: false
-
-  skip_no_secrets:
-    runs-on: ubuntu-latest
-    if: ${{ !(secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN) }}
-    steps:
-      - name: Skip
-        run: echo "Skipping: Docker secrets not set."
