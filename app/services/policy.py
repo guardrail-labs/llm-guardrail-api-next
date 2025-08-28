@@ -28,7 +28,7 @@ _RULES: Dict[str, List[Pattern[str]]] = {
 _REDACTIONS: List[Tuple[Pattern[str], str]] = []
 
 
-def _env(name: string) -> Optional[str]:  # type: ignore[name-defined]
+def _env(name: str) -> Optional[str]:  # type: ignore[name-defined]
     v = os.environ.get(name)
     return v if v and v.strip() else None
 
