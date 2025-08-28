@@ -28,36 +28,43 @@ _RULES: Dict[str, List[Pattern[str]]] = {
 _REDACTIONS: List[Tuple[Pattern[str], str]] = []
 
 
-def _env(name: str) -> Optional[str]:  # type: ignore[name-defined]
+def _env(name: str) -> Optional[str]:
+    """Return a stripped environment value or None if missing/empty."""
     v = os.environ.get(name)
-    return v if v and v.strip() else None
+    return v.strip() if v and v.strip() else None
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
     """
-    Load a minimal rules yaml:
+    Load rules from YAML if possible, else fall back to a tiny text parser.
 
+    Expected minimal shape (used by tests):
       version: "9"
       deny:
         - id: block_phrase
           pattern: "(?i)do not allow this"
           flags: ["i"]
-
-    Uses PyYAML if available; otherwise falls back to a tiny parser that handles the
-    test-fixture shape (version + deny items with pattern and optional flags).
     """
-    # Try PyYAML first
+    # Try importing PyYAML dynamically via importlib to avoid mypy stub issues.
     try:
-        import yaml  # type: ignore[import-not-found]
-        with path.open("r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        if isinstance(raw, dict):
-            return raw
+        import importlib
+
+        yaml_mod: Any
+        try:
+            yaml_mod = importlib.import_module("yaml")
+        except Exception:
+            yaml_mod = None
+
+        if yaml_mod is not None:
+            with path.open("r", encoding="utf-8") as f:
+                raw = yaml_mod.safe_load(f) or {}
+            if isinstance(raw, dict):
+                return raw
     except Exception:
-        # Fall through to naive parser
+        # Fall through to naive parser on any error.
         pass
 
-    # Naive fallback: extract version and deny entries from plain text
+    # Naive fallback: extract version and simple deny entries from plain text.
     try:
         text = path.read_text(encoding="utf-8")
     except Exception:
@@ -70,7 +77,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     if m:
         data["version"] = m.group(1).strip()
 
-    # deny: look for blocks that contain "pattern:" (very simple split/scan)
+    # deny: very light parsing by scanning for blocks with "pattern:"
     deny: List[Dict[str, Any]] = []
     for block in re.split(r"(?m)^\s*-\s*", text):
         if "pattern:" not in block:
@@ -97,25 +104,24 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
 
 
 def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
-    """Compile rules using an optional yaml dict. Merge with built-ins."""
+    """Compile rules using an optional YAML dict; merge/override sensible defaults."""
     global _RULES, _REDACTIONS, _RULES_VERSION
     with _RULE_LOCK:
         # --- Secrets (sample subset) ---
         secrets: List[Pattern[str]] = [
             re.compile(r"sk-[A-Za-z0-9]{16,}"),  # OpenAI-style key
-            re.compile(r"AKIA[0-9A-Z]{16}"),     # AWS access key id
+            re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS access key id
         ]
         pk_marker = r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
         secrets.append(re.compile(pk_marker))
 
-        # --- Unsafe (deny rules) ---
+        # --- Unsafe (deny rules) defaults ---
         unsafe: List[Pattern[str]] = [
-            # sensible defaults in absence of yaml
             re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I),
             re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I),
         ]
 
-        # If yaml provided, replace/extend unsafe with deny list
+        # Replace/extend unsafe rules from YAML deny list, if provided.
         if cfg and isinstance(cfg.get("deny"), list):
             unsafe = []
             for item in cfg["deny"]:
@@ -124,11 +130,11 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
                 pat = item.get("pattern")
                 if not isinstance(pat, str) or not pat:
                     continue
-                flags = 0
+                flags_val = 0
                 for fl in (item.get("flags") or []):
                     if isinstance(fl, str) and fl.lower() == "i":
-                        flags |= re.IGNORECASE
-                unsafe.append(re.compile(pat, flags))
+                        flags_val |= re.IGNORECASE
+                unsafe.append(re.compile(pat, flags_val))
 
         # --- Gray area (likely jailbreaks / intent unclear) ---
         gray: List[Pattern[str]] = [
@@ -147,7 +153,7 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
             (re.compile(pk_marker), "[REDACTED:PRIVATE_KEY]"),
         ]
 
-        # Set version (yaml wins; else bump)
+        # Set version (YAML wins; else bump)
         if cfg and isinstance(cfg.get("version"), (str, int)):
             _RULES_VERSION = str(cfg["version"])
         else:
@@ -181,7 +187,7 @@ def _maybe_autoreload() -> None:
 
 
 def _compile_rules_initial() -> None:
-    """Initial compile; consider static yaml if provided (without autoreload)."""
+    """Initial compile; consider static YAML if provided (without autoreload)."""
     path_str = _env("POLICY_RULES_PATH")
     cfg = None
     if path_str and Path(path_str).exists():
@@ -235,111 +241,4 @@ def reload_rules() -> Dict[str, Any]:
 
 
 # Some code may import this older alias.
-force_reload = reload_rules
-
-
-def get_redactions_total() -> float:
-    return float(_REDACTIONS_TOTAL)
-
-
-def _apply_redactions(text: str) -> Tuple[str, int]:
-    """Apply redaction patterns to text; return (sanitized_text, count)."""
-    global _REDACTIONS_TOTAL
-    count = 0
-    out = text
-    for rx, label in _REDACTIONS:
-        new = re.sub(rx, label, out)
-        if new != out:
-            count += 1
-            out = new
-    if count:
-        with _RULE_LOCK:
-            _REDACTIONS_TOTAL += float(count)
-    return out, count
-
-
-def rule_hits(text: str) -> List[Dict[str, Any]]:
-    """Return a list of rule hits with lightweight tagging."""
-    _maybe_autoreload()
-    hits: List[Dict[str, Any]] = []
-    for tag, patterns in _RULES.items():
-        for rx in patterns:
-            if rx.search(text):
-                hits.append({"tag": tag, "pattern": rx.pattern})
-    return hits
-
-
-def score_and_decide(text: str, hits: List[Dict[str, Any]]) -> Tuple[str, int]:
-    """
-    Simple scoring heuristic:
-      - unsafe hit: +100 (deny)
-      - secret hit: +50 (sanitize)
-      - gray hit: +40 (clarify)
-
-    Decision order:
-      1) unsafe -> deny
-      2) secrets only -> sanitize
-      3) gray -> clarify
-      4) else -> allow
-
-    Returns (action, risk_score)
-    """
-    score = 0
-    tags = {h.get("tag") for h in hits}
-
-    if "unsafe" in tags:
-        score += 100
-        return "deny", score
-
-    if "secrets" in tags:
-        score += 50
-        return "sanitize", score
-
-    if "gray" in tags:
-        score += 40
-        return "clarify", score
-
-    return "allow", score
-
-
-def apply_policies(text: str) -> Dict[str, Any]:
-    """
-    Full ingress policy pass for base:
-      - detect rule hits
-      - score & choose action
-      - apply redactions (if any)
-    """
-    hits = rule_hits(text)
-    action, risk = score_and_decide(text, hits)
-    sanitized, redactions = _apply_redactions(text)
-    return {
-        "action": action,
-        "risk_score": risk,
-        "sanitized_text": sanitized,
-        "redactions": redactions,
-        "hits": hits,
-    }
-
-
-def evaluate_and_apply(text: str) -> Dict[str, Any]:
-    """
-    Legacy helper preserved for routes that import:
-        from app.services.policy import evaluate_and_apply
-
-    Returns a shape compatible with older code paths:
-      - action
-      - risk_score
-      - transformed_text (sanitized_text)
-      - rule_hits (list of dicts; routes may flatten to strings)
-      - redactions
-      - decisions (empty list; routes can append details)
-    """
-    res = apply_policies(text)
-    return {
-        "action": res["action"],
-        "risk_score": int(res.get("risk_score", 0)),
-        "transformed_text": res.get("sanitized_text", text),
-        "rule_hits": list(res.get("hits", [])),
-        "redactions": int(res.get("redactions", 0)),
-        "decisions": [],
-    }
+force_relo_
