@@ -7,7 +7,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -144,10 +144,8 @@ async def _read_multipart_payload(
     return text, request_id, decisions
 
 
-@router.post("/")
-async def guardrail_root(
-    request: Request,
-) -> Union[Dict[str, Any], JSONResponse]:
+@router.post("/", response_model=None)
+async def guardrail_root(request: Request) -> Any:
     """
     Legacy ingress guardrail.
 
@@ -155,7 +153,7 @@ async def guardrail_root(
 
     - 401: {"detail": "Unauthorized"}
     - 413: {"code": "payload_too_large", "request_id": ...}
-    - 429: {"code": "rate_limited", "detail": "...", "request_id": ...}
+    - 429: {"code": "rate_limited", "detail": "Rate limit exceeded", "request_id": ...}
     - 200: {
         "decision": "allow|block",
         "transformed_text": "...",
