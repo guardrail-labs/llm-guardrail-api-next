@@ -8,8 +8,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Tuple
 
-from fastapi import APIRouter, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.services.detectors import evaluate_prompt
 from app.services.policy import current_rules_version, reload_rules
@@ -110,8 +109,8 @@ def _req_id(request: Request) -> str:
 
 def _audit_maybe(prompt: str, rid: str) -> None:
     """
-    Emit a JSON log line to logger 'guardrail_audit' with a truncated snippet.
-    Fields expected by tests:
+    Emit a JSON line to logger 'guardrail_audit' with truncated snippet.
+    Fields:
       - event: "guardrail_decision"
       - request_id: str
       - snippet: truncated text
@@ -185,7 +184,7 @@ def _maybe_load_static_rules_once() -> None:
 
 
 @router.post("/", response_model=None)
-async def guardrail_root(request: Request) -> Dict[str, Any]:
+async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]:
     """
     Legacy ingress guardrail.
 
@@ -193,8 +192,12 @@ async def guardrail_root(request: Request) -> Dict[str, Any]:
 
     - 401: {"detail": "Unauthorized"}
     - 413: {"code": "payload_too_large", "request_id": ...}
-    - 429: {"code": "rate_limited", "detail": "Rate limit exceeded",
-            "retry_after": 60, "request_id": ...}
+    - 429: {
+        "code": "rate_limited",
+        "detail": "Rate limit exceeded",
+        "retry_after": 60,
+        "request_id": ...
+      }
     - 200: {
         "decision": "allow|block",
         "transformed_text": "...",
@@ -216,16 +219,14 @@ async def guardrail_root(request: Request) -> Dict[str, Any]:
     # Rate-limit before parsing payload
     if not _rate_limit_check(request):
         retry_after = 60
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "code": "rate_limited",
-                "detail": "Rate limit exceeded",
-                "retry_after": int(retry_after),
-                "request_id": rid,
-            },
-            headers={"Retry-After": str(retry_after)},
-        )
+        response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
+        response.headers["Retry-After"] = str(retry_after)
+        return {
+            "code": "rate_limited",
+            "detail": "Rate limit exceeded",
+            "retry_after": int(retry_after),
+            "request_id": rid,
+        }
 
     try:
         payload = await request.json()
@@ -238,10 +239,8 @@ async def guardrail_root(request: Request) -> Dict[str, Any]:
     except Exception:
         max_chars = 0
     if max_chars and len(prompt) > max_chars:
-        return JSONResponse(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            content={"code": "payload_too_large", "request_id": rid},
-        )
+        response.status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+        return {"code": "payload_too_large", "request_id": rid}
 
     _requests_total += 1
 
@@ -289,7 +288,9 @@ async def evaluate(request: Request) -> Dict[str, Any]:
             payload = await request.json()
         except Exception:
             payload = {}
-        text, request_id = _read_json_payload(payload if isinstance(payload, dict) else {})
+        text, request_id = _read_json_payload(
+            payload if isinstance(payload, dict) else {}
+        )
     elif content_type.startswith("multipart/form-data"):
         text, request_id, norm_decisions = await _read_multipart_payload(request)
         decisions.extend(norm_decisions)
