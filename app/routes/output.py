@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+import uuid
+from typing import List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.routes.schema import (
-    OutputGuardrailRequest,
-    GuardrailResponse,  # response model expects: transformed_text, decision
-)
-from app.services.policy import evaluate_and_apply
+from app.routes.schema import OutputGuardrailRequest, GuardrailResponse
+from app.services.policy import evaluate_and_apply, current_rules_version
 from app.config import get_settings
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -29,9 +27,11 @@ def guard_output(
     """
     Egress filter:
       - Enforces output size limit via OUTPUT_MAX_CHARS (env) or settings.MAX_OUTPUT_CHARS.
-      - If REDACT_SECRETS=true, apply policy redactions; still return decision="allow".
-      - Otherwise, pass-through with decision="allow".
+      - If REDACT_SECRETS=true, apply policy redactions.
+      - Always return decision="allow" with required schema fields.
     """
+    req_id = getattr(ingress, "request_id", None) or str(uuid.uuid4())
+
     # Env has priority; fall back to settings to preserve existing config path
     max_chars_env = _env_int("OUTPUT_MAX_CHARS", 0)
     max_chars_cfg = int(getattr(s, "MAX_OUTPUT_CHARS", 0) or 0)
@@ -44,16 +44,26 @@ def guard_output(
         )
 
     redact = (os.environ.get("REDACT_SECRETS") or "false").lower() == "true"
+
+    transformed: str
+    rule_hits: List[Dict[str, Any]]
+    reason: str
+
     if redact:
         res = evaluate_and_apply(ingress.output)
-        # Return only schema fields accepted by GuardrailResponse
-        return GuardrailResponse(
-            transformed_text=res.get("transformed_text", ingress.output),
-            decision="allow",
-        )
+        transformed = res.get("transformed_text", ingress.output)
+        rule_hits = list(res.get("rule_hits", []))
+        reason = "redacted" if int(res.get("redactions", 0) or 0) > 0 else ""
+    else:
+        transformed = ingress.output
+        rule_hits = []
+        reason = ""
 
-    # No redaction path: pass-through with explicit allow
     return GuardrailResponse(
-        transformed_text=ingress.output,
+        transformed_text=transformed,
         decision="allow",
+        request_id=req_id,
+        reason=reason,
+        rule_hits=rule_hits,
+        policy_version=current_rules_version(),
     )
