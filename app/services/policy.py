@@ -4,7 +4,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Pattern, Tuple, Optional
+from typing import Any, Dict, List, Optional, Pattern, Tuple
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
@@ -23,62 +23,77 @@ _RULES: Dict[str, List[Pattern[str]]] = {
     "unsafe": [],
     "gray": [],
 }
+
 # Redaction patterns: (compiled_regex, replacement_label)
 _REDACTIONS: List[Tuple[Pattern[str], str]] = []
 
 
-def _env(path: str) -> Optional[str]:
-    v = os.environ.get(path)
+def _env(name: string) -> Optional[str]:  # type: ignore[name-defined]
+    v = os.environ.get(name)
     return v if v and v.strip() else None
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
     """
     Load a minimal rules yaml:
+
       version: "9"
       deny:
         - id: block_phrase
           pattern: "(?i)do not allow this"
           flags: ["i"]
-    Uses PyYAML if available; falls back to a naive parser for the limited test fixture shape.
-    """
-try:
-    import yaml
-except Exception:
-    return {}
 
-try:
-    with path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-        return raw if isinstance(raw, dict) else {}
-except Exception:
-    return {}
+    Uses PyYAML if available; otherwise falls back to a tiny parser that handles the
+    test-fixture shape (version + deny items with pattern and optional flags).
+    """
+    # Try PyYAML first
+    try:
+        import yaml  # type: ignore[import-not-found]
+        with path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        if isinstance(raw, dict):
+            return raw
     except Exception:
-        # Naive fallback: extract version and a single deny item (pattern + flags)
+        # Fall through to naive parser
+        pass
+
+    # Naive fallback: extract version and deny entries from plain text
+    try:
         text = path.read_text(encoding="utf-8")
-        data: Dict[str, Any] = {}
-        # version:
-        m = re.search(r"(?m)^\s*version\s*:\s*['\"]?([^'\"]+)['\"]?\s*$", text)
-        if m:
-            data["version"] = m.group(1).strip()
-        # deny (very light parsing; good enough for our tests)
-        deny: List[Dict[str, Any]] = []
-        for block in re.split(r"(?m)^\s*-\s*", text):
-            if "pattern:" in block:
-                pat_m = re.search(r"pattern\s*:\s*['\"](.+?)['\"]", block)
-                fl_m = re.search(r"flags\s*:\s*\[(.*?)\]", block)
-                item: Dict[str, Any] = {}
-                if pat_m:
-                    item["pattern"] = pat_m.group(1)
-                if fl_m:
-                    # split by comma, strip, remove quotes
-                    flags = [p.strip().strip("'\"") for p in fl_m.group(1).split(",") if p.strip()]
-                    item["flags"] = flags
-                if item:
-                    deny.append(item)
-        if deny:
-            data["deny"] = deny
-        return data
+    except Exception:
+        return {}
+
+    data: Dict[str, Any] = {}
+
+    # version:
+    m = re.search(r"(?m)^\s*version\s*:\s*['\"]?([^'\"]+)['\"]?\s*$", text)
+    if m:
+        data["version"] = m.group(1).strip()
+
+    # deny: look for blocks that contain "pattern:" (very simple split/scan)
+    deny: List[Dict[str, Any]] = []
+    for block in re.split(r"(?m)^\s*-\s*", text):
+        if "pattern:" not in block:
+            continue
+        pat_m = re.search(r"pattern\s*:\s*['\"](.+?)['\"]", block)
+        fl_m = re.search(r"flags\s*:\s*\[(.*?)\]", block)
+        item: Dict[str, Any] = {}
+        if pat_m:
+            item["pattern"] = pat_m.group(1)
+        if fl_m:
+            flags = [
+                p.strip().strip("'\"")
+                for p in fl_m.group(1).split(",")
+                if p.strip()
+            ]
+            item["flags"] = flags
+        if item:
+            deny.append(item)
+
+    if deny:
+        data["deny"] = deny
+
+    return data
 
 
 def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
@@ -110,7 +125,7 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
                 if not isinstance(pat, str) or not pat:
                     continue
                 flags = 0
-                for fl in item.get("flags", []) or []:
+                for fl in (item.get("flags") or []):
                     if isinstance(fl, str) and fl.lower() == "i":
                         flags |= re.IGNORECASE
                 unsafe.append(re.compile(pat, flags))
@@ -140,18 +155,22 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
 
 
 def _maybe_autoreload() -> None:
-    """If POLICY_AUTORELOAD=true, reload when the file mtime changes.
+    """
+    If POLICY_AUTORELOAD=true, reload when the file mtime changes.
     Also recompile when rules are not yet loaded.
     """
     auto = (_env("POLICY_AUTORELOAD") or "false").lower() == "true"
     if not auto:
         return
+
     path_str = _env("POLICY_RULES_PATH")
     if not path_str:
         return
+
     path = Path(path_str)
     if not path.exists():
         return
+
     global _RULES_MTIME, _RULES_PATH
     mtime = path.stat().st_mtime
     if _RULES_MTIME is None or mtime != _RULES_MTIME or _RULES_PATH != path:
@@ -196,6 +215,7 @@ def reload_rules() -> Dict[str, Any]:
         except Exception:
             cfg = None
     _compile_rules_from_dict(cfg)
+
     global _RULES_MTIME, _RULES_PATH
     if path_str and Path(path_str).exists():
         p = Path(path_str)
@@ -204,6 +224,7 @@ def reload_rules() -> Dict[str, Any]:
     else:
         _RULES_MTIME = None
         _RULES_PATH = None
+
     return {
         "policy_version": current_rules_version(),
         "version": current_rules_version(),  # alias for older callers
@@ -254,11 +275,13 @@ def score_and_decide(text: str, hits: List[Dict[str, Any]]) -> Tuple[str, int]:
       - unsafe hit: +100 (deny)
       - secret hit: +50 (sanitize)
       - gray hit: +40 (clarify)
+
     Decision order:
       1) unsafe -> deny
       2) secrets only -> sanitize
       3) gray -> clarify
       4) else -> allow
+
     Returns (action, risk_score)
     """
     score = 0
@@ -298,8 +321,6 @@ def apply_policies(text: str) -> Dict[str, Any]:
     }
 
 
-# --- Back-compat alias for legacy callers (e.g., app/routes/output.py) ---
-
 def evaluate_and_apply(text: str) -> Dict[str, Any]:
     """
     Legacy helper preserved for routes that import:
@@ -309,7 +330,7 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
       - action
       - risk_score
       - transformed_text (sanitized_text)
-      - rule_hits (list[str] in routes will flatten)
+      - rule_hits (list of dicts; routes may flatten to strings)
       - redactions
       - decisions (empty list; routes can append details)
     """
