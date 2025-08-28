@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Dict, Tuple, cast
+from typing import Any, Dict, List, Tuple, cast
 
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
@@ -127,6 +127,33 @@ def _rate_limit(request: Request, now: float) -> Tuple[bool, int]:
     return False, retry_after
 
 
+def _read_json_payload(payload: Dict[str, Any]) -> Tuple[str, str]:
+    text = str(payload.get("text", ""))
+    request_id = payload.get("request_id") or str(uuid.uuid4())
+    return text, request_id
+
+
+async def _read_multipart_payload(request: Request) -> Tuple[str, str, List[Dict[str, Any]]]:
+    """Parse multipart form-data into a unified text and decision list."""
+    form = await request.form()
+    text = str(form.get("text") or "")
+    request_id = str(form.get("request_id") or str(uuid.uuid4()))
+    decisions: List[Dict[str, Any]] = []
+
+    def append_files(kind: str) -> None:
+        nonlocal text
+        items = form.getlist(kind)
+        for f in items:
+            filename = getattr(f, "filename", "upload")
+            text += f" [{kind.upper()}:{filename}]"
+            decisions.append({"type": "normalized", "tag": kind, "filename": filename})
+
+    for kind in ("image", "audio", "file"):
+        append_files(kind)
+
+    return text, request_id, decisions
+
+
 @router.post("")
 def guard(
     ingress: GuardrailRequest, request: Request, s=Depends(get_settings)
@@ -193,27 +220,57 @@ def guard(
 
 
 @router.post("/evaluate")
-def guard_evaluate(
-    ingress: GuardrailRequest, request: Request, s=Depends(get_settings)
-) -> JSONResponse:
+async def guard_evaluate(request: Request) -> JSONResponse:
     global _requests_total, _decisions_total
+
+    req_id = _extract_request_id(request)
+
+    # Rate limit check (reuses main guard limiter)
+    ok, retry_after = _rate_limit(request, time.time())
+    if not ok:
+        resp = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "code": "rate_limited",
+                "detail": "Rate limit exceeded",
+                "retry_after": retry_after,
+                "request_id": req_id,
+            },
+        )
+        resp.headers["Retry-After"] = str(retry_after)
+        _attach_request_id(resp, req_id)
+        _security_headers(resp)
+        return resp
+
     _requests_total += 1
 
-    req_id = ingress.request_id or _extract_request_id(request)
+    content_type = (request.headers.get("content-type") or "").lower()
+    decisions: List[Dict[str, Any]] = []
 
-    redacted = _maybe_redact(ingress.prompt)
-    payload = evaluate_and_apply(redacted, request_id=req_id)
+    if content_type.startswith("application/json"):
+        payload = await request.json()
+        text, req_id = _read_json_payload(payload if isinstance(payload, dict) else {})
+    elif content_type.startswith("multipart/form-data"):
+        text, req_id, norm_decisions = await _read_multipart_payload(request)
+        decisions.extend(norm_decisions)
+    else:
+        try:
+            payload = await request.json()
+            text, req_id = _read_json_payload(payload if isinstance(payload, dict) else {})
+        except Exception:
+            text, req_id = "", req_id
+
+    transformed = _maybe_redact(text)
+    if transformed != text:
+        decisions.append({"type": "redaction", "changed": True})
+
     _decisions_total += 1
-
-    decisions: list[dict[str, str]] = []
-    if redacted != ingress.prompt:
-        decisions.append({"type": "redaction"})
 
     resp_body = {
         "request_id": req_id,
-        "action": payload["decision"],
+        "action": "allow",
+        "transformed_text": transformed,
         "decisions": decisions,
-        "transformed_text": payload["transformed_text"],
     }
     resp = JSONResponse(status_code=status.HTTP_200_OK, content=resp_body)
     _attach_request_id(resp, req_id)
