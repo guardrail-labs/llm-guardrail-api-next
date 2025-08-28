@@ -122,7 +122,8 @@ async def evaluate(request: Request) -> Dict[str, Any]:
 
     _decisions_total += 1
 
-    # Use actual decision coming from detectors/policy (tests expect sanitize/deny/clarify when applicable)
+# Use the actual decision from detectors/policy.
+# Tests expect sanitize/deny/clarify when applicable.
     body: Dict[str, Any] = {
         "request_id": request_id,
         "action": det.get("action", "allow"),
