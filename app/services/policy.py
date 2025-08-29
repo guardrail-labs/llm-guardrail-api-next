@@ -2,350 +2,348 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+import threading
 from pathlib import Path
-from typing import Any, Iterable, List, Tuple
+from typing import Any, Dict, List, Optional, Pattern, Tuple
 
-import yaml
+# Thread-safe counters and rule storage
+_RULE_LOCK = threading.RLock()
+_REDACTIONS_TOTAL = 0.0
 
-from app.telemetry.audit import emit_decision_event
+# Versioning for rules (string to satisfy response contracts/tests)
+_RULES_VERSION: str = "1"
 
-# ---- settings (defensive import with fallback) --------------------------------
-try:
-    from app.settings import get_settings as _external_get_settings
-except Exception:  # pragma: no cover
-    _external_get_settings = None
+# Track source file and mtime (for autoreload)
+_RULES_PATH: Optional[Path] = None
+_RULES_MTIME: Optional[float] = None
+
+# Compiled rule caches
+_RULES: Dict[str, List[Pattern[str]]] = {
+    "secrets": [],
+    "unsafe": [],
+    "gray": [],
+}
+
+# Redaction patterns: (compiled_regex, replacement_label)
+_REDACTIONS: List[Tuple[Pattern[str], str]] = []
 
 
-def get_settings() -> Any:
+def _env(name: str) -> Optional[str]:
+    v = os.environ.get(name)
+    return v if v and v.strip() else None
+
+
+def _load_yaml(path: Path) -> Dict[str, Any]:
     """
-    Lightweight getter that always reflects current environment.
-    If an external settings provider exists, call it; otherwise read os.environ.
+    Load a minimal rules yaml.
+
+    Example:
+        version: "9"
+        deny:
+          - id: block_phrase
+            pattern: "(?i)do not allow this"
+            flags: ["i"]
+
+    Uses PyYAML if available; otherwise falls back to a tiny parser that handles the
+    test-fixture shape (version + deny items with pattern and optional flags).
     """
-    if _external_get_settings is not None:
-        return _external_get_settings()
+    # Try PyYAML first
+    try:
+        import yaml  # noqa: F401
+        with path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        # Fall through to naive parser
+        pass
 
-    class _Shim:
-        def __getattr__(self, name: str) -> Any:
-            return os.environ.get(name)
+    # Naive fallback: extract version and deny entries from plain text
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return {}
 
-    return _Shim()
+    data: Dict[str, Any] = {}
 
+    # version:
+    m = re.search(r"(?m)^\s*version\s*:\s*['\"]?([^'\"]+)['\"]?\s*$", text)
+    if m:
+        data["version"] = m.group(1).strip()
 
-# -------------------------
-# Rule loading & compilation
-# -------------------------
+    # deny: look for blocks that contain "pattern:" (very simple split/scan)
+    deny: List[Dict[str, Any]] = []
+    for block in re.split(r"(?m)^\s*-\s*", text):
+        if "pattern:" not in block:
+            continue
+        pat_m = re.search(r"pattern\s*:\s*['\"](.+?)['\"]", block)
+        fl_m = re.search(r"flags\s*:\s*\[(.*?)\]", block)
+        item: Dict[str, Any] = {}
+        if pat_m:
+            item["pattern"] = pat_m.group(1)
+        if fl_m:
+            flags = [
+                p.strip().strip("'\"")
+                for p in fl_m.group(1).split(",")
+                if p.strip()
+            ]
+            item["flags"] = flags
+        if item:
+            deny.append(item)
 
-# Default rules with IDs aligned to tests
-_DEFAULT_RULES_YAML = """\
-version: "3"
+    if deny:
+        data["deny"] = deny
 
-rules:
-  - id: payload:encoded_blob
-    description: Detect long base64-like blobs
-    regex: '/^[A-Za-z0-9+/=]{128,}$/'
-    decision: block
-
-  - id: secrets:api_key_like
-    description: OpenAI-like API key
-    regex: '/sk-[A-Za-z0-9]{16,}/'
-    decision: block
-
-  - id: secret:aws_access_key_id
-    description: AWS Access Key ID
-    regex: '/AKIA[0-9A-Z]{16}/'
-    decision: block
-
-  - id: secret:private_key_block
-    description: Private key PEM block markers
-    regex: '/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----/'
-    decision: block
-
-  - id: pi:prompt_injection
-    description: Common prompt-injection phrase
-    regex: '/ignore\\s+(?:all\\s+)?previous\\s+(?:instructions|directions)/i'
-    decision: block
-"""
+    return data
 
 
-def _compile_rule_pattern(
-    raw: str, flags_list: Iterable[str] | None = None
-) -> re.Pattern[str]:
+def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
+    """Compile rules using an optional yaml dict. Merge with built-ins."""
+    global _RULES, _REDACTIONS, _RULES_VERSION
+    with _RULE_LOCK:
+        # --- Secrets (sample subset) ---
+        secrets: List[Pattern[str]] = [
+            re.compile(r"sk-[A-Za-z0-9]{16,}"),  # OpenAI-style key
+            re.compile(r"AKIA[0-9A-Z]{16}"),     # AWS access key id
+        ]
+        pk_marker = r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+        secrets.append(re.compile(pk_marker))
+
+        # --- Unsafe (deny rules) ---
+        unsafe: List[Pattern[str]] = [
+            # sensible defaults in absence of yaml
+            re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I),
+            re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I),
+        ]
+
+        # If yaml provided, replace/extend unsafe with deny list
+        if cfg and isinstance(cfg.get("deny"), list):
+            unsafe = []
+            for item in cfg["deny"]:
+                if not isinstance(item, dict):
+                    continue
+                pat = item.get("pattern")
+                if not isinstance(pat, str) or not pat:
+                    continue
+                flags = 0
+                for fl in (item.get("flags") or []):
+                    if isinstance(fl, str) and fl.lower() == "i":
+                        flags |= re.IGNORECASE
+                unsafe.append(re.compile(pat, flags))
+
+        # --- Gray area (likely jailbreaks / intent unclear) ---
+        gray: List[Pattern[str]] = [
+            re.compile(r"\bignore\s+previous\s+instructions\b", re.I),
+            re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I),
+            re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I),
+        ]
+
+        _RULES = {"secrets": secrets, "unsafe": unsafe, "gray": gray}
+
+        # Redactions: map to labels for auditability
+        _REDACTIONS = [
+            (re.compile(r"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ"), "[REDACTED:OPENAI_KEY]"),
+            (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
+            (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
+            (re.compile(pk_marker), "[REDACTED:PRIVATE_KEY]"),
+        ]
+
+        # Set version (yaml wins; else bump)
+        if cfg and isinstance(cfg.get("version"), (str, int)):
+            _RULES_VERSION = str(cfg["version"])
+        else:
+            _RULES_VERSION = str(int(_RULES_VERSION) + 1)
+
+
+def _maybe_autoreload() -> None:
     """
-    Accept either /pattern/flags or a bare pattern string plus flags list.
-    Supports i, m, s flags.
+    If POLICY_AUTORELOAD=true, reload when the file mtime changes.
+    Also recompile when rules are not yet loaded.
     """
-    raw = (raw or "").strip()
-    if not raw:
-        return re.compile(r"(?!x)")  # never matches
-
-    if len(raw) >= 2 and raw[0] == "/" and raw.rfind("/") > 0:
-        last = raw.rfind("/")
-        pat = raw[1:last]
-        flag_str = raw[last + 1 :]
-        flags = 0
-        for ch in flag_str:
-            if ch == "i":
-                flags |= re.IGNORECASE
-            elif ch == "m":
-                flags |= re.MULTILINE
-            elif ch == "s":
-                flags |= re.DOTALL
-        return re.compile(pat, flags)
-
-    flags = 0
-    for ch in (flags_list or []):
-        if ch == "i":
-            flags |= re.IGNORECASE
-        elif ch == "m":
-            flags |= re.MULTILINE
-        elif ch == "s":
-            flags |= re.DOTALL
-    return re.compile(raw, flags)
-
-
-@dataclass
-class CompiledRule:
-    id: str
-    description: str
-    decision: str  # "allow" | "block"
-    regex: re.Pattern[str]
-
-
-_policy_rules: List[CompiledRule] | None = None
-_policy_version: str = "3"
-_rules_path: Path | None = None
-_last_mtime: float = 0.0
-
-# redaction counter for metrics
-_redactions_total: int = 0
-
-
-def _policy_path_from_settings() -> Path:
-    s = get_settings()
-    path_str = (
-        getattr(s, "POLICY_RULES_PATH", None)
-        or getattr(s, "POLICY_PATH", None)
-        or str(Path(__file__).with_name("rules.yaml"))
-    )
-    return Path(path_str)
-
-
-def _load_rules(path: Path) -> Tuple[List[CompiledRule], str, float]:
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_DEFAULT_RULES_YAML, encoding="utf-8")
-
-    txt = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(txt) or {}
-    version = str(data.get("version", "3"))
-
-    compiled: List[CompiledRule] = []
-
-    # New-style "rules" list (decision-bearing)
-    for item in data.get("rules", []) or []:
-        rid = str(item.get("id", "") or "").strip() or "unnamed"
-        desc = str(item.get("description", "") or "")
-        decision = str(item.get("decision", "block") or "block").lower()
-        raw = str(item.get("regex") or item.get("pattern") or "")
-        rx = _compile_rule_pattern(raw)
-        compiled.append(
-            CompiledRule(id=rid, description=desc, decision=decision, regex=rx)
-        )
-
-    # Back-compat test format: "deny" -> implicit block; flags as list
-    for item in data.get("deny", []) or []:
-        rid = str(item.get("id", "") or "").strip() or "unnamed"
-        pat = str(item.get("pattern", "") or "")
-        flags = item.get("flags") or []
-        rx = _compile_rule_pattern(pat, flags)
-        compiled.append(
-            CompiledRule(
-                id=f"policy:deny:{rid}",
-                description="deny rule",
-                decision="block",
-                regex=rx,
-            )
-        )
-
-    mtime = path.stat().st_mtime
-    return compiled, version, mtime
-
-
-def _ensure_loaded() -> None:
-    """
-    Ensure rules are loaded and reflect current env:
-    - If POLICY_RULES_PATH changed since last load, reload from the new path.
-    - If POLICY_AUTORELOAD=true and file mtime increased, reload.
-    """
-    global _policy_rules, _policy_version, _rules_path, _last_mtime
-
-    current_path = _policy_path_from_settings()
-
-    # First load or env-path change => load now
-    if _policy_rules is None or _rules_path is None or current_path != _rules_path:
-        _rules_path = current_path
-        _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
+    auto = (_env("POLICY_AUTORELOAD") or "false").lower() == "true"
+    if not auto:
         return
 
-    s = get_settings()
-    auto = str(
-        getattr(s, "POLICY_AUTORELOAD", None)
-        or getattr(s, "POLICY_AUTO_RELOAD", "false")
-    ).lower() in ("1", "true", "yes")
+    path_str = _env("POLICY_RULES_PATH")
+    if not path_str:
+        return
 
-    if auto and _rules_path.exists():
+    path = Path(path_str)
+    if not path.exists():
+        return
+
+    global _RULES_MTIME, _RULES_PATH
+    mtime = path.stat().st_mtime
+    if _RULES_MTIME is None or mtime != _RULES_MTIME or _RULES_PATH != path:
+        cfg = _load_yaml(path)
+        _compile_rules_from_dict(cfg)
+        _RULES_MTIME = mtime
+        _RULES_PATH = path
+
+
+def _compile_rules_initial() -> None:
+    """Initial compile; consider static yaml if provided (without autoreload)."""
+    path_str = _env("POLICY_RULES_PATH")
+    cfg = None
+    if path_str and Path(path_str).exists():
         try:
-            mtime = _rules_path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        if mtime > _last_mtime:
-            _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
+            cfg = _load_yaml(Path(path_str))
+        except Exception:
+            cfg = None
+    _compile_rules_from_dict(cfg)
 
 
-def reload_rules() -> dict[str, Any]:
-    global _policy_rules, _policy_version, _last_mtime, _rules_path
-    _rules_path = _policy_path_from_settings()
-    _policy_rules, _policy_version, _last_mtime = _load_rules(_rules_path)
-    return {
-        "policy_version": _policy_version,
-        "rules_loaded": len(_policy_rules or []),
-    }
+# Initial load on import
+_compile_rules_initial()
 
 
 def current_rules_version() -> str:
-    _ensure_loaded()
-    return str(_policy_version)
+    """Return current rules version as string (tests expect string)."""
+    _maybe_autoreload()
+    return _RULES_VERSION
 
 
-# Back-compat name
-def force_reload() -> dict[str, Any]:
-    return reload_rules()
-
-
-# -------------
-# Redaction pass
-# -------------
-_REDACTIONS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"sk-[A-Za-z0-9]{16,}"), "[REDACTED:OPENAI_KEY]"),
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY_ID]"),
-    (
-        re.compile(
-            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        ),
-        "[REDACTED:PRIVATE_KEY]",
-    ),
-]
-
-# Always-on secret rules (independent of YAML), IDs match tests
-_BUILTIN_SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
-    ("secrets:api_key_like", re.compile(r"sk-[A-Za-z0-9]{16,}")),
-    ("secret:aws_access_key_id", re.compile(r"AKIA[0-9A-Z]{16}")),
-    (
-        "secret:private_key_block",
-        re.compile(
-            r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        ),
-    ),
-]
-
-
-def _maybe_redact(text: str) -> str:
-    global _redactions_total
-    s = get_settings()
-    enabled = str(getattr(s, "REDACT_SECRETS", None) or "true").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    if not enabled:
-        return text
-    out = text
-    before = out
-    for pat, repl in _REDACTIONS:
-        out = pat.sub(repl, out)
-    if out != before:
-        _redactions_total += 1
-    return out
-
-
-def get_redactions_total() -> int:
-    return _redactions_total
-
-
-# ----------
-# Evaluation
-# ----------
-def analyze(text: str) -> tuple[str, list[str], str]:
+def reload_rules() -> Dict[str, Any]:
     """
-    Returns (decision, rule_hits, reason).
-    Decision is "block" if any rule triggers with decision=block; else "allow".
+    Recompile rules and return metadata.
+    If POLICY_RULES_PATH is set, (re)load from that path.
     """
-    _ensure_loaded()
-    rules = _policy_rules or []
-
-    hits: list[str] = []
-
-    # Always enforce built-in secret hits first
-    for rid, pat in _BUILTIN_SECRET_RULES:
+    path_str = _env("POLICY_RULES_PATH")
+    cfg = None
+    if path_str and Path(path_str).exists():
         try:
-            if pat.search(text):
-                hits.append(rid)
-        except re.error:
-            continue
+            cfg = _load_yaml(Path(path_str))
+        except Exception:
+            cfg = None
+    _compile_rules_from_dict(cfg)
 
-    # External rules from YAML file
-    for r in rules:
-        try:
-            if r.regex.search(text):
-                hits.append(r.id)
-        except re.error:
-            continue
-
-    if hits:
-        uniq = list(dict.fromkeys(hits))  # stable de-dupe
-        return "block", uniq, f"High-risk rules matched: {', '.join(uniq)}"
-    return "allow", [], "No risk signals detected"
-
-
-def evaluate_and_apply(text: str, request_id: str = "") -> dict[str, Any]:
-    """
-    Main entry point used by routes. Applies policy and redactions, emits audit.
-    """
-    _ensure_loaded()
-    s = get_settings()
-
-    # Optional soft size limit (hard 413 is enforced at route layer)
-    max_chars_soft = int(getattr(s, "PROMPT_MAX_CHARS", 0) or 0)
-    if max_chars_soft and len(text) > max_chars_soft:
-        decision, rule_hits, reason = (
-            "block",
-            ["payload:size_limit"],
-            "Prompt exceeds maximum allowed size",
-        )
+    global _RULES_MTIME, _RULES_PATH
+    if path_str and Path(path_str).exists():
+        p = Path(path_str)
+        _RULES_MTIME = p.stat().st_mtime
+        _RULES_PATH = p
     else:
-        decision, rule_hits, reason = analyze(text)
-
-    transformed = _maybe_redact(text)
-
-    try:
-        emit_decision_event(
-            decision=decision,
-            rule_hits=list(rule_hits),
-            reason=reason,
-            policy_version=str(_policy_version),
-            prompt_text=text,
-            request_id=request_id,
-        )
-    except Exception:
-        # telemetry failures are non-fatal
-        pass
+        _RULES_MTIME = None
+        _RULES_PATH = None
 
     return {
-        "decision": decision,
-        "rule_hits": list(rule_hits),
-        "reason": reason,
-        "policy_version": str(_policy_version),
-        "transformed_text": transformed,
-        "request_id": request_id,
+        "policy_version": current_rules_version(),
+        "version": current_rules_version(),  # alias for older callers
+        "rules_count": sum(len(v) for v in _RULES.values()),
+        "redaction_patterns": len(_REDACTIONS),
+        "rules_loaded": True,
+    }
+
+
+# Some code may import this older alias.
+force_reload = reload_rules
+
+
+def get_redactions_total() -> float:
+    return float(_REDACTIONS_TOTAL)
+
+
+def _apply_redactions(text: str) -> Tuple[str, int]:
+    """Apply redaction patterns to text; return (sanitized_text, count)."""
+    global _REDACTIONS_TOTAL
+    count = 0
+    out = text
+    for rx, label in _REDACTIONS:
+        new = re.sub(rx, label, out)
+        if new != out:
+            count += 1
+            out = new
+    if count:
+        with _RULE_LOCK:
+            _REDACTIONS_TOTAL += float(count)
+    return out, count
+
+
+def rule_hits(text: str) -> List[Dict[str, Any]]:
+    """Return a list of rule hits with lightweight tagging."""
+    _maybe_autoreload()
+    hits: List[Dict[str, Any]] = []
+    for tag, patterns in _RULES.items():
+        for rx in patterns:
+            if rx.search(text):
+                hits.append({"tag": tag, "pattern": rx.pattern})
+    return hits
+
+
+def score_and_decide(text: str, hits: List[Dict[str, Any]]) -> Tuple[str, int]:
+    """
+    Simple scoring heuristic:
+
+      - unsafe hit: +100 (deny)
+      - secret hit: +50 (sanitize)
+      - gray hit: +40 (clarify)
+
+    Decision order:
+      1) unsafe -> deny
+      2) secrets only -> sanitize
+      3) gray -> clarify
+      4) else -> allow
+
+    Returns (action, risk_score)
+    """
+    score = 0
+    tags = {h.get("tag") for h in hits}
+
+    if "unsafe" in tags:
+        score += 100
+        return "deny", score
+
+    if "secrets" in tags:
+        score += 50
+        return "sanitize", score
+
+    if "gray" in tags:
+        score += 40
+        return "clarify", score
+
+    return "allow", score
+
+
+def apply_policies(text: str) -> Dict[str, Any]:
+    """
+    Full ingress policy pass for base:
+
+      - detect rule hits
+      - score & choose action
+      - apply redactions (if any)
+    """
+    hits = rule_hits(text)
+    action, risk = score_and_decide(text, hits)
+    sanitized, redactions = _apply_redactions(text)
+    return {
+        "action": action,
+        "risk_score": risk,
+        "sanitized_text": sanitized,
+        "redactions": redactions,
+        "hits": hits,
+    }
+
+
+def evaluate_and_apply(text: str) -> Dict[str, Any]:
+    """
+    Legacy helper preserved for routes that import:
+      from app.services.policy import evaluate_and_apply
+
+    Returns a shape compatible with older code paths:
+
+      - action
+      - risk_score
+      - transformed_text (sanitized_text)
+      - rule_hits (list of dicts; routes may flatten to strings)
+      - redactions
+      - decisions (empty list; routes can append details)
+    """
+    res = apply_policies(text)
+    return {
+        "action": res["action"],
+        "risk_score": int(res.get("risk_score", 0)),
+        "transformed_text": res.get("sanitized_text", text),
+        "rule_hits": list(res.get("hits", [])),
+        "redactions": int(res.get("redactions", 0)),
+        "decisions": [],
     }

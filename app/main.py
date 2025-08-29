@@ -15,6 +15,8 @@ from app.routes.guardrail import (
     get_requests_total,
     router as guardrail_router,
 )
+from app.routes.output import router as output_router
+
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 
@@ -28,9 +30,27 @@ def _get_origins_from_env() -> Iterable[str]:
     return parts or []
 
 
+def _init_rate_limit_state(app: FastAPI) -> None:
+    """Populate app.state with rate-limit config from environment."""
+    enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
+    try:
+        per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
+    except Exception:
+        per_min = 60
+    try:
+        burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
+    except Exception:
+        burst = per_min
+
+    app.state.rate_limit_enabled = enabled
+    app.state.rate_limit_per_minute = per_min
+    app.state.rate_limit_burst = burst
+
+
 def create_app() -> FastAPI:
     app = FastAPI()
 
+    # CORS (optional; only enabled when env provides origins)
     origins = list(_get_origins_from_env())
     if origins:
         app.add_middleware(
@@ -40,6 +60,9 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Initialize per-app rate-limit configuration
+    _init_rate_limit_state(app)
 
     @app.middleware("http")
     async def add_request_id_and_security_headers(request: Request, call_next):
@@ -77,7 +100,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
-        # Include "ok": True (smoke test + dashboards), keep your original "status"
+        # Include "ok": True for tests/dashboards
         return {
             "ok": True,
             "status": "ok",
@@ -102,7 +125,6 @@ def create_app() -> FastAPI:
             return resp
 
         info = reload_rules()
-        # Keep shape stable; include test-required keys and existing fields
         payload = {
             "reloaded": True,
             "version": str(info.get("policy_version", info.get("version", ""))),
@@ -140,7 +162,9 @@ def create_app() -> FastAPI:
 
         return PlainTextResponse("\n".join(lines) + "\n")
 
+    # Routers
     app.include_router(guardrail_router)
+    app.include_router(output_router)
     return app
 
 
@@ -149,4 +173,3 @@ def build_app() -> FastAPI:
 
 
 app = create_app()
-
