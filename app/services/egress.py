@@ -22,10 +22,11 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
     Evaluate outbound LLM text. Return (response_payload, debug_messages).
 
     Decision policy (v1):
-    - If private key envelope markers are present -> action="deny" (policy:deny:private_key_envelope)
+    - If private key envelope markers are present -> action="deny"
+      (policy:deny:private_key_envelope)
     - Else apply redactions via sanitize_text():
-        * If only redactions applied -> action="allow"
-        * Families reflect which rule families were hit (secrets:*, pi:*, payload:*)
+      * If only redactions applied -> action="allow"
+      * Families reflect which rule families were hit (secrets:*, pi:*, payload:*)
     """
     debug_msgs: List[str] = []
 
@@ -43,7 +44,9 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
         return payload, debug_msgs
 
     # 2) Otherwise, sanitize & allow (contract: allow when only redactions happen)
-    sanitized, families, redaction_count, debug_matches = sanitize_text(text, debug=debug)
+    sanitized, families, redaction_count, debug_matches = sanitize_text(
+        text, debug=debug
+    )
 
     payload: Dict[str, Any] = {
         "action": "allow",
