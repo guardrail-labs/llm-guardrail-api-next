@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Tuple
+import re
 
 # Reuse ingress sanitization helpers for egress redactions
 from app.services.policy import sanitize_text
@@ -22,8 +22,7 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
     Evaluate outbound LLM text. Return (response_payload, debug_messages).
 
     Decision policy (v1):
-    - If private key envelope markers are present -> action="deny"
-      (policy:deny:private_key_envelope)
+    - If private key envelope markers are present -> action="deny" (policy:deny:private_key_envelope)
     - Else apply redactions via sanitize_text():
         * If only redactions applied -> action="allow"
         * Families reflect which rule families were hit (secrets:*, pi:*, payload:*)
@@ -33,7 +32,7 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
     # 1) Hard deny policy checks first (expandable)
     if _PRIV_KEY_BOUNDS.search(text or ""):
         families = ["policy:deny:*"]
-        payload = {
+        payload: Dict[str, Any] = {
             "action": "deny",
             "text": "",
             "rule_hits": families,
@@ -46,7 +45,7 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
     # 2) Otherwise, sanitize & allow (contract: allow when only redactions happen)
     sanitized, families, redaction_count, debug_matches = sanitize_text(text, debug=debug)
 
-    payload = {
+    payload: Dict[str, Any] = {
         "action": "allow",
         "text": sanitized,
         "rule_hits": families or None,
