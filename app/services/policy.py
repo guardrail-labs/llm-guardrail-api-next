@@ -347,3 +347,121 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
         "redactions": int(res.get("redactions", 0)),
         "decisions": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Sanitization helpers
+# ---------------------------------------------------------------------------
+
+# --- Normalized rule family tags (must match tests/docs) ---
+# secrets:*, pi:*, payload:*, policy:deny:*
+# We'll normalize specific hits into these families.
+
+# Secrets (common)
+_OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
+_AWS_ACCESS_KEY = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_PRIV_KEY_BOUNDS = re.compile(
+    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+)
+
+# PII (lightweight patterns; we do not claim legal-grade recall)
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+_SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+
+# Payload / prompt-injection hints (keep conservative to avoid false positives)
+_PROMPT_INJ = re.compile(
+    r"(?i)\b(ignore (all|any) previous (rules|instructions)|"
+    r"system prompt|do not follow policy|override policy)\b"
+)
+
+# We redact these with neutral placeholders. Keep short to preserve readability.
+REDACTION_MAP: Dict[str, str] = {
+    "secrets:openai_key": "[REDACTED:OPENAI_KEY]",
+    "secrets:aws_key": "[REDACTED:AWS_ACCESS_KEY_ID]",
+    "secrets:private_key_marker": "[REDACTED:PRIVATE_KEY]",
+    "pi:email": "[REDACTED:EMAIL]",
+    "pi:phone": "[REDACTED:PHONE]",
+    "pi:ssn": "[REDACTED:SSN]",
+    "payload:prompt_injection": "[REDACTED:INJECTION]",
+}
+
+# Order matters to produce stable redaction behavior
+REDACTION_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
+    (_OPENAI_KEY, "secrets:openai_key", REDACTION_MAP["secrets:openai_key"]),
+    (_AWS_ACCESS_KEY, "secrets:aws_key", REDACTION_MAP["secrets:aws_key"]),
+    (
+        _PRIV_KEY_BOUNDS,
+        "secrets:private_key_marker",
+        REDACTION_MAP["secrets:private_key_marker"],
+    ),
+    (_EMAIL, "pi:email", REDACTION_MAP["pi:email"]),
+    (_PHONE, "pi:phone", REDACTION_MAP["pi:phone"]),
+    (_SSN, "pi:ssn", REDACTION_MAP["pi:ssn"]),
+    (
+        _PROMPT_INJ,
+        "payload:prompt_injection",
+        REDACTION_MAP["payload:prompt_injection"],
+    ),
+]
+
+
+def _normalize_family(hit: str) -> str:
+    """
+    Map specific hits to their normalized families:
+    secrets:* | pi:* | payload:* | policy:deny:*
+    """
+    if hit.startswith("secrets:"):
+        return "secrets:*"
+    if hit.startswith("pi:"):
+        return "pi:*"
+    if hit.startswith("payload:"):
+        return "payload:*"
+    if hit.startswith("policy:deny:"):
+        return "policy:deny:*"
+    # default: pass through
+    return hit
+
+
+def sanitize_text(
+    text: str, debug: bool = False
+) -> Tuple[str, List[str], int, List[Dict[str, Any]]]:
+    """
+    Apply conservative redactions and return:
+      - sanitized_text
+      - normalized rule_hits (families)
+      - redaction_count
+      - debug_matches (optional)
+    """
+    hits: List[str] = []
+    debug_matches: List[Dict[str, Any]] = []
+    redactions = 0
+    out = text
+
+    # Walk each pattern; replace iteratively to gather counts and hits
+    for pattern, tag, replacement in REDACTION_PATTERNS:
+        # Find all occurrences before substitution (for debug/counting)
+        occurrences = list(pattern.finditer(out))
+        if not occurrences:
+            continue
+
+        # Perform substitution
+        out, n_subs = pattern.subn(replacement, out)
+        redactions += n_subs
+        hits.append(tag)
+
+        if debug:
+            for m in occurrences[:5]:  # cap to avoid huge debug payloads
+                span = {"start": m.start(), "end": m.end()}
+                sample = text[m.start() : m.end()]
+                debug_matches.append({"tag": tag, "span": span, "sample": sample})
+
+    # Deduplicate hits and normalize families
+    families = sorted({_normalize_family(h) for h in hits})
+
+    return out, families, redactions, (debug_matches if debug else [])
+
+
+# Note:
+# - Keep existing public functions like get_redactions_total(), reload_rules(), etc.
+# - Call sanitize_text() from the evaluate route to apply ingress redactions.

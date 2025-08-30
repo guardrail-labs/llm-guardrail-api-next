@@ -9,10 +9,15 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status, Header
 
 from app.services.detectors import evaluate_prompt
-from app.services.policy import current_rules_version, reload_rules
+from app.services.policy import (
+    current_rules_version,
+    reload_rules,
+    sanitize_text,
+    _normalize_family,
+)
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -346,7 +351,12 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
 
 @router.post("/evaluate", response_model=None)
-async def evaluate(request: Request) -> Dict[str, Any]:
+async def evaluate(
+    request: Request,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+) -> Dict[str, Any]:
     """
     Backward-compatible evaluate:
 
@@ -371,13 +381,11 @@ async def evaluate(request: Request) -> Dict[str, Any]:
             payload = {}
         text = str((payload or {}).get("text", ""))
         req_in = (payload or {}).get("request_id")
-        request_id_supplied = req_in is not None
         request_id = req_in or str(uuid.uuid4())
     elif content_type.startswith("multipart/form-data"):
         form = await request.form()
         text = str(form.get("text") or "")
         req_in = form.get("request_id")
-        request_id_supplied = req_in is not None
         request_id = str(req_in or str(uuid.uuid4()))
         # Append placeholders to text and also emit normalized decisions
         for kind in ("image", "audio", "file"):
@@ -393,45 +401,55 @@ async def evaluate(request: Request) -> Dict[str, Any]:
             payload = await request.json()
             text = str((payload or {}).get("text", ""))
             req_in = (payload or {}).get("request_id")
-            request_id_supplied = req_in is not None
             request_id = req_in or str(uuid.uuid4())
         except Exception:
             text, request_id = "", str(uuid.uuid4())
-            request_id_supplied = False
 
-    det = evaluate_prompt(text)
+    want_debug = x_debug == "1"
+    sanitized, families, redaction_count, debug_matches = sanitize_text(
+        text, debug=want_debug
+    )
+
+    det = evaluate_prompt(sanitized)
     decisions.extend(det.get("decisions", []))
 
     # If text changed, surface a redaction decision for tests.
-    xformed = det.get("transformed_text", text)
-    if xformed != text:
+    xformed = det.get("transformed_text", sanitized)
+    if sanitized != text or xformed != sanitized:
         decisions.append({"type": "redaction", "changed": True})
 
     _decisions_total += 1
 
     det_action = str(det.get("action", "allow"))
 
-    # --- Action selection rules to satisfy BOTH suites ---
-    # 1) Contract/smoke paths: if client supplied request_id, force "allow".
-    # 2) Contract edge-case: the contract test uses text "hello sk-..."; it
-    #    expects "allow" even though redaction occurs. We handle this
-    #    non-invasively without affecting detectors_ingress cases.
-    contract_hello_secret = text.lower().startswith("hello ") and _API_KEY_RE.search(
-        text
-    )
-
-    if request_id_supplied or contract_hello_secret:
+    if det_action == "deny":
+        out_action = "deny"
+    elif redaction_count > 0:
         out_action = "allow"
     else:
-        # detectors_ingress path wants actual detector actions (sanitize/deny/clarify)
         out_action = det_action
+
+    det_hits = _normalize_rule_hits(det.get("rule_hits", []), det.get("decisions", []))
+    det_families = [_normalize_family(h) for h in det_hits]
+    combined_hits = sorted({*families, *det_families})
 
     body: Dict[str, Any] = {
         "request_id": request_id,
         "action": out_action,
+        "text": xformed,
         "transformed_text": xformed,
         "decisions": decisions,
         "risk_score": det.get("risk_score", 0),
-        "rule_hits": det.get("rule_hits", []),
+        "rule_hits": combined_hits or None,
+        "redactions": redaction_count or None,
     }
+
+    if want_debug:
+        body["debug"] = {
+            "matches": debug_matches,
+            "explanations": [
+                "Redactions applied conservatively; verifier not invoked."
+            ],
+        }
+
     return body
