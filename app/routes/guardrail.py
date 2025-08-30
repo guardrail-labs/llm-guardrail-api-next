@@ -9,14 +9,23 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Request, Response, status, Header
+from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 
 from app.services.detectors import evaluate_prompt
 from app.services.policy import (
+    _normalize_family,
     current_rules_version,
     reload_rules,
     sanitize_text,
-    _normalize_family,
+)
+from app.services.verifier import (
+    Verdict,
+    Verifier,
+    content_fingerprint,
+    is_known_harmful,
+    load_providers_order,
+    mark_harmful,
+    verifier_enabled,
 )
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -356,6 +365,9 @@ async def evaluate(
     x_debug: Optional[str] = Header(
         default=None, alias="X-Debug", convert_underscores=False
     ),
+    x_force_unclear: Optional[str] = Header(
+        default=None, alias="X-Force-Unclear", convert_underscores=False
+    ),
 ) -> Dict[str, Any]:
     """
     Backward-compatible evaluate:
@@ -433,7 +445,7 @@ async def evaluate(
     det_families = [_normalize_family(h) for h in det_hits]
     combined_hits = sorted({*families, *det_families})
 
-    body: Dict[str, Any] = {
+    resp: Dict[str, Any] = {
         "request_id": request_id,
         "action": out_action,
         "text": xformed,
@@ -445,11 +457,45 @@ async def evaluate(
     }
 
     if want_debug:
-        body["debug"] = {
+        resp["debug"] = {
             "matches": debug_matches,
             "explanations": [
-                "Redactions applied conservatively; verifier not invoked."
+                "Redactions applied conservatively; verifier not invoked.",
             ],
         }
 
-    return body
+    # Feature-gated verifier path (dev/test only)
+    should_verify = verifier_enabled() and (x_force_unclear == "1")
+
+    if should_verify:
+        fp = content_fingerprint(text)
+        providers = load_providers_order()
+        v = Verifier(providers)
+        verdict, provider = v.assess_intent(text, meta={"hint": ""})
+
+        if verdict is None:
+            # Providers unreachable
+            if is_known_harmful(fp):
+                resp["action"] = "deny"
+            else:
+                resp["action"] = "clarify"
+            if want_debug:
+                resp.setdefault("debug", {})["verifier"] = {
+                    "providers": providers, "chosen": None, "verdict": None
+                }
+            return resp
+
+        if verdict == Verdict.UNSAFE:
+            mark_harmful(fp)
+            resp["action"] = "deny"
+        elif verdict == Verdict.UNCLEAR:
+            resp["action"] = "clarify"
+        # SAFE -> leave resp["action"] as-is
+
+        if want_debug:
+            resp.setdefault("debug", {})["verifier"] = {
+                "providers": providers, "chosen": provider, "verdict": verdict.value
+            }
+        return resp
+
+    return resp
