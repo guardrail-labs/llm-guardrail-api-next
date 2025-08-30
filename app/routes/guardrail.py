@@ -372,7 +372,7 @@ async def evaluate(
 
     content_type = (request.headers.get("content-type") or "").lower()
     decisions: List[Dict[str, Any]] = []
-    request_id_supplied = False
+    #request_id_supplied = False
 
     if content_type.startswith("application/json"):
         try:
