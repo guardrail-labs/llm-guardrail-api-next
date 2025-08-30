@@ -10,8 +10,10 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from pydantic import BaseModel
 
 from app.services.detectors import evaluate_prompt
+from app.services.egress import egress_check
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
@@ -499,3 +501,21 @@ async def evaluate(
         return resp
 
     return resp
+
+
+class EgressEvaluateRequest(BaseModel):
+    text: str
+
+
+@router.post("/egress_evaluate")
+async def egress_evaluate(
+    req: EgressEvaluateRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> Dict[str, Any]:
+    want_debug = (x_debug == "1")
+    payload, dbg = egress_check(req.text, debug=want_debug)
+
+    # Only include debug if requested, keep response keys stable otherwise
+    if want_debug and dbg:
+        payload["debug"] = {"explanations": dbg}
+    return payload
