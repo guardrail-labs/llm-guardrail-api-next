@@ -29,11 +29,12 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
       * Families reflect which rule families were hit (secrets:*, pi:*, payload:*)
     """
     debug_msgs: List[str] = []
+    payload: Dict[str, Any]  # declared once to avoid mypy no-redef
 
     # 1) Hard deny policy checks first (expandable)
     if _PRIV_KEY_BOUNDS.search(text or ""):
         families = ["policy:deny:*"]
-        payload: Dict[str, Any] = {
+        payload = {
             "action": "deny",
             "text": "",
             "rule_hits": families,
@@ -48,7 +49,7 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
         text, debug=debug
     )
 
-    payload: Dict[str, Any] = {
+    payload = {
         "action": "allow",
         "text": sanitized,
         "rule_hits": families or None,
