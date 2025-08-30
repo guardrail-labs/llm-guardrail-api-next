@@ -6,16 +6,19 @@ from app.main import app
 client = TestClient(app)
 
 
-def test_secrets_are_sanitized_and_action_is_sanitize():
+def test_secrets_are_sanitized_and_action_stays_allow():
     text = "please use this sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ to test"
     r = client.post("/guardrail/evaluate", json={"text": text})
     assert r.status_code == 200
     body = r.json()
-    assert body["action"] == "sanitize"
-    assert "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in body["transformed_text"]
-    # decisions should record a redaction
-    kinds = {d.get("type") for d in body.get("decisions", []) if isinstance(d, dict)}
-    assert "redaction" in kinds
+    # Contract: action remains "allow" when only redactions happen
+    assert body["action"] == "allow"
+    # Ensure redaction actually happened
+    assert "[REDACTED:OPENAI_KEY]" in body["text"]
+    # Normalized rule family present
+    assert "secrets:*" in (body.get("rule_hits") or [])
+    # Optional: redaction count surfaced
+    assert (body.get("redactions") or 0) >= 1
 
 
 def test_unsafe_is_denied():
@@ -32,4 +35,3 @@ def test_gray_area_prompts_request_clarification():
     assert r.status_code == 200
     body = r.json()
     assert body["action"] == "clarify"
-
