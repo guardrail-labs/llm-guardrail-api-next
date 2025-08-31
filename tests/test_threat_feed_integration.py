@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-
 from fastapi.testclient import TestClient
-
 from app.main import app
 
 client = TestClient(app)
@@ -29,7 +27,7 @@ def test_threat_feed_dynamic_redaction_policy():
             ],
         }
 
-    tf._fetch_json = _fake_fetch_json  # type: ignore
+    tf._fetch_json = _fake_fetch_json
 
     # Trigger refresh
     r_reload = client.post("/admin/threat/reload")
