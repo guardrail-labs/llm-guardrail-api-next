@@ -20,6 +20,11 @@ from app.services.policy import (
     reload_rules,
     sanitize_text,
 )
+from app.services.threat_feed import (
+    apply_dynamic_redactions,
+    refresh_from_env,
+    threat_feed_enabled,
+)
 from app.services.verifier import (
     Verdict,
     Verifier,
@@ -423,6 +428,18 @@ async def evaluate(
     sanitized, families, redaction_count, debug_matches = sanitize_text(
         text, debug=want_debug
     )
+    # Optional: threat-feed dynamic redactions layered on top
+    if threat_feed_enabled():
+        dyn_text, dyn_families, dyn_redactions, _dyn_debug = apply_dynamic_redactions(
+            sanitized, debug=want_debug
+        )
+        sanitized = dyn_text
+        if dyn_families:
+            base = set(families or [])
+            base.update(dyn_families)
+            families = sorted(base)
+        if dyn_redactions:
+            redaction_count = (redaction_count or 0) + dyn_redactions
 
     det = evaluate_prompt(sanitized)
     decisions.extend(det.get("decisions", []))
@@ -465,6 +482,12 @@ async def evaluate(
                 "Redactions applied conservatively; verifier not invoked.",
             ],
         }
+
+    # Attach threat-feed debug info if requested
+    if want_debug and threat_feed_enabled():
+        _, _, _, dyn_debug = apply_dynamic_redactions(sanitized, debug=True)
+        if dyn_debug:
+            resp.setdefault("debug", {})["threat_feed"] = {"matches": dyn_debug}
 
     # Feature-gated verifier path (dev/test only)
     should_verify = verifier_enabled() and (x_force_unclear == "1")
@@ -519,3 +542,17 @@ async def egress_evaluate(
     if want_debug and dbg:
         payload["debug"] = {"explanations": dbg}
     return payload
+
+
+threat_admin_router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@threat_admin_router.post("/threat/reload")
+async def admin_threat_reload() -> Dict[str, Any]:
+    """
+    Pulls the latest threat-feed specs from THREAT_FEED_URLS and swaps them in.
+    Safe for dev/test; in production, protect with auth.
+    """
+    result = refresh_from_env()
+    return {"ok": True, "result": result}
+
