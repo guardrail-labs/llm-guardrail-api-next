@@ -46,6 +46,7 @@ from app.services.verifier import (
     mark_harmful,
     verifier_enabled,
 )
+from app.telemetry.metrics import inc_decision_family  # <-- NEW
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -283,28 +284,20 @@ def _maybe_patch_with_fallbacks(
     return decision, hits
 
 
+def _inc_family_for_legacy(decision: str, rule_hits: List[str]) -> None:
+    """
+    Legacy /guardrail/ maps to allow|block only.
+    We keep it simple: block -> block, else -> allow.
+    """
+    fam = "block" if decision == "block" else "allow"
+    inc_decision_family(fam)
+
+
 @router.post("/", response_model=None)
 async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]:
     """
     Legacy ingress guardrail.
-
     JSON body: {"prompt": "..."}
-
-    - 401: {"detail": "Unauthorized"}
-    - 413: {"code": "payload_too_large", "detail": "Prompt too large", "request_id": ...}
-    - 429: {
-        "code": "rate_limited",
-        "detail": "Rate limit exceeded",
-        "retry_after": 60,
-        "request_id": ...
-      }
-    - 200: {
-        "decision": "allow|block",
-        "transformed_text": "...",
-        "rule_hits": [...],
-        "policy_version": "...",
-        "request_id": "..."
-      }
     """
     global _requests_total, _decisions_total
 
@@ -348,7 +341,6 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     _requests_total += 1
 
-    # Use detectors for rule_hits and transformed text; map to legacy "block".
     det = evaluate_prompt(prompt)
     action = str(det.get("action", "allow"))
     decision = "block" if action != "allow" else "allow"
@@ -358,15 +350,14 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     raw_decisions = det.get("decisions", []) or []
     rule_hits = _normalize_rule_hits(raw_hits, raw_decisions)
 
-    # Fallbacks to ensure expected rule IDs/blocks for tests
     decision, rule_hits = _maybe_patch_with_fallbacks(prompt, decision, rule_hits)
 
     _decisions_total += 1
 
-    # Audit log line (tests expect "decision" in the event)
-    _audit_maybe(prompt, rid, decision=decision)
+    # --- NEW: increment decision family counters (legacy path) ---
+    _inc_family_for_legacy(decision, rule_hits)
 
-    # Always reflect the active, loaded policy version
+    _audit_maybe(prompt, rid, decision=decision)
     policy_version = current_rules_version()
 
     return {
@@ -390,11 +381,8 @@ async def evaluate(
 ) -> Dict[str, Any]:
     """
     Backward-compatible evaluate:
-
-      - JSON: {"text": "...", "request_id": "...?"}
+      - JSON: {"text": "...", "request_id": "..."?}
       - Multipart: fields: text?, image?, audio?, file? (repeatable)
-
-    Returns detectors/decisions and possible redactions.
     """
     global _requests_total, _decisions_total
 
@@ -403,7 +391,6 @@ async def evaluate(
 
     content_type = (request.headers.get("content-type") or "").lower()
     decisions: List[Dict[str, Any]] = []
-    #request_id_supplied = False
 
     if content_type.startswith("application/json"):
         try:
@@ -418,7 +405,6 @@ async def evaluate(
         text = str(form.get("text") or "")
         req_in = form.get("request_id")
         request_id = str(req_in or str(uuid.uuid4()))
-        # Append placeholders to text and also emit normalized decisions
         for kind in ("image", "audio", "file"):
             for f in form.getlist(kind):
                 filename = getattr(f, "filename", "upload")
@@ -427,7 +413,6 @@ async def evaluate(
                     {"type": "normalized", "tag": kind, "filename": filename}
                 )
     else:
-        # Best-effort JSON parse; otherwise empty
         try:
             payload = await request.json()
             text = str((payload or {}).get("text", ""))
@@ -440,7 +425,6 @@ async def evaluate(
     sanitized, families, redaction_count, debug_matches = sanitize_text(
         text, debug=want_debug
     )
-    # Optional: threat-feed dynamic redactions layered on top
     if threat_feed_enabled():
         dyn_text, dyn_families, dyn_redactions, _dyn_debug = apply_dynamic_redactions(
             sanitized, debug=want_debug
@@ -456,7 +440,6 @@ async def evaluate(
     det = evaluate_prompt(sanitized)
     decisions.extend(det.get("decisions", []))
 
-    # If text changed, surface a redaction decision for tests.
     xformed = det.get("transformed_text", sanitized)
     if sanitized != text or xformed != sanitized:
         decisions.append({"type": "redaction", "changed": True})
@@ -467,10 +450,16 @@ async def evaluate(
 
     if det_action == "deny":
         out_action = "deny"
+        family = "block"
     elif redaction_count > 0:
         out_action = "allow"
+        family = "sanitize"
+    elif det_action == "clarify":
+        out_action = "clarify"
+        family = "verify"
     else:
         out_action = det_action
+        family = "allow"
 
     det_hits = _normalize_rule_hits(det.get("rule_hits", []), det.get("decisions", []))
     det_families = [_normalize_family(h) for h in det_hits]
@@ -495,7 +484,6 @@ async def evaluate(
             ],
         }
 
-    # Attach threat-feed debug info if requested
     if want_debug and threat_feed_enabled():
         _, _, _, dyn_debug = apply_dynamic_redactions(sanitized, debug=True)
         if dyn_debug:
@@ -514,25 +502,24 @@ async def evaluate(
             # Providers unreachable
             if is_known_harmful(fp):
                 resp["action"] = "deny"
+                family = "block"
             else:
                 resp["action"] = "clarify"
+                family = "verify"
             if want_debug:
                 resp.setdefault("debug", {})["verifier"] = {
                     "providers": providers, "chosen": None, "verdict": None
                 }
-            # --- enterprise audit forwarding (feature-gated) ---
             try:
                 emit_audit_event(
                     {
                         "ts": None,
-                        # replace later when tenancy headers are wired into core
                         "tenant_id": "default",
                         "bot_id": "default",
                         "request_id": resp.get("request_id", ""),
                         "direction": "ingress",
                         "decision": resp.get("action", "allow"),
                         "rule_hits": resp.get("rule_hits") or None,
-                        # fill when policy versioning is added
                         "policy_version": "",
                         "verifier_provider": (
                             (resp.get("debug") or {})
@@ -542,39 +529,40 @@ async def evaluate(
                         "fallback_used": None,
                         "status_code": 200,
                         "redaction_count": resp.get("redactions") or 0,
-                        # fill when you compute content fingerprints for requests
                         "hash_fingerprint": "",
                         "meta": {},
                     }
                 )
             except Exception:
                 pass
+
+            # --- NEW: increment after final action chosen ---
+            inc_decision_family(family)
             return resp
 
         if verdict == Verdict.UNSAFE:
             mark_harmful(fp)
             resp["action"] = "deny"
+            family = "block"
         elif verdict == Verdict.UNCLEAR:
             resp["action"] = "clarify"
-        # SAFE -> leave resp["action"] as-is
+            family = "verify"
+        # SAFE -> leave resp["action"] and family as-is
 
         if want_debug:
             resp.setdefault("debug", {})["verifier"] = {
                 "providers": providers, "chosen": provider, "verdict": verdict.value
             }
-        # --- enterprise audit forwarding (feature-gated) ---
         try:
             emit_audit_event(
                 {
                     "ts": None,
-                    # replace later when tenancy headers are wired into core
                     "tenant_id": "default",
                     "bot_id": "default",
                     "request_id": resp.get("request_id", ""),
                     "direction": "ingress",
                     "decision": resp.get("action", "allow"),
                     "rule_hits": resp.get("rule_hits") or None,
-                    # fill when policy versioning is added
                     "policy_version": "",
                     "verifier_provider": (
                         (resp.get("debug") or {})
@@ -584,28 +572,27 @@ async def evaluate(
                     "fallback_used": None,
                     "status_code": 200,
                     "redaction_count": resp.get("redactions") or 0,
-                    # fill when you compute content fingerprints for requests
                     "hash_fingerprint": "",
                     "meta": {},
                 }
             )
         except Exception:
             pass
+
+        # --- NEW: increment after final action chosen ---
+        inc_decision_family(family)
         return resp
 
-    # --- enterprise audit forwarding (feature-gated) ---
     try:
         emit_audit_event(
             {
                 "ts": None,
-                # replace later when tenancy headers are wired into core
                 "tenant_id": "default",
                 "bot_id": "default",
                 "request_id": resp.get("request_id", ""),
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
-                # fill when policy versioning is added
                 "policy_version": "",
                 "verifier_provider": (
                     (resp.get("debug") or {})
@@ -615,13 +602,15 @@ async def evaluate(
                 "fallback_used": None,
                 "status_code": 200,
                 "redaction_count": resp.get("redactions") or 0,
-                # fill when you compute content fingerprints for requests
                 "hash_fingerprint": "",
                 "meta": {},
             }
         )
     except Exception:
         pass
+
+    # --- NEW: increment decision family counters (evaluate path) ---
+    inc_decision_family(family)
     return resp
 
 
@@ -643,9 +632,6 @@ async def evaluate_guardrail_multipart(
 ) -> Dict[str, Any]:
     """
     Multimodal ingress evaluation via multipart/form-data.
-    - Safely extracts printable text from files (no macro/code execution)
-    - Aggregates with 'text' field
-    - Applies same sanitization and optional threat-feed redactions
     Contract: response keys match /guardrail/evaluate; debug only with X-Debug: 1.
     """
     want_debug = (x_debug == "1")
@@ -671,12 +657,10 @@ async def evaluate_guardrail_multipart(
         combo_files = "\n".join([t for t in extracted_texts if t])
         combined = (combined + "\n" + combo_files).strip()
 
-    # Apply base sanitization
     sanitized, families, redaction_count, debug_matches = sanitize_text(
         combined, debug=want_debug
     )
 
-    # Optional dynamic redactions
     if threat_feed_enabled():
         dyn_text, dyn_fams, dyn_reds, dyn_dbg = apply_dynamic_redactions(
             sanitized, debug=want_debug
@@ -688,10 +672,12 @@ async def evaluate_guardrail_multipart(
             families = sorted(base)
         if dyn_reds:
             redaction_count = (redaction_count or 0) + dyn_reds
-        # We'll add dyn_dbg below if debug is requested
+
+    # allow by contract; if redactions happened, count as sanitize
+    family = "sanitize" if (redaction_count or 0) > 0 else "allow"
 
     resp: Dict[str, Any] = {
-        "action": "allow",  # contract: allow when only redactions happen
+        "action": "allow",
         "text": sanitized,
         "rule_hits": families or None,
         "redactions": redaction_count or None,
@@ -702,20 +688,18 @@ async def evaluate_guardrail_multipart(
             "sources": sources_meta,
             "matches": debug_matches,
         }
-        # If dynamic redactions ran, include their debug matches too
         if threat_feed_enabled():
             _, _, _, dyn_dbg2 = apply_dynamic_redactions(sanitized, debug=True)
             if dyn_dbg2:
                 resp["debug"]["threat_feed"] = {"matches": dyn_dbg2}
 
-    # --- enterprise audit forwarding (feature-gated) ---
     try:
         emit_audit_event(
             {
                 "ts": None,
                 "tenant_id": "default",
                 "bot_id": "default",
-                "request_id": "",  # include if you thread request IDs into multipart flow
+                "request_id": "",
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
@@ -733,6 +717,8 @@ async def evaluate_guardrail_multipart(
     except Exception:
         pass
 
+    # --- NEW: increment family (sanitize if redactions occurred) ---
+    inc_decision_family(family)
     return resp
 
 
@@ -748,18 +734,17 @@ async def egress_evaluate(
     want_debug = (x_debug == "1")
     payload, dbg = egress_check(req.text, debug=want_debug)
 
-    # Only include debug if requested, keep response keys stable otherwise
+    # Only include debug if requested
     if want_debug and dbg:
         payload["debug"] = {"explanations": dbg}
 
-    # --- enterprise audit forwarding (feature-gated) ---
     try:
         emit_audit_event(
             {
                 "ts": None,
                 "tenant_id": "default",
                 "bot_id": "default",
-                "request_id": "",  # populate if you propagate request_ids to egress
+                "request_id": "",
                 "direction": "egress",
                 "decision": payload.get("action", "allow"),
                 "rule_hits": payload.get("rule_hits") or None,
@@ -774,6 +759,16 @@ async def egress_evaluate(
         )
     except Exception:
         pass
+
+    # --- NEW: increment family for egress ---
+    action = str(payload.get("action", "allow"))
+    if action == "deny":
+        fam = "block"
+    elif int(payload.get("redactions") or 0) > 0:
+        fam = "sanitize"
+    else:
+        fam = "allow"
+    inc_decision_family(fam)
 
     return payload
 
