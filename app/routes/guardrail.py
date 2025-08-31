@@ -22,6 +22,7 @@ from fastapi import (
 )
 from pydantic import BaseModel
 
+from app.services.audit_forwarder import emit_event as emit_audit_event
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
 from app.services.extractors import extract_from_bytes
@@ -519,6 +520,35 @@ async def evaluate(
                 resp.setdefault("debug", {})["verifier"] = {
                     "providers": providers, "chosen": None, "verdict": None
                 }
+            # --- enterprise audit forwarding (feature-gated) ---
+            try:
+                emit_audit_event(
+                    {
+                        "ts": None,
+                        # replace later when tenancy headers are wired into core
+                        "tenant_id": "default",
+                        "bot_id": "default",
+                        "request_id": resp.get("request_id", ""),
+                        "direction": "ingress",
+                        "decision": resp.get("action", "allow"),
+                        "rule_hits": resp.get("rule_hits") or None,
+                        # fill when policy versioning is added
+                        "policy_version": "",
+                        "verifier_provider": (
+                            (resp.get("debug") or {})
+                            .get("verifier", {})
+                            .get("chosen")
+                        ),
+                        "fallback_used": None,
+                        "status_code": 200,
+                        "redaction_count": resp.get("redactions") or 0,
+                        # fill when you compute content fingerprints for requests
+                        "hash_fingerprint": "",
+                        "meta": {},
+                    }
+                )
+            except Exception:
+                pass
             return resp
 
         if verdict == Verdict.UNSAFE:
@@ -532,8 +562,66 @@ async def evaluate(
             resp.setdefault("debug", {})["verifier"] = {
                 "providers": providers, "chosen": provider, "verdict": verdict.value
             }
+        # --- enterprise audit forwarding (feature-gated) ---
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    # replace later when tenancy headers are wired into core
+                    "tenant_id": "default",
+                    "bot_id": "default",
+                    "request_id": resp.get("request_id", ""),
+                    "direction": "ingress",
+                    "decision": resp.get("action", "allow"),
+                    "rule_hits": resp.get("rule_hits") or None,
+                    # fill when policy versioning is added
+                    "policy_version": "",
+                    "verifier_provider": (
+                        (resp.get("debug") or {})
+                        .get("verifier", {})
+                        .get("chosen")
+                    ),
+                    "fallback_used": None,
+                    "status_code": 200,
+                    "redaction_count": resp.get("redactions") or 0,
+                    # fill when you compute content fingerprints for requests
+                    "hash_fingerprint": "",
+                    "meta": {},
+                }
+            )
+        except Exception:
+            pass
         return resp
 
+    # --- enterprise audit forwarding (feature-gated) ---
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                # replace later when tenancy headers are wired into core
+                "tenant_id": "default",
+                "bot_id": "default",
+                "request_id": resp.get("request_id", ""),
+                "direction": "ingress",
+                "decision": resp.get("action", "allow"),
+                "rule_hits": resp.get("rule_hits") or None,
+                # fill when policy versioning is added
+                "policy_version": "",
+                "verifier_provider": (
+                    (resp.get("debug") or {})
+                    .get("verifier", {})
+                    .get("chosen")
+                ),
+                "fallback_used": None,
+                "status_code": 200,
+                "redaction_count": resp.get("redactions") or 0,
+                # fill when you compute content fingerprints for requests
+                "hash_fingerprint": "",
+                "meta": {},
+            }
+        )
+    except Exception:
+        pass
     return resp
 
 
@@ -620,6 +708,31 @@ async def evaluate_guardrail_multipart(
             if dyn_dbg2:
                 resp["debug"]["threat_feed"] = {"matches": dyn_dbg2}
 
+    # --- enterprise audit forwarding (feature-gated) ---
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": "default",
+                "bot_id": "default",
+                "request_id": "",  # include if you thread request IDs into multipart flow
+                "direction": "ingress",
+                "decision": resp.get("action", "allow"),
+                "rule_hits": resp.get("rule_hits") or None,
+                "policy_version": "",
+                "verifier_provider": (resp.get("debug") or {}).get("verifier", {}).get("chosen"),
+                "fallback_used": None,
+                "status_code": 200,
+                "redaction_count": resp.get("redactions") or 0,
+                "hash_fingerprint": "",
+                "meta": {
+                    "sources": (resp.get("debug") or {}).get("sources") if "debug" in resp else None
+                },
+            }
+        )
+    except Exception:
+        pass
+
     return resp
 
 
@@ -638,6 +751,30 @@ async def egress_evaluate(
     # Only include debug if requested, keep response keys stable otherwise
     if want_debug and dbg:
         payload["debug"] = {"explanations": dbg}
+
+    # --- enterprise audit forwarding (feature-gated) ---
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": "default",
+                "bot_id": "default",
+                "request_id": "",  # populate if you propagate request_ids to egress
+                "direction": "egress",
+                "decision": payload.get("action", "allow"),
+                "rule_hits": payload.get("rule_hits") or None,
+                "policy_version": "",
+                "verifier_provider": None,
+                "fallback_used": None,
+                "status_code": 200,
+                "redaction_count": payload.get("redactions") or 0,
+                "hash_fingerprint": "",
+                "meta": {},
+            }
+        )
+    except Exception:
+        pass
+
     return payload
 
 
