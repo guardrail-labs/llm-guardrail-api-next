@@ -14,9 +14,9 @@ from app.routes.guardrail import (
     get_decisions_total,
     get_requests_total,
     router as guardrail_router,
+    threat_admin_router,
 )
 from app.routes.output import router as output_router
-
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 
@@ -164,6 +164,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(guardrail_router)
+    app.include_router(threat_admin_router)
     app.include_router(output_router)
     return app
 
