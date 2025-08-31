@@ -10,7 +10,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from app.middleware.rate_limit import RateLimitMiddleware
 from app.routes.guardrail import (
     get_decisions_total,
     get_requests_total,
@@ -20,7 +19,8 @@ from app.routes.guardrail import (
 from app.routes.output import router as output_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
-from app.telemetry.metrics import get_all_family_totals  # <-- NEW
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.telemetry.metrics import get_all_family_totals, get_rate_limited_total  # <-- NEW
 
 # Test-only bypass for admin auth (enabled in CI/tests via env)
 TEST_AUTH_BYPASS = os.getenv("GUARDRAIL_DISABLE_AUTH") == "1"
@@ -140,7 +140,7 @@ def create_app() -> FastAPI:
     @app.get("/metrics")
     async def metrics():
         lines = []
-        # Counters
+        # Existing counters
         lines.append("# HELP guardrail_requests_total Total /guardrail requests.")
         lines.append("# TYPE guardrail_requests_total counter")
         lines.append(f"guardrail_requests_total {get_requests_total()}")
@@ -157,13 +157,18 @@ def create_app() -> FastAPI:
         lines.append("# TYPE guardrail_audit_events_total counter")
         lines.append(f"guardrail_audit_events_total {get_audit_events_total()}")
 
-        # NEW: family counters
+        # NEW: decisions by family
         lines.append("# HELP guardrail_decisions_family_total Decisions by family.")
         lines.append("# TYPE guardrail_decisions_family_total counter")
         fam = get_all_family_totals()
         for k in ("allow", "block", "sanitize", "verify"):
             v = fam.get(k, 0.0)
             lines.append(f'guardrail_decisions_family_total{{family="{k}"}} {v}')
+
+        # NEW: total rate-limited requests (429 from rate limit)
+        lines.append("# HELP guardrail_rate_limited_total Requests blocked by rate limit.")
+        lines.append("# TYPE guardrail_rate_limited_total counter")
+        lines.append(f"guardrail_rate_limited_total {get_rate_limited_total()}")
 
         # Minimal histogram (tests only check *_count presence)
         lines.append("# HELP guardrail_latency_seconds Request latency histogram.")
