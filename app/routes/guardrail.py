@@ -46,7 +46,8 @@ from app.services.verifier import (
     mark_harmful,
     verifier_enabled,
 )
-from app.telemetry.metrics import inc_decision_family  # <-- NEW
+from app.telemetry.metrics import inc_decision_family
+from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -59,6 +60,13 @@ _RATE_LOCK = threading.RLock()
 _BUCKETS: Dict[str, List[float]] = {}  # per-client rolling window timestamps
 _LAST_RATE_CFG: Tuple[bool, int, int] = (False, 60, 60)
 _LAST_APP_ID: Optional[int] = None  # reset buckets when app instance changes
+
+
+def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
+    """Resolve tenant/bot from headers with safe defaults."""
+    tenant = request.headers.get(TENANT_HEADER) or "default"
+    bot = request.headers.get(BOT_HEADER) or "default"
+    return tenant, bot
 
 
 def get_requests_total() -> float:
@@ -392,6 +400,8 @@ async def evaluate(
     content_type = (request.headers.get("content-type") or "").lower()
     decisions: List[Dict[str, Any]] = []
 
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+
     if content_type.startswith("application/json"):
         try:
             payload = await request.json()
@@ -514,8 +524,8 @@ async def evaluate(
                 emit_audit_event(
                     {
                         "ts": None,
-                        "tenant_id": "default",
-                        "bot_id": "default",
+                        "tenant_id": tenant_id,
+                        "bot_id": bot_id,
                         "request_id": resp.get("request_id", ""),
                         "direction": "ingress",
                         "decision": resp.get("action", "allow"),
@@ -557,8 +567,8 @@ async def evaluate(
             emit_audit_event(
                 {
                     "ts": None,
-                    "tenant_id": "default",
-                    "bot_id": "default",
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
                     "request_id": resp.get("request_id", ""),
                     "direction": "ingress",
                     "decision": resp.get("action", "allow"),
@@ -587,8 +597,8 @@ async def evaluate(
         emit_audit_event(
             {
                 "ts": None,
-                "tenant_id": "default",
-                "bot_id": "default",
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
                 "request_id": resp.get("request_id", ""),
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
@@ -624,6 +634,7 @@ class EvaluateMultipartResponse(BaseModel):
 
 @router.post("/evaluate_multipart")
 async def evaluate_guardrail_multipart(
+    request: Request,
     text: Optional[str] = Form(default=""),
     files: List[UploadFile] = File(default=[]),
     x_debug: Optional[str] = Header(
@@ -635,6 +646,7 @@ async def evaluate_guardrail_multipart(
     Contract: response keys match /guardrail/evaluate; debug only with X-Debug: 1.
     """
     want_debug = (x_debug == "1")
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
 
     extracted_texts: List[str] = []
     sources_meta: List[Dict[str, Any]] = []
@@ -697,9 +709,9 @@ async def evaluate_guardrail_multipart(
         emit_audit_event(
             {
                 "ts": None,
-                "tenant_id": "default",
-                "bot_id": "default",
-                "request_id": "",
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": "",  # populate later if you thread request IDs to multipart
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
@@ -728,10 +740,12 @@ class EgressEvaluateRequest(BaseModel):
 
 @router.post("/egress_evaluate")
 async def egress_evaluate(
+    request: Request,
     req: EgressEvaluateRequest,
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
     want_debug = (x_debug == "1")
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
     payload, dbg = egress_check(req.text, debug=want_debug)
 
     # Only include debug if requested
@@ -742,8 +756,8 @@ async def egress_evaluate(
         emit_audit_event(
             {
                 "ts": None,
-                "tenant_id": "default",
-                "bot_id": "default",
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
                 "request_id": "",
                 "direction": "egress",
                 "decision": payload.get("action", "allow"),

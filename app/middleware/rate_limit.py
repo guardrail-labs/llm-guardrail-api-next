@@ -5,10 +5,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from app.services.rate_limit import RateLimiter
-from app.telemetry.metrics import inc_rate_limited  # <-- NEW
-
-TENANT_HEADER = "X-Tenant-ID"
-BOT_HEADER = "X-Bot-ID"
+from app.telemetry.metrics import inc_rate_limited
+from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
