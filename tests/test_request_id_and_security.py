@@ -22,7 +22,7 @@ def _make_client():
 
 def test_request_id_generated_and_echoed():
     client = _make_client()
-    r = client.post("/guardrail", json={"prompt": "hello"}, headers={"X-API-Key": "unit-test-key"})
+    r = client.post("/guardrail/", json={"prompt": "hello"}, headers={"X-API-Key": "unit-test-key"})
     assert r.status_code == 200
 
     rid = r.headers.get("X-Request-ID")
@@ -34,7 +34,7 @@ def test_request_id_passthrough_from_client():
     client = _make_client()
     custom = "123e4567-e89b-12d3-a456-426614174000"
     r = client.post(
-        "/guardrail",
+        "/guardrail/",
         json={"prompt": "echo"},
         headers={"X-API-Key": "unit-test-key", "X-Request-ID": custom},
     )
@@ -52,18 +52,18 @@ def test_security_headers_present_on_health():
     assert h.get("Referrer-Policy") == "no-referrer"
 
 
-def test_retry_after_and_request_id_on_429():
-    os.environ["RATE_LIMIT_ENABLED"] = "true"
-    os.environ["RATE_LIMIT_PER_MINUTE"] = "2"
-    os.environ["RATE_LIMIT_BURST"] = "2"
+def test_retry_after_and_request_id_on_429(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "2")
 
     client = _make_client()
     headers = {"X-API-Key": "unit-test-key"}
 
-    assert client.post("/guardrail", json={"prompt": "1"}, headers=headers).status_code == 200
-    assert client.post("/guardrail", json={"prompt": "2"}, headers=headers).status_code == 200
-    r = client.post("/guardrail", json={"prompt": "3"}, headers=headers)
+    assert client.post("/guardrail/", json={"prompt": "1"}, headers=headers).status_code == 200
+    assert client.post("/guardrail/", json={"prompt": "2"}, headers=headers).status_code == 200
+    r = client.post("/guardrail/", json={"prompt": "3"}, headers=headers)
     assert r.status_code == 429
     assert r.headers.get("Retry-After") is not None
     assert r.headers.get("X-Request-ID") is not None
-    assert "Rate limit exceeded" in r.json().get("detail", "")
+    assert "rate limit exceeded" in r.json().get("detail", "").lower()

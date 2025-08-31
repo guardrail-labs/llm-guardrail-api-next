@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.routes.guardrail import (
     get_decisions_total,
     get_requests_total,
@@ -63,6 +64,9 @@ def create_app() -> FastAPI:
 
     # Initialize per-app rate-limit configuration
     _init_rate_limit_state(app)
+
+    # Rate limit middleware (always attached; behavior is env-gated)
+    app.add_middleware(RateLimitMiddleware)
 
     @app.middleware("http")
     async def add_request_id_and_security_headers(request: Request, call_next):

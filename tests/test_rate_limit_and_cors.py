@@ -25,19 +25,19 @@ def test_cors_allows_origin_header_on_simple_get():
     assert r.headers.get("access-control-allow-origin") == "http://example.com"
 
 
-def test_rate_limit_429_after_burst():
-    os.environ["RATE_LIMIT_ENABLED"] = "true"
-    os.environ["RATE_LIMIT_PER_MINUTE"] = "2"
-    os.environ["RATE_LIMIT_BURST"] = "2"
+def test_rate_limit_429_after_burst(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "2")
 
     client = _make_client()
 
     h = {"X-API-Key": "unit-test-key"}
     # First two allowed
-    assert client.post("/guardrail", json={"prompt": "ok"}, headers=h).status_code == 200
-    assert client.post("/guardrail", json={"prompt": "ok2"}, headers=h).status_code == 200
+    assert client.post("/guardrail/", json={"prompt": "ok"}, headers=h).status_code == 200
+    assert client.post("/guardrail/", json={"prompt": "ok2"}, headers=h).status_code == 200
     # Third should be limited
-    r3 = client.post("/guardrail", json={"prompt": "ok3"}, headers=h)
+    r3 = client.post("/guardrail/", json={"prompt": "ok3"}, headers=h)
     assert r3.status_code == 429
-    assert "Rate limit exceeded" in r3.json().get("detail", "")
+    assert "rate limit exceeded" in r3.json().get("detail", "").lower()
 

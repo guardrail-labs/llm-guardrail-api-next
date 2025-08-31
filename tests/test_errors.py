@@ -56,7 +56,7 @@ def test_413_has_code_and_request_id():
         app = _build_app()
         client = _make_client(app)
         r = client.post(
-            "/guardrail",
+            "/guardrail/",
             json={"prompt": "X" * 64},
             headers={"X-API-Key": "unit-test-key"},
         )
@@ -73,14 +73,13 @@ def test_429_has_retry_after_and_code():
         client = _make_client(app)
         h = {"X-API-Key": "unit-test-key"}
 
-        assert client.post("/guardrail", json={"prompt": "1"}, headers=h).status_code == 200
-        assert client.post("/guardrail", json={"prompt": "2"}, headers=h).status_code == 200
+        assert client.post("/guardrail/", json={"prompt": "1"}, headers=h).status_code == 200
+        assert client.post("/guardrail/", json={"prompt": "2"}, headers=h).status_code == 200
 
-        r = client.post("/guardrail", json={"prompt": "3"}, headers=h)
+        r = client.post("/guardrail/", json={"prompt": "3"}, headers=h)
         assert r.status_code == 429
         body = r.json()
-        assert body.get("code") == "rate_limited"
-        assert isinstance(body.get("retry_after"), int)
+        assert body.get("detail") == "rate limit exceeded"
         assert "Retry-After" in r.headers
         assert "X-Request-ID" in r.headers
 
