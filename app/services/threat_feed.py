@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.request import urlopen  # stdlib to avoid extra deps
+
 
 # A dynamic redaction spec: {"pattern": "regex", "tag": "secrets:vendor_token",
 #                            "replacement": "[REDACTED:VENDOR_TOKEN]"}
@@ -19,13 +20,15 @@ def threat_feed_enabled() -> bool:
 
 
 def _fetch_json(url: str) -> Dict[str, Any]:
-    with urlopen(url, timeout=10) as resp:  # nosec - controlled by admin call/tests
+    with urlopen(url, timeout=10) as resp:  # nosec - controlled by admin/tests
         data = resp.read().decode("utf-8", "ignore")
-        return json.loads(data)
+        # mypy: json.loads returns Any; cast to Dict[str, Any] for our schema
+        return cast(Dict[str, Any], json.loads(data))
 
 
-def _compile_specs(specs: List[_RedactionSpec]
-                   ) -> List[Tuple[re.Pattern[str], str, str]]:
+def _compile_specs(
+    specs: List[_RedactionSpec],
+) -> List[Tuple[re.Pattern[str], str, str]]:
     compiled: List[Tuple[re.Pattern[str], str, str]] = []
     for s in specs:
         pat = s.get("pattern", "")
@@ -45,12 +48,18 @@ def refresh_from_env() -> Dict[str, Any]:
     """
     Pull redaction specs from all URLs in THREAT_FEED_URLS (comma-separated),
     compile them, and replace the dynamic pattern set atomically.
+
     Expected JSON shape per URL:
-      { "version": "2025-08-30",
+      {
+        "version": "2025-08-30",
         "redactions": [
-          {"pattern": "token_[0-9]{6}", "tag": "secrets:vendor_token",
-           "replacement": "[REDACTED:VENDOR_TOKEN]"}
-        ]}
+          {
+            "pattern": "token_[0-9]{6}",
+            "tag": "secrets:vendor_token",
+            "replacement": "[REDACTED:VENDOR_TOKEN]"
+          }
+        ]
+      }
     """
     urls = [u.strip() for u in os.getenv("THREAT_FEED_URLS", "").split(",") if u.strip()]
     all_specs: List[_RedactionSpec] = []
@@ -126,5 +135,5 @@ def apply_dynamic_redactions(
                 )
 
     # Deduplicate + normalize families
-    nf = sorted({ _family(t) for t in families })
+    nf = sorted({_family(t) for t in families})
     return out, nf, redactions, dbg
