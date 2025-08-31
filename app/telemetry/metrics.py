@@ -1,94 +1,48 @@
-from time import monotonic
+from __future__ import annotations
 
-from fastapi import FastAPI, Request, Response
-from prometheus_client import (
-    CONTENT_TYPE_LATEST,
-    CollectorRegistry,
-    Counter,
-    Histogram,
-    generate_latest,
-)
+import threading
+from typing import Dict
 
-_registry = CollectorRegistry(auto_describe=True)
+# ----------------------------
+# Decision-family counters
+# ----------------------------
+_FAMILY_LOCK = threading.RLock()
+_FAMILY: Dict[str, float] = {
+    "allow": 0.0,
+    "block": 0.0,
+    "sanitize": 0.0,
+    "verify": 0.0,
+}
 
-REQUESTS = Counter(
-    "guardrail_requests_total",
-    "Total guardrail requests",
-    registry=_registry,
-)
+def inc_decision_family(name: str, by: float = 1.0) -> None:
+    key = (name or "").lower().strip()
+    if key not in _FAMILY:
+        return
+    with _FAMILY_LOCK:
+        _FAMILY[key] += float(by)
 
-DECISIONS = Counter(
-    "guardrail_decisions_total",
-    "Total decisions by type",
-    ["decision"],
-    registry=_registry,
-)
+def get_decisions_family_total(name: str) -> float:
+    key = (name or "").lower().strip()
+    if key not in _FAMILY:
+        return 0.0
+    with _FAMILY_LOCK:
+        return float(_FAMILY[key])
 
-RULE_HITS = Counter(
-    "guardrail_rule_hits_total",
-    "Total rule hits by rule_id",
-    ["rule_id"],
-    registry=_registry,
-)
+def get_all_family_totals() -> Dict[str, float]:
+    with _FAMILY_LOCK:
+        return {k: float(v) for k, v in _FAMILY.items()}
 
-REDACTIONS = Counter(
-    "guardrail_redactions_total",
-    "Total secret redactions by kind",
-    ["kind"],
-    registry=_registry,
-)
+# ----------------------------
+# Rate-limited counter
+# ----------------------------
+_RATE_LIMIT_LOCK = threading.RLock()
+_RATE_LIMITED_TOTAL: float = 0.0
 
-RATE_LIMITED = Counter(
-    "guardrail_rate_limited_total",
-    "Total requests rejected due to rate limiting",
-    registry=_registry,
-)
+def inc_rate_limited(by: float = 1.0) -> None:
+    global _RATE_LIMITED_TOTAL
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMITED_TOTAL += float(by)
 
-AUDIT_EVENTS = Counter(
-    "guardrail_audit_events_total",
-    "Total audit events emitted",
-    registry=_registry,
-)
-
-LATENCY = Histogram(
-    "guardrail_latency_seconds",
-    "Latency of /guardrail* requests in seconds",
-    registry=_registry,
-)
-
-
-def inc_decision(decision: str) -> None:
-    DECISIONS.labels(decision=decision).inc()
-
-
-def inc_rule_hits(rule_ids: list[str]) -> None:
-    for rid in rule_ids:
-        RULE_HITS.labels(rule_id=rid).inc()
-
-
-def inc_redaction(kind: str) -> None:
-    REDACTIONS.labels(kind=kind).inc()
-
-
-def inc_rate_limited() -> None:
-    RATE_LIMITED.inc()
-
-
-def inc_audit_event() -> None:
-    AUDIT_EVENTS.inc()
-
-
-def setup_metrics(app: FastAPI) -> None:
-    @app.middleware("http")
-    async def metrics_middleware(request: Request, call_next):
-        start = monotonic()
-        response = await call_next(request)
-        if request.url.path.startswith("/guardrail"):
-            REQUESTS.inc()
-            LATENCY.observe(monotonic() - start)
-        return response
-
-    @app.get("/metrics")
-    def metrics() -> Response:
-        data = generate_latest(_registry)
-        return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+def get_rate_limited_total() -> float:
+    with _RATE_LIMIT_LOCK:
+        return float(_RATE_LIMITED_TOTAL)

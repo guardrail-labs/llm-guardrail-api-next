@@ -5,10 +5,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from app.services.rate_limit import RateLimiter
+from app.telemetry.metrics import inc_rate_limited  # <-- NEW
 
 TENANT_HEADER = "X-Tenant-ID"
 BOT_HEADER = "X-Bot-ID"
-
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
@@ -20,7 +20,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         X-RateLimit-Reset
     - Returns 429 when enabled AND bucket empty.
     """
-
     def __init__(self, app: ASGIApp):
         super().__init__(app)
         self.limiter = RateLimiter()  # in-memory; swap to Redis in prod
@@ -44,6 +43,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
         if not allowed:
+            # increment metric for rate-limited requests
+            inc_rate_limited(1.0)
             resp = Response(
                 content='{"detail":"rate limit exceeded"}',
                 media_type="application/json",
@@ -53,8 +54,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             resp.headers["X-RateLimit-Remaining"] = "0"
             resp.headers["X-RateLimit-Reset"] = str(reset_epoch)
             # Retry-After (seconds until at least 1 token refills)
-            retry_after = max(0, reset_epoch - __import__("time").time())
-            resp.headers["Retry-After"] = str(int(retry_after))
+            import time as _t
+            retry_after = max(0, int(reset_epoch - int(_t.time())))
+            resp.headers["Retry-After"] = str(retry_after)
             return resp
 
         response = await call_next(request)
