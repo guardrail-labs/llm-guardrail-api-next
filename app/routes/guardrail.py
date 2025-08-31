@@ -9,11 +9,22 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel
 
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
+from app.services.extractors import extract_from_bytes
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
@@ -522,6 +533,92 @@ async def evaluate(
                 "providers": providers, "chosen": provider, "verdict": verdict.value
             }
         return resp
+
+    return resp
+
+
+class EvaluateMultipartResponse(BaseModel):
+    action: str
+    text: str
+    rule_hits: Optional[list] = None
+    redactions: Optional[int] = None
+    # debug remains optional and only when X-Debug: 1 is set
+
+
+@router.post("/evaluate_multipart")
+async def evaluate_guardrail_multipart(
+    text: Optional[str] = Form(default=""),
+    files: List[UploadFile] = File(default=[]),
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+) -> Dict[str, Any]:
+    """
+    Multimodal ingress evaluation via multipart/form-data.
+    - Safely extracts printable text from files (no macro/code execution)
+    - Aggregates with 'text' field
+    - Applies same sanitization and optional threat-feed redactions
+    Contract: response keys match /guardrail/evaluate; debug only with X-Debug: 1.
+    """
+    want_debug = (x_debug == "1")
+
+    extracted_texts: List[str] = []
+    sources_meta: List[Dict[str, Any]] = []
+
+    for up in files:
+        try:
+            data = await up.read()
+        except Exception:
+            data = b""
+        txt, meta = extract_from_bytes(
+            filename=up.filename or "unnamed",
+            content_type=up.content_type or "",
+            data=data,
+        )
+        extracted_texts.append(txt)
+        sources_meta.append(meta)
+
+    combined = (text or "")
+    if extracted_texts:
+        combo_files = "\n".join([t for t in extracted_texts if t])
+        combined = (combined + "\n" + combo_files).strip()
+
+    # Apply base sanitization
+    sanitized, families, redaction_count, debug_matches = sanitize_text(
+        combined, debug=want_debug
+    )
+
+    # Optional dynamic redactions
+    if threat_feed_enabled():
+        dyn_text, dyn_fams, dyn_reds, dyn_dbg = apply_dynamic_redactions(
+            sanitized, debug=want_debug
+        )
+        sanitized = dyn_text
+        if dyn_fams:
+            base = set(families or [])
+            base.update(dyn_fams)
+            families = sorted(base)
+        if dyn_reds:
+            redaction_count = (redaction_count or 0) + dyn_reds
+        # We'll add dyn_dbg below if debug is requested
+
+    resp: Dict[str, Any] = {
+        "action": "allow",  # contract: allow when only redactions happen
+        "text": sanitized,
+        "rule_hits": families or None,
+        "redactions": redaction_count or None,
+    }
+
+    if want_debug:
+        resp["debug"] = {
+            "sources": sources_meta,
+            "matches": debug_matches,
+        }
+        # If dynamic redactions ran, include their debug matches too
+        if threat_feed_enabled():
+            _, _, _, dyn_dbg2 = apply_dynamic_redactions(sanitized, debug=True)
+            if dyn_dbg2:
+                resp["debug"]["threat_feed"] = {"matches": dyn_dbg2}
 
     return resp
 
