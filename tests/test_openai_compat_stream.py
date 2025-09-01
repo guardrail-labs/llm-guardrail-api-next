@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from fastapi.testclient import TestClient
 
 
 class FakeClient:
-    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
-        # Include an email so egress redacts it before streaming.
-        return "Hello user@example.com — welcome!", {"provider": "fake", "model": model}
+    def chat_stream(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[Iterable[str], Dict[str, Any]]:
+        # Yield pieces that together include an email for redaction testing.
+        parts = ["Hello ", "user@example.com", " — welcome!"]
+        return iter(parts), {"provider": "fake", "model": model}
 
 
 def _client(monkeypatch):
