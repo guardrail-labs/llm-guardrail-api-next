@@ -156,6 +156,31 @@ def _need_auth(request: Request) -> bool:
 def _req_id(request: Request) -> str:
     return request.headers.get("x-request-id") or str(uuid.uuid4())
 
+# --- Centralized audit emitter ensuring meta.client is present ---
+def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
+    """
+    Wraps audit_forwarder.emit_event to guarantee meta.client is present.
+    - Merges into existing event["meta"] and event["meta"]["client"] without overwriting
+      fields already set by the caller.
+    - Never raises to caller.
+    """
+    try:
+        base_meta = event.get("meta") or {}
+        base_client = base_meta.get("client") or {}
+        client_now = get_client_meta(request)  # {"ip","user_agent","path","method"}
+
+        # Only fill missing keys; keep anything already set by caller
+        merged_client = {
+            **client_now,
+            **{k: v for k, v in base_client.items() if v is not None},
+        }
+        event["meta"] = {**base_meta, "client": merged_client}
+
+        emit_audit_event(event)
+    except Exception:
+        # Never fail the request due to audit forwarder issues
+        pass
+
 
 def _audit_maybe(prompt: str, rid: str, decision: Optional[str] = None) -> None:
     """
@@ -383,34 +408,28 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     # Rich enterprise audit event (align with /v1/* payload fields)
     policy_version = current_rules_version()
-    try:
-        emit_audit_event(
-            {
-                "ts": None,
-                "tenant_id": tenant_id,
-                "bot_id": bot_id,
-                "request_id": rid,
-                "direction": "ingress",
-                # Keep legacy semantics ("allow"/"block") for this endpoint:
-                "decision": decision,
-                "rule_hits": (rule_hits or None),
-                "policy_version": policy_version,
-                "verifier_provider": None,
-                "fallback_used": None,
-                "status_code": 200,
-                "redaction_count": 0,
-                "hash_fingerprint": content_fingerprint(prompt),
-                "payload_bytes": int(_blen(prompt)),
-                "sanitized_bytes": int(_blen(transformed)),
-                "meta": {
-                    "endpoint": "/guardrail",
-                    "client": get_client_meta(request),
-                },
-            }
-        )
-    except Exception:
-        # do not fail the request on audit-forwarder issues
-        pass
+    _emit_audit_with_client(
+        request,
+        {
+            "ts": None,
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "request_id": rid,
+            "direction": "ingress",
+            # Keep legacy semantics ("allow"/"block") for this endpoint:
+            "decision": decision,
+            "rule_hits": (rule_hits or None),
+            "policy_version": policy_version,
+            "verifier_provider": None,
+            "fallback_used": None,
+            "status_code": 200,
+            "redaction_count": 0,
+            "hash_fingerprint": content_fingerprint(prompt),
+            "payload_bytes": int(_blen(prompt)),
+            "sanitized_bytes": int(_blen(transformed)),
+            "meta": {"endpoint": "/guardrail"},
+        },
+    )
 
     return {
         "decision": decision,
@@ -567,66 +586,8 @@ async def evaluate(
                     "chosen": None,
                     "verdict": None,
                 }
-            try:
-                emit_audit_event(
-                    {
-                        "ts": None,
-                        "tenant_id": tenant_id,
-                        "bot_id": bot_id,
-                        "request_id": resp.get("request_id", ""),
-                        "direction": "ingress",
-                        "decision": resp.get("action", "allow"),
-                        "rule_hits": resp.get("rule_hits") or None,
-                        "policy_version": policy_version,
-                        "verifier_provider": (
-                            (resp.get("debug") or {}).get("verifier", {}).get("chosen")
-                        ),
-                        "fallback_used": None,
-                        "status_code": 200,
-                        "redaction_count": resp.get("redactions") or 0,
-                        "hash_fingerprint": fp_all,
-                        "payload_bytes": int(payload_bytes),
-                        "sanitized_bytes": int(sanitized_bytes),
-                        "meta": {
-                            **(
-                                {"provider": providers}
-                                if "providers" in locals()
-                                else {}
-                            ),
-                            **(
-                                {"sources": (resp.get("debug") or {}).get("sources")}
-                                if "debug" in resp
-                                else {}
-                            ),
-                            "client": get_client_meta(request),
-                        },
-                    }
-                )
-            except Exception:
-                pass
-
-            # --- NEW: increment after final action chosen ---
-            inc_decision_family(family)
-            inc_decision_family_tenant_bot(tenant_id, bot_id, family)
-            return resp
-
-        if verdict == Verdict.UNSAFE:
-            mark_harmful(fp)
-            resp["action"] = "deny"
-            family = "block"
-        elif verdict == Verdict.UNCLEAR:
-            resp["action"] = "clarify"
-            family = "verify"
-        # SAFE -> leave resp["action"] and family as-is
-
-        if want_debug:
-            resp.setdefault("debug", {})["verifier"] = {
-                "providers": providers,
-                "chosen": provider,
-                "verdict": verdict.value,
-            }
-        try:
-            emit_audit_event(
+            _emit_audit_with_client(
+                request,
                 {
                     "ts": None,
                     "tenant_id": tenant_id,
@@ -656,20 +617,32 @@ async def evaluate(
                             if "debug" in resp
                             else {}
                         ),
-                        "client": get_client_meta(request),
                     },
-                }
+                },
             )
-        except Exception:
-            pass
 
-        # --- NEW: increment after final action chosen ---
-        inc_decision_family(family)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, family)
-        return resp
+            # --- NEW: increment after final action chosen ---
+            inc_decision_family(family)
+            inc_decision_family_tenant_bot(tenant_id, bot_id, family)
+            return resp
 
-    try:
-        emit_audit_event(
+        if verdict == Verdict.UNSAFE:
+            mark_harmful(fp)
+            resp["action"] = "deny"
+            family = "block"
+        elif verdict == Verdict.UNCLEAR:
+            resp["action"] = "clarify"
+            family = "verify"
+        # SAFE -> leave resp["action"] and family as-is
+
+        if want_debug:
+            resp.setdefault("debug", {})["verifier"] = {
+                "providers": providers,
+                "chosen": provider,
+                "verdict": verdict.value,
+            }
+        _emit_audit_with_client(
+            request,
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -679,7 +652,9 @@ async def evaluate(
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
                 "policy_version": policy_version,
-                "verifier_provider": ((resp.get("debug") or {}).get("verifier", {}).get("chosen")),
+                "verifier_provider": (
+                    (resp.get("debug") or {}).get("verifier", {}).get("chosen")
+                ),
                 "fallback_used": None,
                 "status_code": 200,
                 "redaction_count": resp.get("redactions") or 0,
@@ -697,12 +672,47 @@ async def evaluate(
                         if "debug" in resp
                         else {}
                     ),
-                    "client": get_client_meta(request),
                 },
-            }
+            },
         )
-    except Exception:
-        pass
+
+        # --- NEW: increment after final action chosen ---
+        inc_decision_family(family)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, family)
+        return resp
+
+    _emit_audit_with_client(
+        request,
+        {
+            "ts": None,
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "request_id": resp.get("request_id", ""),
+            "direction": "ingress",
+            "decision": resp.get("action", "allow"),
+            "rule_hits": resp.get("rule_hits") or None,
+            "policy_version": policy_version,
+            "verifier_provider": ((resp.get("debug") or {}).get("verifier", {}).get("chosen")),
+            "fallback_used": None,
+            "status_code": 200,
+            "redaction_count": resp.get("redactions") or 0,
+            "hash_fingerprint": fp_all,
+            "payload_bytes": int(payload_bytes),
+            "sanitized_bytes": int(sanitized_bytes),
+            "meta": {
+                **(
+                    {"provider": providers}
+                    if "providers" in locals()
+                    else {}
+                ),
+                **(
+                    {"sources": (resp.get("debug") or {}).get("sources")}
+                    if "debug" in resp
+                    else {}
+                ),
+            },
+        },
+    )
 
     # --- NEW: increment decision family counters (evaluate path) ---
     inc_decision_family(family)
@@ -798,36 +808,33 @@ async def evaluate_guardrail_multipart(
             if dyn_dbg2:
                 resp["debug"]["threat_feed"] = {"matches": dyn_dbg2}
 
-    try:
-        emit_audit_event(
-            {
-                "ts": None,
-                "tenant_id": tenant_id,
-                "bot_id": bot_id,
-                "request_id": rid,
-                "direction": "ingress",
-                "decision": resp.get("action", "allow"),
-                "rule_hits": resp.get("rule_hits") or None,
-                "policy_version": policy_version,
-                "verifier_provider": (resp.get("debug") or {}).get("verifier", {}).get("chosen"),
-                "fallback_used": None,
-                "status_code": 200,
-                "redaction_count": resp.get("redactions") or 0,
-                "hash_fingerprint": fp_all,
-                "payload_bytes": int(payload_bytes),
-                "sanitized_bytes": int(sanitized_bytes),
-                "meta": {
-                    "sources": (
-                        (resp.get("debug") or {}).get("sources")
-                        if "debug" in resp
-                        else None
-                    ),
-                    "client": get_client_meta(request),
-                },
-            }
-        )
-    except Exception:
-        pass
+    _emit_audit_with_client(
+        request,
+        {
+            "ts": None,
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "request_id": rid,
+            "direction": "ingress",
+            "decision": resp.get("action", "allow"),
+            "rule_hits": resp.get("rule_hits") or None,
+            "policy_version": policy_version,
+            "verifier_provider": (resp.get("debug") or {}).get("verifier", {}).get("chosen"),
+            "fallback_used": None,
+            "status_code": 200,
+            "redaction_count": resp.get("redactions") or 0,
+            "hash_fingerprint": fp_all,
+            "payload_bytes": int(payload_bytes),
+            "sanitized_bytes": int(sanitized_bytes),
+            "meta": {
+                "sources": (
+                    (resp.get("debug") or {}).get("sources")
+                    if "debug" in resp
+                    else None
+                ),
+            },
+        },
+    )
 
     # --- NEW: increment family (sanitize if redactions occurred) ---
     inc_decision_family(family)
@@ -862,29 +869,27 @@ async def egress_evaluate(
     if want_debug and dbg:
         payload["debug"] = {"explanations": dbg}
 
-    try:
-        emit_audit_event(
-            {
-                "ts": None,
-                "tenant_id": tenant_id,
-                "bot_id": bot_id,
-                "request_id": rid,
-                "direction": "egress",
-                "decision": payload.get("action", "allow"),
-                "rule_hits": payload.get("rule_hits") or None,
-                "policy_version": policy_version,
-                "verifier_provider": None,
-                "fallback_used": None,
-                "status_code": 200,
-                "redaction_count": payload.get("redactions") or 0,
-                "hash_fingerprint": fp_all,
-                "payload_bytes": int(payload_bytes),
-                "sanitized_bytes": int(sanitized_bytes),
-                "meta": {"client": get_client_meta(request)},
-            }
-        )
-    except Exception:
-        pass
+    _emit_audit_with_client(
+        request,
+        {
+            "ts": None,
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "request_id": rid,
+            "direction": "egress",
+            "decision": payload.get("action", "allow"),
+            "rule_hits": payload.get("rule_hits") or None,
+            "policy_version": policy_version,
+            "verifier_provider": None,
+            "fallback_used": None,
+            "status_code": 200,
+            "redaction_count": payload.get("redactions") or 0,
+            "hash_fingerprint": fp_all,
+            "payload_bytes": int(payload_bytes),
+            "sanitized_bytes": int(sanitized_bytes),
+            "meta": {},
+        },
+    )
 
     # --- NEW: increment family for egress ---
     action = str(payload.get("action", "allow"))
