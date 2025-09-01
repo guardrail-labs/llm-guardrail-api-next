@@ -1,6 +1,7 @@
 # file: app/routes/openai_compat.py
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -8,26 +9,25 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.services.detectors import evaluate_prompt
+from app.services.egress import egress_check
+from app.services.llm_client import get_client
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
     sanitize_text,
 )
-from app.services.detectors import evaluate_prompt
 from app.services.threat_feed import (
     apply_dynamic_redactions,
     threat_feed_enabled,
 )
-from app.services.egress import egress_check
 from app.services.verifier import content_fingerprint
-from app.services.llm_client import get_client
-from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
 )
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
-
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -35,6 +35,35 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 # ---------------------------
 # Models (subset for compat)
 # ---------------------------
+
+
+def _compat_models() -> List[Dict[str, Any]]:
+    """
+    Return OpenAI-style model objects.
+    Configure via OAI_COMPAT_MODELS="gpt-4o-mini,gpt-4o" or default to ["demo"].
+    """
+    raw = os.environ.get("OAI_COMPAT_MODELS") or ""
+    ids = [s.strip() for s in raw.split(",") if s.strip()] or ["demo"]
+    now = int(time.time())
+    out: List[Dict[str, Any]] = []
+    for mid in ids:
+        out.append(
+            {
+                "id": mid,
+                "object": "model",
+                "created": now,
+                "owned_by": "guardrail",
+            }
+        )
+    return out
+
+
+@router.get("/models")
+async def list_models():
+    """
+    Minimal OpenAI-compatible /v1/models listing.
+    """
+    return {"object": "list", "data": _compat_models()}
 
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")

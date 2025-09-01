@@ -1,65 +1,59 @@
 from __future__ import annotations
 
+import os
+import uuid
+
 from fastapi import Request
-from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-from app.config import get_settings
-
-# Public endpoints (no API key required)
-_PUBLIC_PATHS = {
-    "/health",
-    "/metrics",
-    "/openapi.json",
-    "/docs",
-    "/docs/oauth2-redirect",
-}
-_PUBLIC_PREFIXES = ("/static/",)
-
-# Only these prefixes require auth by default
-_PROTECTED_PREFIXES = ("/guardrail", "/admin")
+_SAFE_PATHS: set[str] = {"/health", "/metrics"}
 
 
-class APIKeyAuthMiddleware(BaseHTTPMiddleware):
+def _is_auth_disabled() -> bool:
+    return (os.environ.get("GUARDRAIL_DISABLE_AUTH") or "0") == "1"
+
+
+def _is_safe_path(path: str) -> bool:
+    # Exact matches only to avoid surprises
+    return path in _SAFE_PATHS
+
+
+def _has_auth_header(request: Request) -> bool:
+    return bool(
+        request.headers.get("X-API-Key")
+        or request.headers.get("Authorization")
+    )
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
     """
-    Require an API key only for protected paths.
-    Accepts either 'X-API-Key' or 'Authorization: Bearer <key>'.
+    Uniform API key/Authorization gate for the whole app.
+    Exemptions:
+      - OPTIONS preflight
+      - /health and /metrics
+    You can bypass entirely via GUARDRAIL_DISABLE_AUTH=1 (used by CI when needed).
     """
-
-    def __init__(self, app) -> None:
-        super().__init__(app)
-        self.s = get_settings()
 
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-
-        # Unprotected paths
-        if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        # Allow preflight and safe paths
+        if request.method == "OPTIONS" or _is_safe_path(request.url.path):
             return await call_next(request)
 
-        # Only protect selected prefixes
-        if not path.startswith(_PROTECTED_PREFIXES):
+        # Optional global bypass
+        if _is_auth_disabled():
             return await call_next(request)
 
-        if not self._authorized(request):
-            # Let the global error handler format the body
-            raise StarletteHTTPException(status_code=401, detail="unauthorized")
+        if _has_auth_header(request):
+            return await call_next(request)
 
-        return await call_next(request)
+        # 401 JSON error aligned with other handlers
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        resp = JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized", "request_id": rid},
+        )
+        resp.headers["WWW-Authenticate"] = "Bearer"
+        resp.headers["X-Request-ID"] = rid
+        return resp
 
-    def _authorized(self, request: Request) -> bool:
-        expected = getattr(self.s, "API_KEY", None)
-        if not expected:
-            return True  # No key configured -> auth disabled
-
-        header_key = request.headers.get("X-API-Key")
-        if header_key and header_key == expected:
-            return True
-
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth.split(" ", 1)[1].strip()
-            if token == expected:
-                return True
-
-        return False
