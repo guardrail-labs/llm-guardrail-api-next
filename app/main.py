@@ -10,6 +10,8 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.routes.batch import router as batch_router
 from app.routes.guardrail import (
     get_decisions_total,
     get_requests_total,
@@ -17,15 +19,14 @@ from app.routes.guardrail import (
     threat_admin_router,
 )
 from app.routes.output import router as output_router
-from app.routes.batch import router as batch_router
+from app.routes.proxy import router as proxy_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
-from app.middleware.rate_limit import RateLimitMiddleware
 from app.telemetry.metrics import (
-    get_all_family_totals,
-    get_rate_limited_total,
     export_family_breakdown_lines,
     export_verifier_lines,
+    get_all_family_totals,
+    get_rate_limited_total,
 )
 
 # Test-only bypass for admin auth (enabled in CI/tests via env)
@@ -197,6 +198,7 @@ def create_app() -> FastAPI:
     app.include_router(threat_admin_router)
     app.include_router(output_router)
     app.include_router(batch_router)
+    app.include_router(proxy_router)
     return app
 
 
