@@ -147,9 +147,7 @@ def _rate_limit_check(request: Request) -> bool:
 
 def _need_auth(request: Request) -> bool:
     # Either header is accepted by tests.
-    return not (
-        request.headers.get("x-api-key") or request.headers.get("authorization")
-    )
+    return not (request.headers.get("x-api-key") or request.headers.get("authorization"))
 
 
 def _req_id(request: Request) -> str:
@@ -254,9 +252,7 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
 # --- Lightweight fallback detectors (only used if primary detectors didn't) ---
 
 _API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")
-_B64_CHARS = set(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r\t"
-)
+_B64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r\t")
 
 
 def _maybe_patch_with_fallbacks(
@@ -292,6 +288,9 @@ def _maybe_patch_with_fallbacks(
     return decision, hits
 
 
+def _blen(s: Optional[str]) -> int:
+    """Return byte length of string, treating None as empty."""
+    return len((s or "").encode("utf-8"))
 
 
 @router.post("/", response_model=None)
@@ -306,9 +305,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     rid = _req_id(request)
 
     if _need_auth(request):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
     # Rate-limit before parsing payload
     if not _rate_limit_check(request):
@@ -376,9 +373,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 @router.post("/evaluate", response_model=None)
 async def evaluate(
     request: Request,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
     x_force_unclear: Optional[str] = Header(
         default=None, alias="X-Force-Unclear", convert_underscores=False
     ),
@@ -414,9 +409,7 @@ async def evaluate(
             for f in form.getlist(kind):
                 filename = getattr(f, "filename", "upload")
                 text += f" [{kind.upper()}:{filename}]"
-                decisions.append(
-                    {"type": "normalized", "tag": kind, "filename": filename}
-                )
+                decisions.append({"type": "normalized", "tag": kind, "filename": filename})
     else:
         try:
             payload = await request.json()
@@ -430,9 +423,7 @@ async def evaluate(
     policy_version = current_rules_version()
     # fingerprint based on the raw inbound text (pre-sanitization)
     fp_all = content_fingerprint(text or "")
-    sanitized, families, redaction_count, debug_matches = sanitize_text(
-        text, debug=want_debug
-    )
+    sanitized, families, redaction_count, debug_matches = sanitize_text(text, debug=want_debug)
     if threat_feed_enabled():
         dyn_text, dyn_families, dyn_redactions, _dyn_debug = apply_dynamic_redactions(
             sanitized, debug=want_debug
@@ -451,6 +442,9 @@ async def evaluate(
     xformed = det.get("transformed_text", sanitized)
     if sanitized != text or xformed != sanitized:
         decisions.append({"type": "redaction", "changed": True})
+
+    payload_bytes = _blen(text)
+    sanitized_bytes = _blen(xformed)
 
     _decisions_total += 1
 
@@ -516,7 +510,9 @@ async def evaluate(
                 family = "verify"
             if want_debug:
                 resp.setdefault("debug", {})["verifier"] = {
-                    "providers": providers, "chosen": None, "verdict": None
+                    "providers": providers,
+                    "chosen": None,
+                    "verdict": None,
                 }
             try:
                 emit_audit_event(
@@ -530,14 +526,14 @@ async def evaluate(
                         "rule_hits": resp.get("rule_hits") or None,
                         "policy_version": policy_version,
                         "verifier_provider": (
-                            (resp.get("debug") or {})
-                            .get("verifier", {})
-                            .get("chosen")
+                            (resp.get("debug") or {}).get("verifier", {}).get("chosen")
                         ),
                         "fallback_used": None,
                         "status_code": 200,
                         "redaction_count": resp.get("redactions") or 0,
                         "hash_fingerprint": fp_all,
+                        "payload_bytes": int(payload_bytes),
+                        "sanitized_bytes": int(sanitized_bytes),
                         "meta": {},
                     }
                 )
@@ -560,7 +556,9 @@ async def evaluate(
 
         if want_debug:
             resp.setdefault("debug", {})["verifier"] = {
-                "providers": providers, "chosen": provider, "verdict": verdict.value
+                "providers": providers,
+                "chosen": provider,
+                "verdict": verdict.value,
             }
         try:
             emit_audit_event(
@@ -574,14 +572,14 @@ async def evaluate(
                     "rule_hits": resp.get("rule_hits") or None,
                     "policy_version": policy_version,
                     "verifier_provider": (
-                        (resp.get("debug") or {})
-                        .get("verifier", {})
-                        .get("chosen")
+                        (resp.get("debug") or {}).get("verifier", {}).get("chosen")
                     ),
                     "fallback_used": None,
                     "status_code": 200,
                     "redaction_count": resp.get("redactions") or 0,
                     "hash_fingerprint": fp_all,
+                    "payload_bytes": int(payload_bytes),
+                    "sanitized_bytes": int(sanitized_bytes),
                     "meta": {},
                 }
             )
@@ -604,15 +602,13 @@ async def evaluate(
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
                 "policy_version": policy_version,
-                "verifier_provider": (
-                    (resp.get("debug") or {})
-                    .get("verifier", {})
-                    .get("chosen")
-                ),
+                "verifier_provider": ((resp.get("debug") or {}).get("verifier", {}).get("chosen")),
                 "fallback_used": None,
                 "status_code": 200,
                 "redaction_count": resp.get("redactions") or 0,
                 "hash_fingerprint": fp_all,
+                "payload_bytes": int(payload_bytes),
+                "sanitized_bytes": int(sanitized_bytes),
                 "meta": {},
             }
         )
@@ -638,15 +634,13 @@ async def evaluate_guardrail_multipart(
     request: Request,
     text: Optional[str] = Form(default=""),
     files: List[UploadFile] = File(default=[]),
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
     """
     Multimodal ingress evaluation via multipart/form-data.
     Contract: response keys match /guardrail/evaluate; debug only with X-Debug: 1.
     """
-    want_debug = (x_debug == "1")
+    want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     rid = _req_id(request)
     policy_version = current_rules_version()
@@ -667,7 +661,7 @@ async def evaluate_guardrail_multipart(
         extracted_texts.append(txt)
         sources_meta.append(meta)
 
-    combined = (text or "")
+    combined = text or ""
     if extracted_texts:
         combo_files = "\n".join([t for t in extracted_texts if t])
         combined = (combined + "\n" + combo_files).strip()
@@ -675,9 +669,7 @@ async def evaluate_guardrail_multipart(
     # fingerprint based on the raw combined text
     fp_all = content_fingerprint(combined or "")
 
-    sanitized, families, redaction_count, debug_matches = sanitize_text(
-        combined, debug=want_debug
-    )
+    sanitized, families, redaction_count, debug_matches = sanitize_text(combined, debug=want_debug)
 
     if threat_feed_enabled():
         dyn_text, dyn_fams, dyn_reds, dyn_dbg = apply_dynamic_redactions(
@@ -690,6 +682,9 @@ async def evaluate_guardrail_multipart(
             families = sorted(base)
         if dyn_reds:
             redaction_count = (redaction_count or 0) + dyn_reds
+
+    payload_bytes = _blen(combined)
+    sanitized_bytes = _blen(sanitized)
 
     # allow by contract; if redactions happened, count as sanitize
     family = "sanitize" if (redaction_count or 0) > 0 else "allow"
@@ -727,6 +722,8 @@ async def evaluate_guardrail_multipart(
                 "status_code": 200,
                 "redaction_count": resp.get("redactions") or 0,
                 "hash_fingerprint": fp_all,
+                "payload_bytes": int(payload_bytes),
+                "sanitized_bytes": int(sanitized_bytes),
                 "meta": {
                     "sources": (resp.get("debug") or {}).get("sources") if "debug" in resp else None
                 },
@@ -751,7 +748,7 @@ async def egress_evaluate(
     req: EgressEvaluateRequest,
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
-    want_debug = (x_debug == "1")
+    want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     rid = _req_id(request)
     policy_version = current_rules_version()
@@ -759,6 +756,8 @@ async def egress_evaluate(
     payload, dbg = egress_check(req.text, debug=want_debug)
     # fingerprint the model egress text (payload under check)
     fp_all = content_fingerprint(req.text or "")
+    payload_bytes = _blen(req.text)
+    sanitized_bytes = _blen(req.text)
 
     # Only include debug if requested
     if want_debug and dbg:
@@ -780,6 +779,8 @@ async def egress_evaluate(
                 "status_code": 200,
                 "redaction_count": payload.get("redactions") or 0,
                 "hash_fingerprint": fp_all,
+                "payload_bytes": int(payload_bytes),
+                "sanitized_bytes": int(sanitized_bytes),
                 "meta": {},
             }
         )
@@ -811,4 +812,3 @@ async def admin_threat_reload() -> Dict[str, Any]:
     """
     result = refresh_from_env()
     return {"ok": True, "result": result}
-
