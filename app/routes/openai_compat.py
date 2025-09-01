@@ -7,7 +7,16 @@ import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -658,6 +667,310 @@ async def images_generations(
         pass
 
     # Headers
+    response.headers["X-Guardrail-Policy-Version"] = policy_version
+    response.headers["X-Guardrail-Ingress-Action"] = "allow"
+    response.headers["X-Guardrail-Egress-Action"] = "allow"
+    response.headers["X-Guardrail-Egress-Redactions"] = "0"
+
+    return {"created": now_ts, "data": data}
+
+
+@router.post("/images/edits")
+async def images_edits(
+    request: Request,
+    response: Response,
+    image: Optional[UploadFile] = File(default=None),
+    prompt: Optional[str] = Form(default=""),
+    n: Optional[int] = Form(default=1),
+    size: Optional[str] = Form(default="256x256"),
+    response_format: Optional[str] = Form(default="b64_json"),
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+) -> Dict[str, Any]:
+    """
+    Minimal /v1/images/edits:
+    - Accepts multipart with 'image' + 'prompt'.
+    - Guards prompt; returns placeholder b64 images.
+    """
+    want_debug = x_debug == "1"
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    policy_version = current_rules_version()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    now_ts = int(time.time())
+    n_final = max(1, int(n or 1))
+    text = prompt or ""
+
+    sanitized, families, redaction_count, _ = sanitize_text(
+        text, debug=want_debug
+    )
+    if threat_feed_enabled():
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+            sanitized, debug=want_debug
+        )
+        sanitized = dyn_text
+        if dyn_fams:
+            base = set(families or [])
+            base.update(dyn_fams)
+            families = sorted(base)
+        if dyn_reds:
+            redaction_count = (redaction_count or 0) + dyn_reds
+
+    det = evaluate_prompt(sanitized)
+    det_action = str(det.get("action", "allow"))
+    flat_hits = _normalize_rule_hits(
+        det.get("rule_hits", []) or [], det.get("decisions", []) or []
+    )
+
+    if det_action == "deny":
+        fam = _family_for("deny", 0)
+        inc_decision_family(fam)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": (
+                        sorted({_normalize_family(h) for h in flat_hits}) or None
+                    ),
+                    "policy_version": policy_version,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint(text),
+                    "payload_bytes": int(_blen(text)),
+                    "sanitized_bytes": int(_blen(sanitized)),
+                    "meta": {
+                        "endpoint": "images/edits",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=_oai_error("Request denied by guardrail policy"),
+            headers=headers,
+        )
+
+    fam = _family_for("allow", int(redaction_count or 0))
+    inc_decision_family(fam)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": req_id,
+                "direction": "ingress",
+                "decision": "allow",
+                "rule_hits": (
+                    sorted({_normalize_family(h) for h in flat_hits}) or None
+                ),
+                "policy_version": policy_version,
+                "redaction_count": int(redaction_count or 0),
+                "hash_fingerprint": content_fingerprint(text),
+                "payload_bytes": int(_blen(text)),
+                "sanitized_bytes": int(_blen(sanitized)),
+                "meta": {
+                    "endpoint": "images/edits",
+                    "client": get_client_meta(request),
+                },
+            }
+        )
+    except Exception:
+        pass
+
+    data = [{"b64_json": _PLACEHOLDER_PNG_B64} for _ in range(n_final)]
+    total_bytes = sum(len(base64.b64decode(d["b64_json"])) for d in data)
+
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": req_id,
+                "direction": "egress",
+                "decision": "allow",
+                "rule_hits": None,
+                "policy_version": policy_version,
+                "redaction_count": 0,
+                "hash_fingerprint": content_fingerprint("image-edit/" + str(n_final)),
+                "payload_bytes": int(total_bytes),
+                "sanitized_bytes": int(total_bytes),
+                "meta": {
+                    "endpoint": "images/edits",
+                    "client": get_client_meta(request),
+                },
+            }
+        )
+    except Exception:
+        pass
+
+    response.headers["X-Guardrail-Policy-Version"] = policy_version
+    response.headers["X-Guardrail-Ingress-Action"] = "allow"
+    response.headers["X-Guardrail-Egress-Action"] = "allow"
+    response.headers["X-Guardrail-Egress-Redactions"] = "0"
+
+    return {"created": now_ts, "data": data}
+
+
+@router.post("/images/variations")
+async def images_variations(
+    request: Request,
+    response: Response,
+    image: UploadFile = File(...),
+    n: Optional[int] = Form(default=1),
+    size: Optional[str] = Form(default="256x256"),
+    response_format: Optional[str] = Form(default="b64_json"),
+    prompt: Optional[str] = Form(default=""),
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+) -> Dict[str, Any]:
+    """
+    Minimal /v1/images/variations:
+    - Accepts multipart with required 'image'.
+    - Optional prompt is guarded; returns placeholder b64 images.
+    """
+    want_debug = x_debug == "1"
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    policy_version = current_rules_version()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    now_ts = int(time.time())
+    n_final = max(1, int(n or 1))
+    text = prompt or ""
+
+    sanitized, families, redaction_count, _ = sanitize_text(
+        text, debug=want_debug
+    )
+    if threat_feed_enabled():
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+            sanitized, debug=want_debug
+        )
+        sanitized = dyn_text
+        if dyn_fams:
+            base = set(families or [])
+            base.update(dyn_fams)
+            families = sorted(base)
+        if dyn_reds:
+            redaction_count = (redaction_count or 0) + dyn_reds
+
+    det = evaluate_prompt(sanitized)
+    det_action = str(det.get("action", "allow"))
+    flat_hits = _normalize_rule_hits(
+        det.get("rule_hits", []) or [], det.get("decisions", []) or []
+    )
+
+    if det_action == "deny":
+        fam = _family_for("deny", 0)
+        inc_decision_family(fam)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": (
+                        sorted({_normalize_family(h) for h in flat_hits}) or None
+                    ),
+                    "policy_version": policy_version,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint(text),
+                    "payload_bytes": int(_blen(text)),
+                    "sanitized_bytes": int(_blen(sanitized)),
+                    "meta": {
+                        "endpoint": "images/variations",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=_oai_error("Request denied by guardrail policy"),
+            headers=headers,
+        )
+
+    fam = _family_for("allow", int(redaction_count or 0))
+    inc_decision_family(fam)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": req_id,
+                "direction": "ingress",
+                "decision": "allow",
+                "rule_hits": (
+                    sorted({_normalize_family(h) for h in flat_hits}) or None
+                ),
+                "policy_version": policy_version,
+                "redaction_count": int(redaction_count or 0),
+                "hash_fingerprint": content_fingerprint(text),
+                "payload_bytes": int(_blen(text)),
+                "sanitized_bytes": int(_blen(sanitized)),
+                "meta": {
+                    "endpoint": "images/variations",
+                    "client": get_client_meta(request),
+                },
+            }
+        )
+    except Exception:
+        pass
+
+    data = [{"b64_json": _PLACEHOLDER_PNG_B64} for _ in range(n_final)]
+    total_bytes = sum(len(base64.b64decode(d["b64_json"])) for d in data)
+
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": req_id,
+                "direction": "egress",
+                "decision": "allow",
+                "rule_hits": None,
+                "policy_version": policy_version,
+                "redaction_count": 0,
+                "hash_fingerprint": content_fingerprint("image-var/" + str(n_final)),
+                "payload_bytes": int(total_bytes),
+                "sanitized_bytes": int(total_bytes),
+                "meta": {
+                    "endpoint": "images/variations",
+                    "client": get_client_meta(request),
+                },
+            }
+        )
+    except Exception:
+        pass
+
     response.headers["X-Guardrail-Policy-Version"] = policy_version
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
