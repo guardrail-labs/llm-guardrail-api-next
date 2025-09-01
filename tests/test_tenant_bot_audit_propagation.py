@@ -5,6 +5,7 @@ import importlib
 from fastapi.testclient import TestClient
 
 import app.routes.guardrail as guardrail
+import app.routes.output as output
 
 
 def _client():
@@ -56,6 +57,29 @@ def test_egress_includes_tenant_bot(monkeypatch):
     assert r.status_code == 200
     assert captured.get("tenant_id") == "globex"
     assert captured.get("bot_id") == "bot-z"
+    assert captured.get("direction") == "egress"
+    assert captured.get("request_id")
+
+
+def test_output_includes_tenant_bot(monkeypatch):
+    captured = {}
+
+    def fake_emit(payload):
+        captured.update(payload)
+
+    monkeypatch.setattr(output, "emit_audit_event", fake_emit)
+
+    c = _client()
+    h = {
+        "X-API-Key": "k",
+        "X-Tenant-ID": "initech",
+        "X-Bot-ID": "bot-x",
+        "Content-Type": "application/json",
+    }
+    r = c.post("/guardrail/output", json={"output": "hi"}, headers=h)
+    assert r.status_code == 200
+    assert captured.get("tenant_id") == "initech"
+    assert captured.get("bot_id") == "bot-x"
     assert captured.get("direction") == "egress"
     assert captured.get("request_id")
 
