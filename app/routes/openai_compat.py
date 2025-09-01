@@ -10,12 +10,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from fastapi import (
     APIRouter,
     File,
-    Form,
     Header,
     HTTPException,
     Request,
     Response,
     UploadFile,
+    Form,
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -31,11 +31,13 @@ from app.services.policy import (
 )
 from app.services.threat_feed import apply_dynamic_redactions, threat_feed_enabled
 from app.services.verifier import content_fingerprint
+from app.services.quotas import quota_check_and_consume
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
+    inc_quota_reject_tenant_bot,
 )
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
@@ -171,7 +173,7 @@ def _sse(obj: Dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-def _chunk_text(s: str, max_len: int = 60) -> List[str]:
+def _chunk_text(s: str, max_len: int) -> List[str]:
     s = s or ""
     out: List[str] = []
     buf: List[str] = []
@@ -209,13 +211,12 @@ async def chat_completions(
     ),
 ):
     """
-    OpenAI-compatible chat endpoint with inline guardrails.
+    OpenAI-compatible chat endpoint with inline guardrails and quotas.
     Supports non-streaming and streaming SSE (stream=true).
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
-
     req_id = (
         body.request_id
         or request.headers.get("X-Request-ID")
@@ -223,9 +224,52 @@ async def chat_completions(
     )
     now_ts = int(time.time())
 
+    # ---------- Quotas (pre-ingress) ----------
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "chat/completions",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
+
     # ---------- Ingress ----------
     joined = "\n".join(f"{m.role}: {m.content}" for m in body.messages or [])
-
     sanitized, families, redaction_count, _ = sanitize_text(
         joined, debug=want_debug
     )
@@ -507,7 +551,6 @@ async def chat_completions(
 
 # --- Images (OpenAI-compatible) ----------------------------------------------
 
-# 1x1 transparent PNG (base64) — deterministic placeholder for demos.
 _PLACEHOLDER_PNG_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAA"
     "AASUVORK5CYII="
@@ -533,10 +576,7 @@ async def images_generations(
     ),
 ) -> Dict[str, Any]:
     """
-    Minimal /v1/images/generations:
-    - Guards prompt (deny on 'deny').
-    - Returns placeholder PNGs as b64_json.
-    - Audits ingress + egress; sets headers inline.
+    /v1/images/generations with quotas + guard.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
@@ -544,6 +584,49 @@ async def images_generations(
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
     n = max(1, int(body.n or 1))
+
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "images/generations",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
 
     # Ingress guard
     sanitized, families, redaction_count, _ = sanitize_text(
@@ -637,11 +720,9 @@ async def images_generations(
     except Exception:
         pass
 
-    # "Generate" placeholders
     data = [{"b64_json": _PLACEHOLDER_PNG_B64} for _ in range(n)]
     total_bytes = sum(len(base64.b64decode(d["b64_json"])) for d in data)
 
-    # Egress audit
     try:
         emit_audit_event(
             {
@@ -666,7 +747,6 @@ async def images_generations(
     except Exception:
         pass
 
-    # Headers
     response.headers["X-Guardrail-Policy-Version"] = policy_version
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
@@ -689,9 +769,7 @@ async def images_edits(
     ),
 ) -> Dict[str, Any]:
     """
-    Minimal /v1/images/edits:
-    - Accepts multipart with 'image' + 'prompt'.
-    - Guards prompt; returns placeholder b64 images.
+    /v1/images/edits with quotas + guard.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
@@ -700,6 +778,49 @@ async def images_edits(
     now_ts = int(time.time())
     n_final = max(1, int(n or 1))
     text = prompt or ""
+
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "images/edits",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
 
     sanitized, families, redaction_count, _ = sanitize_text(
         text, debug=want_debug
@@ -841,9 +962,7 @@ async def images_variations(
     ),
 ) -> Dict[str, Any]:
     """
-    Minimal /v1/images/variations:
-    - Accepts multipart with required 'image'.
-    - Optional prompt is guarded; returns placeholder b64 images.
+    /v1/images/variations with quotas + guard.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
@@ -852,6 +971,49 @@ async def images_variations(
     now_ts = int(time.time())
     n_final = max(1, int(n or 1))
     text = prompt or ""
+
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "images/variations",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
 
     sanitized, families, redaction_count, _ = sanitize_text(
         text, debug=want_debug
@@ -1018,12 +1180,9 @@ async def azure_chat_completions(
         request_id=body.request_id,
     )
     api_version = request.query_params.get("api-version") or ""
-
     result = await chat_completions(request, response, mapped, x_debug)
-
     if not isinstance(result, StreamingResponse) and api_version:
         response.headers["X-Azure-API-Version"] = api_version
-
     return result
 
 
@@ -1043,10 +1202,8 @@ async def azure_embeddings(
     mapped = EmbeddingsRequest(model=deployment_id, input=body.input)
     api_version = request.query_params.get("api-version") or ""
     result = await create_embeddings(request, response, mapped, x_debug)
-
     if isinstance(result, dict) and api_version:
         response.headers["X-Azure-API-Version"] = api_version
-
     return result
 
 
@@ -1078,14 +1235,56 @@ async def create_moderation(
     ),
 ):
     """
-    Minimal OpenAI-compatible /v1/moderations.
-    'deny' -> flagged=True. Redactions don't flag.
+    /v1/moderations with quotas + guard.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
+
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "moderations",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
 
     results: List[Dict[str, Any]] = []
 
@@ -1223,10 +1422,7 @@ async def create_embeddings(
     ),
 ):
     """
-    Minimal OpenAI-compatible /v1/embeddings.
-    - Ingress guard; deny on 'deny'.
-    - Deterministic vectors via PRNG seeded by sha256(text).
-    - Records tenant/bot family metrics and audits.
+    /v1/embeddings with quotas + guard.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
@@ -1234,6 +1430,49 @@ async def create_embeddings(
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
     dim = int(_os.environ.get("OAI_COMPAT_EMBED_DIM") or "1536")
+
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "embeddings",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
 
     data: List[Dict[str, Any]] = []
 
@@ -1341,9 +1580,7 @@ async def completions(
     ),
 ):
     """
-    Minimal OpenAI-compatible /v1/completions:
-    - Maps prompt -> chat-style single user message.
-    - Applies same ingress/egress guard, metrics, and audit.
+    /v1/completions with quotas + guard.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
@@ -1354,6 +1591,49 @@ async def completions(
         or str(uuid.uuid4())
     )
     now_ts = int(time.time())
+
+    allowed, retry_after, _ = quota_check_and_consume(
+        request, tenant_id, bot_id
+    )
+    if not allowed:
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "status_code": 429,
+                    "redaction_count": 0,
+                    "hash_fingerprint": content_fingerprint("quota"),
+                    "payload_bytes": 0,
+                    "sanitized_bytes": 0,
+                    "meta": {
+                        "endpoint": "completions",
+                        "client": get_client_meta(request),
+                    },
+                }
+            )
+        except Exception:
+            pass
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "deny",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        detail = {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": req_id,
+        }
+        raise HTTPException(status_code=429, detail=detail, headers=headers)
 
     # ---------- Ingress ----------
     joined = f"user: {body.prompt}"
@@ -1430,12 +1710,10 @@ async def completions(
             headers=headers,
         )
 
-    # ---------- Model call ----------
     client = get_client()
     messages = [{"role": "user", "content": body.prompt}]
     model_text, model_meta = client.chat(messages, body.model)
 
-    # ---------- Egress ----------
     payload, _ = egress_check(model_text, debug=want_debug)
     e_action = str(payload.get("action", "allow"))
     e_text = str(payload.get("text", ""))
