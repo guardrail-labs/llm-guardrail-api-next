@@ -48,8 +48,8 @@ from app.services.verifier import (
     verifier_enabled,
 )
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
-from app.shared.request_meta import get_client_meta
 from app.shared.quotas import check_and_consume
+from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
@@ -929,3 +929,51 @@ async def admin_threat_reload(request: Request) -> Dict[str, Any]:
 
     result = refresh_from_env()
     return {"ok": True, "result": result}
+
+
+@threat_admin_router.post("/policy/reload")
+async def admin_policy_reload(request: Request) -> Any:
+    """
+    Reload policy rules in-process. Same lightweight auth as threat reload.
+    """
+    if not TEST_AUTH_BYPASS and not (
+        request.headers.get("X-API-Key") or request.headers.get("Authorization")
+    ):
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        from fastapi.responses import JSONResponse
+
+        jresp = JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Unauthorized", "request_id": rid},
+        )
+        jresp.headers["WWW-Authenticate"] = "Bearer"
+        jresp.headers["X-Request-ID"] = rid
+        return jresp  # type: ignore[return-value]
+
+    try:
+        reload_rules()
+    except Exception:
+        pass
+    return {"ok": True, "policy_version": current_rules_version()}
+
+
+@threat_admin_router.get("/policy/version")
+async def admin_policy_version(request: Request) -> Any:
+    """
+    Return current policy rules version. Same lightweight auth.
+    """
+    if not TEST_AUTH_BYPASS and not (
+        request.headers.get("X-API-Key") or request.headers.get("Authorization")
+    ):
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        from fastapi.responses import JSONResponse
+
+        jresp = JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Unauthorized", "request_id": rid},
+        )
+        jresp.headers["WWW-Authenticate"] = "Bearer"
+        jresp.headers["X-Request-ID"] = rid
+        return jresp  # type: ignore[return-value]
+
+    return {"ok": True, "policy_version": current_rules_version()}
