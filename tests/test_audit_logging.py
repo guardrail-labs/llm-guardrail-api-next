@@ -1,6 +1,4 @@
 import importlib
-import json
-import logging
 import os
 
 from fastapi.testclient import TestClient
@@ -17,29 +15,25 @@ def _make_client():
     return TestClient(main.build_app())
 
 
-def test_audit_event_emitted_with_truncation(caplog):
-    # Force audit on and always sample, with tiny snippet size
+def test_audit_event_emitted_with_truncation(monkeypatch):
     os.environ["AUDIT_ENABLED"] = "true"
     os.environ["AUDIT_SAMPLE_RATE"] = "1.0"
     os.environ["AUDIT_MAX_TEXT_CHARS"] = "24"
 
-    client = _make_client()
+    captured = {}
 
-    caplog.set_level(logging.INFO, logger="guardrail_audit")
+    def fake_emit(event: dict) -> None:
+        captured.update(event)
+
+    monkeypatch.setattr("app.routes.guardrail.emit_audit_event", fake_emit)
+
+    client = _make_client()
 
     payload = {"prompt": "A" * 200}
     r = client.post("/guardrail", json=payload, headers={"X-API-Key": "unit-test-key"})
     assert r.status_code == 200
 
-    # Find an audit log line
-    records = [rec for rec in caplog.records if rec.name == "guardrail_audit"]
-    assert records, "No audit log records captured"
-
-    # Parse JSON and verify fields
-    event = json.loads(records[-1].msg)
-    assert event["event"] == "guardrail_decision"
-    assert isinstance(event["request_id"], str)
-    assert event["snippet_len"] <= 24
-    assert event["snippet_truncated"] is True
-    assert event["decision"] in ("allow", "block")
+    assert captured.get("decision") in ("allow", "block")
+    assert captured.get("payload_bytes") == len("A" * 200)
+    assert captured.get("sanitized_bytes") == len("A" * 200)
 

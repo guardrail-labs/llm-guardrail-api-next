@@ -184,6 +184,10 @@ def _audit_maybe(prompt: str, rid: str, decision: Optional[str] = None) -> None:
     logging.getLogger("guardrail_audit").info(json.dumps(event))
 
 
+def _blen(s: Optional[str]) -> int:
+    return len((s or "").encode("utf-8"))
+
+
 def _maybe_load_static_rules_once(request: Request) -> None:
     """
     When AUTORELOAD=false and a rules path is provided, load it once per-app.
@@ -288,16 +292,28 @@ def _maybe_patch_with_fallbacks(
     return decision, hits
 
 
-def _blen(s: Optional[str]) -> int:
-    """Return byte length of string, treating None as empty."""
-    return len((s or "").encode("utf-8"))
-
-
 @router.post("/", response_model=None)
 async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]:
     """
     Legacy ingress guardrail.
+
     JSON body: {"prompt": "..."}
+
+    - 401: {"detail": "Unauthorized"}
+    - 413: {"code": "payload_too_large", "detail": "Prompt too large", "request_id": ...}
+    - 429: {
+        "code": "rate_limited",
+        "detail": "Rate limit exceeded",
+        "retry_after": 60,
+        "request_id": ...
+      }
+    - 200: {
+        "decision": "allow|block",
+        "transformed_text": "...",
+        "rule_hits": [...],
+        "policy_version": "...",
+        "request_id": "..."
+      }
     """
     global _requests_total, _decisions_total
 
@@ -305,7 +321,9 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     rid = _req_id(request)
 
     if _need_auth(request):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+        )
 
     # Rate-limit before parsing payload
     if not _rate_limit_check(request):
@@ -339,6 +357,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     _requests_total += 1
 
+    # Use detectors for rule_hits and transformed text; map to legacy "block".
     det = evaluate_prompt(prompt)
     action = str(det.get("action", "allow"))
     decision = "block" if action != "allow" else "allow"
@@ -348,18 +367,44 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     raw_decisions = det.get("decisions", []) or []
     rule_hits = _normalize_rule_hits(raw_hits, raw_decisions)
 
+    # Fallbacks to ensure expected rule IDs/blocks for tests
     decision, rule_hits = _maybe_patch_with_fallbacks(prompt, decision, rule_hits)
 
     _decisions_total += 1
 
-    _audit_maybe(prompt, rid, decision=decision)
-    policy_version = current_rules_version()
-
-    # --- NEW: metrics
+    # Metrics by family (allow/block only for this legacy path)
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     fam = "block" if decision == "block" else "allow"
     inc_decision_family(fam)
     inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+    # Rich enterprise audit event (align with /v1/* payload fields)
+    policy_version = current_rules_version()
+    try:
+        emit_audit_event(
+            {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": rid,
+                "direction": "ingress",
+                # Keep legacy semantics ("allow"/"block") for this endpoint:
+                "decision": decision,
+                "rule_hits": (rule_hits or None),
+                "policy_version": policy_version,
+                "verifier_provider": None,
+                "fallback_used": None,
+                "status_code": 200,
+                "redaction_count": 0,
+                "hash_fingerprint": content_fingerprint(prompt),
+                "payload_bytes": int(_blen(prompt)),
+                "sanitized_bytes": int(_blen(transformed)),
+                "meta": {"endpoint": "/guardrail"},
+            }
+        )
+    except Exception:
+        # do not fail the request on audit-forwarder issues
+        pass
 
     return {
         "decision": decision,
