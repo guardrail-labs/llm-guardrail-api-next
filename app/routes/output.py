@@ -1,3 +1,4 @@
+# file: app/routes/output.py
 from __future__ import annotations
 
 import os
@@ -101,9 +102,9 @@ def guard_output(
     inc_decision_family(family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, family)
 
-    # enriched audit payload
+    # enriched audit payload (typed for mypy)
     try:
-        emit_event = {
+        emit_event: Dict[str, Any] = {
             "ts": None,
             "tenant_id": tenant_id,
             "bot_id": bot_id,
@@ -137,4 +138,3 @@ def guard_output(
         rule_hits=rule_hits_strs,
         policy_version=current_rules_version(),
     )
-
