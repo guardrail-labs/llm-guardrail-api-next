@@ -18,6 +18,7 @@ from app.routes.guardrail import (
     router as guardrail_router,
     threat_admin_router,
 )
+from app.routes.openai_compat import router as openai_router
 from app.routes.output import router as output_router
 from app.routes.proxy import router as proxy_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
@@ -81,6 +82,11 @@ def create_app() -> FastAPI:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         start = time.perf_counter()
         resp = await call_next(request)
+        # attach extra guard headers if present
+        extra = getattr(request.state, "_extra_headers", None)
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                resp.headers.setdefault(k, str(v))
         # Request-id + security headers
         resp.headers["X-Request-ID"] = rid
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -199,6 +205,7 @@ def create_app() -> FastAPI:
     app.include_router(output_router)
     app.include_router(batch_router)
     app.include_router(proxy_router)
+    app.include_router(openai_router)
     return app
 
 
