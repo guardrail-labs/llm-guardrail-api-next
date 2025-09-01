@@ -1,15 +1,14 @@
-# file: app/routes/openai_compat.py
 from __future__ import annotations
 
 import json
 import os
 import time
 import uuid
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.audit_forwarder import emit_event as emit_audit_event
 from app.services.detectors import evaluate_prompt
@@ -20,18 +19,13 @@ from app.services.policy import (
     current_rules_version,
     sanitize_text,
 )
-from app.services.threat_feed import (
-    apply_dynamic_redactions,
-    threat_feed_enabled,
-)
+from app.services.threat_feed import apply_dynamic_redactions, threat_feed_enabled
 from app.services.verifier import content_fingerprint
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
-from app.shared.quotas import check_and_consume
 from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
-    inc_quota_reject_tenant_bot,
 )
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
@@ -54,7 +48,6 @@ async def health() -> Dict[str, Any]:
 # Models (subset for compat)
 # ---------------------------
 
-
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
     content: str
@@ -70,7 +63,6 @@ class ChatCompletionsRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
-
 
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
@@ -91,9 +83,6 @@ def _family_for(action: str, redactions: int) -> str:
 
 
 def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
-    """
-    Flatten detector hits/decisions to 'source:list:id' strings.
-    """
     out: List[str] = []
 
     def add_hit(s: Optional[str]) -> None:
@@ -131,46 +120,15 @@ def _oai_error(message: str, type_: str = "invalid_request_error") -> Dict[str, 
 
 
 def _compat_models() -> List[Dict[str, Any]]:
-    """
-    Return OpenAI-style model objects.
-    Configure via OAI_COMPAT_MODELS="gpt-4o-mini,gpt-4o" or default to ["demo"].
-    """
-    import os
-
     raw = os.environ.get("OAI_COMPAT_MODELS") or ""
     ids = [s.strip() for s in raw.split(",") if s.strip()] or ["demo"]
     now = int(time.time())
     out: List[Dict[str, Any]] = []
     for mid in ids:
         out.append(
-            {
-                "id": mid,
-                "object": "model",
-                "created": now,
-                "owned_by": "guardrail",
-            }
+            {"id": mid, "object": "model", "created": now, "owned_by": "guardrail"}
         )
     return out
-
-
-# --- Centralized audit emitter ensuring meta.client is present ---
-def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
-    """
-    Wrap emit_audit_event to guarantee meta.client is present.
-    - Merges into event["meta"] and event["meta"]["client"] (caller values win).
-    - Never raises back to caller.
-    """
-    try:
-        base_meta = event.get("meta") or {}
-        base_client = base_meta.get("client") or {}
-        client_now = get_client_meta(request)  # {"ip","user_agent","path","method"}
-
-        merged_client = {**client_now, **{k: v for k, v in base_client.items() if v is not None}}
-        event["meta"] = {**base_meta, "client": merged_client}
-
-        emit_audit_event(event)
-    except Exception:
-        pass
 
 
 def _sse(obj: Dict[str, Any]) -> str:
@@ -178,9 +136,6 @@ def _sse(obj: Dict[str, Any]) -> str:
 
 
 def _chunk_text(s: str, max_len: int = 60) -> List[str]:
-    """
-    Simple chunker that preserves spaces reasonably well for demo streaming.
-    """
     s = s or ""
     out: List[str] = []
     buf: List[str] = []
@@ -206,15 +161,13 @@ def _chunk_text(s: str, max_len: int = 60) -> List[str]:
 
 @router.get("/models")
 async def list_models():
-    """
-    Minimal OpenAI-compatible /v1/models listing.
-    """
     return {"object": "list", "data": _compat_models()}
 
 
 @router.post("/chat/completions")
 async def chat_completions(
     request: Request,
+    response: Response,
     body: ChatCompletionsRequest,
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
@@ -226,23 +179,6 @@ async def chat_completions(
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
 
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        headers = {
-            "Retry-After": str(retry_after),
-            "X-Guardrail-Quota-Window": "60",
-            "X-Guardrail-Quota-Retry-After": str(retry_after),
-            "X-Guardrail-Policy-Version": policy_version,
-            "X-Guardrail-Ingress-Action": "skipped",
-            "X-Guardrail-Egress-Action": "skipped",
-        }
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        raise HTTPException(
-            status_code=429,
-            detail=_oai_error("Per-tenant quota exceeded"),
-            headers=headers,
-        )
-
     req_id = body.request_id or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
 
@@ -251,7 +187,9 @@ async def chat_completions(
 
     sanitized, families, redaction_count, _ = sanitize_text(joined, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+            sanitized, debug=want_debug
+        )
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -280,10 +218,8 @@ async def chat_completions(
     inc_decision_family(ingress_family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, ingress_family)
 
-    # Audit ingress
     try:
-        _emit_audit_with_client(
-            request,
+        emit_audit_event(
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -293,15 +229,12 @@ async def chat_completions(
                 "decision": ingress_action,
                 "rule_hits": (combined_hits or None),
                 "policy_version": policy_version,
-                "verifier_provider": None,
-                "fallback_used": None,
-                "status_code": 200,
                 "redaction_count": int(redaction_count or 0),
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {},
-            },
+                "meta": {"client": get_client_meta(request)},
+            }
         )
     except Exception:
         pass
@@ -326,7 +259,6 @@ async def chat_completions(
         created = now_ts
         model_id = body.model
 
-        # Rolling sanitizer across the cumulative output
         accum_raw = ""
         last_sanitized = ""
         e_action_final = "allow"
@@ -337,7 +269,6 @@ async def chat_completions(
             nonlocal accum_raw, last_sanitized
             nonlocal e_action_final, e_reds_final, e_hits_final
 
-            # First chunk announces role
             yield _sse(
                 {
                     "id": sid,
@@ -350,14 +281,12 @@ async def chat_completions(
                 }
             )
 
-            # Stream model deltas -> cumulative egress_check -> stream sanitized deltas
             for piece in stream:
                 accum_raw += str(piece or "")
                 payload, _ = egress_check(accum_raw, debug=want_debug)
                 e_action = str(payload.get("action", "allow"))
 
                 if e_action == "deny":
-                    # Stop immediately with content_filter
                     e_action_final = "deny"
                     e_reds_final = int(payload.get("redactions") or 0)
                     e_hits_final = list(payload.get("rule_hits") or []) or None
@@ -398,7 +327,6 @@ async def chat_completions(
                     e_reds_final = int(payload.get("redactions") or 0)
                     e_hits_final = list(payload.get("rule_hits") or []) or None
 
-            # Final chunk with finish_reason=stop
             yield _sse(
                 {
                     "id": sid,
@@ -410,13 +338,11 @@ async def chat_completions(
             )
             yield "data: [DONE]\n\n"
 
-            # Audit + metrics after stream ends
             fam = _family_for(e_action_final, int(e_reds_final or 0))
             inc_decision_family(fam)
             inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
             try:
-                _emit_audit_with_client(
-                    request,
+                emit_audit_event(
                     {
                         "ts": None,
                         "tenant_id": tenant_id,
@@ -426,15 +352,13 @@ async def chat_completions(
                         "decision": e_action_final,
                         "rule_hits": e_hits_final,
                         "policy_version": policy_version,
-                        "verifier_provider": None,
-                        "fallback_used": None,
                         "status_code": 200,
                         "redaction_count": int(e_reds_final or 0),
                         "hash_fingerprint": content_fingerprint(accum_raw),
                         "payload_bytes": int(_blen(accum_raw)),
                         "sanitized_bytes": int(_blen(last_sanitized)),
-                        "meta": {"provider": model_meta},
-                    },
+                        "meta": {"provider": model_meta, "client": get_client_meta(request)},
+                    }
                 )
             except Exception:
                 pass
@@ -443,8 +367,6 @@ async def chat_completions(
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "X-Guardrail-Policy-Version": policy_version,
-            # We can only know final egress action after streaming completes.
-            # Default the header to "allow" for compatibility.
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": "allow",
         }
@@ -465,8 +387,7 @@ async def chat_completions(
     inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
 
     try:
-        _emit_audit_with_client(
-            request,
+        emit_audit_event(
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -476,15 +397,12 @@ async def chat_completions(
                 "decision": e_action,
                 "rule_hits": e_hits,
                 "policy_version": policy_version,
-                "verifier_provider": None,
-                "fallback_used": None,
-                "status_code": 200,
                 "redaction_count": e_reds,
                 "hash_fingerprint": content_fingerprint(model_text),
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {"provider": model_meta},
-            },
+                "meta": {"provider": model_meta, "client": get_client_meta(request)},
+            }
         )
     except Exception:
         pass
@@ -504,19 +422,337 @@ async def chat_completions(
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
-    # Attach guard signals via headers for non-streaming
-    request.state._extra_headers = {
-        "X-Guardrail-Policy-Version": policy_version,
-        "X-Guardrail-Ingress-Action": ingress_action,
-        "X-Guardrail-Egress-Action": e_action,
-        "X-Guardrail-Egress-Redactions": str(e_reds),
-    }
+    # set headers inline (no middleware dependency)
+    response.headers["X-Guardrail-Policy-Version"] = policy_version
+    response.headers["X-Guardrail-Ingress-Action"] = ingress_action
+    response.headers["X-Guardrail-Egress-Action"] = e_action
+    response.headers["X-Guardrail-Egress-Redactions"] = str(e_reds)
 
     return oai_resp
 
 
-# --- Text Completions (OpenAI-compatible) ------------------------------------
+# --- Azure OpenAI–compatible endpoints ---------------------------------------
 
+from fastapi import APIRouter as _APIRouter  # noqa: E402
+
+azure_router = _APIRouter(prefix="/openai/deployments", tags=["azure-openai-compat"])
+
+
+class _AzureChatBody(BaseModel):
+    messages: List[ChatMessage]
+    stream: Optional[bool] = False
+    request_id: Optional[str] = None
+
+
+class _AzureEmbeddingsBody(BaseModel):
+    input: Any  # normalized via EmbeddingsRequest validator
+
+
+@azure_router.post("/{deployment_id}/chat/completions")
+async def azure_chat_completions(
+    request: Request,
+    response: Response,
+    deployment_id: str,
+    body: _AzureChatBody,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+):
+    """
+    Azure-style chat endpoint. Delegates to /v1/chat/completions.
+    """
+    mapped = ChatCompletionsRequest(
+        model=deployment_id,
+        messages=body.messages,
+        stream=bool(body.stream),
+        request_id=body.request_id,
+    )
+    api_version = request.query_params.get("api-version") or ""
+
+    result = await chat_completions(request, response, mapped, x_debug)
+
+    # For non-streaming, add Azure version header
+    if not isinstance(result, StreamingResponse) and api_version:
+        response.headers["X-Azure-API-Version"] = api_version
+
+    return result
+
+
+@azure_router.post("/{deployment_id}/embeddings")
+async def azure_embeddings(
+    request: Request,
+    response: Response,
+    deployment_id: str,
+    body: _AzureEmbeddingsBody,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+):
+    """
+    Azure-style embeddings endpoint.
+    """
+    mapped = EmbeddingsRequest(model=deployment_id, input=body.input)
+    api_version = request.query_params.get("api-version") or ""
+    result = await create_embeddings(request, response, mapped, x_debug)
+
+    if isinstance(result, dict) and api_version:
+        response.headers["X-Azure-API-Version"] = api_version
+
+    return result
+
+
+# --- Moderations (OpenAI-compatible) -----------------------------------------
+
+class ModerationsRequest(BaseModel):
+    model: str
+    input: Union[str, List[str]]
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def _normalize_input(cls, v: Any) -> List[str]:
+        if v is None:
+            return [""]
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return [str(v)]
+
+
+@router.post("/moderations")
+async def create_moderation(
+    request: Request,
+    response: Response,
+    body: ModerationsRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+):
+    """
+    Minimal OpenAI-compatible /v1/moderations.
+    'deny' -> flagged=True. Redactions don't flag.
+    """
+    want_debug = x_debug == "1"
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    policy_version = current_rules_version()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    now_ts = int(time.time())
+
+    results: List[Dict[str, Any]] = []
+
+    for item in body.input:
+        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
+        if threat_feed_enabled():
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+                sanitized, debug=want_debug
+            )
+            sanitized = dyn_text
+            if dyn_fams:
+                base = set(fams or [])
+                base.update(dyn_fams)
+                fams = sorted(base)
+            if dyn_reds:
+                redaction_count = (redaction_count or 0) + dyn_reds
+
+        det = evaluate_prompt(sanitized)
+        det_action = str(det.get("action", "allow"))
+        decisions = list(det.get("decisions", []))
+        flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
+
+        if det_action == "deny":
+            ingress_action = "deny"
+        elif redaction_count:
+            ingress_action = "allow"
+        else:
+            ingress_action = det_action
+
+        fam = _family_for(ingress_action, int(redaction_count or 0))
+        inc_decision_family(fam)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": ingress_action,
+                    "rule_hits": (
+                        sorted({_normalize_family(h) for h in flat_hits}) or None
+                    ),
+                    "policy_version": policy_version,
+                    "redaction_count": int(redaction_count or 0),
+                    "hash_fingerprint": content_fingerprint(item),
+                    "payload_bytes": int(_blen(item)),
+                    "sanitized_bytes": int(_blen(sanitized)),
+                    "meta": {"endpoint": "moderations", "client": get_client_meta(request)},
+                }
+            )
+        except Exception:
+            pass
+
+        flagged = ingress_action == "deny"
+        violence = any("weapon" in h or "explosive" in h for h in flat_hits)
+        categories = {
+            "harassment": False,
+            "hate": False,
+            "self-harm": False,
+            "sexual": False,
+            "violence": bool(violence),
+        }
+        scores = {
+            k: (0.98 if (k == "violence" and violence) else (0.0 if not flagged else 0.6))
+            for k in categories.keys()
+        }
+
+        results.append(
+            {
+                "flagged": bool(flagged),
+                "categories": categories,
+                "category_scores": scores,
+            }
+        )
+
+    # attach guard headers on moderations too
+    response.headers["X-Guardrail-Policy-Version"] = policy_version
+    # summarise: if any flagged -> ingress_action treated as 'deny'
+    final_flag = any(r["flagged"] for r in results)
+    response.headers["X-Guardrail-Ingress-Action"] = "deny" if final_flag else "allow"
+    response.headers["X-Guardrail-Egress-Action"] = "skipped"
+    response.headers["X-Guardrail-Egress-Redactions"] = "0"
+
+    return {
+        "id": f"modr-{uuid.uuid4().hex[:12]}",
+        "model": body.model,
+        "created": now_ts,
+        "results": results,
+    }
+
+
+# --- Embeddings (OpenAI-compatible) ------------------------------------------
+
+import hashlib as _hashlib  # noqa: E402
+import os as _os  # noqa: E402
+import random as _random  # noqa: E402
+
+
+class EmbeddingsRequest(BaseModel):
+    model: str
+    input: Union[str, List[str]]
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def _normalize_input(cls, v: Any) -> List[str]:
+        if v is None:
+            return [""]
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return [str(v)]
+
+
+@router.post("/embeddings")
+async def create_embeddings(
+    request: Request,
+    response: Response,
+    body: EmbeddingsRequest,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+):
+    """
+    Minimal OpenAI-compatible /v1/embeddings.
+    - Ingress guard (sanitize + detectors); deny on 'deny'.
+    - Deterministic vectors via PRNG seeded by sha256(text).
+    - Records tenant/bot family metrics and audits.
+    """
+    want_debug = x_debug == "1"
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    policy_version = current_rules_version()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    now_ts = int(time.time())
+    dim = int(_os.environ.get("OAI_COMPAT_EMBED_DIM") or "1536")
+
+    data: List[Dict[str, Any]] = []
+
+    for idx, item in enumerate(body.input):
+        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
+        if threat_feed_enabled():
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+                sanitized, debug=want_debug
+            )
+            sanitized = dyn_text
+            if dyn_fams:
+                base = set(fams or [])
+                base.update(dyn_fams)
+                fams = sorted(base)
+            if dyn_reds:
+                redaction_count = (redaction_count or 0) + dyn_reds
+
+        det = evaluate_prompt(sanitized)
+        det_action = str(det.get("action", "allow"))
+        fam = _family_for(
+            "deny" if det_action == "deny" else "allow", int(redaction_count or 0)
+        )
+        inc_decision_family(fam)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": "deny" if det_action == "deny" else "allow",
+                    "rule_hits": None,
+                    "policy_version": policy_version,
+                    "redaction_count": int(redaction_count or 0),
+                    "hash_fingerprint": content_fingerprint(item),
+                    "payload_bytes": int(_blen(item)),
+                    "sanitized_bytes": int(_blen(sanitized)),
+                    "meta": {"endpoint": "embeddings", "client": get_client_meta(request)},
+                }
+            )
+        except Exception:
+            pass
+
+        if det_action == "deny":
+            headers = {
+                "X-Guardrail-Policy-Version": policy_version,
+                "X-Guardrail-Ingress-Action": "deny",
+                "X-Guardrail-Egress-Action": "skipped",
+            }
+            raise HTTPException(
+                status_code=400, detail=_oai_error("Request denied by guardrail policy"),
+                headers=headers,
+            )
+
+        seed = int.from_bytes(
+            _hashlib.sha256(item.encode("utf-8")).digest()[:8], "big"
+        )
+        rng = _random.Random(seed)
+        vec = [rng.uniform(-0.01, 0.01) for _ in range(dim)]
+        data.append({"object": "embedding", "embedding": vec, "index": idx})
+
+    # attach headers inline (non-streaming)
+    response.headers["X-Guardrail-Policy-Version"] = policy_version
+    response.headers["X-Guardrail-Ingress-Action"] = "allow"
+    response.headers["X-Guardrail-Egress-Action"] = "allow"
+    response.headers["X-Guardrail-Egress-Redactions"] = "0"
+
+    return {
+        "object": "list",
+        "data": data,
+        "model": body.model,
+        "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        "created": now_ts,
+    }
+
+
+# --- Completions (OpenAI-compatible) -----------------------------------------
 
 class CompletionsRequest(BaseModel):
     model: str
@@ -528,6 +764,7 @@ class CompletionsRequest(BaseModel):
 @router.post("/completions")
 async def completions(
     request: Request,
+    response: Response,
     body: CompletionsRequest,
     x_debug: Optional[str] = Header(
         default=None, alias="X-Debug", convert_underscores=False
@@ -536,28 +773,11 @@ async def completions(
     """
     Minimal OpenAI-compatible /v1/completions:
     - Maps prompt -> chat-style single user message.
-    - Applies the same ingress/egress guard, metrics, and audit.
+    - Applies same ingress/egress guard, metrics, and audit.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
-
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        headers = {
-            "Retry-After": str(retry_after),
-            "X-Guardrail-Quota-Window": "60",
-            "X-Guardrail-Quota-Retry-After": str(retry_after),
-            "X-Guardrail-Policy-Version": policy_version,
-            "X-Guardrail-Ingress-Action": "skipped",
-            "X-Guardrail-Egress-Action": "skipped",
-        }
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        raise HTTPException(
-            status_code=429,
-            detail=_oai_error("Per-tenant quota exceeded"),
-            headers=headers,
-        )
     req_id = body.request_id or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
 
@@ -580,8 +800,9 @@ async def completions(
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
     xformed = det.get("transformed_text", sanitized)
-    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [],
-                                     det.get("decisions", []) or [])
+    flat_hits = _normalize_rule_hits(
+        det.get("rule_hits", []) or [], det.get("decisions", []) or []
+    )
     det_families = [_normalize_family(h) for h in flat_hits]
     combined_hits = sorted({*(families or []), *det_families})
 
@@ -597,8 +818,7 @@ async def completions(
     inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
     try:
-        _emit_audit_with_client(
-            request,
+        emit_audit_event(
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -608,15 +828,12 @@ async def completions(
                 "decision": ingress_action,
                 "rule_hits": (combined_hits or None),
                 "policy_version": policy_version,
-                "verifier_provider": None,
-                "fallback_used": None,
-                "status_code": 200,
                 "redaction_count": int(redaction_count or 0),
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {"endpoint": "completions"},
-            },
+                "meta": {"endpoint": "completions", "client": get_client_meta(request)},
+            }
         )
     except Exception:
         pass
@@ -647,8 +864,7 @@ async def completions(
     inc_decision_family_tenant_bot(tenant_id, bot_id, e_fam)
 
     try:
-        _emit_audit_with_client(
-            request,
+        emit_audit_event(
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -658,15 +874,16 @@ async def completions(
                 "decision": e_action,
                 "rule_hits": e_hits,
                 "policy_version": policy_version,
-                "verifier_provider": None,
-                "fallback_used": None,
-                "status_code": 200,
                 "redaction_count": e_reds,
                 "hash_fingerprint": content_fingerprint(model_text),
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {"provider": model_meta, "endpoint": "completions"},
-            },
+                "meta": {
+                    "provider": model_meta,
+                    "endpoint": "completions",
+                    "client": get_client_meta(request),
+                },
+            }
         )
     except Exception:
         pass
@@ -684,13 +901,7 @@ async def completions(
                         "object": "text_completion",
                         "created": created,
                         "model": model_id,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "text": piece,
-                                "finish_reason": None,
-                            }
-                        ],
+                        "choices": [{"index": 0, "text": piece, "finish_reason": None}],
                     }
                 )
             yield _sse(
@@ -699,9 +910,7 @@ async def completions(
                     "object": "text_completion",
                     "created": created,
                     "model": model_id,
-                    "choices": [
-                        {"index": 0, "text": "", "finish_reason": "stop"}
-                    ],
+                    "choices": [{"index": 0, "text": "", "finish_reason": "stop"}],
                 }
             )
             yield "data: [DONE]\n\n"
@@ -716,413 +925,20 @@ async def completions(
         }
         return StreamingResponse(gen(), headers=headers)
 
-    # Non-streaming response (OpenAI-ish)
+    # Non-streaming response
     resp: Dict[str, Any] = {
         "id": f"cmpl-{uuid.uuid4().hex[:12]}",
         "object": "text_completion",
         "created": now_ts,
         "model": body.model,
-        "choices": [
-            {"index": 0, "text": e_text, "finish_reason": "stop"}
-        ],
+        "choices": [{"index": 0, "text": e_text, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
-    request.state._extra_headers = {
-        "X-Guardrail-Policy-Version": policy_version,
-        "X-Guardrail-Ingress-Action": ingress_action,
-        "X-Guardrail-Egress-Action": e_action,
-        "X-Guardrail-Egress-Redactions": str(e_reds),
-    }
+    response.headers["X-Guardrail-Policy-Version"] = policy_version
+    response.headers["X-Guardrail-Ingress-Action"] = ingress_action
+    response.headers["X-Guardrail-Egress-Action"] = e_action
+    response.headers["X-Guardrail-Egress-Redactions"] = str(e_reds)
+
     return resp
 
-
-# --- Azure OpenAI–compatible endpoints ---------------------------------------
-
-from fastapi import APIRouter as _APIRouter  # noqa: E402  (local alias to avoid churn)
-
-azure_router = _APIRouter(
-    prefix="/openai/deployments", tags=["azure-openai-compat"]
-)
-
-
-class _AzureChatBody(BaseModel):
-    messages: List[ChatMessage]
-    stream: Optional[bool] = False
-    request_id: Optional[str] = None
-
-
-class _AzureEmbeddingsBody(BaseModel):
-    # Azure body omits "model"; deployment_id is the model
-    # Keep parity with OpenAI: input may be str or list[str]
-    # Reuse EmbeddingsRequest shape by converting below
-    input: Any  # we normalize via EmbeddingsRequest's validator later
-
-
-@azure_router.post("/{deployment_id}/chat/completions")
-async def azure_chat_completions(
-    request: Request,
-    deployment_id: str,
-    body: _AzureChatBody,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
-):
-    """
-    Azure-style chat endpoint.
-    Maps deployment_id -> model and delegates to /v1/chat/completions handler.
-    """
-    # Map Azure body -> OpenAI-compat request
-    mapped = ChatCompletionsRequest(
-        model=deployment_id,
-        messages=body.messages,
-        stream=bool(body.stream),
-        request_id=body.request_id,
-    )
-
-    # Remember api-version (if provided) for non-streaming response headers
-    api_version = request.query_params.get("api-version") or ""
-
-    # Delegate to main handler (returns dict or StreamingResponse)
-    result = await chat_completions(request, mapped, x_debug)
-
-    # For non-streaming, attach Azure version header (streaming has its own headers)
-    if not isinstance(result, StreamingResponse) and api_version:
-        extra = getattr(request.state, "_extra_headers", {}) or {}
-        extra["X-Azure-API-Version"] = api_version
-        request.state._extra_headers = extra
-
-    return result
-
-
-@azure_router.post("/{deployment_id}/embeddings")
-async def azure_embeddings(
-    request: Request,
-    deployment_id: str,
-    body: _AzureEmbeddingsBody,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
-):
-    """
-    Azure-style embeddings endpoint.
-    Maps deployment_id -> model and delegates to /v1/embeddings handler.
-    """
-    # Normalize Azure body to our EmbeddingsRequest
-    mapped = EmbeddingsRequest(model=deployment_id, input=body.input)
-
-    api_version = request.query_params.get("api-version") or ""
-    result = await create_embeddings(request, mapped, x_debug)
-
-    # Add Azure version header for non-streaming response (embeddings are not streaming)
-    if isinstance(result, dict) and api_version:
-        extra = getattr(request.state, "_extra_headers", {}) or {}
-        extra["X-Azure-API-Version"] = api_version
-        request.state._extra_headers = extra
-
-    return result
-
-
-# --- Moderations (OpenAI-compatible) -----------------------------------------
-
-from typing import Union  # noqa: E402  (keep import local to avoid reorder churn)
-
-from pydantic import field_validator  # noqa: E402
-
-
-class ModerationsRequest(BaseModel):
-    model: str
-    # OpenAI accepts str or list[str]; we normalize in a validator.
-    input: Union[str, List[str]]
-
-    @field_validator("input", mode="before")
-    @classmethod
-    def _normalize_input(cls, v: Any) -> List[str]:
-        if v is None:
-            return [""]
-        if isinstance(v, str):
-            return [v]
-        if isinstance(v, list):
-            return [str(x) for x in v]
-        return [str(v)]
-
-
-@router.post("/moderations")
-async def create_moderation(
-    request: Request,
-    body: ModerationsRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
-):
-    """
-    Minimal OpenAI-compatible /v1/moderations.
-
-    We treat 'deny' from detectors as flagged=True. Redactions do not flag,
-    but still count toward 'sanitize' family for metrics.
-    """
-    want_debug = x_debug == "1"
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
-    policy_version = current_rules_version()
-
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        headers = {
-            "Retry-After": str(retry_after),
-            "X-Guardrail-Quota-Window": "60",
-            "X-Guardrail-Quota-Retry-After": str(retry_after),
-            "X-Guardrail-Policy-Version": policy_version,
-            "X-Guardrail-Ingress-Action": "skipped",
-            "X-Guardrail-Egress-Action": "skipped",
-        }
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        raise HTTPException(
-            status_code=429,
-            detail=_oai_error("Per-tenant quota exceeded"),
-            headers=headers,
-        )
-    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    now_ts = int(time.time())
-
-    results: List[Dict[str, Any]] = []
-
-    for item in body.input:
-        # Ingress pass
-        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
-        if threat_feed_enabled():
-            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
-            sanitized = dyn_text
-            if dyn_fams:
-                base = set(fams or [])
-                base.update(dyn_fams)
-                fams = sorted(base)
-            if dyn_reds:
-                redaction_count = (redaction_count or 0) + dyn_reds
-
-        det = evaluate_prompt(sanitized)
-        det_action = str(det.get("action", "allow"))
-        decisions = list(det.get("decisions", []))
-        flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
-
-        # Decision mapping
-        if det_action == "deny":
-            ingress_action = "deny"
-        elif redaction_count:
-            ingress_action = "allow"
-        else:
-            ingress_action = det_action
-
-        fam = _family_for(ingress_action, int(redaction_count or 0))
-        inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
-
-        # Audit each item (ingress)
-        try:
-            _emit_audit_with_client(
-                request,
-                {
-                    "ts": None,
-                    "tenant_id": tenant_id,
-                    "bot_id": bot_id,
-                    "request_id": req_id,
-                    "direction": "ingress",
-                    "decision": ingress_action,
-                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
-                    "policy_version": policy_version,
-                    "verifier_provider": None,
-                    "fallback_used": None,
-                    "status_code": 200,
-                    "redaction_count": int(redaction_count or 0),
-                    "hash_fingerprint": content_fingerprint(item),
-                    "payload_bytes": int(_blen(item)),
-                    "sanitized_bytes": int(_blen(sanitized)),
-                    "meta": {"endpoint": "moderations"},
-                },
-            )
-        except Exception:
-            pass
-
-        # OpenAI-ish categories (minimal; extend as detectors grow)
-        flagged = ingress_action == "deny"
-        violence = any("weapon" in h or "explosive" in h for h in flat_hits)
-        categories = {
-            "harassment": False,
-            "hate": False,
-            "self-harm": False,
-            "sexual": False,
-            "violence": bool(violence),
-        }
-        scores = {
-            k: (0.98 if (k == "violence" and violence) else (0.0 if not flagged else 0.6))
-            for k in categories.keys()
-        }
-
-        results.append(
-            {
-                "flagged": bool(flagged),
-                "categories": categories,
-                "category_scores": scores,
-            }
-        )
-
-    return {
-        "id": f"modr-{uuid.uuid4().hex[:12]}",
-        "model": body.model,
-        "created": now_ts,
-        "results": results,
-    }
-
-
-# --- Embeddings (OpenAI-compatible) ------------------------------------------
-
-# Local imports to avoid top-of-file churn
-import hashlib as _hashlib  # noqa: E402
-import os as _os  # noqa: E402
-import random as _random  # noqa: E402
-
-from pydantic import field_validator  # noqa: E402
-
-
-class EmbeddingsRequest(BaseModel):
-    model: str
-    # OpenAI accepts str or list[str]; normalize via validator
-    input: Union[str, List[str]]
-
-    @field_validator("input", mode="before")
-    @classmethod
-    def _normalize_input(cls, v: Any) -> List[str]:
-        if v is None:
-            return [""]
-        if isinstance(v, str):
-            return [v]
-        if isinstance(v, list):
-            return [str(x) for x in v]
-        return [str(v)]
-
-
-@router.post("/embeddings")
-async def create_embeddings(
-    request: Request,
-    body: EmbeddingsRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
-):
-    """
-    Minimal OpenAI-compatible /v1/embeddings.
-    - Ingress guard (sanitize + detectors); deny on 'deny'.
-    - Deterministic vectors via PRNG seeded by sha256(text).
-    - Records tenant/bot family metrics and audits.
-    """
-    want_debug = x_debug == "1"
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
-    policy_version = current_rules_version()
-
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        headers = {
-            "Retry-After": str(retry_after),
-            "X-Guardrail-Quota-Window": "60",
-            "X-Guardrail-Quota-Retry-After": str(retry_after),
-            "X-Guardrail-Policy-Version": policy_version,
-            "X-Guardrail-Ingress-Action": "skipped",
-            "X-Guardrail-Egress-Action": "skipped",
-        }
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        raise HTTPException(
-            status_code=429,
-            detail=_oai_error("Per-tenant quota exceeded"),
-            headers=headers,
-        )
-    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    now_ts = int(time.time())
-    dim = int(_os.environ.get("OAI_COMPAT_EMBED_DIM") or "1536")
-
-    data: List[Dict[str, Any]] = []
-
-    for idx, item in enumerate(body.input):
-        # Ingress pass (same flow as chat/moderations)
-        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
-        if threat_feed_enabled():
-            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-                sanitized, debug=want_debug
-            )
-            sanitized = dyn_text
-            if dyn_fams:
-                base = set(fams or [])
-                base.update(dyn_fams)
-                fams = sorted(base)
-            if dyn_reds:
-                redaction_count = (redaction_count or 0) + dyn_reds
-
-        det = evaluate_prompt(sanitized)
-        det_action = str(det.get("action", "allow"))
-        flat_hits = _normalize_rule_hits(
-            det.get("rule_hits", []) or [], det.get("decisions", []) or []
-        )
-        fam = _family_for(
-            "deny" if det_action == "deny" else "allow", int(redaction_count or 0)
-        )
-        inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
-
-        # Audit ingress per item
-        try:
-            _emit_audit_with_client(
-                request,
-                {
-                    "ts": None,
-                    "tenant_id": tenant_id,
-                    "bot_id": bot_id,
-                    "request_id": req_id,
-                    "direction": "ingress",
-                    "decision": "deny" if det_action == "deny" else "allow",
-                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits})
-                                  or None),
-                    "policy_version": policy_version,
-                    "verifier_provider": None,
-                    "fallback_used": None,
-                    "status_code": 200,
-                    "redaction_count": int(redaction_count or 0),
-                    "hash_fingerprint": content_fingerprint(item),
-                    "payload_bytes": int(_blen(item)),
-                    "sanitized_bytes": int(_blen(sanitized)),
-                    "meta": {"endpoint": "embeddings"},
-                },
-            )
-        except Exception:
-            pass
-
-        if det_action == "deny":
-            headers = {
-                "X-Guardrail-Policy-Version": policy_version,
-                "X-Guardrail-Ingress-Action": "deny",
-                "X-Guardrail-Egress-Action": "skipped",
-            }
-            raise HTTPException(
-                status_code=400,
-                detail=_oai_error("Request denied by guardrail policy"),
-                headers=headers,
-            )
-
-        # Deterministic pseudo-embedding (no external calls)
-        seed = int.from_bytes(
-            _hashlib.sha256(item.encode("utf-8")).digest()[:8], "big"
-        )
-        rng = _random.Random(seed)
-        vec = [rng.uniform(-0.01, 0.01) for _ in range(dim)]
-        data.append({"object": "embedding", "embedding": vec, "index": idx})
-
-    # Propagate guard headers (non-streaming)
-    request.state._extra_headers = {
-        "X-Guardrail-Policy-Version": policy_version,
-        "X-Guardrail-Ingress-Action": "allow",
-        "X-Guardrail-Egress-Action": "allow",
-        "X-Guardrail-Egress-Redactions": "0",
-    }
-
-    return {
-        "object": "list",
-        "data": data,
-        "model": body.model,
-        "usage": {"prompt_tokens": 0, "total_tokens": 0},
-        "created": now_ts,
-    }
