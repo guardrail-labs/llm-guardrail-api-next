@@ -91,6 +91,52 @@ def _family_for(action: str, redactions: int) -> str:
     return "allow"
 
 
+def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
+    """
+    Normalize detector hits and decision metadata to flat 'source:list:id' strings
+    (mirrors helper in routes/guardrail.py).
+    """
+    out: List[str] = []
+
+    def add_hit(s: Optional[str]) -> None:
+        if not s:
+            return
+        if s not in out:
+            out.append(s)
+
+    # direct hits
+    for h in raw_hits or []:
+        if isinstance(h, str):
+            add_hit(h)
+        elif isinstance(h, dict):
+            src = (
+                h.get("source")
+                or h.get("origin")
+                or h.get("provider")
+                or h.get("src")
+            )
+            lst = h.get("list") or h.get("kind") or h.get("type")
+            rid = h.get("id") or h.get("rule_id") or h.get("name")
+            if src and lst and rid:
+                add_hit(f"{src}:{lst}:{rid}")
+            elif rid:
+                add_hit(str(rid))
+
+    # derive from decisions if present
+    for d in raw_decisions or []:
+        if not isinstance(d, dict):
+            continue
+        src = d.get("source") or d.get("origin") or d.get("provider") or d.get("src")
+        lst = d.get("list") or d.get("kind") or d.get("type")
+        rid = d.get("id") or d.get("rule_id") or d.get("name")
+        if src and lst and rid:
+            add_hit(f"{src}:{lst}:{rid}")
+        elif rid:
+            add_hit(str(rid))
+
+    return out
+
+
 # ---------------------------
 # Routes
 # ---------------------------
@@ -146,8 +192,11 @@ async def batch_evaluate(
         decisions = list(det.get("decisions", []))
         xformed = det.get("transformed_text", sanitized)
 
-        det_hits = det.get("rule_hits", []) or []
-        det_families = [_normalize_family(h) for h in det_hits]
+        # flatten detector hits to strings then normalize to families
+        det_hits_raw = det.get("rule_hits", []) or []
+        dec_raw = det.get("decisions", []) or []
+        flat_hits = _normalize_rule_hits(det_hits_raw, dec_raw)
+        det_families = [_normalize_family(h) for h in flat_hits]
         combined_hits = sorted({*(families or []), *det_families})
 
         det_action = str(det.get("action", "allow"))
@@ -257,14 +306,16 @@ async def egress_batch(
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
 
-    out_items: List[BatchItemOut] = []
+    out_items: List[BatchItemOut] = {}
+
+    out_items = []
 
     for itm in body.items:
         text_in = itm.text or ""
         req_id = itm.request_id or str(uuid.uuid4())
         fp_all = content_fingerprint(text_in)
 
-        payload, dbg = egress_check(text_in, debug=want_debug)
+        payload, _ = egress_check(text_in, debug=want_debug)
         action = str(payload.get("action", "allow"))
         xformed = str(payload.get("text", ""))
         redactions = int(payload.get("redactions") or 0)
