@@ -20,7 +20,11 @@ from app.routes.output import router as output_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.telemetry.metrics import get_all_family_totals, get_rate_limited_total  # <-- NEW
+from app.telemetry.metrics import (
+    get_all_family_totals,
+    get_rate_limited_total,
+    export_family_breakdown_lines,
+)
 
 # Test-only bypass for admin auth (enabled in CI/tests via env)
 TEST_AUTH_BYPASS = os.getenv("GUARDRAIL_DISABLE_AUTH") == "1"
@@ -165,7 +169,10 @@ def create_app() -> FastAPI:
             v = fam.get(k, 0.0)
             lines.append(f'guardrail_decisions_family_total{{family="{k}"}} {v}')
 
-        # NEW: total rate-limited requests (429 from rate limit)
+        # NEW: per-tenant/bot breakdowns
+        lines.extend(export_family_breakdown_lines())
+
+        # Rate-limit blocks
         lines.append("# HELP guardrail_rate_limited_total Requests blocked by rate limit.")
         lines.append("# TYPE guardrail_rate_limited_total counter")
         lines.append(f"guardrail_rate_limited_total {get_rate_limited_total()}")
