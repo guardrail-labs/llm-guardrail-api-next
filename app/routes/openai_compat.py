@@ -1,3 +1,4 @@
+# file: app/routes/openai_compat.py
 from __future__ import annotations
 
 import time
@@ -7,25 +8,26 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.services.audit_forwarder import emit_event as emit_audit_event
-from app.services.detectors import evaluate_prompt
-from app.services.egress import egress_check
-from app.services.llm_client import get_client
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
     sanitize_text,
 )
+from app.services.detectors import evaluate_prompt
 from app.services.threat_feed import (
     apply_dynamic_redactions,
     threat_feed_enabled,
 )
+from app.services.egress import egress_check
 from app.services.verifier import content_fingerprint
-from app.shared.headers import BOT_HEADER, TENANT_HEADER
+from app.services.llm_client import get_client
+from app.services.audit_forwarder import emit_event as emit_audit_event
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
 )
+from app.shared.headers import TENANT_HEADER, BOT_HEADER
+
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -33,7 +35,6 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 # ---------------------------
 # Models (subset for compat)
 # ---------------------------
-
 
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
@@ -50,7 +51,6 @@ class ChatCompletionsRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
-
 
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
@@ -118,7 +118,6 @@ def _oai_error(message: str, type_: str = "invalid_request_error") -> Dict[str, 
 # ---------------------------
 # Route
 # ---------------------------
-
 
 @router.post("/chat/completions")
 async def chat_completions(
@@ -212,13 +211,13 @@ async def chat_completions(
 
     if ingress_action == "deny":
         # Strict compat: return 400 with OpenAI-style error object
-        resp = _oai_error("Request denied by guardrail policy")
+        err_body = _oai_error("Request denied by guardrail policy")
         headers = {
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": "skipped",
         }
-        raise HTTPException(status_code=400, detail=resp, headers=headers)
+        raise HTTPException(status_code=400, detail=err_body, headers=headers)
 
     # ---------- Provider ----------
     client = get_client()
@@ -263,7 +262,7 @@ async def chat_completions(
         pass
 
     # OpenAI-compatible response shape (subset)
-    resp: Dict[str, Any] = {
+    oai_resp: Dict[str, Any] = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "created": now_ts,
@@ -286,4 +285,4 @@ async def chat_completions(
         "X-Guardrail-Egress-Redactions": str(e_reds),
     }
 
-    return resp
+    return oai_resp
