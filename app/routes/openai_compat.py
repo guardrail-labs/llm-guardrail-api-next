@@ -137,6 +137,26 @@ def _compat_models() -> List[Dict[str, Any]]:
     return out
 
 
+# --- Centralized audit emitter ensuring meta.client is present ---
+def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
+    """
+    Wrap emit_audit_event to guarantee meta.client is present.
+    - Merges into event["meta"] and event["meta"]["client"] (caller values win).
+    - Never raises back to caller.
+    """
+    try:
+        base_meta = event.get("meta") or {}
+        base_client = base_meta.get("client") or {}
+        client_now = get_client_meta(request)  # {"ip","user_agent","path","method"}
+
+        merged_client = {**client_now, **{k: v for k, v in base_client.items() if v is not None}}
+        event["meta"] = {**base_meta, "client": merged_client}
+
+        emit_audit_event(event)
+    except Exception:
+        pass
+
+
 def _sse(obj: Dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
@@ -229,7 +249,8 @@ async def chat_completions(
 
     # Audit ingress
     try:
-        emit_audit_event(
+        _emit_audit_with_client(
+            request,
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -246,8 +267,8 @@ async def chat_completions(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {"client": get_client_meta(request)},
-            }
+                "meta": {},
+            },
         )
     except Exception:
         pass
@@ -361,7 +382,8 @@ async def chat_completions(
             inc_decision_family(fam)
             inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
             try:
-                emit_audit_event(
+                _emit_audit_with_client(
+                    request,
                     {
                         "ts": None,
                         "tenant_id": tenant_id,
@@ -378,8 +400,8 @@ async def chat_completions(
                         "hash_fingerprint": content_fingerprint(accum_raw),
                         "payload_bytes": int(_blen(accum_raw)),
                         "sanitized_bytes": int(_blen(last_sanitized)),
-                        "meta": {"provider": model_meta, "client": get_client_meta(request)},
-                    }
+                        "meta": {"provider": model_meta},
+                    },
                 )
             except Exception:
                 pass
@@ -410,7 +432,8 @@ async def chat_completions(
     inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
 
     try:
-        emit_audit_event(
+        _emit_audit_with_client(
+            request,
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -427,8 +450,8 @@ async def chat_completions(
                 "hash_fingerprint": content_fingerprint(model_text),
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {"provider": model_meta, "client": get_client_meta(request)},
-            }
+                "meta": {"provider": model_meta},
+            },
         )
     except Exception:
         pass
@@ -524,7 +547,8 @@ async def completions(
     inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
     try:
-        emit_audit_event(
+        _emit_audit_with_client(
+            request,
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -541,8 +565,8 @@ async def completions(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {"endpoint": "completions", "client": get_client_meta(request)},
-            }
+                "meta": {"endpoint": "completions"},
+            },
         )
     except Exception:
         pass
@@ -573,7 +597,8 @@ async def completions(
     inc_decision_family_tenant_bot(tenant_id, bot_id, e_fam)
 
     try:
-        emit_audit_event(
+        _emit_audit_with_client(
+            request,
             {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -590,12 +615,8 @@ async def completions(
                 "hash_fingerprint": content_fingerprint(model_text),
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {
-                    "provider": model_meta,
-                    "endpoint": "completions",
-                    "client": get_client_meta(request),
-                },
-            }
+                "meta": {"provider": model_meta, "endpoint": "completions"},
+            },
         )
     except Exception:
         pass
@@ -828,7 +849,8 @@ async def create_moderation(
 
         # Audit each item (ingress)
         try:
-            emit_audit_event(
+            _emit_audit_with_client(
+                request,
                 {
                     "ts": None,
                     "tenant_id": tenant_id,
@@ -845,8 +867,8 @@ async def create_moderation(
                     "hash_fingerprint": content_fingerprint(item),
                     "payload_bytes": int(_blen(item)),
                     "sanitized_bytes": int(_blen(sanitized)),
-                    "meta": {"endpoint": "moderations", "client": get_client_meta(request)},
-                }
+                    "meta": {"endpoint": "moderations"},
+                },
             )
         except Exception:
             pass
@@ -960,7 +982,8 @@ async def create_embeddings(
 
         # Audit ingress per item
         try:
-            emit_audit_event(
+            _emit_audit_with_client(
+                request,
                 {
                     "ts": None,
                     "tenant_id": tenant_id,
@@ -978,8 +1001,8 @@ async def create_embeddings(
                     "hash_fingerprint": content_fingerprint(item),
                     "payload_bytes": int(_blen(item)),
                     "sanitized_bytes": int(_blen(sanitized)),
-                    "meta": {"endpoint": "embeddings", "client": get_client_meta(request)},
-                }
+                    "meta": {"endpoint": "embeddings"},
+                },
             )
         except Exception:
             pass
