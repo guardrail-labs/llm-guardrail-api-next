@@ -39,3 +39,10 @@ def test_egress_debug_explanations_when_header_set():
     body = r.json()
     assert "debug" in body
     assert "explanations" in body["debug"]
+
+
+def test_egress_request_id_generated_and_echoed():
+    r = client.post("/guardrail/egress_evaluate", json={"text": "hello"})
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body.get("request_id"), str)

@@ -53,3 +53,10 @@ def test_multipart_text_file_with_pii_is_redacted_and_debug_sources():
     assert "sources" in body["debug"]
     assert isinstance(body["debug"]["sources"], list)
     assert body["debug"]["sources"][0]["filename"] == "note.txt"
+
+
+def test_multipart_generates_request_id():
+    r = client.post("/guardrail/evaluate_multipart", data={"text": "hello"})
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body.get("request_id"), str)
