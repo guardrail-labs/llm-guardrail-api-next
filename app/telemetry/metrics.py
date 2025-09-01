@@ -1,8 +1,9 @@
+# file: app/telemetry/metrics.py
 from __future__ import annotations
 
 import re
 import threading
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, cast
 
 from prometheus_client import Counter, REGISTRY
 
@@ -47,7 +48,6 @@ def get_all_family_totals() -> Dict[str, float]:
 _RATE_LIMIT_LOCK = threading.RLock()
 _RATE_LIMITED_TOTAL: float = 0.0
 
-
 # Prometheus counters
 try:
     _QUOTA_REJECTS = Counter(
@@ -56,11 +56,15 @@ try:
         ["tenant_id", "bot_id"],
     )
 except ValueError:
-    _QUOTA_REJECTS = REGISTRY._names_to_collectors["guardrail_quota_rejects_total"]
+    # If already registered (in tests/multiple app inits), reuse it and satisfy mypy.
+    _QUOTA_REJECTS = cast(
+        Counter, REGISTRY._names_to_collectors["guardrail_quota_rejects_total"]
+    )
 
 
 def inc_quota_reject_tenant_bot(tenant_id: str, bot_id: str) -> None:
     _QUOTA_REJECTS.labels(tenant_id=tenant_id, bot_id=bot_id).inc()
+
 
 def inc_rate_limited(by: float = 1.0) -> None:
     global _RATE_LIMITED_TOTAL
@@ -192,7 +196,6 @@ def get_family_bot_totals() -> Dict[Tuple[str, str, str], float]:
 def export_family_breakdown_lines() -> List[str]:
     """
     Returns Prometheus text lines for:
-
     - guardrail_decisions_family_tenant_total{tenant, family}
     - guardrail_decisions_family_bot_total{tenant, bot, family}
     """
@@ -262,7 +265,8 @@ def export_verifier_lines() -> List[str]:
     totals = get_verifier_totals()
     if totals:
         lines.append(
-            "# HELP guardrail_verifier_outcomes_total Verifier outcomes by provider and result."
+            "# HELP guardrail_verifier_outcomes_total "
+            "Verifier outcomes by provider and result."
         )
         lines.append("# TYPE guardrail_verifier_outcomes_total counter")
         for (prov, outcome), v in sorted(totals.items()):
