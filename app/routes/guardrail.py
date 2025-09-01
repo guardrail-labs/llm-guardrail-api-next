@@ -620,6 +620,15 @@ async def evaluate(
                     "chosen": None,
                     "verdict": None,
                 }
+
+            meta_extra: Dict[str, Any] = {}
+            if "providers" in locals():
+                meta_extra["provider"] = providers
+            if "debug" in resp:
+                srcs = (resp.get("debug") or {}).get("sources")
+                if srcs is not None:
+                    meta_extra["sources"] = srcs
+
             _emit_audit_with_client(
                 request,
                 {
@@ -640,10 +649,7 @@ async def evaluate(
                     "hash_fingerprint": fp_all,
                     "payload_bytes": int(payload_bytes),
                     "sanitized_bytes": int(sanitized_bytes),
-                    "meta": {
-                        **({"provider": providers} if "providers" in locals() else {}),
-                        **({"sources": (resp.get("debug") or {}).get("sources")} if "debug" in resp else {}),
-                    },
+                    "meta": meta_extra,
                 },
             )
 
@@ -667,6 +673,15 @@ async def evaluate(
                 "chosen": provider,
                 "verdict": verdict.value,
             }
+
+        meta_extra2: Dict[str, Any] = {}
+        if "providers" in locals():
+            meta_extra2["provider"] = providers
+        if "debug" in resp:
+            srcs2 = (resp.get("debug") or {}).get("sources")
+            if srcs2 is not None:
+                meta_extra2["sources"] = srcs2
+
         _emit_audit_with_client(
             request,
             {
@@ -687,10 +702,7 @@ async def evaluate(
                 "hash_fingerprint": fp_all,
                 "payload_bytes": int(payload_bytes),
                 "sanitized_bytes": int(sanitized_bytes),
-                "meta": {
-                    **({"provider": providers} if "providers" in locals() else {}),
-                    **({"sources": (resp.get("debug") or {}).get("sources")} if "debug" in resp else {}),
-                },
+                "meta": meta_extra2,
             },
         )
 
@@ -698,6 +710,14 @@ async def evaluate(
         inc_decision_family(family)
         inc_decision_family_tenant_bot(tenant_id, bot_id, family)
         return resp
+
+    meta_extra3: Dict[str, Any] = {}
+    if "providers" in locals():
+        meta_extra3["provider"] = providers
+    if "debug" in resp:
+        srcs3 = (resp.get("debug") or {}).get("sources")
+        if srcs3 is not None:
+            meta_extra3["sources"] = srcs3
 
     _emit_audit_with_client(
         request,
@@ -717,10 +737,7 @@ async def evaluate(
             "hash_fingerprint": fp_all,
             "payload_bytes": int(payload_bytes),
             "sanitized_bytes": int(sanitized_bytes),
-            "meta": {
-                **({"provider": providers} if "providers" in locals() else {}),
-                **({"sources": (resp.get("debug") or {}).get("sources")} if "debug" in resp else {}),
-            },
+            "meta": meta_extra3,
         },
     )
 
