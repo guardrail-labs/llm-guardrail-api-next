@@ -213,3 +213,44 @@ def export_family_breakdown_lines() -> List[str]:
             lines.append(metric)
 
     return lines
+
+
+# ----------------------------
+# Verifier outcomes
+# ----------------------------
+
+_VERIFIER_LOCK = threading.RLock()
+# provider -> outcome -> count
+_VERIFIER: Dict[str, Dict[str, float]] = {}
+
+
+def inc_verifier_outcome(provider: str, outcome: str, by: float = 1.0) -> None:
+    prov = (provider or "").strip() or "unknown"
+    out = (outcome or "").strip() or "unknown"
+    with _VERIFIER_LOCK:
+        bucket = _VERIFIER.setdefault(prov, {})
+        bucket[out] = bucket.get(out, 0.0) + float(by)
+
+
+def get_verifier_totals() -> Dict[Tuple[str, str], float]:
+    out: Dict[Tuple[str, str], float] = {}
+    with _VERIFIER_LOCK:
+        for prov, outcomes in _VERIFIER.items():
+            for outcome, v in outcomes.items():
+                out[(prov, outcome)] = float(v)
+    return out
+
+
+def export_verifier_lines() -> List[str]:
+    lines: List[str] = []
+    totals = get_verifier_totals()
+    if totals:
+        lines.append(
+            "# HELP guardrail_verifier_outcomes_total Verifier outcomes by provider and result."
+        )
+        lines.append("# TYPE guardrail_verifier_outcomes_total counter")
+        for (prov, outcome), v in sorted(totals.items()):
+            lines.append(
+                f'guardrail_verifier_outcomes_total{{provider="{prov}",outcome="{outcome}"}} {v}'
+            )
+    return lines
