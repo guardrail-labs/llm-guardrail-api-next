@@ -1,3 +1,4 @@
+# file: app/routes/batch.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,7 +42,6 @@ router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 # Models
 # ---------------------------
 
-
 class BatchItemIn(BaseModel):
     text: str
     request_id: Optional[str] = None
@@ -71,7 +71,6 @@ class BatchOut(BaseModel):
 # Helpers
 # ---------------------------
 
-
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
     bot = request.headers.get(BOT_HEADER) or "default"
@@ -92,23 +91,9 @@ def _family_for(action: str, redactions: int) -> str:
     return "allow"
 
 
-def _flatten_rule_hits(as_dicts: List[Dict[str, Any]]) -> List[str]:
-    out: List[str] = []
-    for h in as_dicts:
-        pat = h.get("pattern")
-        tag = h.get("tag")
-        if isinstance(pat, str) and pat:
-            if isinstance(tag, str) and tag:
-                out.append(f"{tag}:{pat}")
-            else:
-                out.append(pat)
-    return out
-
-
 # ---------------------------
 # Routes
 # ---------------------------
-
 
 @router.post("/batch_evaluate", response_model=BatchOut)
 async def batch_evaluate(
@@ -161,8 +146,7 @@ async def batch_evaluate(
         decisions = list(det.get("decisions", []))
         xformed = det.get("transformed_text", sanitized)
 
-        det_hits_raw = list(det.get("rule_hits", []) or [])
-        det_hits = _flatten_rule_hits(det_hits_raw)
+        det_hits = det.get("rule_hits", []) or []
         det_families = [_normalize_family(h) for h in det_hits]
         combined_hits = sorted({*(families or []), *det_families})
 
@@ -207,7 +191,8 @@ async def batch_evaluate(
                 else:
                     outcome = "safe"
 
-            inc_verifier_outcome(provider, outcome)
+            # ensure provider is a string for metrics
+            inc_verifier_outcome(str(provider or "unknown"), outcome)
 
         # metrics
         inc_decision_family(family)
@@ -225,7 +210,7 @@ async def batch_evaluate(
                     "decision": action,
                     "rule_hits": (combined_hits or None),
                     "policy_version": policy_version,
-                    "verifier_provider": None,  # set when verifier debug is attached
+                    "verifier_provider": None,
                     "fallback_used": None,
                     "status_code": 200,
                     "redaction_count": int(redaction_count or 0),
