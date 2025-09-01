@@ -661,6 +661,92 @@ async def completions(
     return resp
 
 
+# --- Azure OpenAI–compatible endpoints ---------------------------------------
+
+from fastapi import APIRouter as _APIRouter  # noqa: E402  (local alias to avoid churn)
+
+azure_router = _APIRouter(
+    prefix="/openai/deployments", tags=["azure-openai-compat"]
+)
+
+
+class _AzureChatBody(BaseModel):
+    messages: List[ChatMessage]
+    stream: Optional[bool] = False
+    request_id: Optional[str] = None
+
+
+class _AzureEmbeddingsBody(BaseModel):
+    # Azure body omits "model"; deployment_id is the model
+    # Keep parity with OpenAI: input may be str or list[str]
+    # Reuse EmbeddingsRequest shape by converting below
+    input: Any  # we normalize via EmbeddingsRequest's validator later
+
+
+@azure_router.post("/{deployment_id}/chat/completions")
+async def azure_chat_completions(
+    request: Request,
+    deployment_id: str,
+    body: _AzureChatBody,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+):
+    """
+    Azure-style chat endpoint.
+    Maps deployment_id -> model and delegates to /v1/chat/completions handler.
+    """
+    # Map Azure body -> OpenAI-compat request
+    mapped = ChatCompletionsRequest(
+        model=deployment_id,
+        messages=body.messages,
+        stream=bool(body.stream),
+        request_id=body.request_id,
+    )
+
+    # Remember api-version (if provided) for non-streaming response headers
+    api_version = request.query_params.get("api-version") or ""
+
+    # Delegate to main handler (returns dict or StreamingResponse)
+    result = await chat_completions(request, mapped, x_debug)
+
+    # For non-streaming, attach Azure version header (streaming has its own headers)
+    if not isinstance(result, StreamingResponse) and api_version:
+        extra = getattr(request.state, "_extra_headers", {}) or {}
+        extra["X-Azure-API-Version"] = api_version
+        request.state._extra_headers = extra
+
+    return result
+
+
+@azure_router.post("/{deployment_id}/embeddings")
+async def azure_embeddings(
+    request: Request,
+    deployment_id: str,
+    body: _AzureEmbeddingsBody,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+):
+    """
+    Azure-style embeddings endpoint.
+    Maps deployment_id -> model and delegates to /v1/embeddings handler.
+    """
+    # Normalize Azure body to our EmbeddingsRequest
+    mapped = EmbeddingsRequest(model=deployment_id, input=body.input)
+
+    api_version = request.query_params.get("api-version") or ""
+    result = await create_embeddings(request, mapped, x_debug)
+
+    # Add Azure version header for non-streaming response (embeddings are not streaming)
+    if isinstance(result, dict) and api_version:
+        extra = getattr(request.state, "_extra_headers", {}) or {}
+        extra["X-Azure-API-Version"] = api_version
+        request.state._extra_headers = extra
+
+    return result
+
+
 # --- Moderations (OpenAI-compatible) -----------------------------------------
 
 from typing import Union  # noqa: E402  (keep import local to avoid reorder churn)
@@ -794,10 +880,10 @@ async def create_moderation(
 # --- Embeddings (OpenAI-compatible) ------------------------------------------
 
 # Local imports to avoid top-of-file churn
-import os as _os  # noqa: E402
 import hashlib as _hashlib  # noqa: E402
+import os as _os  # noqa: E402
 import random as _random  # noqa: E402
-from typing import Union  # noqa: E402
+
 from pydantic import field_validator  # noqa: E402
 
 

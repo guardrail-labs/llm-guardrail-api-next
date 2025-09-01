@@ -19,7 +19,7 @@ from app.routes.guardrail import (
     router as guardrail_router,
     threat_admin_router,
 )
-from app.routes.openai_compat import router as openai_router
+from app.routes.openai_compat import azure_router, router as openai_router
 from app.routes.output import router as output_router
 from app.routes.proxy import router as proxy_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
@@ -211,6 +211,7 @@ def create_app() -> FastAPI:
     app.include_router(batch_router)
     app.include_router(proxy_router)
     app.include_router(openai_router)
+    app.include_router(azure_router)
     return app
 
 
