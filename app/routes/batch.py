@@ -93,15 +93,13 @@ def _family_for(action: str, redactions: int) -> str:
 
 def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
     """
-    Normalize detector hits and decision metadata to flat 'source:list:id' strings
-    (mirrors helper in routes/guardrail.py).
+    Normalize detector hits and decision metadata to flat 'source:list:id' strings.
+    Mirrors the helper in routes/guardrail.py.
     """
     out: List[str] = []
 
     def add_hit(s: Optional[str]) -> None:
-        if not s:
-            return
-        if s not in out:
+        if s and s not in out:
             out.append(s)
 
     # direct hits
@@ -154,6 +152,7 @@ async def batch_evaluate(
 ) -> BatchOut:
     """
     Evaluate multiple ingress texts in one request.
+
     Per-item:
       - sanitize + optional threat feed redactions
       - detectors
@@ -298,6 +297,7 @@ async def egress_batch(
 ) -> BatchOut:
     """
     Evaluate multiple egress texts in one request (post-model output).
+
     Per-item:
       - hard-deny checks, else sanitize via policy.sanitize_text
       - audit + family metrics
@@ -306,9 +306,7 @@ async def egress_batch(
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
 
-    out_items: List[BatchItemOut] = {}
-
-    out_items = []
+    out_items: List[BatchItemOut] = []
 
     for itm in body.items:
         text_in = itm.text or ""
