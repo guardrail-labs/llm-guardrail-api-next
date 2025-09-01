@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import uuid
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from app.services.rate_limit import RateLimiter
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import inc_rate_limited
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
@@ -41,23 +45,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
         if not allowed:
-            # increment metric for rate-limited requests
-            inc_rate_limited(1.0)
-            resp = Response(
-                content='{"detail":"rate limit exceeded"}',
-                media_type="application/json",
-                status_code=429,
-            )
+            # Increment metric for rate-limited requests
+            inc_rate_limited()
+            rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+            body = {
+                "code": "rate_limited",
+                "detail": "rate limit exceeded",
+                "retry_after": 60,
+                "request_id": rid,
+            }
+            resp = JSONResponse(status_code=429, content=body)
+            resp.headers["Retry-After"] = "60"
             resp.headers["X-RateLimit-Limit"] = str(limit)
             resp.headers["X-RateLimit-Remaining"] = "0"
             resp.headers["X-RateLimit-Reset"] = str(reset_epoch)
-            # Retry-After (seconds until at least 1 token refills)
-            import time as _t
-            retry_after = max(0, int(reset_epoch - int(_t.time())))
-            resp.headers["Retry-After"] = str(retry_after)
+            # Allow outer middleware to attach X-Request-ID, security headers, etc.
             return resp
 
-        response = await call_next(request)
+        response: Response = await call_next(request)
         response.headers["X-RateLimit-Limit"] = str(limit)
         response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
         response.headers["X-RateLimit-Reset"] = str(reset_epoch)
