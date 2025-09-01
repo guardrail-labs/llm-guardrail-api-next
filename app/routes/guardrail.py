@@ -1,3 +1,4 @@
+# file: app/routes/guardrail.py
 from __future__ import annotations
 
 import json
@@ -161,29 +162,22 @@ def _need_auth(request: Request) -> bool:
 def _req_id(request: Request) -> str:
     return request.headers.get("x-request-id") or str(uuid.uuid4())
 
+
 # --- Centralized audit emitter ensuring meta.client is present ---
 def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
     """
     Wraps audit_forwarder.emit_event to guarantee meta.client is present.
-    - Merges into existing event["meta"] and event["meta"]["client"] without overwriting
-      fields already set by the caller.
-    - Never raises to caller.
+    Merges without overwriting caller-provided values.
+    Never raises back to caller.
     """
     try:
         base_meta = event.get("meta") or {}
         base_client = base_meta.get("client") or {}
         client_now = get_client_meta(request)  # {"ip","user_agent","path","method"}
-
-        # Only fill missing keys; keep anything already set by caller
-        merged_client = {
-            **client_now,
-            **{k: v for k, v in base_client.items() if v is not None},
-        }
+        merged_client = {**client_now, **{k: v for k, v in base_client.items() if v is not None}}
         event["meta"] = {**base_meta, "client": merged_client}
-
         emit_audit_event(event)
     except Exception:
-        # Never fail the request due to audit forwarder issues
         pass
 
 
@@ -358,13 +352,12 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
         )
 
+    # --- Per-tenant quota (before rate limiter / heavy work) ---
     tenant_id, bot_id = _tenant_bot_from_headers(request)
-
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
         response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
         response.headers["Retry-After"] = str(retry_after)
-        # Optional visibility headers aligned with other endpoints:
         response.headers["X-Guardrail-Quota-Window"] = "60"
         response.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
         inc_quota_reject_tenant_bot(tenant_id, bot_id)
@@ -423,7 +416,6 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     _decisions_total += 1
 
     # Metrics by family (allow/block only for this legacy path)
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
     fam = "block" if decision == "block" else "allow"
     inc_decision_family(fam)
     inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
@@ -486,17 +478,18 @@ async def evaluate(
     decisions: List[Dict[str, Any]] = []
     tenant_id, bot_id = _tenant_bot_from_headers(request)
 
+    # --- Per-tenant quota (use rid before parsing body) ---
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
-        from fastapi.responses import JSONResponse
-
+        from fastapi.responses import JSONResponse  # local import to avoid churn
+        rid = _req_id(request)
         resp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
                 "code": "rate_limited",
                 "detail": "Per-tenant quota exceeded",
                 "retry_after": int(retry_after),
-                "request_id": request_id if "request_id" in locals() else str(uuid.uuid4()),
+                "request_id": rid,
             },
         )
         resp.headers["Retry-After"] = str(retry_after)
@@ -648,21 +641,13 @@ async def evaluate(
                     "payload_bytes": int(payload_bytes),
                     "sanitized_bytes": int(sanitized_bytes),
                     "meta": {
-                        **(
-                            {"provider": providers}
-                            if "providers" in locals()
-                            else {}
-                        ),
-                        **(
-                            {"sources": (resp.get("debug") or {}).get("sources")}
-                            if "debug" in resp
-                            else {}
-                        ),
+                        **({"provider": providers} if "providers" in locals() else {}),
+                        **({"sources": (resp.get("debug") or {}).get("sources")} if "debug" in resp else {}),
                     },
                 },
             )
 
-            # --- NEW: increment after final action chosen ---
+            # increment after final action chosen
             inc_decision_family(family)
             inc_decision_family_tenant_bot(tenant_id, bot_id, family)
             return resp
@@ -703,21 +688,13 @@ async def evaluate(
                 "payload_bytes": int(payload_bytes),
                 "sanitized_bytes": int(sanitized_bytes),
                 "meta": {
-                    **(
-                        {"provider": providers}
-                        if "providers" in locals()
-                        else {}
-                    ),
-                    **(
-                        {"sources": (resp.get("debug") or {}).get("sources")}
-                        if "debug" in resp
-                        else {}
-                    ),
+                    **({"provider": providers} if "providers" in locals() else {}),
+                    **({"sources": (resp.get("debug") or {}).get("sources")} if "debug" in resp else {}),
                 },
             },
         )
 
-        # --- NEW: increment after final action chosen ---
+        # increment after final action chosen
         inc_decision_family(family)
         inc_decision_family_tenant_bot(tenant_id, bot_id, family)
         return resp
@@ -741,21 +718,13 @@ async def evaluate(
             "payload_bytes": int(payload_bytes),
             "sanitized_bytes": int(sanitized_bytes),
             "meta": {
-                **(
-                    {"provider": providers}
-                    if "providers" in locals()
-                    else {}
-                ),
-                **(
-                    {"sources": (resp.get("debug") or {}).get("sources")}
-                    if "debug" in resp
-                    else {}
-                ),
+                **({"provider": providers} if "providers" in locals() else {}),
+                **({"sources": (resp.get("debug") or {}).get("sources")} if "debug" in resp else {}),
             },
         },
     )
 
-    # --- NEW: increment decision family counters (evaluate path) ---
+    # increment decision family counters (evaluate path)
     inc_decision_family(family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, family)
     return resp
@@ -787,10 +756,10 @@ async def evaluate_guardrail_multipart(
     rid = request_id or _req_id(request)
     policy_version = current_rules_version()
 
+    # --- Per-tenant quota before reading files ---
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
         from fastapi.responses import JSONResponse
-
         resp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
@@ -887,16 +856,12 @@ async def evaluate_guardrail_multipart(
             "payload_bytes": int(payload_bytes),
             "sanitized_bytes": int(sanitized_bytes),
             "meta": {
-                "sources": (
-                    (resp.get("debug") or {}).get("sources")
-                    if "debug" in resp
-                    else None
-                ),
+                "sources": ((resp.get("debug") or {}).get("sources") if "debug" in resp else None),
             },
         },
     )
 
-    # --- NEW: increment family (sanitize if redactions occurred) ---
+    # increment family (sanitize if redactions occurred)
     inc_decision_family(family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, family)
     return resp
@@ -918,10 +883,10 @@ async def egress_evaluate(
     rid = req.request_id or _req_id(request)
     policy_version = current_rules_version()
 
+    # --- Per-tenant quota before egress checks ---
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
         from fastapi.responses import JSONResponse
-
         resp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
@@ -970,7 +935,7 @@ async def egress_evaluate(
         },
     )
 
-    # --- NEW: increment family for egress ---
+    # increment family for egress
     action = str(payload.get("action", "allow"))
     if action == "deny":
         fam = "block"
