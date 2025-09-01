@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import Request, Response
@@ -10,6 +11,9 @@ from starlette.types import ASGIApp
 from app.services.rate_limit import RateLimiter
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import inc_rate_limited
+
+
+logger = logging.getLogger(__name__)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -45,8 +49,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
         if not allowed:
-            # Increment metric for rate-limited requests
-            inc_rate_limited()
+            # Increment metric for rate-limited requests; ignore failures
+            try:
+                inc_rate_limited()
+            except Exception:
+                logger.warning("inc_rate_limited failed", exc_info=True)
+
             rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
             body = {
                 "code": "rate_limited",
