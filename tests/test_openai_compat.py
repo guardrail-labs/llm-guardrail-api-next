@@ -57,24 +57,3 @@ def test_openai_chat_compat(monkeypatch):
     assert r.headers.get("X-Guardrail-Egress-Action") == "allow"
 
 
-def test_openai_chat_stream_unsupported(monkeypatch):
-    c = _client(monkeypatch)
-    headers = {
-        "X-API-Key": "k",
-        "X-Tenant-ID": "acme",
-        "X-Bot-ID": "assistant-1",
-        "Content-Type": "application/json",
-    }
-
-    r = c.post(
-        "/v1/chat/completions",
-        json={
-            "model": "demo",
-            "stream": True,
-            "messages": [{"role": "user", "content": "hello"}],
-        },
-        headers=headers,
-    )
-    assert r.status_code == 400
-    j = r.json()
-    assert "error" in j["detail"]

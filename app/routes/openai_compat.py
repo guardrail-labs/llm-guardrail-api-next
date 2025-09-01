@@ -1,33 +1,35 @@
 # file: app/routes/openai_compat.py
 from __future__ import annotations
 
+import json
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.services.audit_forwarder import emit_event as emit_audit_event
-from app.services.detectors import evaluate_prompt
-from app.services.egress import egress_check
-from app.services.llm_client import get_client
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
     sanitize_text,
 )
+from app.services.detectors import evaluate_prompt
 from app.services.threat_feed import (
     apply_dynamic_redactions,
     threat_feed_enabled,
 )
+from app.services.egress import egress_check
+from app.services.llm_client import get_client
+from app.services.audit_forwarder import emit_event as emit_audit_event
 from app.services.verifier import content_fingerprint
-from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
 )
+from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -73,7 +75,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionsRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
-    stream: Optional[bool] = False  # not supported yet
+    stream: Optional[bool] = False
     request_id: Optional[str] = None
 
 
@@ -144,6 +146,32 @@ def _oai_error(message: str, type_: str = "invalid_request_error") -> Dict[str, 
     return {"error": {"message": message, "type": type_, "param": None, "code": None}}
 
 
+def _sse(obj: Dict[str, Any]) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+def _chunk_text(s: str, max_len: int = 60) -> List[str]:
+    """
+    Simple chunker that preserves spaces reasonably well for demo streaming.
+    """
+    s = s or ""
+    out: List[str] = []
+    buf: List[str] = []
+    cur = 0
+    for tok in s.split(" "):
+        add = (tok if not buf else " " + tok)
+        if cur + len(add) > max_len and buf:
+            out.append("".join(buf))
+            buf = [tok]
+            cur = len(tok)
+        else:
+            buf.append(add if buf else tok)
+            cur += len(add)
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
 # ---------------------------
 # Route
 # ---------------------------
@@ -157,19 +185,9 @@ async def chat_completions(
     ),
 ):
     """
-    OpenAI-compatible (non-streaming) chat endpoint with inline guardrails.
-
-    Compatibility:
-      - Request/response shape mirrors OpenAI /v1/chat/completions (subset).
-      - Guard decisions exposed via headers; full details go to audit/metrics.
-      - On ingress deny: 400 with OpenAI-style error object.
+    OpenAI-compatible chat endpoint with inline guardrails.
+    Supports non-streaming and streaming SSE (stream=true).
     """
-    if body.stream:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_oai_error("stream=True not supported"),
-        )
-
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
@@ -239,7 +257,6 @@ async def chat_completions(
         pass
 
     if ingress_action == "deny":
-        # Strict compat: return 400 with OpenAI-style error object
         err_body = _oai_error("Request denied by guardrail policy")
         headers = {
             "X-Guardrail-Policy-Version": policy_version,
@@ -248,13 +265,108 @@ async def chat_completions(
         }
         raise HTTPException(status_code=400, detail=err_body, headers=headers)
 
-    # ---------- Provider ----------
+    if body.stream:
+        # ---------- Provider ----------
+        client = get_client()
+        model_text, model_meta = client.chat(
+            [m.model_dump() for m in body.messages], body.model
+        )
+
+        # ---------- Egress (once) ----------
+        payload, _ = egress_check(model_text, debug=want_debug)
+        e_action = str(payload.get("action", "allow"))
+        if e_action == "deny":
+            err_body = _oai_error("Response denied by guardrail policy")
+            headers = {
+                "X-Guardrail-Policy-Version": policy_version,
+                "X-Guardrail-Ingress-Action": ingress_action,
+                "X-Guardrail-Egress-Action": e_action,
+            }
+            raise HTTPException(status_code=400, detail=err_body, headers=headers)
+
+        e_text = str(payload.get("text", ""))
+        e_reds = int(payload.get("redactions") or 0)
+        e_hits = list(payload.get("rule_hits") or []) or None
+
+        e_family = _family_for(e_action, e_reds)
+        inc_decision_family(e_family)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
+
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "egress",
+                    "decision": e_action,
+                    "rule_hits": e_hits,
+                    "policy_version": policy_version,
+                    "verifier_provider": None,
+                    "fallback_used": None,
+                    "status_code": 200,
+                    "redaction_count": e_reds,
+                    "hash_fingerprint": content_fingerprint(model_text),
+                    "payload_bytes": int(_blen(model_text)),
+                    "sanitized_bytes": int(_blen(e_text)),
+                    "meta": {"provider": model_meta},
+                }
+            )
+        except Exception:
+            pass
+
+        sid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = now_ts
+        model_id = body.model
+
+        def gen() -> Iterable[str]:
+            yield _sse(
+                {
+                    "id": sid,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_id,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                }
+            )
+            for piece in _chunk_text(e_text, max_len=60):
+                yield _sse(
+                    {
+                        "id": sid,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model_id,
+                        "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+                    }
+                )
+            yield _sse(
+                {
+                    "id": sid,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model_id,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            )
+            yield "data: [DONE]\n\n"
+
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": ingress_action,
+            "X-Guardrail-Egress-Action": e_action,
+            "X-Guardrail-Egress-Redactions": str(e_reds),
+        }
+        return StreamingResponse(gen(), headers=headers)
+
+    # ---------- Non-streaming path ----------
     client = get_client()
     model_text, model_meta = client.chat(
         [m.model_dump() for m in body.messages], body.model
     )
 
-    # ---------- Egress ----------
     payload, _ = egress_check(model_text, debug=want_debug)
     e_action = str(payload.get("action", "allow"))
     e_text = str(payload.get("text", ""))
@@ -265,7 +377,6 @@ async def chat_completions(
     inc_decision_family(e_family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
 
-    # Audit egress
     try:
         emit_audit_event(
             {
@@ -290,7 +401,6 @@ async def chat_completions(
     except Exception:
         pass
 
-    # OpenAI-compatible response shape (subset)
     oai_resp: Dict[str, Any] = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
@@ -306,7 +416,6 @@ async def chat_completions(
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
-    # Attach guard signals via headers
     request.state._extra_headers = {
         "X-Guardrail-Policy-Version": policy_version,
         "X-Guardrail-Ingress-Action": ingress_action,
