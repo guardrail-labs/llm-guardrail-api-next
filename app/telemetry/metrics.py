@@ -4,6 +4,8 @@ import re
 import threading
 from typing import Dict, Tuple, List
 
+from prometheus_client import Counter, REGISTRY
+
 # ----------------------------
 # Decision-family (global)
 # ----------------------------
@@ -45,6 +47,20 @@ def get_all_family_totals() -> Dict[str, float]:
 _RATE_LIMIT_LOCK = threading.RLock()
 _RATE_LIMITED_TOTAL: float = 0.0
 
+
+# Prometheus counters
+try:
+    _QUOTA_REJECTS = Counter(
+        "guardrail_quota_rejects_total",
+        "Total requests rejected by per-tenant quotas",
+        ["tenant_id", "bot_id"],
+    )
+except ValueError:
+    _QUOTA_REJECTS = REGISTRY._names_to_collectors["guardrail_quota_rejects_total"]
+
+
+def inc_quota_reject_tenant_bot(tenant_id: str, bot_id: str) -> None:
+    _QUOTA_REJECTS.labels(tenant_id=tenant_id, bot_id=bot_id).inc()
 
 def inc_rate_limited(by: float = 1.0) -> None:
     global _RATE_LIMITED_TOTAL

@@ -26,9 +26,11 @@ from app.services.threat_feed import (
 from app.services.verifier import content_fingerprint
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.shared.request_meta import get_client_meta
+from app.shared.quotas import check_and_consume
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
+    inc_quota_reject_tenant_bot,
 )
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
@@ -209,6 +211,23 @@ async def chat_completions(
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Quota-Window": "60",
+            "X-Guardrail-Quota-Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "skipped",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        raise HTTPException(
+            status_code=429,
+            detail=_oai_error("Per-tenant quota exceeded"),
+            headers=headers,
+        )
 
     req_id = body.request_id or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
@@ -508,6 +527,23 @@ async def completions(
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Quota-Window": "60",
+            "X-Guardrail-Quota-Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "skipped",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        raise HTTPException(
+            status_code=429,
+            detail=_oai_error("Per-tenant quota exceeded"),
+            headers=headers,
+        )
     req_id = body.request_id or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
 
@@ -812,6 +848,23 @@ async def create_moderation(
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Quota-Window": "60",
+            "X-Guardrail-Quota-Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "skipped",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        raise HTTPException(
+            status_code=429,
+            detail=_oai_error("Per-tenant quota exceeded"),
+            headers=headers,
+        )
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
 
@@ -948,6 +1001,23 @@ async def create_embeddings(
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-Guardrail-Quota-Window": "60",
+            "X-Guardrail-Quota-Retry-After": str(retry_after),
+            "X-Guardrail-Policy-Version": policy_version,
+            "X-Guardrail-Ingress-Action": "skipped",
+            "X-Guardrail-Egress-Action": "skipped",
+        }
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        raise HTTPException(
+            status_code=429,
+            detail=_oai_error("Per-tenant quota exceeded"),
+            headers=headers,
+        )
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
     dim = int(_os.environ.get("OAI_COMPAT_EMBED_DIM") or "1536")

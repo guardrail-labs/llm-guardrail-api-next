@@ -48,7 +48,12 @@ from app.services.verifier import (
 )
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.shared.request_meta import get_client_meta
-from app.telemetry.metrics import inc_decision_family, inc_decision_family_tenant_bot
+from app.shared.quotas import check_and_consume
+from app.telemetry.metrics import (
+    inc_decision_family,
+    inc_decision_family_tenant_bot,
+    inc_quota_reject_tenant_bot,
+)
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -353,6 +358,23 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
         )
 
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
+        response.headers["Retry-After"] = str(retry_after)
+        # Optional visibility headers aligned with other endpoints:
+        response.headers["X-Guardrail-Quota-Window"] = "60"
+        response.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        return {
+            "code": "rate_limited",
+            "detail": "Per-tenant quota exceeded",
+            "retry_after": int(retry_after),
+            "request_id": rid,
+        }
+
     # Rate-limit before parsing payload
     if not _rate_limit_check(request):
         retry_after = 60
@@ -463,6 +485,25 @@ async def evaluate(
     content_type = (request.headers.get("content-type") or "").lower()
     decisions: List[Dict[str, Any]] = []
     tenant_id, bot_id = _tenant_bot_from_headers(request)
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        from fastapi.responses import JSONResponse
+
+        resp = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "code": "rate_limited",
+                "detail": "Per-tenant quota exceeded",
+                "retry_after": int(retry_after),
+                "request_id": request_id if "request_id" in locals() else str(uuid.uuid4()),
+            },
+        )
+        resp.headers["Retry-After"] = str(retry_after)
+        resp.headers["X-Guardrail-Quota-Window"] = "60"
+        resp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        return resp  # type: ignore[return-value]
 
     if content_type.startswith("application/json"):
         try:
@@ -746,6 +787,25 @@ async def evaluate_guardrail_multipart(
     rid = request_id or _req_id(request)
     policy_version = current_rules_version()
 
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        from fastapi.responses import JSONResponse
+
+        resp = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "code": "rate_limited",
+                "detail": "Per-tenant quota exceeded",
+                "retry_after": int(retry_after),
+                "request_id": rid,
+            },
+        )
+        resp.headers["Retry-After"] = str(retry_after)
+        resp.headers["X-Guardrail-Quota-Window"] = "60"
+        resp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        return resp  # type: ignore[return-value]
+
     extracted_texts: List[str] = []
     sources_meta: List[Dict[str, Any]] = []
 
@@ -857,6 +917,25 @@ async def egress_evaluate(
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     rid = req.request_id or _req_id(request)
     policy_version = current_rules_version()
+
+    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
+    if not ok:
+        from fastapi.responses import JSONResponse
+
+        resp = JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "code": "rate_limited",
+                "detail": "Per-tenant quota exceeded",
+                "retry_after": int(retry_after),
+                "request_id": rid,
+            },
+        )
+        resp.headers["Retry-After"] = str(retry_after)
+        resp.headers["X-Guardrail-Quota-Window"] = "60"
+        resp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        inc_quota_reject_tenant_bot(tenant_id, bot_id)
+        return resp  # type: ignore[return-value]
 
     payload, dbg = egress_check(req.text, debug=want_debug)
     payload["request_id"] = rid
