@@ -84,19 +84,21 @@ def create_app() -> FastAPI:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         start = time.perf_counter()
         resp = await call_next(request)
+
         # Request-id + security headers
         resp.headers["X-Request-ID"] = rid
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
-        # Attach simple latency for tests/metrics
         resp.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
-        # If a route attached extra headers (e.g., /v1/* guard signals), forward them
-        extra = getattr(request.state, "_extra_headers", None)
+
+        # NEW: propagate any extra guard headers set by route handlers
+        extra = getattr(getattr(request, "state", object()), "_extra_headers", None)
         if isinstance(extra, dict):
             for k, v in extra.items():
-                if v is not None:
-                    resp.headers[str(k)] = str(v)
+                if isinstance(k, str) and isinstance(v, str):
+                    resp.headers[k] = v
+
         return resp
 
     @app.exception_handler(404)
