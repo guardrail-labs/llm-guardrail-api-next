@@ -184,13 +184,6 @@ def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
 def _audit_maybe(prompt: str, rid: str, decision: Optional[str] = None) -> None:
     """
     Emit a JSON line to logger 'guardrail_audit' with truncated snippet.
-    Fields:
-      - event: "guardrail_decision"
-      - request_id: str
-      - snippet: truncated text
-      - snippet_len: int
-      - snippet_truncated: bool
-      - decision: "allow" | "block"   (tests expect this key)
     """
     if (os.environ.get("AUDIT_ENABLED") or "false").lower() != "true":
         return
@@ -218,8 +211,6 @@ def _blen(s: Optional[str]) -> int:
 def _maybe_load_static_rules_once(request: Request) -> None:
     """
     When AUTORELOAD=false and a rules path is provided, load it once per-app.
-    We still report policy_version via current_rules_version() on each request
-    so /admin/policy/reload reflects immediately.
     """
     st = request.app.state
     if getattr(st, "static_rules_loaded", False):
@@ -231,28 +222,20 @@ def _maybe_load_static_rules_once(request: Request) -> None:
             try:
                 reload_rules()
             except Exception:
-                # best effort only
                 pass
     st.static_rules_loaded = True
 
 
 def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
     """
-    Normalize rule hits to a flat list[str] like:
-      - "policy:deny:block_phrase"
-      - "secrets:api_key_like"
-      - "pi:prompt_injection"
-    Accepts hits and also scans decisions for rule metadata.
+    Normalize rule hits to a flat list[str] like "policy:deny:block_phrase".
     """
     out: List[str] = []
 
     def add_hit(s: Optional[str]) -> None:
-        if not s:
-            return
-        if s not in out:
+        if s and s not in out:
             out.append(s)
 
-    # Direct hits first
     for h in raw_hits or []:
         if isinstance(h, str):
             add_hit(h)
@@ -265,7 +248,6 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
             elif rid:
                 add_hit(str(rid))
 
-    # Derive from decisions if present
     for d in raw_decisions or []:
         if not isinstance(d, dict):
             continue
@@ -296,22 +278,18 @@ def _maybe_patch_with_fallbacks(
         if tag not in hits:
             hits.append(tag)
 
-    # Prompt-injection phrase
     if "ignore previous instructions" in p_lower:
         ensure("pi:prompt_injection")
         decision = "block"
 
-    # Secret-like API key
     if _API_KEY_RE.search(prompt):
         ensure("secrets:api_key_like")
         decision = "block"
 
-    # Long base64-like blob
     if len(prompt) >= 128 and all((c in _B64_CHARS) for c in prompt):
         ensure("payload:encoded_blob")
         decision = "block"
 
-    # Policy deny phrase used by tests
     if "do not allow this" in p_lower:
         ensure("policy:deny:block_phrase")
         decision = "block"
@@ -322,25 +300,7 @@ def _maybe_patch_with_fallbacks(
 @router.post("/", response_model=None)
 async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]:
     """
-    Legacy ingress guardrail.
-
-    JSON body: {"prompt": "..."}
-
-    - 401: {"detail": "Unauthorized"}
-    - 413: {"code": "payload_too_large", "detail": "Prompt too large", "request_id": ...}
-    - 429: {
-        "code": "rate_limited",
-        "detail": "Rate limit exceeded",
-        "retry_after": 60,
-        "request_id": ...
-      }
-    - 200: {
-        "decision": "allow|block",
-        "transformed_text": "...",
-        "rule_hits": [...],
-        "policy_version": "...",
-        "request_id": "..."
-      }
+    Legacy ingress guardrail (JSON body: {"prompt": "..."}).
     """
     global _requests_total, _decisions_total
 
@@ -368,7 +328,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
             "request_id": rid,
         }
 
-    # Rate-limit before parsing payload
+    # Per-process rate limiter
     if not _rate_limit_check(request):
         retry_after = 60
         response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
@@ -400,7 +360,6 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     _requests_total += 1
 
-    # Use detectors for rule_hits and transformed text; map to legacy "block".
     det = evaluate_prompt(prompt)
     action = str(det.get("action", "allow"))
     decision = "block" if action != "allow" else "allow"
@@ -410,17 +369,14 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     raw_decisions = det.get("decisions", []) or []
     rule_hits = _normalize_rule_hits(raw_hits, raw_decisions)
 
-    # Fallbacks to ensure expected rule IDs/blocks for tests
     decision, rule_hits = _maybe_patch_with_fallbacks(prompt, decision, rule_hits)
 
     _decisions_total += 1
 
-    # Metrics by family (allow/block only for this legacy path)
     fam = "block" if decision == "block" else "allow"
     inc_decision_family(fam)
     inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
-    # Rich enterprise audit event (align with /v1/* payload fields)
     policy_version = current_rules_version()
     _emit_audit_with_client(
         request,
@@ -430,7 +386,6 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
             "bot_id": bot_id,
             "request_id": rid,
             "direction": "ingress",
-            # Keep legacy semantics ("allow"/"block") for this endpoint:
             "decision": decision,
             "rule_hits": (rule_hits or None),
             "policy_version": policy_version,
@@ -464,9 +419,7 @@ async def evaluate(
 ) -> Dict[str, Any]:
     """
     Evaluate ingress content via JSON request body:
-
       {"text": "...", "request_id": "...?"}
-
     Returns detectors/decisions and possible redactions.
     """
     global _requests_total, _decisions_total
@@ -483,7 +436,7 @@ async def evaluate(
     if not ok:
         from fastapi.responses import JSONResponse  # local import to avoid churn
         rid = _req_id(request)
-        resp = JSONResponse(
+        jresp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
                 "code": "rate_limited",
@@ -492,11 +445,11 @@ async def evaluate(
                 "request_id": rid,
             },
         )
-        resp.headers["Retry-After"] = str(retry_after)
-        resp.headers["X-Guardrail-Quota-Window"] = "60"
-        resp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        jresp.headers["Retry-After"] = str(retry_after)
+        jresp.headers["X-Guardrail-Quota-Window"] = "60"
+        jresp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
         inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return resp  # type: ignore[return-value]
+        return jresp  # type: ignore[return-value]
 
     if content_type.startswith("application/json"):
         try:
@@ -527,7 +480,6 @@ async def evaluate(
 
     want_debug = x_debug == "1"
     policy_version = current_rules_version()
-    # fingerprint based on the raw inbound text (pre-sanitization)
     fp_all = content_fingerprint(text or "")
     sanitized, families, redaction_count, debug_matches = sanitize_text(text, debug=want_debug)
     if threat_feed_enabled():
@@ -607,7 +559,6 @@ async def evaluate(
         verdict, provider = v.assess_intent(text, meta={"hint": ""})
 
         if verdict is None:
-            # Providers unreachable
             if is_known_harmful(fp):
                 resp["action"] = "deny"
                 family = "block"
@@ -653,7 +604,6 @@ async def evaluate(
                 },
             )
 
-            # increment after final action chosen
             inc_decision_family(family)
             inc_decision_family_tenant_bot(tenant_id, bot_id, family)
             return resp
@@ -665,7 +615,6 @@ async def evaluate(
         elif verdict == Verdict.UNCLEAR:
             resp["action"] = "clarify"
             family = "verify"
-        # SAFE -> leave resp["action"] and family as-is
 
         if want_debug:
             resp.setdefault("debug", {})["verifier"] = {
@@ -706,7 +655,6 @@ async def evaluate(
             },
         )
 
-        # increment after final action chosen
         inc_decision_family(family)
         inc_decision_family_tenant_bot(tenant_id, bot_id, family)
         return resp
@@ -741,7 +689,6 @@ async def evaluate(
         },
     )
 
-    # increment decision family counters (evaluate path)
     inc_decision_family(family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, family)
     return resp
@@ -753,7 +700,6 @@ class EvaluateMultipartResponse(BaseModel):
     rule_hits: Optional[list] = None
     redactions: Optional[int] = None
     request_id: str
-    # debug remains optional and only when X-Debug: 1 is set
 
 
 @router.post("/evaluate_multipart")
@@ -766,7 +712,6 @@ async def evaluate_guardrail_multipart(
 ) -> Dict[str, Any]:
     """
     Multimodal ingress evaluation via multipart/form-data.
-    Contract: response keys match /guardrail/evaluate; debug only with X-Debug: 1.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
@@ -777,7 +722,7 @@ async def evaluate_guardrail_multipart(
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
         from fastapi.responses import JSONResponse
-        resp = JSONResponse(
+        jresp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
                 "code": "rate_limited",
@@ -786,11 +731,11 @@ async def evaluate_guardrail_multipart(
                 "request_id": rid,
             },
         )
-        resp.headers["Retry-After"] = str(retry_after)
-        resp.headers["X-Guardrail-Quota-Window"] = "60"
-        resp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        jresp.headers["Retry-After"] = str(retry_after)
+        jresp.headers["X-Guardrail-Quota-Window"] = "60"
+        jresp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
         inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return resp  # type: ignore[return-value]
+        return jresp  # type: ignore[return-value]
 
     extracted_texts: List[str] = []
     sources_meta: List[Dict[str, Any]] = []
@@ -813,7 +758,6 @@ async def evaluate_guardrail_multipart(
         combo_files = "\n".join([t for t in extracted_texts if t])
         combined = (combined + "\n" + combo_files).strip()
 
-    # fingerprint based on the raw combined text
     fp_all = content_fingerprint(combined or "")
 
     sanitized, families, redaction_count, debug_matches = sanitize_text(combined, debug=want_debug)
@@ -833,7 +777,6 @@ async def evaluate_guardrail_multipart(
     payload_bytes = _blen(combined)
     sanitized_bytes = _blen(sanitized)
 
-    # allow by contract; if redactions happened, count as sanitize
     family = "sanitize" if (redaction_count or 0) > 0 else "allow"
 
     resp: Dict[str, Any] = {
@@ -878,7 +821,6 @@ async def evaluate_guardrail_multipart(
         },
     )
 
-    # increment family (sanitize if redactions occurred)
     inc_decision_family(family)
     inc_decision_family_tenant_bot(tenant_id, bot_id, family)
     return resp
@@ -904,7 +846,7 @@ async def egress_evaluate(
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
         from fastapi.responses import JSONResponse
-        resp = JSONResponse(
+        jresp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             content={
                 "code": "rate_limited",
@@ -913,20 +855,18 @@ async def egress_evaluate(
                 "request_id": rid,
             },
         )
-        resp.headers["Retry-After"] = str(retry_after)
-        resp.headers["X-Guardrail-Quota-Window"] = "60"
-        resp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
+        jresp.headers["Retry-After"] = str(retry_after)
+        jresp.headers["X-Guardrail-Quota-Window"] = "60"
+        jresp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
         inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return resp  # type: ignore[return-value]
+        return jresp  # type: ignore[return-value]
 
     payload, dbg = egress_check(req.text, debug=want_debug)
     payload["request_id"] = rid
-    # fingerprint the model egress text (payload under check)
     fp_all = content_fingerprint(req.text or "")
     payload_bytes = _blen(req.text)
     sanitized_bytes = _blen(req.text)
 
-    # Only include debug if requested
     if want_debug and dbg:
         payload["debug"] = {"explanations": dbg}
 
@@ -952,7 +892,6 @@ async def egress_evaluate(
         },
     )
 
-    # increment family for egress
     action = str(payload.get("action", "allow"))
     if action == "deny":
         fam = "block"
@@ -973,7 +912,6 @@ threat_admin_router = APIRouter(prefix="/admin", tags=["admin"])
 async def admin_threat_reload(request: Request) -> Dict[str, Any]:
     """
     Pulls the latest threat-feed specs from THREAT_FEED_URLS and swaps them in.
-    Matches lightweight auth used elsewhere; bypass in tests/CI via GUARDRAIL_DISABLE_AUTH=1.
     """
     if not TEST_AUTH_BYPASS and not (
         request.headers.get("X-API-Key") or request.headers.get("Authorization")
@@ -981,13 +919,13 @@ async def admin_threat_reload(request: Request) -> Dict[str, Any]:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         from fastapi.responses import JSONResponse  # local import to avoid churn
 
-        resp = JSONResponse(
+        jresp = JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"detail": "Unauthorized", "request_id": rid},
         )
-        resp.headers["WWW-Authenticate"] = "Bearer"
-        resp.headers["X-Request-ID"] = rid
-        return resp  # type: ignore[return-value]
+        jresp.headers["WWW-Authenticate"] = "Bearer"
+        jresp.headers["X-Request-ID"] = rid
+        return jresp  # type: ignore[return-value]
 
     result = refresh_from_env()
     return {"ok": True, "result": result}
