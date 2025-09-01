@@ -1,14 +1,22 @@
+# file: app/routes/output.py
 from __future__ import annotations
 
 import os
 import uuid
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.config import get_settings
 from app.routes.schema import GuardrailResponse, OutputGuardrailRequest
 from app.services.policy import current_rules_version, evaluate_and_apply
+from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.services.verifier import content_fingerprint
+from app.telemetry.metrics import (
+    inc_decision_family,
+    inc_decision_family_tenant_bot,
+)
+from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -33,19 +41,33 @@ def _flatten_rule_hits(as_dicts: List[Dict[str, Any]]) -> List[str]:
     return out
 
 
+def _blen(s: str) -> int:
+    return len((s or "").encode("utf-8"))
+
+
 @router.post("/output", response_model=GuardrailResponse)
 def guard_output(
-    ingress: OutputGuardrailRequest, s=Depends(get_settings)
+    ingress: OutputGuardrailRequest,
+    request: Request,
+    s=Depends(get_settings),
 ) -> GuardrailResponse:
     """
     Egress filter:
       - Enforce output size limit via OUTPUT_MAX_CHARS or settings.MAX_OUTPUT_CHARS.
       - If REDACT_SECRETS=true, apply policy redactions.
       - Always return decision="allow" with required schema fields.
+      - Emit enriched enterprise audit + family metrics.
     """
-    req_id = getattr(ingress, "request_id", None) or str(uuid.uuid4())
+    # request/tenancy context
+    req_id = (
+        getattr(ingress, "request_id", None)
+        or request.headers.get("X-Request-ID")
+        or str(uuid.uuid4())
+    )
+    tenant_id = request.headers.get(TENANT_HEADER) or "default"
+    bot_id = request.headers.get(BOT_HEADER) or "default"
 
-    # Env has priority; fall back to settings to preserve existing config path
+    # limits
     max_chars_env = _env_int("OUTPUT_MAX_CHARS", 0)
     max_chars_cfg = int(getattr(s, "MAX_OUTPUT_CHARS", 0) or 0)
     max_chars = max(max_chars_env, max_chars_cfg)
@@ -56,22 +78,57 @@ def guard_output(
             detail="Output too large",
         )
 
+    # redact flag
     redact = (os.environ.get("REDACT_SECRETS") or "false").lower() == "true"
 
     transformed: str
     rule_hits_strs: List[str]
-    reason: str
+    redactions = 0
 
     if redact:
+        # Use ingress policy helpers for consistent redactions.
         res = evaluate_and_apply(ingress.output)
         transformed = res.get("transformed_text", ingress.output)
         rule_hits_strs = _flatten_rule_hits(list(res.get("rule_hits", [])))
         redactions = int(res.get("redactions", 0) or 0)
-        reason = "redacted" if redactions > 0 else ""
     else:
         transformed = ingress.output
         rule_hits_strs = []
-        reason = ""
+
+    # decision family for metrics
+    family = "sanitize" if redactions > 0 else "allow"
+
+    # metrics
+    inc_decision_family(family)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, family)
+
+    # enriched audit payload (typed for mypy)
+    try:
+        emit_event: Dict[str, Any] = {
+            "ts": None,
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "request_id": req_id,
+            "direction": "egress",
+            "decision": "allow",
+            "rule_hits": (rule_hits_strs or None),
+            "policy_version": current_rules_version(),
+            "verifier_provider": None,
+            "fallback_used": None,
+            "status_code": 200,
+            "redaction_count": redactions,
+            "hash_fingerprint": content_fingerprint(ingress.output or ""),
+            "payload_bytes": int(_blen(ingress.output)),
+            "sanitized_bytes": int(_blen(transformed)),
+            "meta": {},
+        }
+        emit_audit_event(emit_event)
+    except Exception:
+        # best-effort audit; never break egress on logging errors
+        pass
+
+    # API contract: always allow; include reason only when redactions occurred
+    reason = "redacted" if redactions > 0 else ""
 
     return GuardrailResponse(
         transformed_text=transformed,
