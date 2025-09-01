@@ -793,10 +793,17 @@ async def create_moderation(
 
 # --- Embeddings (OpenAI-compatible) ------------------------------------------
 
+# Local imports to avoid top-of-file churn
+import os as _os  # noqa: E402
+import hashlib as _hashlib  # noqa: E402
+import random as _random  # noqa: E402
+from typing import Union  # noqa: E402
+from pydantic import field_validator  # noqa: E402
+
 
 class EmbeddingsRequest(BaseModel):
     model: str
-    # OpenAI accepts str or list[str]
+    # OpenAI accepts str or list[str]; normalize via validator
     input: Union[str, List[str]]
 
     @field_validator("input", mode="before")
@@ -811,24 +818,6 @@ class EmbeddingsRequest(BaseModel):
         return [str(v)]
 
 
-def _demo_embed(s: str, dim: int = 8) -> List[float]:
-    """
-    Deterministic, local-only toy embedding for demos/tests.
-    Produces small floats from a rolling hash.
-    """
-    h = 2166136261
-    for ch in (s or ""):
-        h ^= ord(ch)
-        h = (h * 16777619) & 0xFFFFFFFF
-    # spread bits into dim floats in [0, 1)
-    out: List[float] = []
-    cur = h
-    for _ in range(dim):
-        cur = (cur * 1103515245 + 12345) & 0x7FFFFFFF
-        out.append((cur % 1000) / 1000.0)
-    return out
-
-
 @router.post("/embeddings")
 async def create_embeddings(
     request: Request,
@@ -839,24 +828,22 @@ async def create_embeddings(
 ):
     """
     Minimal OpenAI-compatible /v1/embeddings.
-
-    - Applies ingress guard (sanitize + optional threat feed).
-    - Emits per-tenant/bot decision-family metrics.
-    - Audits each item (ingress).
-    - Returns deterministic local vectors (no external calls).
+    - Ingress guard (sanitize + detectors); deny on 'deny'.
+    - Deterministic vectors via PRNG seeded by sha256(text).
+    - Records tenant/bot family metrics and audits.
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
+    dim = int(_os.environ.get("OAI_COMPAT_EMBED_DIM") or "1536")
 
-    data_items: List[Dict[str, Any]] = []
-    idx = 0
+    data: List[Dict[str, Any]] = []
 
-    for raw in body.input:
-        # Ingress pass
-        sanitized, fams, redaction_count, _ = sanitize_text(raw, debug=want_debug)
+    for idx, item in enumerate(body.input):
+        # Ingress pass (same flow as chat/moderations)
+        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
         if threat_feed_enabled():
             dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
                 sanitized, debug=want_debug
@@ -869,30 +856,18 @@ async def create_embeddings(
             if dyn_reds:
                 redaction_count = (redaction_count or 0) + dyn_reds
 
-        # Detectors (to surface rule families even for embeddings)
         det = evaluate_prompt(sanitized)
         det_action = str(det.get("action", "allow"))
-        det_hits = _normalize_rule_hits(
-            det.get("rule_hits", []) or [],
-            det.get("decisions", []) or [],
+        flat_hits = _normalize_rule_hits(
+            det.get("rule_hits", []) or [], det.get("decisions", []) or []
         )
-        combined_hits = sorted(
-            {*(fams or []), *[_normalize_family(h) for h in det_hits]}
+        fam = _family_for(
+            "deny" if det_action == "deny" else "allow", int(redaction_count or 0)
         )
-
-        # Decision mapping (deny vs allow w/ sanitize)
-        if det_action == "deny":
-            ingress_action = "deny"
-        elif redaction_count:
-            ingress_action = "allow"
-        else:
-            ingress_action = det_action
-
-        fam = _family_for(ingress_action, int(redaction_count or 0))
         inc_decision_family(fam)
         inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
-        # Audit (ingress) — per item
+        # Audit ingress per item
         try:
             emit_audit_event(
                 {
@@ -901,15 +876,16 @@ async def create_embeddings(
                     "bot_id": bot_id,
                     "request_id": req_id,
                     "direction": "ingress",
-                    "decision": ingress_action,
-                    "rule_hits": (combined_hits or None),
+                    "decision": "deny" if det_action == "deny" else "allow",
+                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits})
+                                  or None),
                     "policy_version": policy_version,
                     "verifier_provider": None,
                     "fallback_used": None,
                     "status_code": 200,
                     "redaction_count": int(redaction_count or 0),
-                    "hash_fingerprint": content_fingerprint(raw),
-                    "payload_bytes": int(_blen(raw)),
+                    "hash_fingerprint": content_fingerprint(item),
+                    "payload_bytes": int(_blen(item)),
                     "sanitized_bytes": int(_blen(sanitized)),
                     "meta": {"endpoint": "embeddings"},
                 }
@@ -917,53 +893,38 @@ async def create_embeddings(
         except Exception:
             pass
 
-        # For embeddings, we only deny when policy says so.
-        # Otherwise, we embed the sanitized text.
-        if ingress_action == "deny":
-            # Match OpenAI error style at the request level.
-            # If any item is denied, fail the whole request consistently.
-            err_body = {
-                "error": {
-                    "message": "Request denied by guardrail policy",
-                    "type": "invalid_request_error",
-                    "param": None,
-                    "code": None,
-                }
-            }
+        if det_action == "deny":
             headers = {
                 "X-Guardrail-Policy-Version": policy_version,
-                "X-Guardrail-Ingress-Action": ingress_action,
+                "X-Guardrail-Ingress-Action": "deny",
                 "X-Guardrail-Egress-Action": "skipped",
             }
-            raise HTTPException(status_code=400, detail=err_body, headers=headers)
+            raise HTTPException(
+                status_code=400,
+                detail=_oai_error("Request denied by guardrail policy"),
+                headers=headers,
+            )
 
-        vec = _demo_embed(sanitized, dim=8)
-        data_items.append(
-            {
-                "object": "embedding",
-                "index": idx,
-                "embedding": vec,
-            }
+        # Deterministic pseudo-embedding (no external calls)
+        seed = int.from_bytes(
+            _hashlib.sha256(item.encode("utf-8")).digest()[:8], "big"
         )
-        idx += 1
+        rng = _random.Random(seed)
+        vec = [rng.uniform(-0.01, 0.01) for _ in range(dim)]
+        data.append({"object": "embedding", "embedding": vec, "index": idx})
 
-    # Standard OpenAI-ish response
-    resp: Dict[str, Any] = {
-        "object": "list",
-        "data": data_items,
-        "model": body.model,
-        "usage": {
-            "prompt_tokens": 0,
-            "total_tokens": 0,
-        },
-        "created": now_ts,
-    }
-
-    # Surface guard metadata via headers (consistent with chat)
+    # Propagate guard headers (non-streaming)
     request.state._extra_headers = {
         "X-Guardrail-Policy-Version": policy_version,
-        "X-Guardrail-Ingress-Action": "allow",  # per-item signals already captured in audit
-        "X-Guardrail-Egress-Action": "skipped",  # embeddings are non-text egress here
+        "X-Guardrail-Ingress-Action": "allow",
+        "X-Guardrail-Egress-Action": "allow",
         "X-Guardrail-Egress-Redactions": "0",
     }
-    return resp
+
+    return {
+        "object": "list",
+        "data": data,
+        "model": body.model,
+        "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        "created": now_ts,
+    }
