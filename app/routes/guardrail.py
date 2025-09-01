@@ -47,7 +47,7 @@ from app.services.verifier import (
     verifier_enabled,
 )
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
-from app.telemetry.metrics import inc_decision_family
+from app.telemetry.metrics import inc_decision_family, inc_decision_family_tenant_bot
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -292,13 +292,6 @@ def _maybe_patch_with_fallbacks(
     return decision, hits
 
 
-def _inc_family_for_legacy(decision: str, rule_hits: List[str]) -> None:
-    """
-    Legacy /guardrail/ maps to allow|block only.
-    We keep it simple: block -> block, else -> allow.
-    """
-    fam = "block" if decision == "block" else "allow"
-    inc_decision_family(fam)
 
 
 @router.post("/", response_model=None)
@@ -362,11 +355,14 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     _decisions_total += 1
 
-    # --- NEW: increment decision family counters (legacy path) ---
-    _inc_family_for_legacy(decision, rule_hits)
-
     _audit_maybe(prompt, rid, decision=decision)
     policy_version = current_rules_version()
+
+    # --- NEW: metrics
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    fam = "block" if decision == "block" else "allow"
+    inc_decision_family(fam)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
     return {
         "decision": decision,
@@ -548,6 +544,7 @@ async def evaluate(
 
             # --- NEW: increment after final action chosen ---
             inc_decision_family(family)
+            inc_decision_family_tenant_bot(tenant_id, bot_id, family)
             return resp
 
         if verdict == Verdict.UNSAFE:
@@ -591,6 +588,7 @@ async def evaluate(
 
         # --- NEW: increment after final action chosen ---
         inc_decision_family(family)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, family)
         return resp
 
     try:
@@ -621,6 +619,7 @@ async def evaluate(
 
     # --- NEW: increment decision family counters (evaluate path) ---
     inc_decision_family(family)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, family)
     return resp
 
 
@@ -732,6 +731,7 @@ async def evaluate_guardrail_multipart(
 
     # --- NEW: increment family (sanitize if redactions occurred) ---
     inc_decision_family(family)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, family)
     return resp
 
 
@@ -785,6 +785,7 @@ async def egress_evaluate(
     else:
         fam = "allow"
     inc_decision_family(fam)
+    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
     return payload
 
