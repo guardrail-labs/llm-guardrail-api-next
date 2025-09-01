@@ -1,4 +1,3 @@
-# file: app/routes/guardrail.py
 from __future__ import annotations
 
 import json
@@ -124,7 +123,6 @@ def _rate_limit_check(request: Request) -> bool:
     """Return True if request is allowed, False if rate-limited."""
     global _LAST_RATE_CFG, _LAST_APP_ID
 
-    # Reset buckets when a new FastAPI app instance is used (common in tests)
     app_id = id(request.app)
     if _LAST_APP_ID != app_id:
         with _RATE_LOCK:
@@ -132,7 +130,6 @@ def _rate_limit_check(request: Request) -> bool:
             _LAST_APP_ID = app_id
 
     cfg = _app_rate_cfg(request)
-    # If the config changed (e.g., new test app or env flip), reset windows.
     if cfg != _LAST_RATE_CFG:
         with _RATE_LOCK:
             _BUCKETS.clear()
@@ -167,13 +164,12 @@ def _req_id(request: Request) -> str:
 def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
     """
     Wraps audit_forwarder.emit_event to guarantee meta.client is present.
-    Merges without overwriting caller-provided values.
     Never raises back to caller.
     """
     try:
         base_meta = event.get("meta") or {}
         base_client = base_meta.get("client") or {}
-        client_now = get_client_meta(request)  # {"ip","user_agent","path","method"}
+        client_now = get_client_meta(request)
         merged_client = {**client_now, **{k: v for k, v in base_client.items() if v is not None}}
         event["meta"] = {**base_meta, "client": merged_client}
         emit_audit_event(event)
@@ -182,9 +178,6 @@ def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
 
 
 def _audit_maybe(prompt: str, rid: str, decision: Optional[str] = None) -> None:
-    """
-    Emit a JSON line to logger 'guardrail_audit' with truncated snippet.
-    """
     if (os.environ.get("AUDIT_ENABLED") or "false").lower() != "true":
         return
     try:
@@ -262,7 +255,7 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
     return out
 
 
-# --- Lightweight fallback detectors (only used if primary detectors didn't) ---
+# --- Lightweight fallbacks ---------------------------------------------------
 
 _API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")
 _B64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r\t")
@@ -271,7 +264,6 @@ _B64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 def _maybe_patch_with_fallbacks(
     prompt: str, decision: str, hits: List[str]
 ) -> Tuple[str, List[str]]:
-    """Add expected rule IDs if the primary detector missed them."""
     p_lower = prompt.lower()
 
     def ensure(tag: str):
@@ -281,15 +273,12 @@ def _maybe_patch_with_fallbacks(
     if "ignore previous instructions" in p_lower:
         ensure("pi:prompt_injection")
         decision = "block"
-
     if _API_KEY_RE.search(prompt):
         ensure("secrets:api_key_like")
         decision = "block"
-
     if len(prompt) >= 128 and all((c in _B64_CHARS) for c in prompt):
         ensure("payload:encoded_blob")
         decision = "block"
-
     if "do not allow this" in p_lower:
         ensure("policy:deny:block_phrase")
         decision = "block"
@@ -312,7 +301,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
         )
 
-    # --- Per-tenant quota (before rate limiter / heavy work) ---
+    # --- Per-tenant quota ---
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
@@ -431,10 +420,10 @@ async def evaluate(
     decisions: List[Dict[str, Any]] = []
     tenant_id, bot_id = _tenant_bot_from_headers(request)
 
-    # --- Per-tenant quota (use rid before parsing body) ---
+    # --- Per-tenant quota ---
     ok, retry_after = check_and_consume(request, tenant_id, bot_id)
     if not ok:
-        from fastapi.responses import JSONResponse  # local import to avoid churn
+        from fastapi.responses import JSONResponse
         rid = _req_id(request)
         jresp = JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -678,7 +667,9 @@ async def evaluate(
             "decision": resp.get("action", "allow"),
             "rule_hits": resp.get("rule_hits") or None,
             "policy_version": policy_version,
-            "verifier_provider": ((resp.get("debug") or {}).get("verifier", {}).get("chosen")),
+            "verifier_provider": (
+                (resp.get("debug") or {}).get("verifier", {}).get("chosen")
+            ),
             "fallback_used": None,
             "status_code": 200,
             "redaction_count": resp.get("redactions") or 0,
@@ -909,7 +900,7 @@ threat_admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @threat_admin_router.post("/threat/reload")
-async def admin_threat_reload(request: Request) -> Dict[str, Any]:
+async def admin_threat_reload(request: Request) -> Any:
     """
     Pulls the latest threat-feed specs from THREAT_FEED_URLS and swaps them in.
     """
@@ -917,7 +908,7 @@ async def admin_threat_reload(request: Request) -> Dict[str, Any]:
         request.headers.get("X-API-Key") or request.headers.get("Authorization")
     ):
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        from fastapi.responses import JSONResponse  # local import to avoid churn
+        from fastapi.responses import JSONResponse  # local import
 
         jresp = JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -925,7 +916,58 @@ async def admin_threat_reload(request: Request) -> Dict[str, Any]:
         )
         jresp.headers["WWW-Authenticate"] = "Bearer"
         jresp.headers["X-Request-ID"] = rid
-        return jresp  # type: ignore[return-value]
+        # removed: unused type ignore
+        return jresp
 
     result = refresh_from_env()
     return {"ok": True, "result": result}
+
+
+@threat_admin_router.post("/policy/reload")
+async def admin_policy_reload(request: Request) -> Any:
+    """
+    Reload policy rules in-process. Same lightweight auth as threat reload.
+    """
+    if not TEST_AUTH_BYPASS and not (
+        request.headers.get("X-API-Key") or request.headers.get("Authorization")
+    ):
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        from fastapi.responses import JSONResponse
+
+        jresp = JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Unauthorized", "request_id": rid},
+        )
+        jresp.headers["WWW-Authenticate"] = "Bearer"
+        jresp.headers["X-Request-ID"] = rid
+        # removed: unused type ignore
+        return jresp
+
+    try:
+        reload_rules()
+    except Exception:
+        pass
+    return {"ok": True, "policy_version": current_rules_version()}
+
+
+@threat_admin_router.get("/policy/version")
+async def admin_policy_version(request: Request) -> Any:
+    """
+    Return current policy rules version. Same lightweight auth.
+    """
+    if not TEST_AUTH_BYPASS and not (
+        request.headers.get("X-API-Key") or request.headers.get("Authorization")
+    ):
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        from fastapi.responses import JSONResponse
+
+        jresp = JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Unauthorized", "request_id": rid},
+        )
+        jresp.headers["WWW-Authenticate"] = "Bearer"
+        jresp.headers["X-Request-ID"] = rid
+        # removed: unused type ignore
+        return jresp
+
+    return {"ok": True, "policy_version": current_rules_version()}

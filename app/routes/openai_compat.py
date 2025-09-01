@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -25,8 +26,8 @@ from app.services.threat_feed import (
 )
 from app.services.verifier import content_fingerprint
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
-from app.shared.request_meta import get_client_meta
 from app.shared.quotas import check_and_consume
+from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
@@ -34,6 +35,19 @@ from app.telemetry.metrics import (
 )
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
+
+
+# ---------------------------
+# Health
+# ---------------------------
+
+@router.get("/health")
+async def health() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "provider": os.environ.get("LLM_PROVIDER") or "local-echo",
+        "policy_version": current_rules_version(),
+    }
 
 
 # ---------------------------
