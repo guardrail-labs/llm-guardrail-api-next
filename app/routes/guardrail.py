@@ -47,6 +47,7 @@ from app.services.verifier import (
     verifier_enabled,
 )
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
+from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import inc_decision_family, inc_decision_family_tenant_bot
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -401,7 +402,10 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
                 "hash_fingerprint": content_fingerprint(prompt),
                 "payload_bytes": int(_blen(prompt)),
                 "sanitized_bytes": int(_blen(transformed)),
-                "meta": {"endpoint": "/guardrail"},
+                "meta": {
+                    "endpoint": "/guardrail",
+                    "client": get_client_meta(request),
+                },
             }
         )
     except Exception:
@@ -583,7 +587,19 @@ async def evaluate(
                         "hash_fingerprint": fp_all,
                         "payload_bytes": int(payload_bytes),
                         "sanitized_bytes": int(sanitized_bytes),
-                        "meta": {},
+                        "meta": {
+                            **(
+                                {"provider": providers}
+                                if "providers" in locals()
+                                else {}
+                            ),
+                            **(
+                                {"sources": (resp.get("debug") or {}).get("sources")}
+                                if "debug" in resp
+                                else {}
+                            ),
+                            "client": get_client_meta(request),
+                        },
                     }
                 )
             except Exception:
@@ -629,7 +645,19 @@ async def evaluate(
                     "hash_fingerprint": fp_all,
                     "payload_bytes": int(payload_bytes),
                     "sanitized_bytes": int(sanitized_bytes),
-                    "meta": {},
+                    "meta": {
+                        **(
+                            {"provider": providers}
+                            if "providers" in locals()
+                            else {}
+                        ),
+                        **(
+                            {"sources": (resp.get("debug") or {}).get("sources")}
+                            if "debug" in resp
+                            else {}
+                        ),
+                        "client": get_client_meta(request),
+                    },
                 }
             )
         except Exception:
@@ -658,7 +686,19 @@ async def evaluate(
                 "hash_fingerprint": fp_all,
                 "payload_bytes": int(payload_bytes),
                 "sanitized_bytes": int(sanitized_bytes),
-                "meta": {},
+                "meta": {
+                    **(
+                        {"provider": providers}
+                        if "providers" in locals()
+                        else {}
+                    ),
+                    **(
+                        {"sources": (resp.get("debug") or {}).get("sources")}
+                        if "debug" in resp
+                        else {}
+                    ),
+                    "client": get_client_meta(request),
+                },
             }
         )
     except Exception:
@@ -777,7 +817,12 @@ async def evaluate_guardrail_multipart(
                 "payload_bytes": int(payload_bytes),
                 "sanitized_bytes": int(sanitized_bytes),
                 "meta": {
-                    "sources": (resp.get("debug") or {}).get("sources") if "debug" in resp else None
+                    "sources": (
+                        (resp.get("debug") or {}).get("sources")
+                        if "debug" in resp
+                        else None
+                    ),
+                    "client": get_client_meta(request),
                 },
             }
         )
@@ -835,7 +880,7 @@ async def egress_evaluate(
                 "hash_fingerprint": fp_all,
                 "payload_bytes": int(payload_bytes),
                 "sanitized_bytes": int(sanitized_bytes),
-                "meta": {},
+                "meta": {"client": get_client_meta(request)},
             }
         )
     except Exception:

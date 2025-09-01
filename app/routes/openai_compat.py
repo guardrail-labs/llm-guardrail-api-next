@@ -25,6 +25,7 @@ from app.services.threat_feed import (
 )
 from app.services.verifier import content_fingerprint
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
+from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
@@ -245,7 +246,7 @@ async def chat_completions(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {},
+                "meta": {"client": get_client_meta(request)},
             }
         )
     except Exception:
@@ -377,7 +378,7 @@ async def chat_completions(
                         "hash_fingerprint": content_fingerprint(accum_raw),
                         "payload_bytes": int(_blen(accum_raw)),
                         "sanitized_bytes": int(_blen(last_sanitized)),
-                        "meta": {"provider": model_meta},
+                        "meta": {"provider": model_meta, "client": get_client_meta(request)},
                     }
                 )
             except Exception:
@@ -426,7 +427,7 @@ async def chat_completions(
                 "hash_fingerprint": content_fingerprint(model_text),
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {"provider": model_meta},
+                "meta": {"provider": model_meta, "client": get_client_meta(request)},
             }
         )
     except Exception:
@@ -540,7 +541,7 @@ async def completions(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {"endpoint": "completions"},
+                "meta": {"endpoint": "completions", "client": get_client_meta(request)},
             }
         )
     except Exception:
@@ -589,7 +590,11 @@ async def completions(
                 "hash_fingerprint": content_fingerprint(model_text),
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {"provider": model_meta, "endpoint": "completions"},
+                "meta": {
+                    "provider": model_meta,
+                    "endpoint": "completions",
+                    "client": get_client_meta(request),
+                },
             }
         )
     except Exception:
@@ -840,7 +845,7 @@ async def create_moderation(
                     "hash_fingerprint": content_fingerprint(item),
                     "payload_bytes": int(_blen(item)),
                     "sanitized_bytes": int(_blen(sanitized)),
-                    "meta": {"endpoint": "moderations"},
+                    "meta": {"endpoint": "moderations", "client": get_client_meta(request)},
                 }
             )
         except Exception:
@@ -973,7 +978,7 @@ async def create_embeddings(
                     "hash_fingerprint": content_fingerprint(item),
                     "payload_bytes": int(_blen(item)),
                     "sanitized_bytes": int(_blen(sanitized)),
-                    "meta": {"endpoint": "embeddings"},
+                    "meta": {"endpoint": "embeddings", "client": get_client_meta(request)},
                 }
             )
         except Exception:
