@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -22,14 +21,15 @@ from app.services.threat_feed import (
     threat_feed_enabled,
 )
 from app.services.egress import egress_check
+from app.services.verifier import content_fingerprint
 from app.services.llm_client import get_client
 from app.services.audit_forwarder import emit_event as emit_audit_event
-from app.services.verifier import content_fingerprint
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
 )
 from app.shared.headers import TENANT_HEADER, BOT_HEADER
+
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -37,35 +37,6 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 # ---------------------------
 # Models (subset for compat)
 # ---------------------------
-
-
-def _compat_models() -> List[Dict[str, Any]]:
-    """
-    Return OpenAI-style model objects.
-    Configure via OAI_COMPAT_MODELS="gpt-4o-mini,gpt-4o" or default to ["demo"].
-    """
-    raw = os.environ.get("OAI_COMPAT_MODELS") or ""
-    ids = [s.strip() for s in raw.split(",") if s.strip()] or ["demo"]
-    now = int(time.time())
-    out: List[Dict[str, Any]] = []
-    for mid in ids:
-        out.append(
-            {
-                "id": mid,
-                "object": "model",
-                "created": now,
-                "owned_by": "guardrail",
-            }
-        )
-    return out
-
-
-@router.get("/models")
-async def list_models():
-    """
-    Minimal OpenAI-compatible /v1/models listing.
-    """
-    return {"object": "list", "data": _compat_models()}
 
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
@@ -146,6 +117,28 @@ def _oai_error(message: str, type_: str = "invalid_request_error") -> Dict[str, 
     return {"error": {"message": message, "type": type_, "param": None, "code": None}}
 
 
+def _compat_models() -> List[Dict[str, Any]]:
+    """
+    Return OpenAI-style model objects.
+    Configure via OAI_COMPAT_MODELS="gpt-4o-mini,gpt-4o" or default to ["demo"].
+    """
+    import os
+    raw = os.environ.get("OAI_COMPAT_MODELS") or ""
+    ids = [s.strip() for s in raw.split(",") if s.strip()] or ["demo"]
+    now = int(time.time())
+    out: List[Dict[str, Any]] = []
+    for mid in ids:
+        out.append(
+            {
+                "id": mid,
+                "object": "model",
+                "created": now,
+                "owned_by": "guardrail",
+            }
+        )
+    return out
+
+
 def _sse(obj: Dict[str, Any]) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
@@ -159,7 +152,7 @@ def _chunk_text(s: str, max_len: int = 60) -> List[str]:
     buf: List[str] = []
     cur = 0
     for tok in s.split(" "):
-        add = (tok if not buf else " " + tok)
+        add = tok if not buf else " " + tok
         if cur + len(add) > max_len and buf:
             out.append("".join(buf))
             buf = [tok]
@@ -173,8 +166,16 @@ def _chunk_text(s: str, max_len: int = 60) -> List[str]:
 
 
 # ---------------------------
-# Route
+# Routes
 # ---------------------------
+
+@router.get("/models")
+async def list_models():
+    """
+    Minimal OpenAI-compatible /v1/models listing.
+    """
+    return {"object": "list", "data": _compat_models()}
+
 
 @router.post("/chat/completions")
 async def chat_completions(
@@ -265,14 +266,14 @@ async def chat_completions(
         }
         raise HTTPException(status_code=400, detail=err_body, headers=headers)
 
+    # ---------- Streaming path ----------
     if body.stream:
-        # ---------- Provider ----------
         client = get_client()
         model_text, model_meta = client.chat(
             [m.model_dump() for m in body.messages], body.model
         )
 
-        # ---------- Egress (once) ----------
+        # Egress (once)
         payload, _ = egress_check(model_text, debug=want_debug)
         e_action = str(payload.get("action", "allow"))
         if e_action == "deny":
@@ -292,6 +293,7 @@ async def chat_completions(
         inc_decision_family(e_family)
         inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
 
+        # Audit egress (full text)
         try:
             emit_audit_event(
                 {
@@ -321,15 +323,23 @@ async def chat_completions(
         model_id = body.model
 
         def gen() -> Iterable[str]:
+            # First chunk announces role
             yield _sse(
                 {
                     "id": sid,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model_id,
-                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant"},
+                            "finish_reason": None,
+                        }
+                    ],
                 }
             )
+            # Content chunks
             for piece in _chunk_text(e_text, max_len=60):
                 yield _sse(
                     {
@@ -337,16 +347,25 @@ async def chat_completions(
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model_id,
-                        "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": piece},
+                                "finish_reason": None,
+                            }
+                        ],
                     }
                 )
+            # Final chunk with finish_reason=stop
             yield _sse(
                 {
                     "id": sid,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model_id,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": "stop"}
+                    ],
                 }
             )
             yield "data: [DONE]\n\n"
@@ -416,6 +435,7 @@ async def chat_completions(
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
+    # Attach guard signals via headers for non-streaming
     request.state._extra_headers = {
         "X-Guardrail-Policy-Version": policy_version,
         "X-Guardrail-Ingress-Action": ingress_action,
