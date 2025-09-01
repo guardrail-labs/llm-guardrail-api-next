@@ -1,87 +1,87 @@
-# LLM Guardrail API
+# LLM Guardrail API (Core -next)
 
-FastAPI middleware that evaluates and sanitizes prompts before they reach your LLM, with reloadable policy, redactions, and Prometheus metrics.
+A modular Guardrail API that intercepts prompts/responses to LLMs, sanitizes or blocks harmful input/output, verifies unclear intent, wires enterprise telemetry (audit, multitenancy, quotas), and supports OpenAI/Azure-compatible endpoints.
 
-## Quickstart
+## Quick Start
+
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 1) Create & populate env (see .env.example)
+cp .env.example .env
+
+# 2) Install
+pip install -r requirements.txt
+
+# 3) Run (dev)
+uvicorn app.main:app --reload --port 8000
+
+# 4) Verify health
+curl -s http://localhost:8000/v1/health | jq
 ```
 
-OpenAPI docs: http://localhost:8000/docs
+OpenAI-Compatible Endpoints
 
-## API Contracts
+GET /v1/health (simple health + policy version)
 
-### `GET /health`
+GET /v1/models
 
-**Response**
+POST /v1/chat/completions (stream & non-stream)
 
-```json
-{
-  "ok": true,
-  "status": "ok",
-  "requests_total": 0,
-  "decisions_total": 0,
-  "rules_version": "string"
-}
-```
+POST /v1/completions (stream & non-stream)
 
-### `GET /metrics`
+POST /v1/moderations
 
-Prometheus exposition includes at least:
+POST /v1/embeddings
 
-- `guardrail_requests_total`
-- `guardrail_decisions_total`
-- `guardrail_redactions_total`
-- `guardrail_audit_events_total`
-- `guardrail_latency_seconds_count`
-- `guardrail_latency_seconds_sum`
+POST /v1/images/generations
 
-### `POST /guardrail/evaluate`
+POST /v1/images/edits
 
-**Request**
+POST /v1/images/variations
 
-```json
-{ "text": "your prompt", "request_id": "optional-guid" }
-```
+Azure-Compatible Endpoints
 
-**Response**
+POST /openai/deployments/{deployment_id}/chat/completions
 
-```json
-{
-  "request_id": "guid",
-  "action": "allow",
-  "transformed_text": "possibly redacted text",
-  "decisions": [{ "type": "redaction", "changed": true }]
-}
-```
+POST /openai/deployments/{deployment_id}/embeddings
 
-### `POST /admin/policy/reload`
+See docs/OPENAI_AZURE_COMPAT.md for payload details and headers.
 
-In production, requires `X-API-Key` (tests/CI bypass via `GUARDRAIL_DISABLE_AUTH=1`).
+Guardrail Behavior
 
-**Response**
+All ingress/egress is processed by:
 
-```json
-{ "reloaded": true, "version": "string", "rules_loaded": 0 }
-```
+Ingress: sanitize, dynamic redactions (threat feed), detectors (deny/allow/clarify), audit emit, metrics.
 
-## Environment
+Egress: streaming and non-streaming checks with redactions/deny and audit emit.
 
-- `CORS_ALLOW_ORIGINS` — comma-separated origins; empty means CORS disabled.
-- `GUARDRAIL_DISABLE_AUTH` — set `1` in tests/CI to bypass admin auth.
-- `GUARDRAIL_RULES` — path to a `rules.yaml` file.
+Quotas: per-tenant/bot hard or soft caps (minute/day) with 429 hard enforcement and Prometheus counter.
 
-## Minimal Python client
+See docs/QUOTAS.md for configuration and expected behavior.
 
-```python
-from clients.python.guardrail_client import GuardrailClient
+Metrics & Audit
 
-with GuardrailClient("http://localhost:8000", api_key="test") as c:
-    resp = c.evaluate("hello sk-ABC...")
-    print(resp["action"], resp["transformed_text"])
-```
+Prometheus counters for decision families, per-tenant/bot breakdown, verifier outcomes, and quota rejects.
 
-## Releasing
+Audit events include tenant_id, bot_id, request_id, policy version, bytes, hashes, and meta.client.
 
-See [RELEASING.md](RELEASING.md).
+Examples
 
+Use the runnable scripts in examples/curl/:
+
+chat.sh, completions.sh, embeddings.sh, moderations.sh
+
+images_generations.sh, images_edits.sh, images_variations.sh
+
+Set API_BASE and headers in each script (see comments) or export from environment.
+
+Environment
+
+See .env.example for all keys and defaults.
+
+Testing
+ruff check --fix .
+mypy .
+pytest -q
+
+
+All tests must be green before merge.
