@@ -51,6 +51,8 @@ from app.telemetry.metrics import inc_decision_family, inc_decision_family_tenan
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
+TEST_AUTH_BYPASS = (os.getenv("GUARDRAIL_DISABLE_AUTH") or "") == "1"
+
 # Simple per-process counters (read by /metrics)
 _requests_total = 0
 _decisions_total = 0
@@ -857,10 +859,24 @@ threat_admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @threat_admin_router.post("/threat/reload")
-async def admin_threat_reload() -> Dict[str, Any]:
+async def admin_threat_reload(request: Request) -> Dict[str, Any]:
     """
     Pulls the latest threat-feed specs from THREAT_FEED_URLS and swaps them in.
-    Safe for dev/test; in production, protect with auth.
+    Matches lightweight auth used elsewhere; bypass in tests/CI via GUARDRAIL_DISABLE_AUTH=1.
     """
+    if not TEST_AUTH_BYPASS and not (
+        request.headers.get("X-API-Key") or request.headers.get("Authorization")
+    ):
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        from fastapi.responses import JSONResponse  # local import to avoid churn
+
+        resp = JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Unauthorized", "request_id": rid},
+        )
+        resp.headers["WWW-Authenticate"] = "Bearer"
+        resp.headers["X-Request-ID"] = rid
+        return resp  # type: ignore[return-value]
+
     result = refresh_from_env()
     return {"ok": True, "result": result}
