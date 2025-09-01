@@ -586,3 +586,181 @@ async def create_moderation(
         "created": now_ts,
         "results": results,
     }
+
+
+# --- Embeddings (OpenAI-compatible) ------------------------------------------
+
+
+class EmbeddingsRequest(BaseModel):
+    model: str
+    # OpenAI accepts str or list[str]
+    input: Union[str, List[str]]
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def _normalize_input(cls, v: Any) -> List[str]:
+        if v is None:
+            return [""]
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return [str(v)]
+
+
+def _demo_embed(s: str, dim: int = 8) -> List[float]:
+    """
+    Deterministic, local-only toy embedding for demos/tests.
+    Produces small floats from a rolling hash.
+    """
+    h = 2166136261
+    for ch in (s or ""):
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    # spread bits into dim floats in [0, 1)
+    out: List[float] = []
+    cur = h
+    for _ in range(dim):
+        cur = (cur * 1103515245 + 12345) & 0x7FFFFFFF
+        out.append((cur % 1000) / 1000.0)
+    return out
+
+
+@router.post("/embeddings")
+async def create_embeddings(
+    request: Request,
+    body: EmbeddingsRequest,
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
+):
+    """
+    Minimal OpenAI-compatible /v1/embeddings.
+
+    - Applies ingress guard (sanitize + optional threat feed).
+    - Emits per-tenant/bot decision-family metrics.
+    - Audits each item (ingress).
+    - Returns deterministic local vectors (no external calls).
+    """
+    want_debug = x_debug == "1"
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    policy_version = current_rules_version()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    now_ts = int(time.time())
+
+    data_items: List[Dict[str, Any]] = []
+    idx = 0
+
+    for raw in body.input:
+        # Ingress pass
+        sanitized, fams, redaction_count, _ = sanitize_text(raw, debug=want_debug)
+        if threat_feed_enabled():
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+                sanitized, debug=want_debug
+            )
+            sanitized = dyn_text
+            if dyn_fams:
+                base = set(fams or [])
+                base.update(dyn_fams)
+                fams = sorted(base)
+            if dyn_reds:
+                redaction_count = (redaction_count or 0) + dyn_reds
+
+        # Detectors (to surface rule families even for embeddings)
+        det = evaluate_prompt(sanitized)
+        det_action = str(det.get("action", "allow"))
+        det_hits = _normalize_rule_hits(
+            det.get("rule_hits", []) or [],
+            det.get("decisions", []) or [],
+        )
+        combined_hits = sorted(
+            {*(fams or []), *[_normalize_family(h) for h in det_hits]}
+        )
+
+        # Decision mapping (deny vs allow w/ sanitize)
+        if det_action == "deny":
+            ingress_action = "deny"
+        elif redaction_count:
+            ingress_action = "allow"
+        else:
+            ingress_action = det_action
+
+        fam = _family_for(ingress_action, int(redaction_count or 0))
+        inc_decision_family(fam)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+        # Audit (ingress) — per item
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": ingress_action,
+                    "rule_hits": (combined_hits or None),
+                    "policy_version": policy_version,
+                    "verifier_provider": None,
+                    "fallback_used": None,
+                    "status_code": 200,
+                    "redaction_count": int(redaction_count or 0),
+                    "hash_fingerprint": content_fingerprint(raw),
+                    "payload_bytes": int(_blen(raw)),
+                    "sanitized_bytes": int(_blen(sanitized)),
+                    "meta": {"endpoint": "embeddings"},
+                }
+            )
+        except Exception:
+            pass
+
+        # For embeddings, we only deny when policy says so.
+        # Otherwise, we embed the sanitized text.
+        if ingress_action == "deny":
+            # Match OpenAI error style at the request level.
+            # If any item is denied, fail the whole request consistently.
+            err_body = {
+                "error": {
+                    "message": "Request denied by guardrail policy",
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": None,
+                }
+            }
+            headers = {
+                "X-Guardrail-Policy-Version": policy_version,
+                "X-Guardrail-Ingress-Action": ingress_action,
+                "X-Guardrail-Egress-Action": "skipped",
+            }
+            raise HTTPException(status_code=400, detail=err_body, headers=headers)
+
+        vec = _demo_embed(sanitized, dim=8)
+        data_items.append(
+            {
+                "object": "embedding",
+                "index": idx,
+                "embedding": vec,
+            }
+        )
+        idx += 1
+
+    # Standard OpenAI-ish response
+    resp: Dict[str, Any] = {
+        "object": "list",
+        "data": data_items,
+        "model": body.model,
+        "usage": {
+            "prompt_tokens": 0,
+            "total_tokens": 0,
+        },
+        "created": now_ts,
+    }
+
+    # Surface guard metadata via headers (consistent with chat)
+    request.state._extra_headers = {
+        "X-Guardrail-Policy-Version": policy_version,
+        "X-Guardrail-Ingress-Action": "allow",  # per-item signals already captured in audit
+        "X-Guardrail-Egress-Action": "skipped",  # embeddings are non-text egress here
+        "X-Guardrail-Egress-Redactions": "0",
+    }
+    return resp
