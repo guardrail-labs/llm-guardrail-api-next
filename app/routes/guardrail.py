@@ -395,7 +395,6 @@ async def evaluate(
 
     content_type = (request.headers.get("content-type") or "").lower()
     decisions: List[Dict[str, Any]] = []
-
     tenant_id, bot_id = _tenant_bot_from_headers(request)
 
     if content_type.startswith("application/json"):
@@ -428,6 +427,9 @@ async def evaluate(
             text, request_id = "", str(uuid.uuid4())
 
     want_debug = x_debug == "1"
+    policy_version = current_rules_version()
+    # fingerprint based on the raw inbound text (pre-sanitization)
+    fp_all = content_fingerprint(text or "")
     sanitized, families, redaction_count, debug_matches = sanitize_text(
         text, debug=want_debug
     )
@@ -526,7 +528,7 @@ async def evaluate(
                         "direction": "ingress",
                         "decision": resp.get("action", "allow"),
                         "rule_hits": resp.get("rule_hits") or None,
-                        "policy_version": "",
+                        "policy_version": policy_version,
                         "verifier_provider": (
                             (resp.get("debug") or {})
                             .get("verifier", {})
@@ -535,7 +537,7 @@ async def evaluate(
                         "fallback_used": None,
                         "status_code": 200,
                         "redaction_count": resp.get("redactions") or 0,
-                        "hash_fingerprint": "",
+                        "hash_fingerprint": fp_all,
                         "meta": {},
                     }
                 )
@@ -570,7 +572,7 @@ async def evaluate(
                     "direction": "ingress",
                     "decision": resp.get("action", "allow"),
                     "rule_hits": resp.get("rule_hits") or None,
-                    "policy_version": "",
+                    "policy_version": policy_version,
                     "verifier_provider": (
                         (resp.get("debug") or {})
                         .get("verifier", {})
@@ -579,7 +581,7 @@ async def evaluate(
                     "fallback_used": None,
                     "status_code": 200,
                     "redaction_count": resp.get("redactions") or 0,
-                    "hash_fingerprint": "",
+                    "hash_fingerprint": fp_all,
                     "meta": {},
                 }
             )
@@ -601,7 +603,7 @@ async def evaluate(
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
-                "policy_version": "",
+                "policy_version": policy_version,
                 "verifier_provider": (
                     (resp.get("debug") or {})
                     .get("verifier", {})
@@ -610,7 +612,7 @@ async def evaluate(
                 "fallback_used": None,
                 "status_code": 200,
                 "redaction_count": resp.get("redactions") or 0,
-                "hash_fingerprint": "",
+                "hash_fingerprint": fp_all,
                 "meta": {},
             }
         )
@@ -647,6 +649,7 @@ async def evaluate_guardrail_multipart(
     want_debug = (x_debug == "1")
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     rid = _req_id(request)
+    policy_version = current_rules_version()
 
     extracted_texts: List[str] = []
     sources_meta: List[Dict[str, Any]] = []
@@ -668,6 +671,9 @@ async def evaluate_guardrail_multipart(
     if extracted_texts:
         combo_files = "\n".join([t for t in extracted_texts if t])
         combined = (combined + "\n" + combo_files).strip()
+
+    # fingerprint based on the raw combined text
+    fp_all = content_fingerprint(combined or "")
 
     sanitized, families, redaction_count, debug_matches = sanitize_text(
         combined, debug=want_debug
@@ -715,12 +721,12 @@ async def evaluate_guardrail_multipart(
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
-                "policy_version": "",
+                "policy_version": policy_version,
                 "verifier_provider": (resp.get("debug") or {}).get("verifier", {}).get("chosen"),
                 "fallback_used": None,
                 "status_code": 200,
                 "redaction_count": resp.get("redactions") or 0,
-                "hash_fingerprint": "",
+                "hash_fingerprint": fp_all,
                 "meta": {
                     "sources": (resp.get("debug") or {}).get("sources") if "debug" in resp else None
                 },
@@ -748,7 +754,11 @@ async def egress_evaluate(
     want_debug = (x_debug == "1")
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     rid = _req_id(request)
+    policy_version = current_rules_version()
+
     payload, dbg = egress_check(req.text, debug=want_debug)
+    # fingerprint the model egress text (payload under check)
+    fp_all = content_fingerprint(req.text or "")
 
     # Only include debug if requested
     if want_debug and dbg:
@@ -764,12 +774,12 @@ async def egress_evaluate(
                 "direction": "egress",
                 "decision": payload.get("action", "allow"),
                 "rule_hits": payload.get("rule_hits") or None,
-                "policy_version": "",
+                "policy_version": policy_version,
                 "verifier_provider": None,
                 "fallback_used": None,
                 "status_code": 200,
                 "redaction_count": payload.get("redactions") or 0,
-                "hash_fingerprint": "",
+                "hash_fingerprint": fp_all,
                 "meta": {},
             }
         )
