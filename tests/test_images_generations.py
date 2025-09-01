@@ -1,9 +1,26 @@
 from typing import Any, Dict, List
 
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from app.routes import openai_compat as compat
+from app.routes.openai_compat import router as oai_router, azure_router
 
 
-def test_images_generations_allow(client, monkeypatch) -> None:
+@pytest.fixture
+def client() -> TestClient:
+    """
+    Minimal FastAPI app exposing the OpenAI/Azure-compatible routes.
+    Keeps the scope local to this test module, avoiding repo-wide fixture deps.
+    """
+    app = FastAPI()
+    app.include_router(oai_router)
+    app.include_router(azure_router)
+    return TestClient(app)
+
+
+def test_images_generations_allow(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # allow everything deterministically
     monkeypatch.setattr(
         compat,
@@ -38,7 +55,7 @@ def test_images_generations_allow(client, monkeypatch) -> None:
     assert after >= before + 1
 
 
-def test_images_generations_deny(client, monkeypatch) -> None:
+def test_images_generations_deny(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # deny path deterministically
     monkeypatch.setattr(
         compat,
