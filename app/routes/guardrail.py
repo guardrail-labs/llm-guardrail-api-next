@@ -628,6 +628,7 @@ class EvaluateMultipartResponse(BaseModel):
     text: str
     rule_hits: Optional[list] = None
     redactions: Optional[int] = None
+    request_id: str
     # debug remains optional and only when X-Debug: 1 is set
 
 
@@ -636,6 +637,7 @@ async def evaluate_guardrail_multipart(
     request: Request,
     text: Optional[str] = Form(default=""),
     files: List[UploadFile] = File(default=[]),
+    request_id: Optional[str] = Form(default=None),
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
     """
@@ -644,7 +646,7 @@ async def evaluate_guardrail_multipart(
     """
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
-    rid = _req_id(request)
+    rid = request_id or _req_id(request)
     policy_version = current_rules_version()
 
     extracted_texts: List[str] = []
@@ -696,6 +698,7 @@ async def evaluate_guardrail_multipart(
         "text": sanitized,
         "rule_hits": families or None,
         "redactions": redaction_count or None,
+        "request_id": rid,
     }
 
     if want_debug:
@@ -742,6 +745,7 @@ async def evaluate_guardrail_multipart(
 
 class EgressEvaluateRequest(BaseModel):
     text: str
+    request_id: Optional[str] = None
 
 
 @router.post("/egress_evaluate")
@@ -752,10 +756,11 @@ async def egress_evaluate(
 ) -> Dict[str, Any]:
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
-    rid = _req_id(request)
+    rid = req.request_id or _req_id(request)
     policy_version = current_rules_version()
 
     payload, dbg = egress_check(req.text, debug=want_debug)
+    payload["request_id"] = rid
     # fingerprint the model egress text (payload under check)
     fp_all = content_fingerprint(req.text or "")
     payload_bytes = _blen(req.text)
