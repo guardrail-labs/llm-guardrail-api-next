@@ -7,7 +7,12 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+# Paths that bypass auth entirely (exact match)
 _SAFE_PATHS: set[str] = {"/health", "/metrics"}
+
+# Prefixes that bypass auth.  Our OpenAI-compatible routes live under ``/v1``
+# and are intentionally unauthenticated to mimic the upstream API contract.
+_SAFE_PREFIXES: tuple[str, ...] = ("/v1/",)
 
 
 def _is_auth_disabled() -> bool:
@@ -15,8 +20,10 @@ def _is_auth_disabled() -> bool:
 
 
 def _is_safe_path(path: str) -> bool:
-    # Exact matches only to avoid surprises
-    return path in _SAFE_PATHS
+    """Return True if the request path should bypass auth."""
+    if path in _SAFE_PATHS:
+        return True
+    return any(path.startswith(pfx) for pfx in _SAFE_PREFIXES)
 
 
 def _has_auth_header(request: Request) -> bool:
