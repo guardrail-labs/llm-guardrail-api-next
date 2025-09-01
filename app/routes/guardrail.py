@@ -46,8 +46,8 @@ from app.services.verifier import (
     mark_harmful,
     verifier_enabled,
 )
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import inc_decision_family
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -647,6 +647,7 @@ async def evaluate_guardrail_multipart(
     """
     want_debug = (x_debug == "1")
     tenant_id, bot_id = _tenant_bot_from_headers(request)
+    rid = _req_id(request)
 
     extracted_texts: List[str] = []
     sources_meta: List[Dict[str, Any]] = []
@@ -711,7 +712,7 @@ async def evaluate_guardrail_multipart(
                 "ts": None,
                 "tenant_id": tenant_id,
                 "bot_id": bot_id,
-                "request_id": "",  # populate later if you thread request IDs to multipart
+                "request_id": rid,
                 "direction": "ingress",
                 "decision": resp.get("action", "allow"),
                 "rule_hits": resp.get("rule_hits") or None,
@@ -746,6 +747,7 @@ async def egress_evaluate(
 ) -> Dict[str, Any]:
     want_debug = (x_debug == "1")
     tenant_id, bot_id = _tenant_bot_from_headers(request)
+    rid = _req_id(request)
     payload, dbg = egress_check(req.text, debug=want_debug)
 
     # Only include debug if requested
@@ -758,7 +760,7 @@ async def egress_evaluate(
                 "ts": None,
                 "tenant_id": tenant_id,
                 "bot_id": bot_id,
-                "request_id": "",
+                "request_id": rid,
                 "direction": "egress",
                 "decision": payload.get("action", "allow"),
                 "rule_hits": payload.get("rule_hits") or None,

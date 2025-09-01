@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+
 from fastapi.testclient import TestClient
+
 import app.routes.guardrail as guardrail
 
 
@@ -32,6 +34,7 @@ def test_ingress_evaluate_includes_tenant_bot(monkeypatch):
     assert captured.get("tenant_id") == "acme"
     assert captured.get("bot_id") == "bot-a"
     assert captured.get("direction") == "ingress"
+    assert captured.get("request_id")
 
 
 def test_egress_includes_tenant_bot(monkeypatch):
@@ -54,6 +57,7 @@ def test_egress_includes_tenant_bot(monkeypatch):
     assert captured.get("tenant_id") == "globex"
     assert captured.get("bot_id") == "bot-z"
     assert captured.get("direction") == "egress"
+    assert captured.get("request_id")
 
 
 def test_multipart_includes_tenant_bot(monkeypatch):
@@ -80,3 +84,4 @@ def test_multipart_includes_tenant_bot(monkeypatch):
     assert captured.get("tenant_id") == "acme"
     assert captured.get("bot_id") == "bot-m"
     assert captured.get("direction") == "ingress"
+    assert captured.get("request_id")
