@@ -263,58 +263,25 @@ async def chat_completions(
     # ---------- Streaming path ----------
     if body.stream:
         client = get_client()
-        model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
-
-        # Egress (once)
-        payload, _ = egress_check(model_text, debug=want_debug)
-        e_action = str(payload.get("action", "allow"))
-        if e_action == "deny":
-            err_body = _oai_error("Response denied by guardrail policy")
-            headers = {
-                "X-Guardrail-Policy-Version": policy_version,
-                "X-Guardrail-Ingress-Action": ingress_action,
-                "X-Guardrail-Egress-Action": e_action,
-            }
-            raise HTTPException(status_code=400, detail=err_body, headers=headers)
-
-        e_text = str(payload.get("text", ""))
-        e_reds = int(payload.get("redactions") or 0)
-        e_hits = list(payload.get("rule_hits") or []) or None
-
-        e_family = _family_for(e_action, e_reds)
-        inc_decision_family(e_family)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
-
-        # Audit egress (full text)
-        try:
-            emit_audit_event(
-                {
-                    "ts": None,
-                    "tenant_id": tenant_id,
-                    "bot_id": bot_id,
-                    "request_id": req_id,
-                    "direction": "egress",
-                    "decision": e_action,
-                    "rule_hits": e_hits,
-                    "policy_version": policy_version,
-                    "verifier_provider": None,
-                    "fallback_used": None,
-                    "status_code": 200,
-                    "redaction_count": e_reds,
-                    "hash_fingerprint": content_fingerprint(model_text),
-                    "payload_bytes": int(_blen(model_text)),
-                    "sanitized_bytes": int(_blen(e_text)),
-                    "meta": {"provider": model_meta},
-                }
-            )
-        except Exception:
-            pass
+        stream, model_meta = client.chat_stream(
+            [m.model_dump() for m in body.messages], body.model
+        )
 
         sid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = now_ts
         model_id = body.model
 
+        # Rolling sanitizer across the cumulative output
+        accum_raw = ""
+        last_sanitized = ""
+        e_action_final = "allow"
+        e_reds_final = 0
+        e_hits_final: Optional[List[str]] = None
+
         def gen() -> Iterable[str]:
+            nonlocal accum_raw, last_sanitized
+            nonlocal e_action_final, e_reds_final, e_hits_final
+
             # First chunk announces role
             yield _sse(
                 {
@@ -323,31 +290,59 @@ async def chat_completions(
                     "created": created,
                     "model": model_id,
                     "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"role": "assistant"},
-                            "finish_reason": None,
-                        }
+                        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
                     ],
                 }
             )
-            # Content chunks
-            for piece in _chunk_text(e_text, max_len=60):
-                yield _sse(
-                    {
-                        "id": sid,
-                        "object": "chat.completion.chunk",
-                        "created": created,
-                        "model": model_id,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": piece},
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                )
+
+            # Stream model deltas -> cumulative egress_check -> stream sanitized deltas
+            for piece in stream:
+                accum_raw += str(piece or "")
+                payload, _ = egress_check(accum_raw, debug=want_debug)
+                e_action = str(payload.get("action", "allow"))
+
+                if e_action == "deny":
+                    # Stop immediately with content_filter
+                    e_action_final = "deny"
+                    e_reds_final = int(payload.get("redactions") or 0)
+                    e_hits_final = list(payload.get("rule_hits") or []) or None
+                    yield _sse(
+                        {
+                            "id": sid,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_id,
+                            "choices": [
+                                {"index": 0, "delta": {}, "finish_reason": "content_filter"}
+                            ],
+                        }
+                    )
+                    yield "data: [DONE]\n\n"
+                    return
+
+                sanitized_full = str(payload.get("text", ""))
+                delta = sanitized_full[len(last_sanitized) :]
+                if delta:
+                    yield _sse(
+                        {
+                            "id": sid,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_id,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": delta},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                    )
+                    last_sanitized = sanitized_full
+                    e_action_final = "allow"
+                    e_reds_final = int(payload.get("redactions") or 0)
+                    e_hits_final = list(payload.get("rule_hits") or []) or None
+
             # Final chunk with finish_reason=stop
             yield _sse(
                 {
@@ -360,13 +355,42 @@ async def chat_completions(
             )
             yield "data: [DONE]\n\n"
 
+            # Audit + metrics after stream ends
+            fam = _family_for(e_action_final, int(e_reds_final or 0))
+            inc_decision_family(fam)
+            inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+            try:
+                emit_audit_event(
+                    {
+                        "ts": None,
+                        "tenant_id": tenant_id,
+                        "bot_id": bot_id,
+                        "request_id": req_id,
+                        "direction": "egress",
+                        "decision": e_action_final,
+                        "rule_hits": e_hits_final,
+                        "policy_version": policy_version,
+                        "verifier_provider": None,
+                        "fallback_used": None,
+                        "status_code": 200,
+                        "redaction_count": int(e_reds_final or 0),
+                        "hash_fingerprint": content_fingerprint(accum_raw),
+                        "payload_bytes": int(_blen(accum_raw)),
+                        "sanitized_bytes": int(_blen(last_sanitized)),
+                        "meta": {"provider": model_meta},
+                    }
+                )
+            except Exception:
+                pass
+
         headers = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "X-Guardrail-Policy-Version": policy_version,
+            # We can only know final egress action after streaming completes.
+            # Default the header to "allow" for compatibility.
             "X-Guardrail-Ingress-Action": ingress_action,
-            "X-Guardrail-Egress-Action": e_action,
-            "X-Guardrail-Egress-Redactions": str(e_reds),
+            "X-Guardrail-Egress-Action": "allow",
         }
         return StreamingResponse(gen(), headers=headers)
 

@@ -1,7 +1,9 @@
+# file: app/services/llm_client.py
 from __future__ import annotations
 
+import json
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 try:
     import httpx
@@ -10,7 +12,17 @@ except Exception:  # pragma: no cover - httpx is optional for local-echo
 
 
 class BaseLLMClient:
-    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
+    def chat(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[str, Dict[str, Any]]:
+        raise NotImplementedError
+
+    def chat_stream(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[Iterable[str], Dict[str, Any]]:
+        """
+        Stream assistant text pieces for SSE. Implemented by providers.
+        """
         raise NotImplementedError
 
 
@@ -18,51 +30,71 @@ class LocalEchoClient(BaseLLMClient):
     """
     Safe default: never leaves the box. Used by CI/tests.
     """
-    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
+
+    def _last_user(self, messages: List[Dict[str, str]]) -> str:
         last = ""
         for m in reversed(messages or []):
             if m.get("role") == "user":
                 last = str(m.get("content") or "")
                 break
-        text = f"Echo: {last}".strip()
+        return last
+
+    def chat(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[str, Dict[str, Any]]:
+        text = f"Echo: {self._last_user(messages)}".strip()
         meta = {"provider": "local-echo", "model": model or "demo"}
         return text, meta
+
+    def chat_stream(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[Iterable[str], Dict[str, Any]]:
+        text = f"Echo: {self._last_user(messages)}".strip()
+
+        def gen() -> Iterable[str]:
+            # One-shot piece is fine for tests; caller supports any granularity.
+            if text:
+                yield text
+
+        meta = {"provider": "local-echo", "model": model or "demo"}
+        return gen(), meta
 
 
 class OpenAIClient(BaseLLMClient):
     """
-    Minimal non-streaming OpenAI Chat Completions call.
-    - Honors a conservative 15s timeout.
+    Minimal OpenAI Chat Completions client (non-stream + stream).
+    - Honors a conservative timeout (OPENAI_HTTP_TIMEOUT, default 15s).
     - Never logs request bodies or API keys.
-    - Returns (text, meta) where meta includes provider/model.
+    - Returns (text, meta) / (iter(text_parts), meta).
     """
+
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         if httpx is None:
             raise RuntimeError("httpx is required for OpenAI provider")
         self.api_key = api_key
-        # Allow alternate base URL (Azure/OpenAI-compatible proxies)
         self.base_url = (base_url or "https://api.openai.com").rstrip("/")
         self.timeout = float(os.environ.get("OPENAI_HTTP_TIMEOUT", "15.0"))
 
-    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
-        url = f"{self.base_url}/v1/chat/completions"
-        headers = {
+    def _headers(self) -> Dict[str, str]:
+        return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        # Keep payload minimal & safe; no function/tool calls here yet.
+
+    def chat(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[str, Dict[str, Any]]:
+        url = f"{self.base_url}/v1/chat/completions"
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
             "temperature": 0.2,
         }
-        # Network call
         with httpx.Client(timeout=self.timeout) as client:
-            r = client.post(url, headers=headers, json=payload)
+            r = client.post(url, headers=self._headers(), json=payload)
             r.raise_for_status()
             data = r.json()
-        # Extract first text
         text = ""
         try:
             choices = data.get("choices") or []
@@ -77,6 +109,54 @@ class OpenAIClient(BaseLLMClient):
             "id": data.get("id") or "",
         }
         return text, meta
+
+    def chat_stream(
+        self, messages: List[Dict[str, str]], model: str
+    ) -> Tuple[Iterable[str], Dict[str, Any]]:
+        """
+        Stream using OpenAI SSE.
+        Yields only delta.content pieces; role/tool events are ignored.
+        """
+        url = f"{self.base_url}/v1/chat/completions"
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.2,
+        }
+
+        def gen() -> Iterable[str]:
+            with httpx.Client(timeout=self.timeout) as client:
+                with client.stream(
+                    "POST", url, headers=self._headers(), json=payload
+                ) as resp:
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line:
+                            continue
+                        if isinstance(line, bytes):
+                            try:
+                                line = line.decode("utf-8", "ignore")
+                            except Exception:
+                                continue
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data_str)
+                        except Exception:
+                            continue
+                        for ch in obj.get("choices") or []:
+                            delta = ch.get("delta") or {}
+                            piece = delta.get("content")
+                            if piece:
+                                yield str(piece)
+
+        meta = {"provider": "openai", "model": model}
+        return gen(), meta
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -100,12 +180,10 @@ def get_client() -> BaseLLMClient:
     if provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY") or ""
         if not api_key:
-            # Fail closed to local echo rather than raising in production boot
             return LocalEchoClient()
         base_url = os.environ.get("OPENAI_BASE_URL") or None
         try:
             return OpenAIClient(api_key=api_key, base_url=base_url)
         except Exception:
-            # If httpx is missing or init fails, fall back safely.
             return LocalEchoClient()
     return LocalEchoClient()
