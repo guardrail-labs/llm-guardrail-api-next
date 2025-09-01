@@ -17,6 +17,7 @@ from app.routes.guardrail import (
     threat_admin_router,
 )
 from app.routes.output import router as output_router
+from app.routes.batch import router as batch_router
 from app.services.policy import current_rules_version, get_redactions_total, reload_rules
 from app.telemetry.audit import get_audit_events_total
 from app.middleware.rate_limit import RateLimitMiddleware
@@ -24,6 +25,7 @@ from app.telemetry.metrics import (
     get_all_family_totals,
     get_rate_limited_total,
     export_family_breakdown_lines,
+    export_verifier_lines,
 )
 
 # Test-only bypass for admin auth (enabled in CI/tests via env)
@@ -172,6 +174,9 @@ def create_app() -> FastAPI:
         # NEW: per-tenant/bot breakdowns
         lines.extend(export_family_breakdown_lines())
 
+        # Verifier outcome metrics
+        lines.extend(export_verifier_lines())
+
         # Rate-limit blocks
         lines.append("# HELP guardrail_rate_limited_total Requests blocked by rate limit.")
         lines.append("# TYPE guardrail_rate_limited_total counter")
@@ -191,6 +196,7 @@ def create_app() -> FastAPI:
     app.include_router(guardrail_router)
     app.include_router(threat_admin_router)
     app.include_router(output_router)
+    app.include_router(batch_router)
     return app
 
 
