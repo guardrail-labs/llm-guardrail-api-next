@@ -379,9 +379,11 @@ async def evaluate(
     ),
 ) -> Dict[str, Any]:
     """
-    Backward-compatible evaluate:
-      - JSON: {"text": "...", "request_id": "..."?}
-      - Multipart: fields: text?, image?, audio?, file? (repeatable)
+    Evaluate ingress content via JSON request body:
+
+      {"text": "...", "request_id": "...?"}
+
+    Returns detectors/decisions and possible redactions.
     """
     global _requests_total, _decisions_total
 
