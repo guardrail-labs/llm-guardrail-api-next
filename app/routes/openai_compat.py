@@ -6,30 +6,29 @@ import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.services.detectors import evaluate_prompt
+from app.services.egress import egress_check
+from app.services.llm_client import get_client
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
     sanitize_text,
 )
-from app.services.detectors import evaluate_prompt
 from app.services.threat_feed import (
     apply_dynamic_redactions,
     threat_feed_enabled,
 )
-from app.services.egress import egress_check
 from app.services.verifier import content_fingerprint
-from app.services.llm_client import get_client
-from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
 )
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
-
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -37,6 +36,7 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 # ---------------------------
 # Models (subset for compat)
 # ---------------------------
+
 
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
@@ -53,6 +53,7 @@ class ChatCompletionsRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
+
 
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
@@ -86,12 +87,7 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
         if isinstance(h, str):
             add_hit(h)
         elif isinstance(h, dict):
-            src = (
-                h.get("source")
-                or h.get("origin")
-                or h.get("provider")
-                or h.get("src")
-            )
+            src = h.get("source") or h.get("origin") or h.get("provider") or h.get("src")
             lst = h.get("list") or h.get("kind") or h.get("type")
             rid = h.get("id") or h.get("rule_id") or h.get("name")
             if src and lst and rid:
@@ -123,6 +119,7 @@ def _compat_models() -> List[Dict[str, Any]]:
     Configure via OAI_COMPAT_MODELS="gpt-4o-mini,gpt-4o" or default to ["demo"].
     """
     import os
+
     raw = os.environ.get("OAI_COMPAT_MODELS") or ""
     ids = [s.strip() for s in raw.split(",") if s.strip()] or ["demo"]
     now = int(time.time())
@@ -169,6 +166,7 @@ def _chunk_text(s: str, max_len: int = 60) -> List[str]:
 # Routes
 # ---------------------------
 
+
 @router.get("/models")
 async def list_models():
     """
@@ -181,9 +179,7 @@ async def list_models():
 async def chat_completions(
     request: Request,
     body: ChatCompletionsRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     OpenAI-compatible chat endpoint with inline guardrails.
@@ -201,9 +197,7 @@ async def chat_completions(
 
     sanitized, families, redaction_count, _ = sanitize_text(joined, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -269,9 +263,7 @@ async def chat_completions(
     # ---------- Streaming path ----------
     if body.stream:
         client = get_client()
-        model_text, model_meta = client.chat(
-            [m.model_dump() for m in body.messages], body.model
-        )
+        model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
 
         # Egress (once)
         payload, _ = egress_check(model_text, debug=want_debug)
@@ -363,9 +355,7 @@ async def chat_completions(
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model_id,
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": "stop"}
-                    ],
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 }
             )
             yield "data: [DONE]\n\n"
@@ -382,9 +372,7 @@ async def chat_completions(
 
     # ---------- Non-streaming path ----------
     client = get_client()
-    model_text, model_meta = client.chat(
-        [m.model_dump() for m in body.messages], body.model
-    )
+    model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
 
     payload, _ = egress_check(model_text, debug=want_debug)
     e_action = str(payload.get("action", "allow"))
@@ -444,3 +432,133 @@ async def chat_completions(
     }
 
     return oai_resp
+
+
+# --- Moderations (OpenAI-compatible) -----------------------------------------
+
+from typing import Union  # noqa: E402  (keep import local to avoid reorder churn)
+
+from pydantic import field_validator  # noqa: E402
+
+
+class ModerationsRequest(BaseModel):
+    model: str
+    # OpenAI accepts str or list[str]; we normalize in a validator.
+    input: Union[str, List[str]]
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def _normalize_input(cls, v: Any) -> List[str]:
+        if v is None:
+            return [""]
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return [str(v)]
+
+
+@router.post("/moderations")
+async def create_moderation(
+    request: Request,
+    body: ModerationsRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+):
+    """
+    Minimal OpenAI-compatible /v1/moderations.
+
+    We treat 'deny' from detectors as flagged=True. Redactions do not flag,
+    but still count toward 'sanitize' family for metrics.
+    """
+    want_debug = x_debug == "1"
+    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    policy_version = current_rules_version()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    now_ts = int(time.time())
+
+    results: List[Dict[str, Any]] = []
+
+    for item in body.input:
+        # Ingress pass
+        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
+        if threat_feed_enabled():
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
+            sanitized = dyn_text
+            if dyn_fams:
+                base = set(fams or [])
+                base.update(dyn_fams)
+                fams = sorted(base)
+            if dyn_reds:
+                redaction_count = (redaction_count or 0) + dyn_reds
+
+        det = evaluate_prompt(sanitized)
+        det_action = str(det.get("action", "allow"))
+        decisions = list(det.get("decisions", []))
+        flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
+
+        # Decision mapping
+        if det_action == "deny":
+            ingress_action = "deny"
+        elif redaction_count:
+            ingress_action = "allow"
+        else:
+            ingress_action = det_action
+
+        fam = _family_for(ingress_action, int(redaction_count or 0))
+        inc_decision_family(fam)
+        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+
+        # Audit each item (ingress)
+        try:
+            emit_audit_event(
+                {
+                    "ts": None,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "request_id": req_id,
+                    "direction": "ingress",
+                    "decision": ingress_action,
+                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
+                    "policy_version": policy_version,
+                    "verifier_provider": None,
+                    "fallback_used": None,
+                    "status_code": 200,
+                    "redaction_count": int(redaction_count or 0),
+                    "hash_fingerprint": content_fingerprint(item),
+                    "payload_bytes": int(_blen(item)),
+                    "sanitized_bytes": int(_blen(sanitized)),
+                    "meta": {"endpoint": "moderations"},
+                }
+            )
+        except Exception:
+            pass
+
+        # OpenAI-ish categories (minimal; extend as detectors grow)
+        flagged = ingress_action == "deny"
+        violence = any("weapon" in h or "explosive" in h for h in flat_hits)
+        categories = {
+            "harassment": False,
+            "hate": False,
+            "self-harm": False,
+            "sexual": False,
+            "violence": bool(violence),
+        }
+        scores = {
+            k: (0.98 if (k == "violence" and violence) else (0.0 if not flagged else 0.6))
+            for k in categories.keys()
+        }
+
+        results.append(
+            {
+                "flagged": bool(flagged),
+                "categories": categories,
+                "category_scores": scores,
+            }
+        )
+
+    return {
+        "id": f"modr-{uuid.uuid4().hex[:12]}",
+        "model": body.model,
+        "created": now_ts,
+        "results": results,
+    }
