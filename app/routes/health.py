@@ -15,6 +15,7 @@ async def health() -> Dict[str, Any]:
     Contract expected by tests:
       {
         "ok": true,
+        "status": "ok",
         "requests_total": float,
         "decisions_total": float,
         "rules_version": "..."
@@ -37,6 +38,7 @@ async def health() -> Dict[str, Any]:
 
     return {
         "ok": True,
+        "status": "ok",
         "requests_total": requests_total,
         "decisions_total": decisions_total,
         "rules_version": current_rules_version(),
