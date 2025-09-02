@@ -230,6 +230,8 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
         "request_id": get_request_id() or "",
     }
     headers = _safe_headers_copy(base_headers or {})
+    # Ensure X-Request-ID is *always* present, even if empty
+    headers["X-Request-ID"] = payload["request_id"]
     return JSONResponse(payload, status_code=status, headers=headers)
 
 
