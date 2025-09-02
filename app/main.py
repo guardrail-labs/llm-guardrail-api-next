@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,12 +20,15 @@ from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.telemetry.tracing import TracingMiddleware
 
-# Prometheus (optional, but expected in tests)
+# Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
-    from prometheus_client import Histogram, REGISTRY
+    from prometheus_client import Histogram as _PromHistogramCls
+    from prometheus_client import REGISTRY as _PromRegistryObj
+    PromHistogram: Any | None = _PromHistogramCls
+    PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
-    Histogram = None  # type: ignore[assignment]
-    REGISTRY = None   # type: ignore[assignment]
+    PromHistogram = None
+    PromRegistry = None
 
 
 def _truthy(val: object) -> bool:
@@ -54,27 +57,33 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
     was reloaded in tests), return the existing collector instead of creating
     a new one to avoid 'Duplicated timeseries' errors.
     """
-    if Histogram is None or REGISTRY is None:  # pragma: no cover
+    if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
 
     name = "guardrail_latency_seconds"
+
     # If already registered, reuse it.
     try:
-        existing = REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
-        if existing is not None:
-            return existing
+        names_map = getattr(PromRegistry, "_names_to_collectors", None)
+        if isinstance(names_map, dict):
+            existing = names_map.get(name)
+            if existing is not None:
+                return existing
     except Exception:
-        # Fall through and try to create; if it fails we'll catch ValueError below.
+        # Best-effort: proceed to create and fallback on ValueError path.
         pass
 
     try:
-        return Histogram(name, "Request latency in seconds")
+        return PromHistogram(name, "Request latency in seconds")
     except ValueError:
-        # Another import path created it in the same process — fetch and reuse.
+        # Another import path created it — fetch and reuse.
         try:
-            return REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
+            names_map = getattr(PromRegistry, "_names_to_collectors", None)
+            if isinstance(names_map, dict):
+                return names_map.get(name)
         except Exception:
             return None
+        return None
 
 
 class _LatencyMiddleware(BaseHTTPMiddleware):
@@ -99,8 +108,8 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
 
 class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     """
-    Some auth middleware may return a bare {'detail': 'Unauthorized'} JSON
-    without a request_id. Ensure 401 bodies include the standard shape.
+    Ensure 401 bodies include {"code","detail","request_id"} even if an upstream
+    middleware returned a minimal {"detail": "..."} response body.
     """
 
     async def dispatch(self, request: StarletteRequest, call_next):
@@ -108,7 +117,7 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
         if resp.status_code != 401:
             return resp
 
-        # Consume body
+        # Consume body for parsing.
         body_chunks: list[bytes] = []
         if hasattr(resp, "body_iterator") and resp.body_iterator is not None:
             async for chunk in resp.body_iterator:
