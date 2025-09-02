@@ -9,7 +9,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from app.telemetry import metrics as tmetrics
 
 if TYPE_CHECKING:
-    # Only needed for type annotations; avoids runtime unused-import lint.
+    # Only needed for type hints; avoids runtime unused-import lint.
     from fastapi import Request
 
 router = APIRouter(tags=["metrics"])
@@ -22,8 +22,8 @@ def _safe_guardrail_legacy_totals() -> List[str]:
     """
     out: List[str] = []
     try:
-        # Import lazily to avoid hard dependency in case file moves.
-        from app.routes.guardrail import (  # noqa: WPS433 (local import)
+        # Import lazily to avoid a hard dependency if the file moves or is omitted.
+        from app.routes.guardrail import (
             get_requests_total,
             get_decisions_total,
         )
