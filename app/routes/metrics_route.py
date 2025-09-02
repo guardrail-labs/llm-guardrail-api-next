@@ -18,10 +18,10 @@ def _safe_guardrail_legacy_totals() -> List[str]:
     """
     out: List[str] = []
     try:
-        # Import lazily to avoid a hard dependency if the file moves or is omitted.
+        # Import lazily to avoid hard dependency in case file moves.
         from app.routes.guardrail import (
-            get_requests_total,
             get_decisions_total,
+            get_requests_total,
         )
 
         req = float(get_requests_total())
@@ -73,13 +73,24 @@ def _export_rate_limited_lines() -> List[str]:
     return lines
 
 
+def _export_verifier_lines() -> List[str]:
+    """
+    Export verifier outcome counters if present.
+    """
+    try:
+        return tmetrics.export_verifier_lines()
+    except Exception:
+        return []
+
+
 @router.get("/metrics")
-async def prometheus_metrics(_: Request) -> PlainTextResponse:
+async def prometheus_metrics(_req: Request) -> PlainTextResponse:
     """
     Prometheus exposition format:
       - Built-in registry metrics via prometheus_client.generate_latest
       - Custom text lines for global/tenant/bot family breakdowns
       - Optional legacy guardrail counters (if available)
+      - Verifier outcome counters (if any)
     """
     # 1) prometheus_client registered metrics (e.g., quota rejects)
     chunks: List[str] = [generate_latest(REGISTRY).decode("utf-8")]
@@ -95,6 +106,9 @@ async def prometheus_metrics(_: Request) -> PlainTextResponse:
 
     # 5) Legacy rate-limited counter
     chunks.extend(_export_rate_limited_lines())
+
+    # 6) Verifier outcomes (if any)
+    chunks.extend(_export_verifier_lines())
 
     body = "\n".join(chunks)
     return PlainTextResponse(content=body, media_type=CONTENT_TYPE_LATEST)
