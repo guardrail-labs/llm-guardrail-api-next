@@ -112,7 +112,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
             # OTEL not available; leave self._trace as None to satisfy tests.
-            log.warning("OpenTelemetry not installed; tracing disabled.")
+            log.warning("opentelemetry is not installed; tracing disabled.")
             return True
 
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
