@@ -1,27 +1,43 @@
 from __future__ import annotations
 
+from typing import Any, Dict
+
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 
 from app.services.policy import current_rules_version
 
-# Optional legacy counters
-try:
-    from app.routes.guardrail import get_requests_total, get_decisions_total
-except Exception:  # pragma: no cover
-    def get_requests_total() -> float:  # type: ignore[no-redef]
-        return 0.0
-    def get_decisions_total() -> float:  # type: ignore[no-redef]
-        return 0.0
-
 router = APIRouter(tags=["health"])
 
+
 @router.get("/health")
-async def health() -> JSONResponse:
-    body = {
+async def health() -> Dict[str, Any]:
+    """
+    Contract expected by tests:
+      {
+        "ok": true,
+        "requests_total": float,
+        "decisions_total": float,
+        "rules_version": "..."
+      }
+    """
+    # Import lazily to avoid hard dependency if legacy guardrail is not present.
+    requests_total = 0.0
+    decisions_total = 0.0
+    try:
+        from app.routes.guardrail import (  # noqa: WPS433
+            get_requests_total,
+            get_decisions_total,
+        )
+
+        requests_total = float(get_requests_total())
+        decisions_total = float(get_decisions_total())
+    except Exception:
+        # Keep zeros if legacy counters aren't available.
+        pass
+
+    return {
         "ok": True,
-        "requests_total": float(get_requests_total()),
-        "decisions_total": float(get_decisions_total()),
-        "rules_version": str(current_rules_version()),
+        "requests_total": requests_total,
+        "decisions_total": decisions_total,
+        "rules_version": current_rules_version(),
     }
-    return JSONResponse(body)
