@@ -2,19 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import time
-from typing import Any, Dict, Optional, Tuple
-
 import http.client
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
-
-# --------------------------------------------------------------------
-# Config helpers
-# --------------------------------------------------------------------
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
-
 
 def _get_forward_cfg() -> Tuple[bool, Optional[str], Optional[str]]:
     enabled = _truthy(os.getenv("AUDIT_FORWARD_ENABLED", "false"))
@@ -23,11 +16,6 @@ def _get_forward_cfg() -> Tuple[bool, Optional[str], Optional[str]]:
     if not enabled or not url or not api_key:
         return False, None, None
     return True, url, api_key
-
-
-# --------------------------------------------------------------------
-# Minimal HTTP poster (no extra deps; works in CI)
-# --------------------------------------------------------------------
 
 def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     parsed = urlparse(url)
@@ -42,6 +30,8 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         "Content-Length": str(len(body)),
     }
 
+    # Annotate as the base class; HTTPSConnection subclasses HTTPConnection.
+    conn: http.client.HTTPConnection
     if scheme == "https":
         conn = http.client.HTTPSConnection(host, timeout=5)
     else:
@@ -58,35 +48,21 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         except Exception:
             pass
 
-
-# --------------------------------------------------------------------
-# Public API
-# --------------------------------------------------------------------
-
 def emit_audit_event(event: Dict[str, Any]) -> None:
-    """
-    Forward an audit event if forwarding is enabled; otherwise no-op.
-    The tests only assert we *attempt* to send with the right shape when enabled.
-    """
     enabled, url, key = _get_forward_cfg()
     if not enabled or not url or not key:
         return
 
-    # Normalize a few common fields the tests look for
     out: Dict[str, Any] = dict(event)
     meta = out.setdefault("meta", {})
 
-    # Add size hints when present
     if isinstance(out.get("text"), str):
-        meta.setdefault("text_size", len(out["text"]))  # no type: ignore
+        meta.setdefault("text_size", len(out["text"]))
     if isinstance(out.get("prompt"), str):
-        meta.setdefault("prompt_size", len(out["prompt"]))  # no type: ignore
+        meta.setdefault("prompt_size", len(out["prompt"]))
 
-    # Best-effort send; test stubs monkeypatch _post
     try:
-        status, _ = _post(url, key, out)
-        # No logging requirement here; tests only check the call happened.
-        _ = status
+        _post(url, key, out)
     except Exception:
-        # Swallow exceptions: forwarding must not break request handling.
+        # Forwarding must never break the main flow.
         pass
