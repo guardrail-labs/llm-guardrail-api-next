@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
+
+# Request ID context used by other modules/middleware
+_REQUEST_ID: ContextVar[Optional[str]] = ContextVar("_REQUEST_ID", default=None)
+
+
+def get_request_id() -> Optional[str]:
+    return _REQUEST_ID.get()
+
+
+def set_request_id(value: Optional[str]) -> None:
+    _REQUEST_ID.set(value)
 
 
 class TracingMiddleware(BaseHTTPMiddleware):
