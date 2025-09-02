@@ -1,7 +1,6 @@
-# app/telemetry/metrics.py
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple, TypeVar, Protocol
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple, TypeVar, Protocol, cast
 
 # ---- Protocols describing only what we use (works for real + shims) ----------
 
@@ -16,40 +15,39 @@ class HistogramLike(Protocol):
 # ---- Try real prometheus, else provide shims with the same surface ------------
 
 try:
-    from prometheus_client import Counter as _PromCounter
-    from prometheus_client import Histogram as _PromHistogram
-    from prometheus_client import REGISTRY as _PROM_REGISTRY
+    from prometheus_client import Counter as PromCounterImpl
+    from prometheus_client import Histogram as PromHistogramImpl
+    from prometheus_client import REGISTRY as PROM_REGISTRY  # type: ignore
     PROM_OK = True
 except Exception:  # pragma: no cover
     PROM_OK = False
 
-    class _PromCounter:  # noqa: D401
+    class PromCounterShim:
         """Minimal counter shim (inc, labels)."""
 
         def __init__(self, *_: Any, **__: Any) -> None:
             self._value = 0.0
-            self._children: Dict[Tuple[Any, ...], "_PromCounter"] = {}
+            self._children: Dict[Tuple[Any, ...], "PromCounterShim"] = {}
 
-        def labels(self, *label_values: Any) -> "_PromCounter":
+        def labels(self, *label_values: Any) -> "PromCounterShim":
             if label_values not in self._children:
-                # Child counters are independent accumulators
-                self._children[label_values] = _PromCounter()
+                self._children[label_values] = PromCounterShim()
             return self._children[label_values]
 
         def inc(self, amount: float = 1.0) -> None:
             self._value += float(amount)
 
-    class _PromHistogram:  # noqa: D401
+    class PromHistogramShim:
         """Minimal histogram shim (observe, labels)."""
 
         def __init__(self, *_: Any, **__: Any) -> None:
             self._sum = 0.0
             self._count = 0
-            self._children: Dict[Tuple[Any, ...], "_PromHistogram"] = {}
+            self._children: Dict[Tuple[Any, ...], "PromHistogramShim"] = {}
 
-        def labels(self, *label_values: Any) -> "_PromHistogram":
+        def labels(self, *label_values: Any) -> "PromHistogramShim":
             if label_values not in self._children:
-                self._children[label_values] = _PromHistogram()
+                self._children[label_values] = PromHistogramShim()
             return self._children[label_values]
 
         def observe(self, value: float) -> None:
@@ -60,12 +58,11 @@ except Exception:  # pragma: no cover
         def __init__(self) -> None:
             self._names_to_collectors: Dict[str, Any] = {}
 
-    _PROM_REGISTRY = _DummyRegistry()  # type: ignore[assignment]
+    PROM_REGISTRY = _DummyRegistry()  # type: ignore[assignment]
 
-# For typing/runtime below, treat these names as our active implementations.
-PromCounter = _PromCounter
-PromHistogram = _PromHistogram
-PROM_REGISTRY: Any = _PROM_REGISTRY  # CollectorRegistry or dummy
+# Bind active implementations used below.
+PromCounter = PromCounterImpl if PROM_OK else PromCounterShim
+PromHistogram = PromHistogramImpl if PROM_OK else PromHistogramShim
 
 # ------------------------------ in-memory tallies ------------------------------
 
@@ -81,13 +78,16 @@ _RULES_VERSION = "unknown"
 
 # --------------------------- registry-safe constructors ------------------------
 
-def _registry_map() -> Mapping[str, Any]:
-    return getattr(PROM_REGISTRY, "_names_to_collectors", {})
+def _registry_map() -> Dict[str, Any]:
+    mapping = getattr(PROM_REGISTRY, "_names_to_collectors", {})
+    # Ensure a dict for typing purposes
+    if isinstance(mapping, dict):
+        return mapping
+    return {}
 
 def _register(name: str, collector: Any) -> Any:
-    mapping = getattr(PROM_REGISTRY, "_names_to_collectors", None)
-    if isinstance(mapping, dict):
-        mapping[name] = collector
+    mapping = _registry_map()
+    mapping[name] = collector
     return collector
 
 T = TypeVar("T")
@@ -95,8 +95,9 @@ T = TypeVar("T")
 def _get_or_create(name: str, factory: Callable[[], T]) -> T:
     existing = _registry_map().get(name)
     if existing is not None:
-        return existing  # type: ignore[return-value]
-    return _register(name, factory())  # type: ignore[return-value]
+        return cast(T, existing)
+    created = _register(name, factory())
+    return cast(T, created)
 
 # --------------------------------- collectors ---------------------------------
 
@@ -105,7 +106,7 @@ def _mk_counter(
     doc: str,
     labels: Iterable[str] | None = None,
 ) -> CounterLike:
-    def _factory() -> PromCounter:
+    def _factory() -> Any:
         if labels:
             return PromCounter(name, doc, list(labels))
         return PromCounter(name, doc)
@@ -116,7 +117,7 @@ def _mk_histogram(
     doc: str,
     labels: Iterable[str] | None = None,
 ) -> HistogramLike:
-    def _factory() -> PromHistogram:
+    def _factory() -> Any:
         if labels:
             return PromHistogram(name, doc, list(labels))
         return PromHistogram(name, doc)
@@ -130,8 +131,9 @@ guardrail_decisions_total: CounterLike = _mk_counter(
     "guardrail_decisions_total", "Total guardrail decisions.", labels=["action"]
 )
 guardrail_latency_seconds: HistogramLike = _mk_histogram(
-    "guardrail_latency_seconds", "Guardrail endpoint latency in seconds.",
-    labels=["endpoint"]
+    "guardrail_latency_seconds",
+    "Guardrail endpoint latency in seconds.",
+    labels=["endpoint"],
 )
 guardrail_rate_limited_total: CounterLike = _mk_counter(
     "guardrail_rate_limited_total", "Requests rejected by legacy rate limiter."
@@ -145,7 +147,8 @@ guardrail_family_tenant_bot_total: CounterLike = _mk_counter(
     labels=["family", "tenant", "bot"],
 )
 guardrail_verifier_outcome_total: CounterLike = _mk_counter(
-    "guardrail_verifier_outcome_total", "Verifier outcome totals.",
+    "guardrail_verifier_outcome_total",
+    "Verifier outcome totals.",
     labels=["verifier", "outcome"],
 )
 
