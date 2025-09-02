@@ -1,3 +1,4 @@
+# app/main.py
 from __future__ import annotations
 import uuid
 
@@ -20,14 +21,14 @@ from app.routes.ready import router as ready_router
 
 # Optional imports (rate limiter, latency)
 try:
-    from app.middleware.rate_limit import RateLimitMiddleware  # type: ignore
+    from app.middleware.rate_limit import RateLimitMiddleware
 except Exception:  # pragma: no cover
-    RateLimitMiddleware = None  # type: ignore
+    RateLimitMiddleware = None  # type: ignore[assignment]
 
 try:
-    from app.telemetry.latency import LatencyHistogramMiddleware  # type: ignore
+    from app.telemetry.latency import LatencyHistogramMiddleware
 except Exception:  # pragma: no cover
-    LatencyHistogramMiddleware = None  # type: ignore
+    LatencyHistogramMiddleware = None  # type: ignore[assignment]
 
 
 def create_app() -> FastAPI:
@@ -42,7 +43,7 @@ def create_app() -> FastAPI:
     if origins:
         allow_credentials = True
         if origins == ["*"]:
-            allow_credentials = False  # Starlette constraint
+            allow_credentials = False  # Starlette constraint: "*" cannot be combined with allow_credentials=True
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
@@ -58,11 +59,11 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     # Optional latency histogram
-    if LatencyHistogramMiddleware is not None and s.ENABLE_LATENCY_HISTOGRAM:
+    if LatencyHistogramMiddleware is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
         app.add_middleware(LatencyHistogramMiddleware)
 
     # Optional rate limiter (uses your existing settings fields)
-    if RateLimitMiddleware is not None and s.RATE_LIMIT_ENABLED:
+    if RateLimitMiddleware is not None and getattr(s, "RATE_LIMIT_ENABLED", False):
         app.add_middleware(RateLimitMiddleware)
 
     # Routers
@@ -95,10 +96,6 @@ def create_app() -> FastAPI:
         )
 
     return app
-
-
-def build_app() -> FastAPI:  # pragma: no cover
-    return create_app()
 
 
 app = create_app()
