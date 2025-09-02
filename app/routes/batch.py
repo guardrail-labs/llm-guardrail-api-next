@@ -27,7 +27,7 @@ from app.services.verifier import (
     verifier_enabled,
 )
 from app.services.egress import egress_check
-from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.services.audit_forwarder import emit_audit_event
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
