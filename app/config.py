@@ -1,12 +1,11 @@
+# app/config.py
 from __future__ import annotations
 
 import os
-from functools import lru_cache
 from typing import List, Optional
 
 from pydantic import Field, BaseModel
 from pydantic_settings import BaseSettings
-
 
 
 class Settings(BaseSettings):
@@ -45,7 +44,7 @@ class Settings(BaseSettings):
     AUDIT_SAMPLE_RATE: float = 0.2
     AUDIT_MAX_TEXT_CHARS: int = 200
 
-    # --- Rate limit (keep your existing contract) ---
+    # --- Rate limit (existing contract) ---
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 60
@@ -81,8 +80,8 @@ class Settings(BaseSettings):
     }
 
 
-@lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    # No caching: tests change environment between app instances.
     return Settings()
 
 
