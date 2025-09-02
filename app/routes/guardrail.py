@@ -22,7 +22,7 @@ from fastapi import (
 )
 from pydantic import BaseModel
 
-from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.services.audit_forwarder import emit_audit_event
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
 from app.services.extractors import extract_from_bytes
