@@ -13,7 +13,7 @@ from app.telemetry.logging import configure_logging
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.access_log import AccessLogMiddleware
 
-# Routers
+# Routers (always-on)
 from app.routes.metrics_route import router as metrics_router
 from app.routes.openai_compat import azure_router, router as oai_router
 from app.routes.health import router as health_router
@@ -21,25 +21,20 @@ from app.routes.admin import router as admin_router
 from app.routes.ready import router as ready_router
 
 # ---- Optional middleware imports (mypy-safe) ----
-# We avoid assigning None to imported class names by using alias variables.
 if TYPE_CHECKING:
-    # Only for type checking; not imported at runtime
     from app.middleware.rate_limit import RateLimitMiddleware as RateLimitMiddlewareType
     from app.telemetry.latency import LatencyHistogramMiddleware as LatencyHistogramMiddlewareType
 
 RateLimitMW: Optional[Type[object]] = None
 LatencyHistogramMW: Optional[Type[object]] = None
 try:
-    # Import under private names, then assign to our alias variables
     from app.middleware.rate_limit import RateLimitMiddleware as _RateLimitMiddleware
-
     RateLimitMW = _RateLimitMiddleware
 except Exception:  # pragma: no cover
     RateLimitMW = None
 
 try:
     from app.telemetry.latency import LatencyHistogramMiddleware as _LatencyHistogramMiddleware
-
     LatencyHistogramMW = _LatencyHistogramMiddleware
 except Exception:  # pragma: no cover
     LatencyHistogramMW = None
@@ -78,11 +73,11 @@ def create_app() -> FastAPI:
     if LatencyHistogramMW is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
         app.add_middleware(LatencyHistogramMW)  # type: ignore[arg-type]
 
-    # Optional rate limiter (uses your existing settings fields)
+    # Optional rate limiter
     if RateLimitMW is not None and getattr(s, "RATE_LIMIT_ENABLED", False):
         app.add_middleware(RateLimitMW)  # type: ignore[arg-type]
 
-    # Routers
+    # Core routers
     app.include_router(health_router)
     app.include_router(ready_router)
     app.include_router(admin_router)
@@ -90,12 +85,47 @@ def create_app() -> FastAPI:
     app.include_router(oai_router)
     app.include_router(azure_router)
 
-    # Error handlers (preserve your existing contracts)
+    # ---- Include app feature routers if present ----
+    # Guardrail (ingress/egress, /guardrail and friends)
+    try:
+        from app.routes import guardrail as _guardrail
+        if hasattr(_guardrail, "router"):
+            app.include_router(_guardrail.router)
+    except Exception:  # pragma: no cover
+        pass
+
+    # Batch
+    try:
+        from app.routes import batch as _batch
+        if hasattr(_batch, "router"):
+            app.include_router(_batch.router)
+    except Exception:  # pragma: no cover
+        pass
+
+    # Output guardrail
+    try:
+        from app.routes import output as _output
+        if hasattr(_output, "router"):
+            app.include_router(_output.router)
+    except Exception:  # pragma: no cover
+        pass
+
+    # Proxy (/proxy/chat) — API-key guarded
+    try:
+        from app.routes import proxy as _proxy
+        if hasattr(_proxy, "router"):
+            app.include_router(_proxy.router)
+    except Exception:  # pragma: no cover
+        pass
+    # ------------------------------------------------
+
+    # Error handlers (with X-Request-ID header)
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         return JSONResponse(
             status_code=exc.status_code,
+            headers={"X-Request-ID": rid},
             content={
                 "code": "not_found" if exc.status_code == 404 else "error",
                 "detail": exc.detail,
@@ -108,13 +138,14 @@ def create_app() -> FastAPI:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         return JSONResponse(
             status_code=500,
+            headers={"X-Request-ID": rid},
             content={"code": "internal_error", "detail": "internal error", "request_id": rid},
         )
 
     return app
 
 
-# Tests import `build_app` from app.main; keep this alias for compatibility.
+# Tests import `build_app` from app.main
 build_app = create_app
 
 # Module-level app instance (also used by uvicorn)
