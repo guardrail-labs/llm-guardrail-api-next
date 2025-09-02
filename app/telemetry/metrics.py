@@ -1,4 +1,3 @@
-# file: app/telemetry/metrics.py
 from __future__ import annotations
 
 import re
@@ -48,15 +47,15 @@ def get_all_family_totals() -> Dict[str, float]:
 _RATE_LIMIT_LOCK = threading.RLock()
 _RATE_LIMITED_TOTAL: float = 0.0
 
-# Prometheus counters
+# Prometheus counters (register once; reuse if already present)
 try:
-    _QUOTA_REJECTS = Counter(
+    _QUOTA_REJECTS: Counter = Counter(
         "guardrail_quota_rejects_total",
         "Total requests rejected by per-tenant quotas",
         ["tenant_id", "bot_id"],
     )
 except ValueError:
-    # If already registered (in tests/multiple app inits), reuse it and satisfy mypy.
+    # Already registered: fetch and cast from registry
     _QUOTA_REJECTS = cast(
         Counter, REGISTRY._names_to_collectors["guardrail_quota_rejects_total"]
     )
@@ -196,6 +195,7 @@ def get_family_bot_totals() -> Dict[Tuple[str, str, str], float]:
 def export_family_breakdown_lines() -> List[str]:
     """
     Returns Prometheus text lines for:
+
     - guardrail_decisions_family_tenant_total{tenant, family}
     - guardrail_decisions_family_bot_total{tenant, bot, family}
     """
@@ -265,8 +265,7 @@ def export_verifier_lines() -> List[str]:
     totals = get_verifier_totals()
     if totals:
         lines.append(
-            "# HELP guardrail_verifier_outcomes_total "
-            "Verifier outcomes by provider and result."
+            "# HELP guardrail_verifier_outcomes_total Verifier outcomes by provider and result."
         )
         lines.append("# TYPE guardrail_verifier_outcomes_total counter")
         for (prov, outcome), v in sorted(totals.items()):
@@ -274,3 +273,22 @@ def export_verifier_lines() -> List[str]:
                 f'guardrail_verifier_outcomes_total{{provider="{prov}",outcome="{outcome}"}} {v}'
             )
     return lines
+
+
+# ----------------------------
+# Redactions counter
+# ----------------------------
+
+try:
+    _REDACTIONS: Counter = Counter(
+        "guardrail_redactions_total",
+        "Total redactions applied across ingress/egress",
+    )
+except ValueError:
+    _REDACTIONS = cast(
+        Counter, REGISTRY._names_to_collectors["guardrail_redactions_total"]
+    )
+
+
+def inc_redactions(by: float = 1.0) -> None:
+    _REDACTIONS.inc(by)

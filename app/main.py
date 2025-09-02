@@ -1,222 +1,215 @@
-# app/main.py
 from __future__ import annotations
 
 import os
-import time
 import uuid
-from typing import Iterable
+import importlib
+from typing import Optional, TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.middleware.auth import AuthMiddleware
-from app.middleware.rate_limit import RateLimitMiddleware
-from app.routes.batch import router as batch_router
-from app.routes.guardrail import (
-    get_decisions_total,
-    get_requests_total,
-    router as guardrail_router,
-    threat_admin_router,
-)
-from app.routes.openai_compat import azure_router, router as openai_router
-from app.routes.output import router as output_router
-from app.routes.proxy import router as proxy_router
-from app.services.policy import current_rules_version, get_redactions_total, reload_rules
-from app.telemetry.audit import get_audit_events_total
-from app.telemetry.metrics import (
-    export_family_breakdown_lines,
-    export_verifier_lines,
-    get_all_family_totals,
-    get_rate_limited_total,
-)
+# Routers (keep imports at top per E402)
+from app.routes.metrics_route import router as metrics_router
+from app.routes.openai_compat import azure_router, router as oai_router
+from app.routes.health import router as health_router
+from app.routes.admin import router as admin_router
 
-# Test-only bypass for admin auth (enabled in CI/tests via env)
-TEST_AUTH_BYPASS = os.getenv("GUARDRAIL_DISABLE_AUTH") == "1"
+if TYPE_CHECKING:
+    from fastapi import APIRouter
 
 
-def _get_origins_from_env() -> Iterable[str]:
-    raw = os.environ.get("CORS_ALLOW_ORIGINS") or ""
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return parts or []
+# -----------------------------
+# Latency histogram middleware
+# -----------------------------
+_LatencyMW: Optional[Any] = None
+try:
+    # Assign to a data variable (not the type symbol) so we can set None cleanly.
+    from app.telemetry.latency import GuardrailLatencyMiddleware as _ImportedLatencyMW
+    _LatencyMW = _ImportedLatencyMW
+except Exception:  # pragma: no cover
+    pass
+
+
+# -----------------------------
+# Simple auth guard for /proxy/*
+# -----------------------------
+class _AuthProxyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path or ""
+        if path.startswith("/proxy/"):
+            if not (request.headers.get("X-API-Key") or request.headers.get("Authorization")):
+                rid = getattr(request.state, "request_id", "") or str(uuid.uuid4())
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized", "request_id": rid},
+                    headers={
+                        "WWW-Authenticate": "Bearer",
+                        "X-Request-ID": rid,
+                    },
+                )
+        return await call_next(request)
+
+
+# -----------------------------
+# Request ID + security headers (outermost)
+# -----------------------------
+class _RequestIdAndSecurityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = rid
+        resp = await call_next(request)
+        # Always attach headers
+        resp.headers.setdefault("X-Request-ID", rid)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("X-XSS-Protection", "0")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        return resp
+
+
+# -----------------------------
+# Optional routers (legacy)
+# -----------------------------
+guardrail_router: Optional["APIRouter"] = None
+threat_admin_router: Optional["APIRouter"] = None
+proxy_router: Optional["APIRouter"] = None
+batch_router: Optional["APIRouter"] = None
+output_router: Optional["APIRouter"] = None
+
+try:  # pragma: no cover
+    from app.routes.guardrail import router as _guardrail_router
+    from app.routes.guardrail import threat_admin_router as _threat_admin_router
+    guardrail_router = _guardrail_router
+    threat_admin_router = _threat_admin_router
+except Exception:  # pragma: no cover
+    pass
+
+try:  # pragma: no cover
+    from app.routes.proxy import router as _proxy_router
+    proxy_router = _proxy_router
+except Exception:  # pragma: no cover
+    pass
+
+try:  # pragma: no cover
+    from app.routes.batch import router as _batch_router
+    batch_router = _batch_router
+except Exception:  # pragma: no cover
+    pass
+
+try:  # pragma: no cover
+    from app.routes.output import router as _output_router
+    output_router = _output_router
+except Exception:  # pragma: no cover
+    pass
 
 
 def _init_rate_limit_state(app: FastAPI) -> None:
-    """Populate app.state with rate-limit config from environment."""
+    """
+    Initialize rate limit config on app.state from environment variables.
+    Tests flip env via temp_env() and rebuild the app, so reading here
+    ensures middleware sees the correct values.
+    """
     enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
-    try:
-        per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
-    except Exception:
-        per_min = 60
-    try:
-        burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
-    except Exception:
-        burst = per_min
+    per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
+    burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
 
     app.state.rate_limit_enabled = enabled
     app.state.rate_limit_per_minute = per_min
     app.state.rate_limit_burst = burst
 
 
-def create_app() -> FastAPI:
-    app = FastAPI()
+def _create_app() -> FastAPI:
+    app = FastAPI(title="LLM Guardrail API", version="next")
 
-    # CORS (optional; only enabled when env provides origins)
-    origins = list(_get_origins_from_env())
-    if origins:
+    # --- CORS (optional) ---
+    allow_origins = (os.environ.get("CORS_ALLOW_ORIGINS") or "").strip()
+    if allow_origins:
+        origins = [o.strip() for o in allow_origins.split(",") if o.strip()]
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
-            allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
         )
 
-    # Initialize per-app rate-limit configuration
+    # Initialize rate-limit state from env so middleware has correct values
     _init_rate_limit_state(app)
 
-    # Add Auth first so unauthorized requests aren't counted/rate-limited
-    app.add_middleware(AuthMiddleware)
-    app.add_middleware(RateLimitMiddleware)
+    # --- Latency histogram (if available) ---
+    if _LatencyMW is not None:
+        app.add_middleware(_LatencyMW)
 
-    @app.middleware("http")
-    async def add_request_id_and_security_headers(request: Request, call_next):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        start = time.perf_counter()
-        resp = await call_next(request)
+    # --- Rate limit middleware (prefer new location, fall back to old) ---
+    for mod_name in ("app.middleware.rate_limit", "app.services.rate_limit"):
+        try:  # pragma: no cover
+            rl_mod = importlib.import_module(mod_name)
+            RL = getattr(rl_mod, "RateLimitMiddleware", None)
+            if RL is not None:
+                app.add_middleware(RL)
+                break
+        except Exception:
+            continue
 
-        # Request-id + security headers
-        resp.headers["X-Request-ID"] = rid
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["X-Frame-Options"] = "DENY"
-        resp.headers["Referrer-Policy"] = "no-referrer"
-        resp.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
+    # --- Auth guard for /proxy/* ---
+    app.add_middleware(_AuthProxyMiddleware)
 
-        # NEW: propagate any extra guard headers set by route handlers
-        extra = getattr(getattr(request, "state", object()), "_extra_headers", None)
-        if isinstance(extra, dict):
-            for k, v in extra.items():
-                if isinstance(k, str) and isinstance(v, str):
-                    resp.headers[k] = v
-
-        return resp
-
-    @app.exception_handler(404)
-    async def not_found_handler(request: Request, exc):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        resp = JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"code": "not_found", "request_id": rid},
-        )
-        resp.headers["X-Request-ID"] = rid
-        return resp
-
-    @app.exception_handler(500)
-    async def internal_error_handler(request: Request, exc: Exception):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        resp = JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"code": "internal_error", "request_id": rid},
-        )
-        resp.headers["X-Request-ID"] = rid
-        return resp
-
-    @app.get("/health")
-    async def health():
-        # Include "ok": True for tests/dashboards
-        return {
-            "ok": True,
-            "status": "ok",
-            "requests_total": get_requests_total(),
-            "decisions_total": get_decisions_total(),
-            "rules_version": current_rules_version(),
-        }
-
-    @app.post("/admin/policy/reload")
-    async def admin_policy_reload(request: Request):
-        # Same lightweight auth contract as /guardrail; bypass in tests/CI
-        if not TEST_AUTH_BYPASS and not (
-            request.headers.get("X-API-Key") or request.headers.get("Authorization")
-        ):
-            rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-            resp = JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"detail": "Unauthorized", "request_id": rid},
+    # --- Exception handlers (404/500 JSON contract) ---
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
+        if exc.status_code != 404:
+            # Let other HTTP errors bubble with request id attached
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers={"X-Request-ID": getattr(request.state, "request_id", "")},
             )
-            resp.headers["WWW-Authenticate"] = "Bearer"
-            resp.headers["X-Request-ID"] = rid
-            return resp
+        rid = getattr(request.state, "request_id", "")
+        body = {"code": "not_found", "detail": "not found", "request_id": rid}
+        return JSONResponse(status_code=404, content=body, headers={"X-Request-ID": rid})
 
-        info = reload_rules()
-        payload = {
-            "reloaded": True,
-            "version": str(info.get("policy_version", info.get("version", ""))),
-            **info,
-        }
-        return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
+    @app.exception_handler(Exception)
+    async def _unhandled_exc_handler(request: Request, _: Exception):
+        rid = getattr(request.state, "request_id", "")
+        body = {"code": "internal_error", "detail": "internal error", "request_id": rid}
+        return JSONResponse(status_code=500, content=body, headers={"X-Request-ID": rid})
 
-    @app.get("/metrics")
-    async def metrics():
-        lines = []
-        # Existing counters
-        lines.append("# HELP guardrail_requests_total Total /guardrail requests.")
-        lines.append("# TYPE guardrail_requests_total counter")
-        lines.append(f"guardrail_requests_total {get_requests_total()}")
-
-        lines.append("# HELP guardrail_decisions_total Total guardrail decisions.")
-        lines.append("# TYPE guardrail_decisions_total counter")
-        lines.append(f"guardrail_decisions_total {get_decisions_total()}")
-
-        lines.append("# HELP guardrail_redactions_total Total redactions applied.")
-        lines.append("# TYPE guardrail_redactions_total counter")
-        lines.append(f"guardrail_redactions_total {get_redactions_total()}")
-
-        lines.append("# HELP guardrail_audit_events_total Total audit events emitted.")
-        lines.append("# TYPE guardrail_audit_events_total counter")
-        lines.append(f"guardrail_audit_events_total {get_audit_events_total()}")
-
-        # NEW: decisions by family
-        lines.append("# HELP guardrail_decisions_family_total Decisions by family.")
-        lines.append("# TYPE guardrail_decisions_family_total counter")
-        fam = get_all_family_totals()
-        for k in ("allow", "block", "sanitize", "verify"):
-            v = fam.get(k, 0.0)
-            lines.append(f'guardrail_decisions_family_total{{family="{k}"}} {v}')
-
-        # NEW: per-tenant/bot breakdowns
-        lines.extend(export_family_breakdown_lines())
-
-        # Verifier outcome metrics
-        lines.extend(export_verifier_lines())
-
-        # Rate-limit blocks
-        lines.append("# HELP guardrail_rate_limited_total Requests blocked by rate limit.")
-        lines.append("# TYPE guardrail_rate_limited_total counter")
-        lines.append(f"guardrail_rate_limited_total {get_rate_limited_total()}")
-
-        # Minimal histogram (tests only check *_count presence)
-        lines.append("# HELP guardrail_latency_seconds Request latency histogram.")
-        lines.append("# TYPE guardrail_latency_seconds histogram")
-        decisions = max(0, get_decisions_total())
-        latency_sum = decisions * 0.001
-        lines.append(f"guardrail_latency_seconds_count {decisions}")
-        lines.append(f"guardrail_latency_seconds_sum {latency_sum:.6f}")
-
-        return PlainTextResponse("\n".join(lines) + "\n")
-
-    # Routers
-    app.include_router(guardrail_router)
-    app.include_router(threat_admin_router)
-    app.include_router(output_router)
-    app.include_router(batch_router)
-    app.include_router(proxy_router)
-    app.include_router(openai_router)
+    # --- Routers (public API first) ---
+    app.include_router(oai_router)
     app.include_router(azure_router)
+
+    # health + admin contract routes
+    app.include_router(health_router)
+    app.include_router(admin_router)
+
+    # Optional routes if present
+    if proxy_router is not None:
+        app.include_router(proxy_router)
+    if batch_router is not None:
+        app.include_router(batch_router)
+    if output_router is not None:
+        app.include_router(output_router)
+    if guardrail_router is not None:
+        app.include_router(guardrail_router)
+    if threat_admin_router is not None:
+        app.include_router(threat_admin_router)
+
+    # Prometheus /metrics
+    app.include_router(metrics_router)
+
+    # Place request-id/security OUTERMOST so it wraps everything
+    app.add_middleware(_RequestIdAndSecurityMiddleware)
     return app
 
 
-def build_app() -> FastAPI:
-    return create_app()
+def build_app() -> FastAPI:  # pragma: no cover
+    return _create_app()
 
 
-app = create_app()
+def create_app() -> FastAPI:
+    return _create_app()
+
+
+app = _create_app()

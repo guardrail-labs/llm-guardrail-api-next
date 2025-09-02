@@ -5,57 +5,27 @@ import time
 from typing import Dict, Tuple
 
 
-class InMemoryTokenBucketStore:
-    """
-    Thread-safe, in-memory token-bucket storage.
-    Key -> (tokens, last_refill_epoch_s)
-    Use Redis for production multi-instance deployments.
-    """
-
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._state: Dict[str, Tuple[float, float]] = {}
-
-    def get(self, key: str) -> Tuple[float, float] | None:
-        with self._lock:
-            return self._state.get(key)
-
-    def set(self, key: str, tokens: float, ts: float) -> None:
-        with self._lock:
-            self._state[key] = (tokens, ts)
-
-
 class RateLimiter:
     """
-    Token-bucket rate limiter (tenant/bot aware).
-    - capacity: BURST size (max tokens)
-    - fill_rate: tokens per second (PER_MINUTE / 60)
-    Behavior:
-      * When disabled: never block, but still compute/emit headers.
-      * When enabled: decrement 1 token per request; if tokens < 1, block (429).
+    Simple in-memory token-bucket rate limiter keyed by (tenant_id, bot_id).
+
+    check_and_consume(...) returns a tuple:
+      (allowed: bool, remaining: int, limit: int, reset_epoch: int)
+
+    Notes:
+    - When `enabled` is False, we never block but still emit headers.
+    - `per_minute` tokens are added per minute, up to `burst`.
+    - 1 token is consumed per request when enabled.
     """
+    def __init__(self) -> None:
+        # key -> (tokens, last_refill_ts)
+        self._buckets: Dict[str, Tuple[float, float]] = {}
+        self._lock = threading.RLock()
 
-    def __init__(self, store: InMemoryTokenBucketStore | None = None):
-        self.store = store or InMemoryTokenBucketStore()
-
-    @staticmethod
-    def _key(tenant_id: str, bot_id: str) -> str:
-        t = tenant_id or "unknown-tenant"
-        b = bot_id or "*"
-        return f"rl:{t}:{b}"
-
-    def _refill(self, key: str, capacity: int, fill_rate: float, now: float) -> float:
-        entry = self.store.get(key)
-        if entry is None:
-            tokens, last = float(capacity), now
-        else:
-            tokens, last = entry
-            if tokens < 0:
-                tokens = 0.0
-            if fill_rate > 0:
-                tokens = min(capacity, tokens + (now - last) * fill_rate)
-        self.store.set(key, tokens, now)
-        return tokens
+    def _key(self, tenant_id: str, bot_id: str) -> str:
+        t = (tenant_id or "").strip()
+        b = (bot_id or "").strip()
+        return f"{t}:{b}"
 
     def check_and_consume(
         self,
@@ -65,47 +35,39 @@ class RateLimiter:
         bot_id: str,
         per_minute: int,
         burst: int,
-        now: float | None = None,
-    ) -> tuple[bool, int, int, int]:
-        """
-        Returns (allowed, remaining, limit, reset_epoch_s)
-        - limit: logical per-minute limit
-        - remaining: integer tokens rounded down for headers
-        - reset_epoch_s: when bucket is expected to be full again
-        """
-        now = now or time.time()
-        capacity = max(1, int(burst))
-        limit = max(1, int(per_minute))
-        fill_rate = limit / 60.0  # tokens per second
+    ) -> Tuple[bool, int, int, int]:
+        now = time.time()
+        limit = max(1, int(burst or per_minute or 1))
+        rate_per_sec = max(0.0, float(per_minute)) / 60.0
+
+        # If disabled, never block; still present plausible headers.
+        if not enabled:
+            reset_epoch = int(now) + 60
+            return True, limit, limit, reset_epoch
 
         key = self._key(tenant_id, bot_id)
-        tokens = self._refill(key, capacity, fill_rate, now)
+        with self._lock:
+            tokens, last = self._buckets.get(key, (float(limit), now))
 
-        if not enabled:
-            # Non-blocking: simulate a consume for accurate Remaining; never 429.
-            tokens_after = max(0.0, tokens - 1.0)
-            self.store.set(key, tokens_after, now)
-            remaining = int(tokens_after)
-            # Time to full from current tokens
-            deficit = capacity - tokens_after
-            reset_in = int(deficit / fill_rate) if fill_rate > 0 else 0
-            reset_epoch = int(now + max(0, reset_in))
-            return True, remaining, limit, reset_epoch
+            # Refill
+            if rate_per_sec > 0.0:
+                elapsed = max(0.0, now - last)
+                tokens = min(float(limit), tokens + elapsed * rate_per_sec)
 
-        # Enforce
-        if tokens >= 1.0:
-            tokens_after = tokens - 1.0
-            self.store.set(key, tokens_after, now)
-            remaining = int(tokens_after)
-            deficit = capacity - tokens_after
-            reset_in = int(deficit / fill_rate) if fill_rate > 0 else 0
-            reset_epoch = int(now + max(0, reset_in))
-            return True, remaining, limit, reset_epoch
+            allowed = tokens >= 1.0
+            if allowed:
+                tokens -= 1.0
 
-        # Block
-        remaining = 0
-        # When will at least 1 token be available?
-        # Need (1 - tokens) / fill_rate seconds.
-        needed = (1.0 - tokens) / fill_rate if fill_rate > 0 else 0
-        reset_epoch = int(now + max(0, needed))
-        return False, remaining, limit, reset_epoch
+            # Compute reset: when 1 token will next be available if blocked,
+            # otherwise one minute from now is fine for a coarse "window".
+            if allowed:
+                reset_epoch = int(now) + 60
+            else:
+                deficit = 1.0 - tokens
+                wait = deficit / rate_per_sec if rate_per_sec > 0.0 else 60.0
+                reset_epoch = int(now + max(0.0, wait))
+
+            remaining = int(tokens) if tokens > 0 else 0
+            self._buckets[key] = (tokens, now)
+
+            return bool(allowed), remaining, limit, reset_epoch

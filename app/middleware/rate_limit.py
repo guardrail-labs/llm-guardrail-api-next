@@ -12,7 +12,6 @@ from app.services.rate_limit import RateLimiter
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import inc_rate_limited
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -63,11 +62,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "request_id": rid,
             }
             resp = JSONResponse(status_code=429, content=body)
+            # Required by tests
             resp.headers["Retry-After"] = "60"
             resp.headers["X-RateLimit-Limit"] = str(limit)
             resp.headers["X-RateLimit-Remaining"] = "0"
             resp.headers["X-RateLimit-Reset"] = str(reset_epoch)
-            # Allow outer middleware to attach X-Request-ID, security headers, etc.
+            # Make 429 self-sufficient even if we're the outermost middleware:
+            resp.headers["X-Request-ID"] = rid
+            # Optional hardening headers for consistency
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            resp.headers["X-Frame-Options"] = "DENY"
+            resp.headers["X-XSS-Protection"] = "0"
+            resp.headers["Referrer-Policy"] = "no-referrer"
             return resp
 
         response: Response = await call_next(request)
