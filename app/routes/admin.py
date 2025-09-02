@@ -1,15 +1,19 @@
-from fastapi import APIRouter
+from __future__ import annotations
 
-from app.services.policy import force_reload
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+
+from app.services.policy import reload_rules, current_rules_version
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-
 @router.post("/policy/reload")
-def reload_policy() -> dict:
-    """
-    Manually reload the policy rules file and return the new version.
-    Protected by your global auth middleware (tests send X-API-Key).
-    """
-    version = force_reload()
-    return {"reloaded": True, "version": version}
+async def policy_reload() -> JSONResponse:
+    # Force reload; surface contract fields expected by tests
+    reload_rules()
+    body = {
+        "reloaded": True,
+        "version": str(current_rules_version()),
+        "rules_loaded": True,
+    }
+    return JSONResponse(body)
