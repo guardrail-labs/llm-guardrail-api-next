@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.services.audit_forwarder import emit_event as emit_audit_event
@@ -145,17 +145,21 @@ def _family_for(action: str, redactions: int) -> str:
 async def proxy_chat(
     request: Request,
     body: ChatRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key", convert_underscores=False),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> ChatResponse:
     """
     End-to-end guarded chat:
+      0) Require X-API-Key
       1) Ingress sanitize + detect
       2) If not denied, call provider (default: local echo)
       3) Egress sanitize/deny
       4) Emit enriched audit + metrics at each step
     """
+    # --- Auth gate (tests expect 401 without key) ---
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
