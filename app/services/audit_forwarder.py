@@ -1,127 +1,166 @@
 from __future__ import annotations
 
-import http.client
 import json
 import os
+import random
+import socket
+import ssl
 import time
-from typing import Any, Dict, Optional, Tuple, cast
+from http.client import HTTPConnection, HTTPSConnection  # <- explicit imports
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
-# ---- config helpers ---------------------------------------------------------
+from app.telemetry.logging import get_audit_logger
+from app.telemetry.tracing import get_request_id, get_trace_id
+
+# Public symbol expected by routes/tests
+__all__ = ["emit_audit_event"]
+
+_audit_log = get_audit_logger("audit")
+
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _env(name: str, default: str = "") -> str:
-    v = os.getenv(name)
-    return v if v is not None else default
+def _get_cfg() -> Dict[str, Any]:
+    return {
+        "enabled": _truthy(os.getenv("AUDIT_FORWARD_ENABLED", "false")),
+        "url": os.getenv("AUDIT_FORWARD_URL", ""),
+        "api_key": os.getenv("AUDIT_FORWARD_API_KEY", ""),
+        "sample_rate": float(os.getenv("AUDIT_SAMPLE_RATE", "1.0") or "1.0"),
+        "timeout": float(os.getenv("AUDIT_FORWARD_TIMEOUT_SECS", "5") or "5"),
+        "retries": int(os.getenv("AUDIT_FORWARD_RETRIES", "1") or "1"),
+        "backoff": float(os.getenv("AUDIT_FORWARD_BACKOFF_SECS", "0.25") or "0.25"),
+    }
 
 
-# ---- trace correlation (safe/optional) --------------------------------------
-
-def _current_trace_ids() -> Tuple[Optional[str], Optional[str]]:
-    """
-    Return (trace_id_hex, span_id_hex) if OpenTelemetry is active and a current span exists.
-    Otherwise (None, None). Never raises.
-    """
-    try:
-        # Import lazily; OTel is optional
-        from opentelemetry.trace import get_current_span
-    except Exception:
-        return None, None
-
-    try:
-        span = get_current_span()
-        # In OTel, a non-recording default span may exist; guard against zero IDs.
-        ctx = span.get_span_context()
-        if ctx is None:
-            return None, None
-
-        trace_id = getattr(ctx, "trace_id", 0)
-        span_id = getattr(ctx, "span_id", 0)
-
-        # Zero means "invalid" in OTel
-        if not trace_id or not span_id:
-            return None, None
-
-        # Convert to hex (zero-padded per spec)
-        trace_hex = f"{trace_id:032x}"
-        span_hex = f"{span_id:016x}"
-        return trace_hex, span_hex
-    except Exception:
-        return None, None
-
-
-# ---- HTTP transport (patch point for tests) ---------------------------------
+# -----------------------------------------------------------------------------
+# HTTP posting (kept simple; tests monkeypatch _post)
+# -----------------------------------------------------------------------------
 
 def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     """
-    Minimal HTTP POST using stdlib http.client so tests can monkeypatch `_post`
-    without extra deps. Returns (status_code, response_body).
+    Minimal HTTP/HTTPS JSON POST with API key header.
+    Returns (status_code, response_text). Raises on connection errors.
+    Tests patch this function.
     """
-    # Parse URL (http only; CI tests patch this anyway)
-    if not url.startswith("http://") and not url.startswith("https://"):
-        raise ValueError("AUDIT_FORWARD_URL must be http(s)")
+    parsed = urlparse(url)
+    use_tls = parsed.scheme == "https"
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if use_tls else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
 
-    is_https = url.startswith("https://")
-    prefix = "https://" if is_https else "http://"
-    rest = url[len(prefix):]
-    host, path = (rest.split("/", 1) + [""])[:2]
-    path = "/" + path
-
-    conn_cls = http.client.HTTPSConnection if is_https else http.client.HTTPConnection
-    conn = cast(http.client.HTTPConnection, conn_cls(host, timeout=5))
+    # Annotate to supertype so both HTTPConnection and HTTPSConnection assign cleanly
+    conn: HTTPConnection
+    if use_tls:
+        context = ssl.create_default_context()
+        conn = HTTPSConnection(host, port, timeout=5, context=context)
+    else:
+        conn = HTTPConnection(host, port, timeout=5)
 
     body = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "llm-guardrail-audit-forwarder/1.0",
         "Authorization": f"Bearer {api_key}",
+        "User-Agent": "llm-guardrail-audit-forwarder/1",
     }
     conn.request("POST", path, body=body, headers=headers)
     resp = conn.getresponse()
-    data = resp.read().decode("utf-8", errors="replace")
+    data = resp.read()
     try:
-        conn.close()
-    finally:
-        pass
-    return getattr(resp, "status", 200), data
+        text = data.decode("utf-8")
+    except Exception:
+        text = ""
+    status = getattr(resp, "status", 0) or 0
+    conn.close()
+    return status, text
 
 
-# ---- public API --------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Core API
+# -----------------------------------------------------------------------------
+
+def _should_sample(rate: float) -> bool:
+    if rate >= 1.0:
+        return True
+    if rate <= 0.0:
+        return False
+    return random.random() < rate
+
+
+def _enrich(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Attach request_id and trace_id if available; copy tenant/bot if provided in event.
+    Do not mutate caller's dict.
+    """
+    out = dict(event)
+    rid = out.get("request_id") or get_request_id()
+    tid = out.get("trace_id") or get_trace_id()
+    if rid:
+        out["request_id"] = rid
+    if tid:
+        out["trace_id"] = tid
+    return out
+
 
 def emit_audit_event(event: Dict[str, Any]) -> None:
     """
-    Fire-and-forget audit event forwarder. When the forwarder is disabled,
-    this function is a no-op. When enabled, it forwards to AUDIT_FORWARD_URL
-    with AUDIT_FORWARD_API_KEY. It also enriches the payload with trace ids
-    (if OpenTelemetry tracing is active) under keys `trace_id` and `span_id`.
-
-    Contract: this function **must not** raise; any internal error is swallowed.
+    Public entrypoint. Always logs a structured audit line.
+    Optionally forwards to external sink when enabled.
     """
-    try:
-        if not _truthy(_env("AUDIT_FORWARD_ENABLED", "false")):
-            return
+    cfg = _get_cfg()
 
-        url = _env("AUDIT_FORWARD_URL")
-        api_key = _env("AUDIT_FORWARD_API_KEY")
-        if not url or not api_key:
-            # Misconfigured; quietly skip
-            return
+    # Sampling: still *log locally* even if not forwarded
+    sampled = _should_sample(cfg["sample_rate"])
 
-        # Non-destructive trace enrichment
-        trace_id, span_id = _current_trace_ids()
-        if trace_id and "trace_id" not in event:
-            event["trace_id"] = trace_id
-        if span_id and "span_id" not in event:
-            event["span_id"] = span_id
+    enriched = _enrich(event)
+    # Ensure minimal shape for local audit stream
+    minimal = {
+        "event": "audit",
+        "action": enriched.get("action", "unknown"),
+        "tenant_id": enriched.get("tenant_id"),
+        "bot_id": enriched.get("bot_id"),
+        "request_id": enriched.get("request_id"),
+        "trace_id": enriched.get("trace_id"),
+    }
+    # Merge everything into the audit log line
+    _audit_log.info("audit event", extra={"extra": {**minimal, **enriched}})
 
-        # Basic envelope metadata if caller didn't include it
-        event.setdefault("timestamp", int(time.time()))
-        event.setdefault("kind", "guardrail")
-
-        _post(url, api_key, event)
-    except Exception:
-        # Never let audit forwarding affect the request path
+    # Forward if configured, sampled, and config sane
+    if not (cfg["enabled"] and cfg["url"] and cfg["api_key"] and sampled):
         return
 
+    # Transmit with small retry/backoff
+    attempts = 1 + max(0, int(cfg["retries"]))
+    backoff = max(0.0, float(cfg["backoff"]))
+    last_exc: Optional[BaseException] = None
+    for i in range(attempts):
+        try:
+            status, _ = _post(cfg["url"], cfg["api_key"], enriched)
+            # Accept any 2xx as success
+            if 200 <= status < 300:
+                return
+        except (
+            socket.timeout,
+            ConnectionError,
+            OSError,
+            ssl.SSLError,
+        ) as exc:  # pragma: no cover
+            last_exc = exc
+        # backoff before next try, except after last attempt
+        if i < attempts - 1 and backoff:
+            time.sleep(backoff)  # pragma: no cover - timing
+
+    # If we exhausted retries, we swallow the error (audit logging is best-effort).
+    if last_exc:
+        _audit_log.debug(
+            "audit forward failed",
+            extra={"extra": {"error": str(last_exc)}},
+        )
