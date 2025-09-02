@@ -1,44 +1,52 @@
 # app/main.py
 from __future__ import annotations
+
 import uuid
 from typing import Optional, Type, TYPE_CHECKING
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
-from app.telemetry.logging import configure_logging
-from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.access_log import AccessLogMiddleware
+from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.telemetry.logging import configure_logging
 
-# Routers (always-on)
+# Always-on routers
+from app.routes.admin import router as admin_router
+from app.routes.health import router as health_router
 from app.routes.metrics_route import router as metrics_router
 from app.routes.openai_compat import azure_router, router as oai_router
-from app.routes.health import router as health_router
-from app.routes.admin import router as admin_router
 from app.routes.ready import router as ready_router
 
-# ---- Optional middleware imports (mypy-safe) ----
+# ---- Optional middleware imports (mypy-safe pattern) ----
 if TYPE_CHECKING:
     from app.middleware.rate_limit import RateLimitMiddleware as RateLimitMiddlewareType
-    from app.telemetry.latency import LatencyHistogramMiddleware as LatencyHistogramMiddlewareType
+    from app.telemetry.latency import (
+        LatencyHistogramMiddleware as LatencyHistogramMiddlewareType,
+    )
 
 RateLimitMW: Optional[Type[object]] = None
 LatencyHistogramMW: Optional[Type[object]] = None
 try:
     from app.middleware.rate_limit import RateLimitMiddleware as _RateLimitMiddleware
+
     RateLimitMW = _RateLimitMiddleware
 except Exception:  # pragma: no cover
     RateLimitMW = None
 
 try:
-    from app.telemetry.latency import LatencyHistogramMiddleware as _LatencyHistogramMiddleware
+    from app.telemetry.latency import (
+        LatencyHistogramMiddleware as _LatencyHistogramMiddleware,
+    )
+
     LatencyHistogramMW = _LatencyHistogramMiddleware
 except Exception:  # pragma: no cover
     LatencyHistogramMW = None
-# -------------------------------------------------
+# --------------------------------------------------------
 
 
 def create_app() -> FastAPI:
@@ -63,7 +71,10 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
 
-    # Access logging first to capture everything
+    # Request ID first so every response gets X-Request-ID
+    app.add_middleware(RequestIDMiddleware)
+
+    # Access logging early to capture everything
     app.add_middleware(AccessLogMiddleware)
 
     # Security headers
@@ -73,56 +84,76 @@ def create_app() -> FastAPI:
     if LatencyHistogramMW is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
         app.add_middleware(LatencyHistogramMW)  # type: ignore[arg-type]
 
-    # Optional rate limiter
-    if RateLimitMW is not None and getattr(s, "RATE_LIMIT_ENABLED", False):
-        app.add_middleware(RateLimitMW)  # type: ignore[arg-type]
+    # Rate limiter: always add if available; it handles enabled vs headers-only itself
+    try:
+        # Prefer local file if present (keeps tests aligned with expected behavior)
+        from app.middleware.rate_limit import RateLimitMiddleware as _LocalRateLimitMW
+
+        app.add_middleware(_LocalRateLimitMW)
+    except Exception:
+        if RateLimitMW is not None:
+            app.add_middleware(RateLimitMW)  # type: ignore[arg-type]
 
     # Core routers
     app.include_router(health_router)
     app.include_router(ready_router)
     app.include_router(admin_router)
+
+    # Threat admin router (if present)
+    try:
+        from app.routes import admin_threat as _admin_threat
+
+        if hasattr(_admin_threat, "router"):
+            app.include_router(_admin_threat.router)
+    except Exception:
+        pass
+
     app.include_router(metrics_router)
     app.include_router(oai_router)
     app.include_router(azure_router)
 
-    # ---- Include app feature routers if present ----
-    # Guardrail (ingress/egress, /guardrail and friends)
+    # ---- Feature routers if present ----
     try:
         from app.routes import guardrail as _guardrail
+
         if hasattr(_guardrail, "router"):
             app.include_router(_guardrail.router)
-    except Exception:  # pragma: no cover
+    except Exception:
         pass
 
-    # Batch
     try:
         from app.routes import batch as _batch
+
         if hasattr(_batch, "router"):
             app.include_router(_batch.router)
-    except Exception:  # pragma: no cover
+    except Exception:
         pass
 
-    # Output guardrail
     try:
         from app.routes import output as _output
+
         if hasattr(_output, "router"):
             app.include_router(_output.router)
-    except Exception:  # pragma: no cover
+    except Exception:
         pass
 
-    # Proxy (/proxy/chat) — API-key guarded
     try:
         from app.routes import proxy as _proxy
+
         if hasattr(_proxy, "router"):
             app.include_router(_proxy.router)
-    except Exception:  # pragma: no cover
+    except Exception:
         pass
-    # ------------------------------------------------
+    # -----------------------------------
 
-    # Error handlers (with X-Request-ID header)
+    # Error handlers (also set X-Request-ID, though RequestIDMiddleware already does)
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        rid = (
+            getattr(request.state, "request_id", None)
+            or request.headers.get("X-Request-ID")
+            or str(uuid.uuid4())
+        )
         return JSONResponse(
             status_code=exc.status_code,
             headers={"X-Request-ID": rid},
@@ -135,11 +166,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        rid = (
+            getattr(request.state, "request_id", None)
+            or request.headers.get("X-Request-ID")
+            or str(uuid.uuid4())
+        )
         return JSONResponse(
             status_code=500,
             headers={"X-Request-ID": rid},
-            content={"code": "internal_error", "detail": "internal error", "request_id": rid},
+            content={
+                "code": "internal_error",
+                "detail": "internal error",
+                "request_id": rid,
+            },
         )
 
     return app
