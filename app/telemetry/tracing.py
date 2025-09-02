@@ -41,7 +41,7 @@ class _UseSpanCtx:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         # Do not suppress exceptions
-        return False
+        return None
 
 
 class _NoopTrace:
