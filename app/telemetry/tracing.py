@@ -1,23 +1,11 @@
 from __future__ import annotations
 
 import os
-from contextvars import ContextVar
 from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
-
-# Request ID context used by other modules/middleware
-_REQUEST_ID: ContextVar[Optional[str]] = ContextVar("_REQUEST_ID", default=None)
-
-
-def get_request_id() -> Optional[str]:
-    return _REQUEST_ID.get()
-
-
-def set_request_id(value: Optional[str]) -> None:
-    _REQUEST_ID.set(value)
 
 
 class TracingMiddleware(BaseHTTPMiddleware):
@@ -33,7 +21,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.enabled = _truthy(os.getenv("OTEL_ENABLED", "false"))
         self._initialized = False
-        self._trace: Optional[Any] = None  # set on init if libs are available
+        self._trace: Any = None  # set on init if libs are available
 
     async def dispatch(self, request: Request, call_next):
         if not self.enabled:
@@ -92,3 +80,16 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ---------------------------------------------------------------------
+# Back-compat shim: some modules may import get_request_id from here.
+# Prefer importing from app.middleware.request_id directly, but we
+# provide a thin wrapper to avoid breaking older imports.
+# ---------------------------------------------------------------------
+def get_request_id() -> Optional[str]:
+    try:
+        from app.middleware.request_id import get_request_id as _get
+    except Exception:
+        return None
+    return _get()
