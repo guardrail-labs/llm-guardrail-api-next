@@ -1,4 +1,3 @@
-# app/middleware/rate_limit.py
 from __future__ import annotations
 
 import logging
@@ -28,7 +27,7 @@ class RateLimitMiddleware:
       - Enforces when RATE_LIMIT_ENABLED=true
       - Always sets X-RateLimit-* headers (even when disabled)
       - Emits inc_rate_limited() and logs "inc_rate_limited failed" on exception
-      - Produces 429 body with exact contract and lower-case detail
+      - Produces 429 body with exact contract and includes request_id
       - Keeps buckets per-app-instance (no cross-test leakage)
     """
 
@@ -96,7 +95,7 @@ class RateLimitMiddleware:
             except Exception as e:  # pragma: no cover
                 logger.warning("inc_rate_limited failed", exc_info=e)
 
-            # Make sure X-Request-ID is present on the 429 reply
+            # Ensure X-Request-ID is present in headers AND body
             incoming = dict(scope.get("headers", []))
             rid = incoming.get(b"x-request-id")
             request_id = rid.decode() if rid else str(uuid.uuid4())
@@ -105,6 +104,7 @@ class RateLimitMiddleware:
                 "code": "rate_limited",
                 "detail": "rate limit exceeded",
                 "retry_after": 60,
+                "request_id": request_id,
             }
 
             async def _send_429(message):
