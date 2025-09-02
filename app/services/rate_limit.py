@@ -1,108 +1,73 @@
 from __future__ import annotations
 
-import os
-import time
 import threading
-import uuid
-from typing import Dict, List, Tuple
-
-from fastapi import Request
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-
-from app.telemetry import metrics as tmetrics
-
-# in-process rolling-window token buckets
-_LOCK = threading.RLock()
-_BUCKETS: Dict[str, List[float]] = {}
-_LAST_CFG: Tuple[bool, int, int] = (False, 60, 60)
-_LAST_APP_ID: int | None = None
+import time
+from typing import Dict, Tuple
 
 
-def _cfg() -> Tuple[bool, int, int]:
-    enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
-    per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
-    burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
-    return enabled, per_min, burst
+class RateLimiter:
+    """
+    Simple in-memory token-bucket rate limiter keyed by (tenant_id, bot_id).
 
+    check_and_consume(...) returns a tuple:
+      (allowed: bool, remaining: int, limit: int, reset_epoch: int)
 
-def _key(request: Request) -> str:
-    host = request.client.host if request.client else "unknown"
-    tenant = request.headers.get("X-Tenant-ID") or "default"
-    bot = request.headers.get("X-Bot-ID") or "default"
-    return f"{host}:{tenant}:{bot}"
+    Notes:
+    - When `enabled` is False, we never block but still emit headers.
+    - `per_minute` tokens are added per minute, up to `burst`.
+    - 1 token is consumed per request when enabled.
+    """
+    def __init__(self) -> None:
+        # key -> (tokens, last_refill_ts)
+        self._buckets: Dict[str, Tuple[float, float]] = {}
+        self._lock = threading.RLock()
 
+    def _key(self, tenant_id: str, bot_id: str) -> str:
+        t = (tenant_id or "").strip()
+        b = (bot_id or "").strip()
+        return f"{t}:{b}"
 
-def _allow_and_remaining(request: Request) -> Tuple[bool, int]:
-    global _LAST_CFG, _LAST_APP_ID
-    app_id = id(request.app)
-    if _LAST_APP_ID != app_id:
-        with _LOCK:
-            _BUCKETS.clear()
-            _LAST_APP_ID = app_id
+    def check_and_consume(
+        self,
+        *,
+        enabled: bool,
+        tenant_id: str,
+        bot_id: str,
+        per_minute: int,
+        burst: int,
+    ) -> Tuple[bool, int, int, int]:
+        now = time.time()
+        limit = max(1, int(burst or per_minute or 1))
+        rate_per_sec = max(0.0, float(per_minute)) / 60.0
 
-    enabled, per_min, burst = _cfg()
-    if (enabled, per_min, burst) != _LAST_CFG:
-        with _LOCK:
-            _BUCKETS.clear()
-            _LAST_CFG = (enabled, per_min, burst)
+        # If disabled, never block; still present plausible headers.
+        if not enabled:
+            reset_epoch = int(now) + 60
+            return True, limit, limit, reset_epoch
 
-    if not enabled:
-        # not limited; remaining is burst
-        return True, burst
+        key = self._key(tenant_id, bot_id)
+        with self._lock:
+            tokens, last = self._buckets.get(key, (float(limit), now))
 
-    now = time.time()
-    cutoff = now - 60.0
-    k = _key(request)
-    with _LOCK:
-        win = _BUCKETS.setdefault(k, [])
-        # prune old
-        win[:] = [t for t in win if t >= cutoff]
-        if len(win) >= burst:
-            return False, 0
-        win.append(now)
-        remaining = max(burst - len(win), 0)
-        return True, remaining
+            # Refill
+            if rate_per_sec > 0.0:
+                elapsed = max(0.0, now - last)
+                tokens = min(float(limit), tokens + elapsed * rate_per_sec)
 
+            allowed = tokens >= 1.0
+            if allowed:
+                tokens -= 1.0
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        enabled, per_min, burst = _cfg()
-        allowed, remaining = _allow_and_remaining(request)
+            # Compute reset: when 1 token will next be available if blocked,
+            # otherwise one minute from now is fine for a coarse "window".
+            if allowed:
+                reset_epoch = int(now) + 60
+            else:
+                deficit = 1.0 - tokens
+                wait = deficit / rate_per_sec if rate_per_sec > 0.0 else 60.0
+                reset_epoch = int(now + max(0.0, wait))
 
-        # Always expose limit headers (even if disabled)
-        limit_val = str(per_min)
-        remaining_val = str(remaining)
+            remaining = int(tokens) if tokens > 0 else 0
+            self._buckets[key] = (tokens, now)
 
-        if not allowed:
-            # try to tick metric, but don't break on failure
-            try:
-                tmetrics.inc_rate_limited(1.0)
-            except Exception:
-                import logging
-                logging.warning("inc_rate_limited failed")
-
-            rid = getattr(request.state, "request_id", "") or str(uuid.uuid4())
-            retry_after = 60
-            body = {
-                "code": "rate_limited",
-                "detail": "rate limit exceeded",  # lowercase (tests expect this)
-                "retry_after": int(retry_after),
-                "request_id": rid,
-            }
-            return JSONResponse(
-                status_code=429,
-                content=body,
-                headers={
-                    "Retry-After": str(retry_after),
-                    "X-RateLimit-Limit": limit_val,
-                    "X-RateLimit-Remaining": remaining_val,
-                    "X-Request-ID": rid,
-                },
-            )
-
-        resp = await call_next(request)
-        # attach headers on successful responses too
-        resp.headers.setdefault("X-RateLimit-Limit", limit_val)
-        resp.headers.setdefault("X-RateLimit-Remaining", remaining_val)
-        return resp
+            return bool(allowed), remaining, limit, reset_epoch
