@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import List, TYPE_CHECKING
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 
 from app.telemetry import metrics as tmetrics
 
+if TYPE_CHECKING:
+    # Only needed for type annotations; avoids runtime unused-import lint.
+    from fastapi import Request
 
 router = APIRouter(tags=["metrics"])
 
@@ -20,9 +23,9 @@ def _safe_guardrail_legacy_totals() -> List[str]:
     out: List[str] = []
     try:
         # Import lazily to avoid hard dependency in case file moves.
-        from app.routes.guardrail import (  # type: ignore
-            get_requests_total,  # noqa: WPS433 (local import)
-            get_decisions_total,  # noqa: WPS433
+        from app.routes.guardrail import (  # noqa: WPS433 (local import)
+            get_requests_total,
+            get_decisions_total,
         )
 
         req = float(get_requests_total())
@@ -75,7 +78,7 @@ def _export_rate_limited_lines() -> List[str]:
 
 
 @router.get("/metrics")
-async def prometheus_metrics(request: Request) -> PlainTextResponse:
+async def prometheus_metrics(_: "Request") -> PlainTextResponse:
     """
     Prometheus exposition format:
       - Built-in registry metrics via prometheus_client.generate_latest
@@ -99,4 +102,3 @@ async def prometheus_metrics(request: Request) -> PlainTextResponse:
 
     body = "\n".join(chunks)
     return PlainTextResponse(content=body, media_type=CONTENT_TYPE_LATEST)
-
