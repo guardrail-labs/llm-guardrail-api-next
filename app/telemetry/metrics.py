@@ -7,6 +7,45 @@ from typing import Dict, Tuple, List, cast
 from prometheus_client import Counter, REGISTRY
 
 # ----------------------------
+# Basic request/decision counters
+# ----------------------------
+
+_REQ_LOCK = threading.RLock()
+_REQUESTS_TOTAL: float = 0.0
+_DECISIONS_TOTAL: float = 0.0
+
+
+def inc_requests_total(by: float = 1.0) -> None:
+    global _REQUESTS_TOTAL
+    with _REQ_LOCK:
+        _REQUESTS_TOTAL += float(by)
+
+
+def inc_decisions_total(by: float = 1.0) -> None:
+    global _DECISIONS_TOTAL
+    with _REQ_LOCK:
+        _DECISIONS_TOTAL += float(by)
+
+
+def get_requests_total() -> float:
+    with _REQ_LOCK:
+        return float(_REQUESTS_TOTAL)
+
+
+def get_decisions_total() -> float:
+    with _REQ_LOCK:
+        return float(_DECISIONS_TOTAL)
+
+
+def get_rules_version() -> str:
+    try:
+        from app.services.policy import current_rules_version
+
+        return str(current_rules_version())
+    except Exception:
+        return "unknown"
+
+# ----------------------------
 # Decision-family (global)
 # ----------------------------
 

@@ -1,43 +1,45 @@
-"""Structured request logging (JSON) that respects X-Request-ID."""
+"""Logging helpers for the Guardrail API."""
 from __future__ import annotations
 
 import json
 import logging
-import uuid
+import sys
 from typing import Any, Dict
 
-from fastapi import FastAPI, Request
-
+from app.config import get_settings
 from app.telemetry.tracing import get_request_id
 
-_LOGGER_NAME = "guardrail"
+logger = logging.getLogger("guardrail")
 
 
-def setup_logging(app: FastAPI) -> None:
-    logger = logging.getLogger(_LOGGER_NAME)
-    logger.setLevel(logging.INFO)
+def configure_logging() -> None:
+    """Configure base logging format and level."""
+    s = get_settings()
+    level = getattr(logging, (s.LOG_LEVEL or "INFO").upper(), logging.INFO)
+    logging.basicConfig(level=level, stream=sys.stdout)
 
-    @app.middleware("http")
-    async def json_access_log(request: Request, call_next):
-        # Prefer the RequestIDMiddleware value; fall back to caller header; finally generate.
-        rid = get_request_id() or request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
-        response = await call_next(request)
+class RequestLoggingMiddleware:
+    """Legacy helper retained for compatibility."""
 
-        # IMPORTANT: do NOT set/overwrite X-Request-ID here.
-        # RequestIDMiddleware is the single source of truth for the response header.
+    def __init__(self, app):
+        self.app = app
 
-        record: Dict[str, Any] = {
-            "event": "guardrail_request",
-            "request_id": rid,
-            "method": request.method,
-            "path": str(request.url.path),
-            "status_code": response.status_code,
-        }
-        try:
-            logger.info(json.dumps(record, ensure_ascii=False))
-        except Exception:
-            # Logging must never break the response path
-            pass
-
-        return response
+    async def __call__(self, scope, receive, send):  # pragma: no cover - legacy
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        request_id = get_request_id() or scope.get("headers", {}).get(b"x-request-id")
+        async def _send(message: Dict[str, Any]):
+            if message.get("type") == "http.response.start":
+                record: Dict[str, Any] = {
+                    "event": "guardrail_request",
+                    "request_id": request_id,
+                    "status_code": message.get("status", 0),
+                }
+                try:
+                    logger.info(json.dumps(record, ensure_ascii=False))
+                except Exception:
+                    pass
+            await send(message)
+        await self.app(scope, receive, _send)

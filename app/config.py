@@ -4,11 +4,17 @@ import os
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # --- Identity / Build ---
+    APP_NAME: str = Field(default="LLM Guardrail API")
+    ENV: str = Field(default=os.environ.get("ENV", "dev"))
+    VERSION: str = Field(default=os.environ.get("VERSION", "0.1.0"))
+    GIT_SHA: str = Field(default=os.environ.get("GIT_SHA", "unknown"))
+
     # --- Core ---
     API_KEY: str | None = None
 
@@ -38,7 +44,7 @@ class Settings(BaseSettings):
     AUDIT_SAMPLE_RATE: float = 0.2
     AUDIT_MAX_TEXT_CHARS: int = 200
 
-    # --- Rate limit ---
+    # --- Rate limit (keep your existing contract) ---
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 60
@@ -48,6 +54,24 @@ class Settings(BaseSettings):
     # --- Metrics / tracing ---
     METRICS_ENABLED: bool = True
     OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = None
+
+    # --- HTTP / CORS / Telemetry toggles (new) ---
+    CORS_ALLOW_ORIGINS: str = Field(default="*")  # comma-separated, or "*"
+    ENABLE_LATENCY_HISTOGRAM: bool = Field(default=True)
+
+    # --- Security headers (new) ---
+    SECURITY_HEADERS_ENABLED: bool = Field(default=True)
+    ADD_COOP: bool = Field(default=True)                # Cross-Origin-Opener-Policy
+    ADD_PERMISSIONS_POLICY: bool = Field(default=True)  # Permissions-Policy
+
+    # --- Header names (new) ---
+    API_KEY_HEADER: str = Field(default="X-API-Key")
+    TENANT_HEADER: str = Field(default="X-Tenant")
+    BOT_HEADER: str = Field(default="X-Bot")
+
+    # --- Logging (new) ---
+    LOG_JSON: bool = Field(default=True)
+    LOG_LEVEL: str = Field(default="INFO")
 
     model_config = {
         "extra": "ignore",
@@ -61,8 +85,9 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Small DTOs used elsewhere
+# Small DTOs used elsewhere (unchanged)
+from pydantic import BaseModel  # local import to keep file tidy
+
 class ServiceInfo(BaseModel):
     service: str = "llm-guardrail-api-next"
     env: str = Field(default=os.environ.get("ENV", "dev"))
-

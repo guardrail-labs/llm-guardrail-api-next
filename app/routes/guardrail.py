@@ -53,15 +53,15 @@ from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
     inc_quota_reject_tenant_bot,
+    inc_requests_total,
+    inc_decisions_total,
 )
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
 TEST_AUTH_BYPASS = (os.getenv("GUARDRAIL_DISABLE_AUTH") or "") == "1"
 
-# Simple per-process counters (read by /metrics)
-_requests_total = 0
-_decisions_total = 0
+# Simple per-process counters now tracked in telemetry.metrics
 
 # Rate limiting state (per-process token buckets)
 _RATE_LOCK = threading.RLock()
@@ -75,14 +75,6 @@ def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
     bot = request.headers.get(BOT_HEADER) or "default"
     return tenant, bot
-
-
-def get_requests_total() -> float:
-    return float(_requests_total)
-
-
-def get_decisions_total() -> float:
-    return float(_decisions_total)
 
 
 def _client_key(request: Request) -> str:
@@ -291,8 +283,6 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
     """
     Legacy ingress guardrail (JSON body: {"prompt": "..."}).
     """
-    global _requests_total, _decisions_total
-
     _maybe_load_static_rules_once(request)
     rid = _req_id(request)
 
@@ -347,7 +337,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
             "request_id": rid,
         }
 
-    _requests_total += 1
+    inc_requests_total()
 
     det = evaluate_prompt(prompt)
     action = str(det.get("action", "allow"))
@@ -360,7 +350,7 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
 
     decision, rule_hits = _maybe_patch_with_fallbacks(prompt, decision, rule_hits)
 
-    _decisions_total += 1
+    inc_decisions_total()
 
     fam = "block" if decision == "block" else "allow"
     inc_decision_family(fam)
@@ -411,10 +401,8 @@ async def evaluate(
       {"text": "...", "request_id": "...?"}
     Returns detectors/decisions and possible redactions.
     """
-    global _requests_total, _decisions_total
-
     _maybe_load_static_rules_once(request)
-    _requests_total += 1
+    inc_requests_total()
 
     content_type = (request.headers.get("content-type") or "").lower()
     decisions: List[Dict[str, Any]] = []
@@ -493,7 +481,7 @@ async def evaluate(
     payload_bytes = _blen(text)
     sanitized_bytes = _blen(xformed)
 
-    _decisions_total += 1
+    inc_decisions_total()
 
     det_action = str(det.get("action", "allow"))
 
