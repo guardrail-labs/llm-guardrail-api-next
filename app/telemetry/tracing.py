@@ -89,7 +89,7 @@ def get_request_id() -> Optional[str]:
     where the request-id is actually implemented.
     """
     try:
-        from app.middleware.request_id import get_request_id as _get  # type: ignore[attr-defined]
+        from app.middleware.request_id import get_request_id as _get
         rid = _get()
         return str(rid) if rid is not None else None
     except Exception:
@@ -102,7 +102,7 @@ def get_trace_id() -> Optional[str]:
     Safe to call even when OTEL is not installed or no span is active.
     """
     try:  # pragma: no cover
-        from opentelemetry import trace as _trace  # type: ignore
+        from opentelemetry import trace as _trace
         span = _trace.get_current_span()
         if span is None:
             return None
