@@ -2,82 +2,186 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
-from typing import Any, Dict
+from datetime import datetime, timezone
+from typing import Any, Dict, Mapping, MutableMapping, Tuple
 
 from app.telemetry.tracing import get_request_id, get_trace_id
 
-# -----------------------------------------------------------------------------
-# Structured JSON logging for audit lines (and a helper to get a base logger).
-# -----------------------------------------------------------------------------
+# ------------------------------- JSON utilities -------------------------------
 
-class _JsonFormatter(logging.Formatter):
+
+def _iso8601(dt: datetime) -> str:
+    # Always UTC, explicit trailing 'Z'
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_JSON_SAFE_PRIMITIVES = (str, int, float, bool, type(None))
+
+
+def _json_sanitize(value: Any) -> Any:
+    """
+    Best-effort JSON sanitizer for log payloads:
+    - Pass through JSON-safe primitives
+    - Convert bytes to utf-8 (errors replaced)
+    - Convert datetimes to ISO8601
+    - Fallback to str(value)
+    """
+    if isinstance(value, _JSON_SAFE_PRIMITIVES):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, datetime):
+        return _iso8601(value)
+    if isinstance(value, Mapping):
+        return {str(k): _json_sanitize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_sanitize(v) for v in value]
+    return str(value)
+
+
+# ------------------------------ JSON formatter --------------------------------
+
+
+class JsonFormatter(logging.Formatter):
+    """
+    Minimal, fast JSON formatter with stable keys. Avoids surprises in CI by
+    ensuring everything is JSON-serializable and line-oriented.
+    """
+
+    #: standard LogRecord attributes to exclude from "extra"
+    _std_keys: Tuple[str, ...] = (
+        "name",
+        "msg",
+        "args",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+    )
+
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401
-        """Render LogRecord as a compact JSON line."""
+        """
+        Format a LogRecord as a single JSON line.
+        """
+        # message resolving (handles %-style on .msg/.args)
+        message = record.getMessage()
+
+        # collect "extra" fields that are not standard record attributes
+        extra: Dict[str, Any] = {}
+        for k, v in record.__dict__.items():
+            if k not in self._std_keys and not k.startswith("_"):
+                extra[k] = v
+
+        # attach request/trace IDs if not already present
+        rid = extra.get("request_id") or get_request_id()
+        tid = extra.get("trace_id") or get_trace_id()
+
         payload: Dict[str, Any] = {
+            "ts": _iso8601(
+                datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)
+            ),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": message,
         }
 
-        # Attach contextual IDs if present
-        rid = get_request_id()
         if rid:
             payload["request_id"] = rid
-        tid = get_trace_id()
         if tid:
             payload["trace_id"] = tid
 
-        # Include extras when record contains dict-like arguments
-        if hasattr(record, "extra") and isinstance(record.extra, dict):
-            payload.update(record.extra)
+        if extra:
+            # Sanitize nested extras safely
+            payload.update(_json_sanitize(extra))
 
-        # Fallback: include record.__dict__ keys that look like structured extras
-        for key in ("event", "audit", "tenant_id", "bot_id", "action"):
-            if hasattr(record, key):
-                payload[key] = getattr(record, key)
+        # Include exception info (if any) in a structured way
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
 
-        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False)
 
 
-def _ensure_handler(logger: logging.Logger) -> None:
-    if logger.handlers:
+# ------------------------------ Logger helpers --------------------------------
+
+
+_configured = False
+
+
+def configure_root_logging(level: int | str = "INFO") -> None:
+    """
+    Idempotent root logger setup for JSON logs to stdout. Safe for tests.
+    """
+    global _configured
+    if _configured:
         return
+
+    root = logging.getLogger()
+
+    if isinstance(level, int):
+        resolved_level = level
+    else:
+        resolved_level = getattr(logging, str(level).upper(), logging.INFO)
+
+    root.setLevel(resolved_level)
+
+    # Remove pre-existing handlers to avoid duplicate lines in tests
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
     handler = logging.StreamHandler(stream=sys.stdout)
-    handler.setFormatter(_JsonFormatter())
-    logger.addHandler(handler)
-    logger.propagate = False  # keep audit lines single-written
+    handler.setFormatter(JsonFormatter())
+    root.addHandler(handler)
+
+    _configured = True
 
 
-def get_audit_logger(name: str = "audit") -> logging.Logger:
+class ContextAdapter(logging.LoggerAdapter):
     """
-    Returns a JSON-structured logger for audit lines.
-    Level is controlled by AUDIT_LOG_LEVEL (default INFO).
+    Bind static context (e.g., tenant_id, component) to a logger, ensuring those
+    keys appear on every log line via the 'extra' mechanism.
     """
-    logger = logging.getLogger(name)
-    level_name = os.getenv("AUDIT_LOG_LEVEL", "INFO").upper()
-    try:
-        logger.setLevel(getattr(logging, level_name))
-    except Exception:
-        logger.setLevel(logging.INFO)
-    _ensure_handler(logger)
-    return logger
+
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> Tuple[Any, MutableMapping[str, Any]]:
+        extra: Dict[str, Any] = {}
+
+        # Merge caller-provided extra if present and a Mapping
+        caller_extra = kwargs.get("extra")
+        if isinstance(caller_extra, Mapping):
+            extra.update(dict(caller_extra))
+
+        # Adapter context wins unless caller explicitly overrides
+        bound_extra: Mapping[str, Any] = self.extra or {}
+        for k, v in bound_extra.items():
+            extra.setdefault(k, v)
+
+        kwargs["extra"] = extra
+        return msg, kwargs
 
 
-def get_app_logger(name: str = "app") -> logging.Logger:
+def bind(logger: logging.Logger | None = None, **context: Any) -> ContextAdapter:
     """
-    Simple application logger (non-JSON). Useful for internal diagnostics.
+    Return a LoggerAdapter with bound context. Usage:
+
+        log = bind(logging.getLogger(__name__), tenant_id="acme", component="proxy")
+        log.info("started")
+
+    If logger is None, the root logger is used.
     """
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        handler = logging.StreamHandler(stream=sys.stdout)
-        formatter = logging.Formatter(
-            fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
-            datefmt="%Y-%m-%dT%H:%M:%S%z",
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.propagate = False
-    logger.setLevel(logging.INFO)
-    return logger
+    base = logger or logging.getLogger()
+    return ContextAdapter(base, dict(context))

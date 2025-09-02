@@ -10,13 +10,16 @@ from http.client import HTTPConnection, HTTPSConnection  # <- explicit imports
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
-from app.telemetry.logging import get_audit_logger
+import logging
+
+from app.telemetry.logging import configure_root_logging
 from app.telemetry.tracing import get_request_id, get_trace_id
 
 # Public symbol expected by routes/tests
 __all__ = ["emit_audit_event"]
 
-_audit_log = get_audit_logger("audit")
+configure_root_logging(os.getenv("AUDIT_LOG_LEVEL", "INFO"))
+_audit_log = logging.getLogger("audit")
 
 
 # -----------------------------------------------------------------------------
@@ -131,7 +134,7 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
         "trace_id": enriched.get("trace_id"),
     }
     # Merge everything into the audit log line
-    _audit_log.info("audit event", extra={"extra": {**minimal, **enriched}})
+    _audit_log.info("audit event", extra={**minimal, **enriched})
 
     # Forward if configured, sampled, and config sane
     if not (cfg["enabled"] and cfg["url"] and cfg["api_key"] and sampled):
@@ -160,7 +163,4 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
 
     # If we exhausted retries, we swallow the error (audit logging is best-effort).
     if last_exc:
-        _audit_log.debug(
-            "audit forward failed",
-            extra={"extra": {"error": str(last_exc)}},
-        )
+        _audit_log.debug("audit forward failed", extra={"error": str(last_exc)})
