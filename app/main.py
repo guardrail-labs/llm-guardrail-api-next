@@ -78,3 +78,28 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+# ---- adapters for tests and scripts ----
+
+# If you already have create_app(), this will reuse it.
+try:
+    create_app  # type: ignore[name-defined]
+except NameError:
+    # If you don't, but have a factory named build_app() already:
+    try:
+        def create_app():
+            return build_app()  # type: ignore[name-defined]
+    except NameError:
+        # Fallback: if your module-level FastAPI instance is named something else,
+        # import or construct it here. This is a last resort and should rarely run.
+        from fastapi import FastAPI
+        def create_app() -> FastAPI:  # pragma: no cover
+            return FastAPI(title="llm-guardrail")
+
+def build_app():
+    # Keep tests happy; delegates to create_app so there is one source of truth.
+    return create_app()
+
+# Expose a module-level app object for imports like `from app.main import app`.
+app = create_app()
+
