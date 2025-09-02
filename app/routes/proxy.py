@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.services.audit_forwarder import emit_event as emit_audit_event
+from app.services.audit_forwarder import emit_audit_event
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
 from app.services.llm_client import get_client
