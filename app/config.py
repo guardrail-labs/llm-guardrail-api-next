@@ -86,9 +86,6 @@ def get_settings() -> Settings:
     return Settings()
 
 
-# Small DTOs used elsewhere (unchanged)
-from pydantic import BaseModel  # local import to keep file tidy
-
 class ServiceInfo(BaseModel):
     service: str = "llm-guardrail-api-next"
     env: str = Field(default=os.environ.get("ENV", "dev"))
