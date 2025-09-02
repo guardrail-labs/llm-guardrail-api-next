@@ -9,9 +9,9 @@ from app.services.policy import current_rules_version
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
-async def health() -> Dict[str, Any]:
+def _health_payload() -> Dict[str, Any]:
     """
+    Shared payload used by /health and /healthz.
     Contract expected by tests:
       {
         "ok": true,
@@ -43,3 +43,14 @@ async def health() -> Dict[str, Any]:
         "decisions_total": decisions_total,
         "rules_version": current_rules_version(),
     }
+
+
+@router.get("/health")
+async def health() -> Dict[str, Any]:
+    return _health_payload()
+
+
+@router.get("/healthz")
+async def healthz() -> Dict[str, Any]:
+    # Alias for external probes
+    return _health_payload()
