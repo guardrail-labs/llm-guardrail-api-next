@@ -12,6 +12,7 @@ log = logging.getLogger(__name__)
 
 
 # ----------------------------- No-op tracing shim -----------------------------
+# (Kept for completeness; not used by tests now that they expect _trace to be None)
 
 class _NoopSpan:
     def set_attribute(self, *_: Any, **__: Any) -> None:  # noqa: D401
@@ -61,7 +62,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
     Lightweight optional OpenTelemetry wiring.
 
     - If OTEL_ENABLED is not truthy, this is a no-op.
-    - If opentelemetry packages are not installed, we install a no-op tracer and continue.
+    - If opentelemetry packages are not installed, we log a warning and proceed with tracing disabled.
     - We import OTel lazily at runtime to keep imports optional and avoid mypy issues.
     """
 
@@ -98,8 +99,8 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
     def _ensure_tracer_provider(self) -> bool:
         """
-        Try to configure OTEL. If not installed, fall back to a no-op tracer,
-        log a warning, and report initialized=True so callers can proceed.
+        Try to configure OTEL. If not installed, log a warning and report initialized=True
+        so callers can proceed with tracing disabled (self._trace stays None).
         """
         try:  # pragma: no cover
             from opentelemetry import trace as _trace
@@ -108,9 +109,8 @@ class TracingMiddleware(BaseHTTPMiddleware):
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
-            # OTEL not available; install no-op shim so tracing calls are safe.
-            log.warning("OpenTelemetry not installed; using no-op tracer.")
-            self._trace = _NoopTrace()
+            # OTEL not available; leave self._trace as None to satisfy tests.
+            log.warning("OpenTelemetry not installed; tracing disabled.")
             return True
 
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -127,8 +127,9 @@ class TracingMiddleware(BaseHTTPMiddleware):
             self._trace = _trace
             return True
         except Exception as e:
-            log.warning("Failed to initialize OpenTelemetry provider; using no-op tracer. %s", e)
-            self._trace = _NoopTrace()
+            # Initialization failed; keep tracing disabled and log.
+            log.warning("Failed to initialize OpenTelemetry provider; tracing disabled. %s", e)
+            self._trace = None
             return True
 
 
