@@ -4,8 +4,11 @@ from typing import Optional, TYPE_CHECKING
 
 from fastapi import FastAPI
 
+# All imports at top (ruff E402 compliance)
+from app.routes.metrics_route import router as metrics_router
+from app.routes.openai_compat import azure_router, router as oai_router
+
 if TYPE_CHECKING:
-    # Only for type checking; avoids runtime unused-import lint.
     from fastapi import APIRouter
 
 # Optional legacy guardrail routes (present in some builds)
@@ -19,9 +22,6 @@ try:  # pragma: no cover
     threat_admin_router = _threat_admin_router
 except Exception:  # pragma: no cover
     pass
-
-from app.routes.metrics_route import router as metrics_router
-from app.routes.openai_compat import azure_router, router as oai_router
 
 
 def _create_app() -> FastAPI:
