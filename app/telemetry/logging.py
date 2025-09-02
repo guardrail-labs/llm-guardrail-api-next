@@ -91,7 +91,9 @@ class JsonFormatter(logging.Formatter):
         tid = extra.get("trace_id") or get_trace_id()
 
         payload: Dict[str, Any] = {
-            "ts": _iso8601(datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)),
+            "ts": _iso8601(
+                datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)
+            ),
             "level": record.levelname,
             "logger": record.name,
             "message": message,
@@ -128,7 +130,13 @@ def configure_root_logging(level: int | str = "INFO") -> None:
         return
 
     root = logging.getLogger()
-    root.setLevel(level if isinstance(level, int) else getattr(logging, str(level).upper(), logging.INFO))
+
+    if isinstance(level, int):
+        resolved_level = level
+    else:
+        resolved_level = getattr(logging, str(level).upper(), logging.INFO)
+
+    root.setLevel(resolved_level)
 
     # Remove pre-existing handlers to avoid duplicate lines in tests
     for h in list(root.handlers):
@@ -147,7 +155,9 @@ class ContextAdapter(logging.LoggerAdapter):
     keys appear on every log line via the 'extra' mechanism.
     """
 
-    def process(self, msg: Any, kwargs: MutableMapping[str, Any]) -> Tuple[Any, MutableMapping[str, Any]]:
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> Tuple[Any, MutableMapping[str, Any]]:
         extra: Dict[str, Any] = {}
         if "extra" in kwargs and isinstance(kwargs["extra"], Mapping):
             # Make a shallow copy to avoid mutating caller's mapping
@@ -170,4 +180,3 @@ def bind(logger: logging.Logger | None = None, **context: Any) -> ContextAdapter
     """
     base = logger or logging.getLogger()
     return ContextAdapter(base, dict(context))
-
