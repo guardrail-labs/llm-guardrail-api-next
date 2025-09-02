@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import Field
+from pydantic import Field, Basemodel
 from pydantic_settings import BaseSettings
 
 
