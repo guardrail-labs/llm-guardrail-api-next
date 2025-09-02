@@ -5,37 +5,51 @@ import json
 import logging
 import socket
 import ssl
-import time
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
-# Public toggle and config via env handled by caller/tests. This file focuses on
-# a clean, typed emitter plus a small retry/backoff wrapper.
+# ----------------------------- helpers ---------------------------------------
 
 
-def _http_connection_for(url: str) -> Union[http.client.HTTPConnection, http.client.HTTPSConnection]:
+def _truthy(val: object) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _getenv(name: str, default: str = "") -> str:
+    # Local import to avoid polluting module namespace for typing/mypy.
+    import os
+
+    return os.getenv(name, default)
+
+
+# ------------------------ HTTP connection creator ----------------------------
+
+
+def _http_connection_for(
+    url: str,
+) -> Union[http.client.HTTPConnection, http.client.HTTPSConnection]:
     """
     Return the correct HTTP(S) connection object for a given URL.
     """
     parsed = urlparse(url)
-    host = parsed.hostname or ""
-    port: int
+    scheme = (parsed.scheme or "http").lower()
+    host = parsed.hostname or "localhost"
+    port: Optional[int] = parsed.port
 
-    if parsed.scheme == "https":
-        port = parsed.port or 443
+    if scheme == "https":
         return http.client.HTTPSConnection(host, port, timeout=5)
-    if parsed.scheme == "http":
-        port = parsed.port or 80
-        return http.client.HTTPConnection(host, port, timeout=5)
+    # Default to HTTP whenever scheme isn't https
+    return http.client.HTTPConnection(host, port, timeout=5)
 
-    raise ValueError(f"Unsupported URL scheme: {parsed.scheme!r}")
+
+# ----------------------------- Core posting ----------------------------------
 
 
 def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     """
-    Raw POST used by tests (monkeypatched) and by emit_audit_event().
+    Low-level POST used by emit_audit_event. Tests monkeypatch this symbol.
     Returns (status_code, response_text).
     """
     parsed = urlparse(url)
@@ -43,19 +57,22 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
-    conn = _http_connection_for(url)
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "llm-guardrail-audit-forwarder/1.0",
+        # The receiving service expects an API key header; keep name stable.
+        "X-API-Key": api_key,
+    }
 
+    conn = _http_connection_for(url)
     try:
-        body = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
         conn.request("POST", path, body=body, headers=headers)
         resp = conn.getresponse()
-        text = resp.read().decode("utf-8", "replace")
-        status = int(resp.status)
-        return (status, text)
+        status = resp.status
+        text = (resp.read() or b"").decode("utf-8", errors="replace")
+        return status, text
     finally:
         try:
             conn.close()
@@ -63,61 +80,75 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
             pass
 
 
+# ----------------------------- Public API ------------------------------------
+
+
 def emit_audit_event(event: Dict[str, Any]) -> None:
     """
-    Fire-and-forget best-effort forwarder. Reads config from env at call time.
+    Fire-and-forget forwarder. Honors env flag AUDIT_FORWARD_ENABLED.
 
-    Expected env (set by process/tests):
-      - AUDIT_FORWARD_ENABLED: truthy to enable
-      - AUDIT_FORWARD_URL: destination URL
-      - AUDIT_FORWARD_API_KEY: bearer value
-      - AUDIT_FORWARD_MAX_RETRIES (optional): default 2
-      - AUDIT_FORWARD_BACKOFF_SECONDS (optional): default 0.15
+    Env:
+      - AUDIT_FORWARD_ENABLED: if falsey, no-op
+      - AUDIT_FORWARD_URL: destination endpoint
+      - AUDIT_FORWARD_API_KEY: bearer secret to include in header
+      - AUDIT_FORWARD_RETRIES: optional, default 3
+      - AUDIT_FORWARD_BACKOFF_MS: optional, default 100 (linear backoff)
     """
-    import os
-
-    enabled = str(os.getenv("AUDIT_FORWARD_ENABLED", "false")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not enabled:
+    if not _truthy(_getenv("AUDIT_FORWARD_ENABLED", "false")):
         return
 
-    url = os.getenv("AUDIT_FORWARD_URL", "")
-    api_key = os.getenv("AUDIT_FORWARD_API_KEY", "")
+    url = _getenv("AUDIT_FORWARD_URL")
+    api_key = _getenv("AUDIT_FORWARD_API_KEY")
     if not url or not api_key:
-        log.warning("Audit forwarder enabled but missing URL or API key; skipping emit.")
+        log.warning("Audit forwarder enabled but URL or API key is missing.")
         return
 
-    # Optional tuning
-    try:
-        max_retries = int(os.getenv("AUDIT_FORWARD_MAX_RETRIES", "2"))
-    except ValueError:
-        max_retries = 2
-    try:
-        backoff = float(os.getenv("AUDIT_FORWARD_BACKOFF_SECONDS", "0.15"))
-    except ValueError:
-        backoff = 0.15
+    # Light validation of payload to avoid surprises downstream.
+    if not isinstance(event, dict):
+        log.debug("Audit event ignored; expected dict, got %r.", type(event))
+        return
 
-    last_exc: Exception | None = None
+    retries_raw = _getenv("AUDIT_FORWARD_RETRIES", "3")
+    backoff_ms_raw = _getenv("AUDIT_FORWARD_BACKOFF_MS", "100")
+    try:
+        retries = max(1, int(retries_raw))
+    except Exception:
+        retries = 3
+    try:
+        backoff_ms = max(0, int(backoff_ms_raw))
+    except Exception:
+        backoff_ms = 100
 
-    for attempt in range(max_retries + 1):
+    last_exc: Optional[BaseException] = None
+    for attempt in range(retries):
         try:
-            status, _ = _post(url, api_key, event)
-            # 2xx success
+            status, _text = _post(url, api_key, event)
+            # Consider 2xx success; otherwise proceed to retry loop.
             if 200 <= status < 300:
                 return
-        except (socket.timeout, ConnectionError, OSError, ssl.SSLError) as exc:
+        except (
+            socket.timeout,
+            ConnectionError,
+            OSError,
+            ssl.SSLError,
+        ) as exc:  # pragma: no cover - network
             last_exc = exc
+        # backoff before next try, except after last attempt
+        if attempt < retries - 1:
+            _sleep_ms(backoff_ms * (attempt + 1))
 
-        # Backoff before next try (except after final attempt)
-        if attempt < max_retries:
-            time.sleep(backoff)
-
-    # Log once on failure after retries
-    if last_exc is not None:
-        log.warning("Audit forward failed after retries: %s", last_exc)
+    if last_exc is not None:  # pragma: no cover - network
+        log.warning(
+            "Audit forwarder failed after %d attempts: %s", retries, last_exc
+        )
     else:
-        log.warning("Audit forward failed; non-2xx response")
+        log.warning(
+            "Audit forwarder non-2xx response after %d attempts.", retries
+        )
+
+
+def _sleep_ms(ms: int) -> None:
+    # Isolated to allow deterministic tests if ever needed.
+    import time
+
+    time.sleep(ms / 1000.0)
