@@ -1,128 +1,80 @@
 from __future__ import annotations
 
 import os
-import uuid
-from typing import Optional, Any
+from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
-
-from app.config import get_settings
-from app.middleware.access_log import AccessLogMiddleware
-from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.telemetry.logging import configure_logging
-
-# Routers
-from app.routes.metrics_route import router as metrics_router
-from app.routes.openai_compat import azure_router, router as oai_router
-from app.routes.health import router as health_router
-from app.routes.admin import router as admin_router
-from app.routes.ready import router as ready_router
-from app.routes.guardrail import router as guardrail_router
-from app.routes.output import router as output_router
-from app.routes.proxy import router as proxy_router
-from app.routes.batch import router as batch_router
-
-# Optional imports (rate limiter, latency)
-try:
-    from app.middleware.rate_limit import RateLimitMiddleware
-except Exception:  # pragma: no cover
-    RateLimitMiddleware = None  # type: ignore[assignment]
-
-try:
-    from app.telemetry.latency import LatencyHistogramMiddleware
-except Exception:  # pragma: no cover
-    LatencyHistogramMiddleware = None  # type: ignore[assignment]
-
-# Optional tracing (alias variable so we don't assign to a type)
-try:
-    from app.telemetry.tracing import TracingMiddleware as TracingMiddlewareCls
-except Exception:  # pragma: no cover
-    TracingMiddlewareCls = None
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.types import ASGIApp
 
 
-def create_app() -> FastAPI:
-    s = get_settings()
-    configure_logging()
+class TracingMiddleware(BaseHTTPMiddleware):
+    """
+    Lightweight optional OpenTelemetry wiring.
 
-    app = FastAPI(title=s.APP_NAME)
+    - If OTEL_ENABLED is not truthy, this is a no-op.
+    - If opentelemetry packages are not installed, this is a no-op.
+    - We import OTel lazily at runtime to keep imports optional and avoid mypy issues.
+    """
 
-    # CORS
-    origins = [o.strip() for o in (getattr(s, "CORS_ALLOW_ORIGINS", "*") or "").split(",") if o.strip()]
-    if origins:
-        allow_credentials = True
-        if origins == ["*"]:
-            # Starlette constraint: "*" cannot be combined with allow_credentials=True
-            allow_credentials = False
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=origins,
-            allow_credentials=allow_credentials,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+        self.enabled = _truthy(os.getenv("OTEL_ENABLED", "false"))
+        self._initialized = False
+        self._trace: Any = None  # set on init if libs are available
 
-    # Access logging first to capture everything
-    app.add_middleware(AccessLogMiddleware)
+    async def dispatch(self, request: Request, call_next):
+        if not self.enabled:
+            return await call_next(request)
 
-    # Security headers
-    app.add_middleware(SecurityHeadersMiddleware)
+        # Lazy init to avoid side effects during import time.
+        if not self._initialized:
+            self._initialized = self._ensure_tracer_provider()
 
-    # Optional tracing (no-op unless OTEL_ENABLED and deps present)
-    if TracingMiddlewareCls is not None and _truthy(os.getenv("OTEL_ENABLED", "false")):
-        app.add_middleware(TracingMiddlewareCls)
+        if not self._initialized or self._trace is None:
+            # Tracing unavailable; proceed normally.
+            return await call_next(request)
 
-    # Optional latency histogram
-    if LatencyHistogramMiddleware is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
-        app.add_middleware(LatencyHistogramMiddleware)
+        tracer = self._trace.get_tracer("llm-guardrail")
+        route = request.url.path
+        peer_ip = request.client.host if request.client else "unknown"
 
-    # Optional rate limiter
-    if RateLimitMiddleware is not None and getattr(s, "RATE_LIMIT_ENABLED", False):
-        app.add_middleware(RateLimitMiddleware)
+        # Minimal span around the request
+        with self._trace.use_span(tracer.start_span(route), end_on_exit=True) as span:
+            span.set_attribute("http.method", request.method)
+            span.set_attribute("http.route", route)
+            span.set_attribute("net.peer.ip", peer_ip)
+            response = await call_next(request)
+            span.set_attribute("http.status_code", response.status_code)
+        return response
 
-    # Routers
-    app.include_router(health_router)
-    app.include_router(ready_router)
-    app.include_router(admin_router)
-    app.include_router(metrics_router)
-    app.include_router(oai_router)
-    app.include_router(azure_router)
-    app.include_router(guardrail_router)
-    app.include_router(output_router)
-    app.include_router(proxy_router)
-    app.include_router(batch_router)
+    def _ensure_tracer_provider(self) -> bool:
+        # Import here to keep dependencies optional and avoid static type noise.
+        try:  # pragma: no cover
+            from opentelemetry import trace as _trace
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        except Exception:
+            return False
 
-    # Error handlers (preserve existing contracts)
-    @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        # Normalize 404 and other HTTP errors per contract
-        code = "not_found" if exc.status_code == 404 else "error"
-        detail = exc.detail if isinstance(exc.detail, str) else "error"
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"code": code, "detail": detail, "request_id": rid},
-            headers={"X-Request-ID": rid},
-        )
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
 
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        return JSONResponse(
-            status_code=500,
-            content={"code": "internal_error", "detail": "internal error", "request_id": rid},
-            headers={"X-Request-ID": rid},
-        )
-
-    return app
+        try:  # pragma: no cover
+            resource = Resource.create({"service.name": service_name})
+            provider = TracerProvider(resource=resource)
+            if endpoint:
+                exporter = OTLPSpanExporter(endpoint=endpoint)
+                processor = BatchSpanProcessor(exporter)
+                provider.add_span_processor(processor)
+            _trace.set_tracer_provider(provider)
+            self._trace = _trace
+            return True
+        except Exception:
+            return False
 
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
-
-
-# Compatibility for tests that import build_app
-build_app = create_app
-app = create_app()
