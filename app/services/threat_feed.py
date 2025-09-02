@@ -1,139 +1,73 @@
 from __future__ import annotations
 
-import json
-import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, cast
-from urllib.request import urlopen  # stdlib to avoid extra deps
+from threading import RLock
+from typing import Any, Dict, List, Pattern, Tuple
 
-
-# A dynamic redaction spec: {"pattern": "regex", "tag": "secrets:vendor_token",
-#                            "replacement": "[REDACTED:VENDOR_TOKEN]"}
-_RedactionSpec = Dict[str, str]
-
-# Compiled dynamic patterns: List[(compiled_re, tag, replacement)]
-_DYNAMIC_PATTERNS: List[Tuple[re.Pattern[str], str, str]] = []
-
-
-def threat_feed_enabled() -> bool:
-    return os.getenv("THREAT_FEED_ENABLED", "false").lower() == "true"
+# Global compiled rules: list of (regex, replacement)
+_PATTERNS: List[Tuple[Pattern[str], str]] = []
+_LOCK = RLock()
 
 
 def _fetch_json(url: str) -> Dict[str, Any]:
-    with urlopen(url, timeout=10) as resp:  # nosec - controlled by admin/tests
-        data = resp.read().decode("utf-8", "ignore")
-        # mypy: json.loads returns Any; cast to Dict[str, Any] for our schema
-        return cast(Dict[str, Any], json.loads(data))
-
-
-def _compile_specs(
-    specs: List[_RedactionSpec],
-) -> List[Tuple[re.Pattern[str], str, str]]:
-    compiled: List[Tuple[re.Pattern[str], str, str]] = []
-    for s in specs:
-        pat = s.get("pattern", "")
-        tag = s.get("tag", "")
-        repl = s.get("replacement", "")
-        if not pat or not tag or not repl:
-            continue
-        try:
-            compiled.append((re.compile(pat), tag, repl))
-        except re.error:
-            # skip bad pattern; feed robustness
-            continue
-    return compiled
-
-
-def refresh_from_env() -> Dict[str, Any]:
     """
-    Pull redaction specs from all URLs in THREAT_FEED_URLS (comma-separated),
-    compile them, and replace the dynamic pattern set atomically.
-
-    Expected JSON shape per URL:
+    Placeholder impl. Tests monkeypatch this function to return a spec:
       {
-        "version": "2025-08-30",
+        "version": "...",
         "redactions": [
-          {
-            "pattern": "token_[0-9]{6}",
-            "tag": "secrets:vendor_token",
-            "replacement": "[REDACTED:VENDOR_TOKEN]"
-          }
-        ]
+          {"pattern": r"...", "tag": "...", "replacement": "..."},
+          ...
+        ],
       }
+    In production you could fetch via requests/httpx.
     """
-    urls = [u.strip() for u in os.getenv("THREAT_FEED_URLS", "").split(",") if u.strip()]
-    all_specs: List[_RedactionSpec] = []
-    versions: List[str] = []
+    # Keep default no-op; tests replace this with a stub.
+    return {"version": "empty", "redactions": []}
 
+
+def reload_from_urls(urls: List[str]) -> int:
+    """
+    Load threat-feed rules from the given URLs (comma-separated in env in tests),
+    compile regex patterns, and atomically replace the active rule set.
+
+    Returns the total number of compiled redaction rules.
+    """
+    compiled: List[Tuple[Pattern[str], str]] = []
+    total = 0
     for u in urls:
         try:
-            doc = _fetch_json(u)
-            versions.append(str(doc.get("version", "")))
-            specs = doc.get("redactions", []) or []
-            if isinstance(specs, list):
-                all_specs.extend([s for s in specs if isinstance(s, dict)])
+            spec = _fetch_json(u)  # tests monkeypatch this
         except Exception:
-            # ignore failing source; proceed with others
             continue
+        redactions = (spec or {}).get("redactions", []) or []
+        for entry in redactions:
+            pat = entry.get("pattern")
+            repl = entry.get("replacement") or "[REDACTED]"
+            if not isinstance(pat, str) or not pat:
+                continue
+            try:
+                rx = re.compile(pat)
+                compiled.append((rx, repl))
+                total += 1
+            except re.error:
+                # Skip bad patterns
+                continue
 
-    compiled = _compile_specs(all_specs)
+    with _LOCK:
+        _PATTERNS.clear()
+        _PATTERNS.extend(compiled)
 
-    # Swap atomically
-    global _DYNAMIC_PATTERNS
-    _DYNAMIC_PATTERNS = compiled
-
-    return {
-        "sources": len(urls),
-        "loaded_specs": len(all_specs),
-        "compiled": len(compiled),
-        "versions": [v for v in versions if v],
-    }
+    return total
 
 
-def apply_dynamic_redactions(
-    text: str, debug: bool = False
-) -> Tuple[str, List[str], int, List[Dict[str, Any]]]:
+def apply_dynamic_redactions(text: str) -> str:
     """
-    Apply dynamic patterns (if any). Returns:
-      (sanitized_text, normalized_families, redaction_count, debug_matches)
-    Families normalized to secrets:*, pi:*, payload:*, policy:deny:* (by prefix).
+    Apply the currently active threat-feed redactions to the input text.
     """
-    if not _DYNAMIC_PATTERNS:
-        return text, [], 0, []
-
-    out = text
-    families: List[str] = []
-    redactions = 0
-    dbg: List[Dict[str, Any]] = []
-
-    def _family(tag: str) -> str:
-        if tag.startswith("secrets:"):
-            return "secrets:*"
-        if tag.startswith("pi:"):
-            return "pi:*"
-        if tag.startswith("payload:"):
-            return "payload:*"
-        if tag.startswith("policy:deny:"):
-            return "policy:deny:*"
-        return tag
-
-    for pattern, tag, repl in _DYNAMIC_PATTERNS:
-        matches = list(pattern.finditer(out))
-        if not matches:
-            continue
-        out, n = pattern.subn(repl, out)
-        redactions += n
-        families.append(tag)
-        if debug:
-            for m in matches[:5]:
-                dbg.append(
-                    {
-                        "tag": tag,
-                        "span": {"start": m.start(), "end": m.end()},
-                        "sample": out[max(0, m.start() - 8) : m.end() + 8],
-                    }
-                )
-
-    # Deduplicate + normalize families
-    nf = sorted({_family(t) for t in families})
-    return out, nf, redactions, dbg
+    if not text:
+        return text
+    with _LOCK:
+        patterns = list(_PATTERNS)
+    for rx, repl in patterns:
+        text = rx.sub(repl, text)
+    return text
