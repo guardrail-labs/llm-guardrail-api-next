@@ -30,13 +30,18 @@ def _fetch_json(url: str) -> Dict[str, Any]:
     {
       "version": "test",
       "redactions": [
-        {"pattern": r"...", "tag": "secrets:vendor_token", "replacement": "[REDACTED:VENDOR_TOKEN]"},
+        {
+          "pattern": r"...",
+          "tag": "secrets:vendor_token",
+          "replacement": "[REDACTED:VENDOR_TOKEN]",
+        },
         ...
       ],
     }
     """
     # Default no-op payload.
     return {"version": "empty", "redactions": []}
+
 
 
 def reload_from_urls(urls: List[str]) -> int:
