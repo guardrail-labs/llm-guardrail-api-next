@@ -6,7 +6,6 @@ import re
 from threading import RLock
 from typing import Any, Dict, List, Pattern, Tuple
 
-
 # Compiled rule: (regex, replacement, tag)
 _Rules: List[Tuple[Pattern[str], str, str]] = []
 _LOCK = RLock()
@@ -43,7 +42,6 @@ def _fetch_json(url: str) -> Dict[str, Any]:
     return {"version": "empty", "redactions": []}
 
 
-
 def reload_from_urls(urls: List[str]) -> int:
     """
     Fetch and compile redaction rules from the given URLs
@@ -56,7 +54,7 @@ def reload_from_urls(urls: List[str]) -> int:
 
     for u in urls:
         try:
-            spec = _fetch_json(u)  # tests replace this
+            spec = _fetch_json(u)
         except Exception:
             continue
 
@@ -114,6 +112,8 @@ def apply_dynamic_redactions(
       * Multiple rules may match; replacements are applied sequentially.
       * We count matches via regex finditer BEFORE substitution so counts reflect
         how many occurrences were present.
+      * Also increments a wildcard family "<prefix>:*" derived from tag prefix
+        before the first ":" (e.g., "secrets:*").
     """
     if not text:
         return text, {}, 0, []
@@ -134,7 +134,13 @@ def apply_dynamic_redactions(
             continue
 
         total += n
+        # Specific tag count
         families[tag] = families.get(tag, 0) + n
+        # Wildcard family (e.g., "secrets:*")
+        if ":" in tag:
+            prefix = tag.split(":", 1)[0]
+            wildcard = f"{prefix}:*"
+            families[wildcard] = families.get(wildcard, 0) + n
 
         if debug:
             # Record a compact representation of matches (tag + first 50 chars)
