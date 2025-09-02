@@ -21,7 +21,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.enabled = _truthy(os.getenv("OTEL_ENABLED", "false"))
         self._initialized = False
-        self._trace: Any = None  # set on init if libs are available
+        self._trace: Optional[Any] = None  # set on init if libs are available
 
     async def dispatch(self, request: Request, call_next):
         if not self.enabled:
@@ -37,12 +37,13 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
         tracer = self._trace.get_tracer("llm-guardrail")
         route = request.url.path
+        peer_ip = request.client.host if request.client else "unknown"
 
         # Minimal span around the request
         with self._trace.use_span(tracer.start_span(route), end_on_exit=True) as span:
             span.set_attribute("http.method", request.method)
             span.set_attribute("http.route", route)
-            span.set_attribute("net.peer.ip", (request.client.host if request.client else "unknown"))
+            span.set_attribute("net.peer.ip", peer_ip)
             response = await call_next(request)
             span.set_attribute("http.status_code", response.status_code)
         return response
@@ -51,7 +52,9 @@ class TracingMiddleware(BaseHTTPMiddleware):
         # Import here to keep dependencies optional and avoid static type noise.
         try:  # pragma: no cover
             from opentelemetry import trace as _trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
             from opentelemetry.sdk.resources import Resource
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
