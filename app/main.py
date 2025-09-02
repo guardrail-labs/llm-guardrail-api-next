@@ -8,7 +8,7 @@ from typing import List
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -150,9 +150,6 @@ def create_app() -> FastAPI:
     async def _health_fallback():
         # Minimal shape; some tests only check .status == "ok"
         return {"status": "ok", "ok": True}
-
-    # Do NOT add a /metrics fallback here to avoid route duplication conflicts.
-    # Metrics are exposed elsewhere; we only ensure the histogram is registered.
 
     # ---- JSON error handlers with request_id ----
 
