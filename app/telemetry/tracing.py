@@ -1,16 +1,12 @@
+# app/telemetry/tracing.py
 from __future__ import annotations
 
-import importlib
-import logging
 import os
 from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
-
-
-logger = logging.getLogger("app.telemetry")
 
 
 class TracingMiddleware(BaseHTTPMiddleware):
@@ -57,18 +53,12 @@ class TracingMiddleware(BaseHTTPMiddleware):
         # Import here to keep dependencies optional and avoid static type noise.
         try:  # pragma: no cover
             from opentelemetry import trace as _trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-                OTLPSpanExporter,
-            )
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.resources import Resource
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
-            logger.warning(
-                "OTel enabled but opentelemetry is not installed; tracing disabled"
-            )
-            self._trace = None
-            return True
+            return False
 
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
@@ -91,33 +81,37 @@ def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
-# Optional helper to expose current trace id (if any) without requiring callers
-# to import OpenTelemetry directly. Returns a 32-character hex string or None.
-def get_trace_id() -> Optional[str]:
-    try:  # pragma: no cover - opentelemetry is optional
-        from opentelemetry.trace import get_current_span
-    except Exception:
-        return None
+# ---- simple adapters used elsewhere -----------------------------------------
 
-    try:
-        span = get_current_span()
-        ctx = span.get_span_context()  # type: ignore[assignment]
-        trace_id = getattr(ctx, "trace_id", 0)
-        if not trace_id:
-            return None
-        return f"{trace_id:032x}"
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------
-# Back-compat shim: some modules used to import get_request_id from here.
-# We proxy to app.middleware.request_id at runtime without static imports.
-# ---------------------------------------------------------------------
 def get_request_id() -> Optional[str]:
-    mod = importlib.import_module("app.middleware.request_id")
-    func = getattr(mod, "get_request_id", None)
-    if callable(func):
-        rid = func()
+    """
+    Thin wrapper so other modules can import from here without caring
+    where the request-id is actually implemented.
+    """
+    try:
+        from app.middleware.request_id import get_request_id as _get  # type: ignore[attr-defined]
+        rid = _get()
         return str(rid) if rid is not None else None
-    return None
+    except Exception:
+        return None
+
+
+def get_trace_id() -> Optional[str]:
+    """
+    Return current OpenTelemetry trace id as 32-char hex if available.
+    Safe to call even when OTEL is not installed or no span is active.
+    """
+    try:  # pragma: no cover
+        from opentelemetry import trace as _trace  # type: ignore
+        span = _trace.get_current_span()
+        if span is None:
+            return None
+        ctx = span.get_span_context()
+        # SpanContext has .is_valid (bool) and .trace_id (int)
+        if getattr(ctx, "is_valid", False):
+            trace_id_int = getattr(ctx, "trace_id", 0)
+            if isinstance(trace_id_int, int) and trace_id_int:
+                return f"{trace_id_int:032x}"
+        return None
+    except Exception:
+        return None
