@@ -1,47 +1,27 @@
 from __future__ import annotations
 
-import contextvars
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
 
-# We keep imports optional so tests/projects without OTel still pass.
-try:  # pragma: no cover
-    from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    _OTEL_AVAILABLE = True
-except Exception:  # pragma: no cover
-    trace = None  # type: ignore[assignment]
-    OTLPSpanExporter = None  # type: ignore[assignment]
-    Resource = None  # type: ignore[assignment]
-    TracerProvider = None  # type: ignore[assignment]
-    BatchSpanProcessor = None  # type: ignore[assignment]
-    _OTEL_AVAILABLE = False
-
-
-_REQUEST_ID = contextvars.ContextVar[Optional[str]]("request_id", default=None)
-
-
-def get_request_id() -> Optional[str]:
-    return _REQUEST_ID.get()
-
 
 class TracingMiddleware(BaseHTTPMiddleware):
     """
-    Lightweight OTel wiring. If opentelemetry* packages are not installed or
-    OTEL_ENABLED is not truthy, this becomes a no-op.
+    Lightweight optional OpenTelemetry wiring.
+
+    - If OTEL_ENABLED is not truthy, this is a no-op.
+    - If opentelemetry packages are not installed, this is a no-op.
+    - We import OTel lazily at runtime to keep imports optional and avoid mypy issues.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
         self.enabled = _truthy(os.getenv("OTEL_ENABLED", "false"))
         self._initialized = False
+        self._trace: Any = None  # set on init if libs are available
 
     async def dispatch(self, request: Request, call_next):
         if not self.enabled:
@@ -51,32 +31,36 @@ class TracingMiddleware(BaseHTTPMiddleware):
         if not self._initialized:
             self._initialized = self._ensure_tracer_provider()
 
-        if not _OTEL_AVAILABLE:
+        if not self._initialized or self._trace is None:
+            # Tracing unavailable; proceed normally.
             return await call_next(request)
 
-        tracer = trace.get_tracer("llm-guardrail")
+        tracer = self._trace.get_tracer("llm-guardrail")
         route = request.url.path
 
-        # Add a basic Server-Timing hint even without collectors.
-        # This is harmless and useful to eyeball timings in dev tools.
-        response = None
-        with tracer.start_as_current_span(route) as span:  # type: ignore[attr-defined]
-            # Tag a few request attributes
-            span.set_attribute("http.method", request.method)  # type: ignore[attr-defined]
-            span.set_attribute("http.route", route)  # type: ignore[attr-defined]
-            span.set_attribute(
-                "net.peer.ip",
-                (request.client.host if request.client else "unknown"),
-            )  # type: ignore[attr-defined]
+        # Minimal span around the request
+        with self._trace.use_span(tracer.start_span(route), end_on_exit=True) as span:
+            span.set_attribute("http.method", request.method)
+            span.set_attribute("http.route", route)
+            span.set_attribute("net.peer.ip", (request.client.host if request.client else "unknown"))
             response = await call_next(request)
-            span.set_attribute("http.status_code", response.status_code)  # type: ignore[attr-defined]
+            span.set_attribute("http.status_code", response.status_code)
         return response
 
     def _ensure_tracer_provider(self) -> bool:
-        if not _OTEL_AVAILABLE:
+        # Import here to keep dependencies optional and avoid static type noise.
+        try:  # pragma: no cover
+            from opentelemetry import trace as _trace
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        except Exception:
             return False
+
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
+
         try:  # pragma: no cover
             resource = Resource.create({"service.name": service_name})
             provider = TracerProvider(resource=resource)
@@ -84,7 +68,8 @@ class TracingMiddleware(BaseHTTPMiddleware):
                 exporter = OTLPSpanExporter(endpoint=endpoint)
                 processor = BatchSpanProcessor(exporter)
                 provider.add_span_processor(processor)
-            trace.set_tracer_provider(provider)  # type: ignore[attr-defined]
+            _trace.set_tracer_provider(provider)
+            self._trace = _trace
             return True
         except Exception:
             return False
@@ -92,4 +77,3 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
-
