@@ -43,7 +43,8 @@ def create_app() -> FastAPI:
     if origins:
         allow_credentials = True
         if origins == ["*"]:
-            allow_credentials = False  # Starlette constraint: "*" cannot be combined with allow_credentials=True
+            # Starlette constraint: cannot combine "*" with allow_credentials=True
+            allow_credentials = False
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
