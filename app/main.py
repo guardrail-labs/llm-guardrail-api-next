@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import uuid
 from typing import TYPE_CHECKING, Optional, Type
 
@@ -22,6 +23,12 @@ from app.routes.metrics_route import router as metrics_router
 from app.routes.openai_compat import azure_router, router as oai_router
 from app.routes.ready import router as ready_router
 from app.telemetry.logging import configure_logging
+
+# NEW (optional tracing)
+try:
+    from app.telemetry.tracing import TracingMiddleware  # type: ignore[no-redef]
+except Exception:  # pragma: no cover
+    TracingMiddleware = None  # type: ignore[assignment]
 
 # Optional middleware imports (mypy-safe pattern)
 if TYPE_CHECKING:
@@ -92,6 +99,10 @@ def create_app() -> FastAPI:
     # Security headers
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # NEW: optional tracing (no-op unless OTEL_ENABLED=true and OTel libs installed)
+    if TracingMiddleware is not None and _truthy(os.getenv("OTEL_ENABLED", "false")):
+        app.add_middleware(TracingMiddleware)
+
     # Optional latency histogram
     if LatencyHistogramMW is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
         app.add_middleware(LatencyHistogramMW)  # type: ignore[arg-type]
@@ -161,6 +172,11 @@ def create_app() -> FastAPI:
         )
 
     return app
+
+
+# Helper used above
+def _truthy(val: object) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
 # Tests import `build_app` from app.main
