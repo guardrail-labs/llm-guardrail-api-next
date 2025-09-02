@@ -1,6 +1,7 @@
 # app/telemetry/tracing.py
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -8,13 +9,60 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
 
+log = logging.getLogger(__name__)
+
+
+# ----------------------------- No-op tracing shim -----------------------------
+
+class _NoopSpan:
+    def set_attribute(self, *_: Any, **__: Any) -> None:  # noqa: D401
+        """No-op attribute setter."""
+        return
+
+    def get_span_context(self) -> Any:
+        # Mimic OTEL SpanContext shape enough for get_trace_id()
+        class _Ctx:
+            is_valid = False
+            trace_id = 0
+
+        return _Ctx()
+
+
+class _NoopTracer:
+    def start_span(self, _name: str) -> _NoopSpan:
+        return _NoopSpan()
+
+
+class _UseSpanCtx:
+    def __init__(self, span: _NoopSpan, *_: Any, **__: Any) -> None:
+        self._span = span
+
+    def __enter__(self) -> _NoopSpan:
+        return self._span
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        # Do not suppress exceptions
+        return False
+
+
+class _NoopTrace:
+    """Subset of opentelemetry.trace used by this middleware."""
+
+    def get_tracer(self, _name: str) -> _NoopTracer:
+        return _NoopTracer()
+
+    def use_span(self, span: _NoopSpan, *args: Any, **kwargs: Any) -> _UseSpanCtx:
+        return _UseSpanCtx(span, *args, **kwargs)
+
+
+# --------------------------------- Middleware ---------------------------------
 
 class TracingMiddleware(BaseHTTPMiddleware):
     """
     Lightweight optional OpenTelemetry wiring.
 
     - If OTEL_ENABLED is not truthy, this is a no-op.
-    - If opentelemetry packages are not installed, this is a no-op.
+    - If opentelemetry packages are not installed, we install a no-op tracer and continue.
     - We import OTel lazily at runtime to keep imports optional and avoid mypy issues.
     """
 
@@ -50,7 +98,10 @@ class TracingMiddleware(BaseHTTPMiddleware):
         return response
 
     def _ensure_tracer_provider(self) -> bool:
-        # Import here to keep dependencies optional and avoid static type noise.
+        """
+        Try to configure OTEL. If not installed, fall back to a no-op tracer,
+        log a warning, and report initialized=True so callers can proceed.
+        """
         try:  # pragma: no cover
             from opentelemetry import trace as _trace
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -58,7 +109,10 @@ class TracingMiddleware(BaseHTTPMiddleware):
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
-            return False
+            # OTEL not available; install no-op shim so tracing calls are safe.
+            log.warning("OpenTelemetry not installed; using no-op tracer.")
+            self._trace = _NoopTrace()
+            return True
 
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
@@ -73,8 +127,10 @@ class TracingMiddleware(BaseHTTPMiddleware):
             _trace.set_tracer_provider(provider)
             self._trace = _trace
             return True
-        except Exception:
-            return False
+        except Exception as e:
+            log.warning("Failed to initialize OpenTelemetry provider; using no-op tracer. %s", e)
+            self._trace = _NoopTrace()
+            return True
 
 
 def _truthy(val: object) -> bool:
@@ -107,7 +163,6 @@ def get_trace_id() -> Optional[str]:
         if span is None:
             return None
         ctx = span.get_span_context()
-        # SpanContext has .is_valid (bool) and .trace_id (int)
         if getattr(ctx, "is_valid", False):
             trace_id_int = getattr(ctx, "trace_id", 0)
             if isinstance(trace_id_int, int) and trace_id_int:
