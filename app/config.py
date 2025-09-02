@@ -4,8 +4,9 @@ import os
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import Field, Basemodel
+from pydantic import Field, BaseModel
 from pydantic_settings import BaseSettings
+
 
 
 class Settings(BaseSettings):
