@@ -2,39 +2,108 @@ from __future__ import annotations
 
 import re
 import threading
-from typing import Dict, Tuple, List, cast
+from typing import Dict, List, Optional, Tuple, cast
 
-from prometheus_client import Counter, REGISTRY
+try:
+    from prometheus_client import Counter, Histogram, REGISTRY
+except Exception:  # pragma: no cover
+    Counter = object  # type: ignore[assignment]
+    Histogram = object  # type: ignore[assignment]
+    REGISTRY = None  # type: ignore[assignment]
 
-# ----------------------------
-# Basic request/decision counters
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Prometheus metric objects (singleton registration)
+# ---------------------------------------------------------------------------
+
+_LOCK = threading.Lock()
+_METRIC_NAMES = {
+    "requests": "guardrail_requests_total",
+    "decisions": "guardrail_decisions_total",
+    "rate_limited": "guardrail_rate_limited_total",
+    "latency": "guardrail_latency_seconds",
+}
+
+
+def _get_collector(name: str):
+    if REGISTRY is None:  # pragma: no cover
+        return None
+    return getattr(REGISTRY, "_names_to_collectors", {}).get(name)  # type: ignore[attr-defined]
+
+
+def _get_or_register_counter(name: str, *args, **kwargs):
+    with _LOCK:
+        existing = _get_collector(name)
+        if existing is not None:
+            return existing
+        return Counter(name, *args, **kwargs)
+
+
+def _get_or_register_histogram(name: str, *args, **kwargs):
+    with _LOCK:
+        existing = _get_collector(name)
+        if existing is not None:
+            return existing
+        return Histogram(name, *args, **kwargs)
+
+
+REQUESTS_TOTAL = _get_or_register_counter(
+    _METRIC_NAMES["requests"],
+    "Total guardrail requests.",
+)
+
+DECISIONS_TOTAL = _get_or_register_counter(
+    _METRIC_NAMES["decisions"],
+    "Total decisions made by guardrail.",
+    ["action"],
+)
+
+RATE_LIMITED_TOTAL = _get_or_register_counter(
+    _METRIC_NAMES["rate_limited"],
+    "Requests rejected by legacy rate limiter.",
+)
+
+LATENCY_SECONDS = _get_or_register_histogram(
+    _METRIC_NAMES["latency"],
+    "Guardrail request latency in seconds.",
+)
+
+# ---------------------------------------------------------------------------
+# Simple in-process counters mirroring legacy behavior
+# ---------------------------------------------------------------------------
 
 _REQ_LOCK = threading.RLock()
-_REQUESTS_TOTAL: float = 0.0
-_DECISIONS_TOTAL: float = 0.0
+_REQUESTS_TOTAL_F: float = 0.0
+_DECISIONS_TOTAL_F: float = 0.0
 
 
 def inc_requests_total(by: float = 1.0) -> None:
-    global _REQUESTS_TOTAL
+    global _REQUESTS_TOTAL_F
     with _REQ_LOCK:
-        _REQUESTS_TOTAL += float(by)
+        _REQUESTS_TOTAL_F += float(by)
+    try:
+        REQUESTS_TOTAL.inc(by)
+    except Exception:  # pragma: no cover
+        pass
 
 
-def inc_decisions_total(by: float = 1.0) -> None:
-    global _DECISIONS_TOTAL
+def inc_decisions_total(by: float = 1.0, action: str = "unknown") -> None:
+    global _DECISIONS_TOTAL_F
     with _REQ_LOCK:
-        _DECISIONS_TOTAL += float(by)
+        _DECISIONS_TOTAL_F += float(by)
+    try:
+        DECISIONS_TOTAL.labels(action=action).inc(by)
+    except Exception:  # pragma: no cover
+        pass
 
 
 def get_requests_total() -> float:
     with _REQ_LOCK:
-        return float(_REQUESTS_TOTAL)
+        return float(_REQUESTS_TOTAL_F)
 
 
 def get_decisions_total() -> float:
     with _REQ_LOCK:
-        return float(_DECISIONS_TOTAL)
+        return float(_DECISIONS_TOTAL_F)
 
 
 def get_rules_version() -> str:
@@ -45,9 +114,9 @@ def get_rules_version() -> str:
     except Exception:
         return "unknown"
 
-# ----------------------------
-# Decision-family (global)
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Decision-family (global + tenant/bot breakdown)
+# ---------------------------------------------------------------------------
 
 _FAMILY_LOCK = threading.RLock()
 _FAMILY: Dict[str, float] = {
@@ -64,6 +133,7 @@ def inc_decision_family(name: str, by: float = 1.0) -> None:
         return
     with _FAMILY_LOCK:
         _FAMILY[key] += float(by)
+    inc_decisions_total(by, action=key)
 
 
 def get_decisions_family_total(name: str) -> float:
@@ -78,52 +148,53 @@ def get_all_family_totals() -> Dict[str, float]:
     with _FAMILY_LOCK:
         return {k: float(v) for k, v in _FAMILY.items()}
 
-
-# ----------------------------
-# Rate-limited (global)
-# ----------------------------
-
+# Rate-limited (legacy)
 _RATE_LIMIT_LOCK = threading.RLock()
-_RATE_LIMITED_TOTAL: float = 0.0
+_RATE_LIMITED_TOTAL_F: float = 0.0
 
-# Prometheus counters (register once; reuse if already present)
+# Quota rejects counter reused if present
 try:
     _QUOTA_REJECTS: Counter = Counter(
         "guardrail_quota_rejects_total",
         "Total requests rejected by per-tenant quotas",
         ["tenant_id", "bot_id"],
     )
-except ValueError:
-    # Already registered: fetch and cast from registry
+except Exception:  # pragma: no cover
     _QUOTA_REJECTS = cast(
-        Counter, REGISTRY._names_to_collectors["guardrail_quota_rejects_total"]
+        Counter, getattr(REGISTRY, "_names_to_collectors", {}).get("guardrail_quota_rejects_total")
     )
 
 
 def inc_quota_reject_tenant_bot(tenant_id: str, bot_id: str) -> None:
-    _QUOTA_REJECTS.labels(tenant_id=tenant_id, bot_id=bot_id).inc()
+    try:
+        _QUOTA_REJECTS.labels(tenant_id=tenant_id, bot_id=bot_id).inc()
+    except Exception:  # pragma: no cover
+        pass
 
 
 def inc_rate_limited(by: float = 1.0) -> None:
-    global _RATE_LIMITED_TOTAL
+    global _RATE_LIMITED_TOTAL_F
     with _RATE_LIMIT_LOCK:
-        _RATE_LIMITED_TOTAL += float(by)
+        _RATE_LIMITED_TOTAL_F += float(by)
+    try:
+        RATE_LIMITED_TOTAL.inc(by)
+    except Exception:  # pragma: no cover
+        pass
 
 
 def get_rate_limited_total() -> float:
     with _RATE_LIMIT_LOCK:
-        return float(_RATE_LIMITED_TOTAL)
+        return float(_RATE_LIMITED_TOTAL_F)
 
-
-# ----------------------------
 # Tenant/Bot breakdown (capped)
-# ----------------------------
-
 _MAX_TENANTS = 20
 _MAX_BOTS_PER_TENANT = 20
 _OTHER = "other"
-
 _LABEL_SAFE = re.compile(r"[^a-zA-Z0-9._-]")
+
+_T_LOCK = threading.RLock()
+_TENANT_FAMILY: Dict[str, Dict[str, float]] = {}
+_BOT_FAMILY: Dict[str, Dict[str, Dict[str, float]]] = {}
 
 
 def _sanitize_label(val: str) -> str:
@@ -132,13 +203,6 @@ def _sanitize_label(val: str) -> str:
         return _OTHER
     v = _LABEL_SAFE.sub("_", v)[:64]
     return v.lower() or _OTHER
-
-
-_T_LOCK = threading.RLock()
-# tenant -> family -> count
-_TENANT_FAMILY: Dict[str, Dict[str, float]] = {}
-# tenant -> (bot -> (family -> count))
-_BOT_FAMILY: Dict[str, Dict[str, Dict[str, float]]] = {}
 
 
 def _ensure_tenant_bucket(tenant: str) -> str:
@@ -153,8 +217,7 @@ def _ensure_tenant_bucket(tenant: str) -> str:
                 "sanitize": 0.0,
                 "verify": 0.0,
             }
-            if t not in _BOT_FAMILY:
-                _BOT_FAMILY[t] = {}
+            _BOT_FAMILY.setdefault(t, {})
             return t
         if _OTHER not in _TENANT_FAMILY:
             _TENANT_FAMILY[_OTHER] = {
@@ -163,8 +226,7 @@ def _ensure_tenant_bucket(tenant: str) -> str:
                 "sanitize": 0.0,
                 "verify": 0.0,
             }
-            if _OTHER not in _BOT_FAMILY:
-                _BOT_FAMILY[_OTHER] = {}
+            _BOT_FAMILY.setdefault(_OTHER, {})
         return _OTHER
 
 
@@ -199,12 +261,8 @@ def inc_decision_family_tenant_bot(
     by: float = 1.0,
 ) -> None:
     fam = (family or "").lower().strip()
-    if fam not in ("allow", "block", "sanitize", "verify"):
+    if fam not in _FAMILY:
         return
-
-    # global family always increments
-    inc_decision_family(fam, by)
-
     with _T_LOCK:
         t_key = _ensure_tenant_bucket(tenant)
         _TENANT_FAMILY[t_key][fam] += float(by)
@@ -232,53 +290,39 @@ def get_family_bot_totals() -> Dict[Tuple[str, str, str], float]:
 
 
 def export_family_breakdown_lines() -> List[str]:
-    """
-    Returns Prometheus text lines for:
-
-    - guardrail_decisions_family_tenant_total{tenant, family}
-    - guardrail_decisions_family_bot_total{tenant, bot, family}
-    """
     lines: List[str] = []
 
-    # tenant level
     t_totals = get_family_tenant_totals()
     if t_totals:
         lines.append(
-            "# HELP guardrail_decisions_family_tenant_total "
-            "Decisions by family per tenant."
+            "# HELP guardrail_decisions_family_tenant_total Decisions by family per tenant."
         )
         lines.append("# TYPE guardrail_decisions_family_tenant_total counter")
         for (tenant, fam), v in sorted(t_totals.items()):
-            metric = (
+            lines.append(
                 "guardrail_decisions_family_tenant_total"
                 f'{{tenant="{tenant}",family="{fam}"}} {v}'
             )
-            lines.append(metric)
 
-    # bot level
     b_totals = get_family_bot_totals()
     if b_totals:
         lines.append(
-            "# HELP guardrail_decisions_family_bot_total "
-            "Decisions by family per bot."
+            "# HELP guardrail_decisions_family_bot_total Decisions by family per bot."
         )
         lines.append("# TYPE guardrail_decisions_family_bot_total counter")
         for (tenant, bot, fam), v in sorted(b_totals.items()):
-            metric = (
+            lines.append(
                 "guardrail_decisions_family_bot_total"
                 f'{{tenant="{tenant}",bot="{bot}",family="{fam}"}} {v}'
             )
-            lines.append(metric)
 
     return lines
 
-
-# ----------------------------
+# ---------------------------------------------------------------------------
 # Verifier outcomes
-# ----------------------------
+# ---------------------------------------------------------------------------
 
 _VERIFIER_LOCK = threading.RLock()
-# provider -> outcome -> count
 _VERIFIER: Dict[str, Dict[str, float]] = {}
 
 
@@ -313,21 +357,50 @@ def export_verifier_lines() -> List[str]:
             )
     return lines
 
-
-# ----------------------------
+# ---------------------------------------------------------------------------
 # Redactions counter
-# ----------------------------
+# ---------------------------------------------------------------------------
 
 try:
     _REDACTIONS: Counter = Counter(
         "guardrail_redactions_total",
         "Total redactions applied across ingress/egress",
     )
-except ValueError:
+except Exception:  # pragma: no cover
     _REDACTIONS = cast(
-        Counter, REGISTRY._names_to_collectors["guardrail_redactions_total"]
+        Counter, getattr(REGISTRY, "_names_to_collectors", {}).get("guardrail_redactions_total")
     )
 
 
 def inc_redactions(by: float = 1.0) -> None:
-    _REDACTIONS.inc(by)
+    try:
+        _REDACTIONS.inc(by)
+    except Exception:  # pragma: no cover
+        pass
+
+# ---------------------------------------------------------------------------
+# Helpers for external modules/tests
+# ---------------------------------------------------------------------------
+
+def get_metrics() -> Dict[str, object]:
+    return {
+        "requests_total": REQUESTS_TOTAL,
+        "decisions_total": DECISIONS_TOTAL,
+        "rate_limited_total": RATE_LIMITED_TOTAL,
+        "latency_seconds": LATENCY_SECONDS,
+    }
+
+
+def reset_registry_for_tests() -> Optional[int]:
+    if REGISTRY is None:  # pragma: no cover
+        return None
+    with _LOCK:
+        mapping = dict(getattr(REGISTRY, "_names_to_collectors", {}))  # type: ignore[attr-defined]
+        count = 0
+        for collector in mapping.values():
+            try:
+                REGISTRY.unregister(collector)
+                count += 1
+            except Exception:
+                pass
+        return count
