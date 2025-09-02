@@ -31,7 +31,7 @@ class _JsonFormatter(logging.Formatter):
 
         # Include extras when record contains dict-like arguments
         if hasattr(record, "extra") and isinstance(record.extra, dict):
-            payload.update(record.extra)  # type: ignore[arg-type]
+            payload.update(record.extra)
 
         # Fallback: include record.__dict__ keys that look like structured extras
         for key in ("event", "audit", "tenant_id", "bot_id", "action"):
