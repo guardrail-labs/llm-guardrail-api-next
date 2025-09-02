@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 import importlib
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -24,11 +24,13 @@ if TYPE_CHECKING:
 # -----------------------------
 # Latency histogram middleware
 # -----------------------------
+_LatencyMW: Optional[Any] = None
 try:
-    # Use a local variable so we don't assign None to a class symbol (mypy-safe)
-    from app.telemetry.latency import GuardrailLatencyMiddleware as _LatencyMW  # type: ignore[assignment]
+    # Assign to a data variable (not the type symbol) so we can set None cleanly.
+    from app.telemetry.latency import GuardrailLatencyMiddleware as _ImportedLatencyMW
+    _LatencyMW = _ImportedLatencyMW
 except Exception:  # pragma: no cover
-    _LatencyMW = None
+    pass
 
 
 # -----------------------------
@@ -80,7 +82,6 @@ output_router: Optional["APIRouter"] = None
 try:  # pragma: no cover
     from app.routes.guardrail import router as _guardrail_router
     from app.routes.guardrail import threat_admin_router as _threat_admin_router
-
     guardrail_router = _guardrail_router
     threat_admin_router = _threat_admin_router
 except Exception:  # pragma: no cover
@@ -88,21 +89,18 @@ except Exception:  # pragma: no cover
 
 try:  # pragma: no cover
     from app.routes.proxy import router as _proxy_router
-
     proxy_router = _proxy_router
 except Exception:  # pragma: no cover
     pass
 
 try:  # pragma: no cover
     from app.routes.batch import router as _batch_router
-
     batch_router = _batch_router
 except Exception:  # pragma: no cover
     pass
 
 try:  # pragma: no cover
     from app.routes.output import router as _output_router
-
     output_router = _output_router
 except Exception:  # pragma: no cover
     pass
@@ -144,7 +142,7 @@ def _create_app() -> FastAPI:
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
         if exc.status_code != 404:
-            # let other HTTP errors bubble with request id attached
+            # Let other HTTP errors bubble with request id attached
             return JSONResponse(
                 status_code=exc.status_code,
                 content={"detail": exc.detail},
