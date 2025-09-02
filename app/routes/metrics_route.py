@@ -11,35 +11,17 @@ from app.telemetry import metrics as tmetrics
 router = APIRouter(tags=["metrics"])
 
 
-def _safe_guardrail_legacy_totals() -> List[str]:
-    """
-    Pull optional legacy counters from guardrail routes if available.
-    Returns Prometheus text lines or an empty list.
-    """
-    out: List[str] = []
-    try:
-        # Import lazily to avoid hard dependency in case file moves.
-        from app.routes.guardrail import (
-            get_decisions_total,
-            get_requests_total,
-        )
-
-        req = float(get_requests_total())
-        dec = float(get_decisions_total())
-        out.append(
-            "# HELP guardrail_requests_total Total guardrail ingress requests received."
-        )
-        out.append("# TYPE guardrail_requests_total counter")
-        out.append(f"guardrail_requests_total {req}")
-        out.append(
-            "# HELP guardrail_decisions_total Total guardrail ingress decisions made."
-        )
-        out.append("# TYPE guardrail_decisions_total counter")
-        out.append(f"guardrail_decisions_total {dec}")
-    except Exception:
-        # Silently omit if legacy route not present in this build.
-        pass
-    return out
+def _export_basic_totals() -> List[str]:
+    req = float(tmetrics.get_requests_total())
+    dec = float(tmetrics.get_decisions_total())
+    return [
+        "# HELP guardrail_requests_total Total guardrail ingress requests received.",
+        "# TYPE guardrail_requests_total counter",
+        f"guardrail_requests_total {req}",
+        "# HELP guardrail_decisions_total Total guardrail ingress decisions made.",
+        "# TYPE guardrail_decisions_total counter",
+        f"guardrail_decisions_total {dec}",
+    ]
 
 
 def _export_global_family_lines() -> List[str]:
@@ -101,8 +83,8 @@ async def prometheus_metrics(_req: Request) -> PlainTextResponse:
     # 3) Tenant/bot breakdown lines
     chunks.extend(tmetrics.export_family_breakdown_lines())
 
-    # 4) Legacy guardrail counters (optional)
-    chunks.extend(_safe_guardrail_legacy_totals())
+    # 4) Basic request/decision counters
+    chunks.extend(_export_basic_totals())
 
     # 5) Legacy rate-limited counter
     chunks.extend(_export_rate_limited_lines())

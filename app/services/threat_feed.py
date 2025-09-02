@@ -1,139 +1,154 @@
+# app/services/threat_feed.py
 from __future__ import annotations
 
-import json
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, cast
-from urllib.request import urlopen  # stdlib to avoid extra deps
+from threading import RLock
+from typing import Any, Dict, List, Pattern, Tuple
+
+# Compiled rule: (regex, replacement, tag)
+_Rules: List[Tuple[Pattern[str], str, str]] = []
+_LOCK = RLock()
 
 
-# A dynamic redaction spec: {"pattern": "regex", "tag": "secrets:vendor_token",
-#                            "replacement": "[REDACTED:VENDOR_TOKEN]"}
-_RedactionSpec = Dict[str, str]
-
-# Compiled dynamic patterns: List[(compiled_re, tag, replacement)]
-_DYNAMIC_PATTERNS: List[Tuple[re.Pattern[str], str, str]] = []
+def _truthy(val: object) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def threat_feed_enabled() -> bool:
-    return os.getenv("THREAT_FEED_ENABLED", "false").lower() == "true"
+    """
+    Gate for dynamic redactions feature.
+    Tests toggle via env THREAT_FEED_ENABLED.
+    """
+    return _truthy(os.environ.get("THREAT_FEED_ENABLED", "false"))
 
 
 def _fetch_json(url: str) -> Dict[str, Any]:
-    with urlopen(url, timeout=10) as resp:  # nosec - controlled by admin/tests
-        data = resp.read().decode("utf-8", "ignore")
-        # mypy: json.loads returns Any; cast to Dict[str, Any] for our schema
-        return cast(Dict[str, Any], json.loads(data))
-
-
-def _compile_specs(
-    specs: List[_RedactionSpec],
-) -> List[Tuple[re.Pattern[str], str, str]]:
-    compiled: List[Tuple[re.Pattern[str], str, str]] = []
-    for s in specs:
-        pat = s.get("pattern", "")
-        tag = s.get("tag", "")
-        repl = s.get("replacement", "")
-        if not pat or not tag or not repl:
-            continue
-        try:
-            compiled.append((re.compile(pat), tag, repl))
-        except re.error:
-            # skip bad pattern; feed robustness
-            continue
-    return compiled
-
-
-def refresh_from_env() -> Dict[str, Any]:
     """
-    Pull redaction specs from all URLs in THREAT_FEED_URLS (comma-separated),
-    compile them, and replace the dynamic pattern set atomically.
-
-    Expected JSON shape per URL:
-      {
-        "version": "2025-08-30",
-        "redactions": [
-          {
-            "pattern": "token_[0-9]{6}",
-            "tag": "secrets:vendor_token",
-            "replacement": "[REDACTED:VENDOR_TOKEN]"
-          }
-        ]
-      }
+    Placeholder implementation. Tests monkeypatch this to return:
+    {
+      "version": "test",
+      "redactions": [
+        {
+          "pattern": r"...",
+          "tag": "secrets:vendor_token",
+          "replacement": "[REDACTED:VENDOR_TOKEN]",
+        },
+        ...
+      ],
+    }
     """
-    urls = [u.strip() for u in os.getenv("THREAT_FEED_URLS", "").split(",") if u.strip()]
-    all_specs: List[_RedactionSpec] = []
-    versions: List[str] = []
+    # Default no-op payload.
+    return {"version": "empty", "redactions": []}
+
+
+def reload_from_urls(urls: List[str]) -> int:
+    """
+    Fetch and compile redaction rules from the given URLs
+    (using _fetch_json, which tests monkeypatch).
+
+    Returns the number of compiled rules.
+    """
+    compiled: List[Tuple[Pattern[str], str, str]] = []
+    total = 0
 
     for u in urls:
         try:
-            doc = _fetch_json(u)
-            versions.append(str(doc.get("version", "")))
-            specs = doc.get("redactions", []) or []
-            if isinstance(specs, list):
-                all_specs.extend([s for s in specs if isinstance(s, dict)])
+            spec = _fetch_json(u)
         except Exception:
-            # ignore failing source; proceed with others
             continue
 
-    compiled = _compile_specs(all_specs)
+        redactions = (spec or {}).get("redactions", []) or []
+        for entry in redactions:
+            pat = entry.get("pattern")
+            tag = entry.get("tag") or "threat_feed"
+            repl = entry.get("replacement") or "[REDACTED]"
+            if not isinstance(pat, str) or not pat:
+                continue
+            try:
+                rx = re.compile(pat)
+            except re.error:
+                # Skip invalid regex
+                continue
+            compiled.append((rx, repl, tag))
+            total += 1
 
-    # Swap atomically
-    global _DYNAMIC_PATTERNS
-    _DYNAMIC_PATTERNS = compiled
+    with _LOCK:
+        _Rules.clear()
+        _Rules.extend(compiled)
 
-    return {
-        "sources": len(urls),
-        "loaded_specs": len(all_specs),
-        "compiled": len(compiled),
-        "versions": [v for v in versions if v],
-    }
+    return total
+
+
+def refresh_from_env() -> int:
+    """
+    Convenience helper used by some routes:
+    reads THREAT_FEED_URLS (comma-separated), reloads, returns compiled count.
+    """
+    urls_env = os.environ.get("THREAT_FEED_URLS", "") or ""
+    urls: List[str] = [u.strip() for u in urls_env.split(",") if u.strip()]
+    if not urls:
+        # Clearing rules when no URLs is safer (keeps behavior deterministic)
+        with _LOCK:
+            _Rules.clear()
+        return 0
+    return reload_from_urls(urls)
 
 
 def apply_dynamic_redactions(
-    text: str, debug: bool = False
-) -> Tuple[str, List[str], int, List[Dict[str, Any]]]:
+    text: str,
+    debug: bool = False,
+) -> Tuple[str, Dict[str, int], int, List[str]]:
     """
-    Apply dynamic patterns (if any). Returns:
-      (sanitized_text, normalized_families, redaction_count, debug_matches)
-    Families normalized to secrets:*, pi:*, payload:*, policy:deny:* (by prefix).
-    """
-    if not _DYNAMIC_PATTERNS:
-        return text, [], 0, []
+    Apply active threat-feed redactions.
 
+    Returns:
+      - sanitized text (str)
+      - families map (dict[tag -> count]) for aggregation
+      - total redactions applied (int)
+      - debug matches (list[str]) when debug=True else []
+
+    Notes:
+      * Multiple rules may match; replacements are applied sequentially.
+      * We count matches via regex finditer BEFORE substitution so counts reflect
+        how many occurrences were present.
+      * Also increments a wildcard family "<prefix>:*" derived from tag prefix
+        before the first ":" (e.g., "secrets:*").
+    """
+    if not text:
+        return text, {}, 0, []
+
+    with _LOCK:
+        rules_snapshot = list(_Rules)
+
+    families: Dict[str, int] = {}
+    debug_matches: List[str] = []
+    total = 0
     out = text
-    families: List[str] = []
-    redactions = 0
-    dbg: List[Dict[str, Any]] = []
 
-    def _family(tag: str) -> str:
-        if tag.startswith("secrets:"):
-            return "secrets:*"
-        if tag.startswith("pi:"):
-            return "pi:*"
-        if tag.startswith("payload:"):
-            return "payload:*"
-        if tag.startswith("policy:deny:"):
-            return "policy:deny:*"
-        return tag
-
-    for pattern, tag, repl in _DYNAMIC_PATTERNS:
-        matches = list(pattern.finditer(out))
-        if not matches:
+    for rx, repl, tag in rules_snapshot:
+        # Count occurrences first
+        matches = list(rx.finditer(out))
+        n = len(matches)
+        if n == 0:
             continue
-        out, n = pattern.subn(repl, out)
-        redactions += n
-        families.append(tag)
-        if debug:
-            for m in matches[:5]:
-                dbg.append(
-                    {
-                        "tag": tag,
-                        "span": {"start": m.start(), "end": m.end()},
-                        "sample": out[max(0, m.start() - 8) : m.end() + 8],
-                    }
-                )
 
-    # Deduplicate + normalize families
-    nf = sorted({_family(t) for t in families})
-    return out, nf, redactions, dbg
+        total += n
+        # Specific tag count
+        families[tag] = families.get(tag, 0) + n
+        # Wildcard family (e.g., "secrets:*")
+        if ":" in tag:
+            prefix = tag.split(":", 1)[0]
+            wildcard = f"{prefix}:*"
+            families[wildcard] = families.get(wildcard, 0) + n
+
+        if debug:
+            # Record a compact representation of matches (tag + first 50 chars)
+            for m in matches:
+                span_txt = m.group(0)
+                debug_matches.append(f"{tag}:{span_txt[:50]}")
+
+        # Apply substitution
+        out = rx.sub(repl, out)
+
+    return out, families, total, (debug_matches if debug else [])

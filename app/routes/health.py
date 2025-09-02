@@ -1,56 +1,20 @@
 from __future__ import annotations
-
-from typing import Any, Dict
-
 from fastapi import APIRouter
 
-from app.services.policy import current_rules_version
+from app.telemetry.metrics import (
+    get_requests_total,
+    get_decisions_total,
+    get_rules_version,
+)
 
-router = APIRouter(tags=["health"])
+router = APIRouter(prefix="/health", tags=["system"])
 
-
-def _health_payload() -> Dict[str, Any]:
-    """
-    Shared payload used by /health and /healthz.
-    Contract expected by tests:
-      {
-        "ok": true,
-        "status": "ok",
-        "requests_total": float,
-        "decisions_total": float,
-        "rules_version": "..."
-      }
-    """
-    # Import lazily to avoid hard dependency if legacy guardrail is not present.
-    requests_total = 0.0
-    decisions_total = 0.0
-    try:
-        from app.routes.guardrail import (  # noqa: WPS433
-            get_requests_total,
-            get_decisions_total,
-        )
-
-        requests_total = float(get_requests_total())
-        decisions_total = float(get_decisions_total())
-    except Exception:
-        # Keep zeros if legacy counters aren't available.
-        pass
-
+@router.get("")
+def health() -> dict:
     return {
         "ok": True,
         "status": "ok",
-        "requests_total": requests_total,
-        "decisions_total": decisions_total,
-        "rules_version": current_rules_version(),
+        "requests_total": float(get_requests_total()),
+        "decisions_total": float(get_decisions_total()),
+        "rules_version": str(get_rules_version()),
     }
-
-
-@router.get("/health")
-async def health() -> Dict[str, Any]:
-    return _health_payload()
-
-
-@router.get("/healthz")
-async def healthz() -> Dict[str, Any]:
-    # Alias for external probes
-    return _health_payload()

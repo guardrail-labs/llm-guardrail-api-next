@@ -1,215 +1,171 @@
+# app/main.py
 from __future__ import annotations
 
-import os
-import uuid
 import importlib
-from typing import Optional, TYPE_CHECKING, Any
+import uuid
+from typing import Optional, Type, TYPE_CHECKING
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-# Routers (keep imports at top per E402)
+from app.config import get_settings
+from app.middleware.access_log import AccessLogMiddleware
+from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.telemetry.logging import configure_logging
+
+# Always-on routers
+from app.routes.admin import router as admin_router
+from app.routes.health import router as health_router
 from app.routes.metrics_route import router as metrics_router
 from app.routes.openai_compat import azure_router, router as oai_router
-from app.routes.health import router as health_router
-from app.routes.admin import router as admin_router
+from app.routes.ready import router as ready_router
 
+# Optional middleware imports (mypy-safe pattern)
 if TYPE_CHECKING:
-    from fastapi import APIRouter
+    from app.middleware.rate_limit import RateLimitMiddleware as RateLimitMiddlewareType
+    from app.telemetry.latency import (
+        LatencyHistogramMiddleware as LatencyHistogramMiddlewareType,
+    )
 
-
-# -----------------------------
-# Latency histogram middleware
-# -----------------------------
-_LatencyMW: Optional[Any] = None
+RateLimitMW: Optional[Type[object]] = None
+LatencyHistogramMW: Optional[Type[object]] = None
 try:
-    # Assign to a data variable (not the type symbol) so we can set None cleanly.
-    from app.telemetry.latency import GuardrailLatencyMiddleware as _ImportedLatencyMW
-    _LatencyMW = _ImportedLatencyMW
+    from app.middleware.rate_limit import RateLimitMiddleware as _RateLimitMiddleware
+
+    RateLimitMW = _RateLimitMiddleware
 except Exception:  # pragma: no cover
-    pass
+    RateLimitMW = None
 
+try:
+    from app.telemetry.latency import (
+        LatencyHistogramMiddleware as _LatencyHistogramMiddleware,
+    )
 
-# -----------------------------
-# Simple auth guard for /proxy/*
-# -----------------------------
-class _AuthProxyMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path or ""
-        if path.startswith("/proxy/"):
-            if not (request.headers.get("X-API-Key") or request.headers.get("Authorization")):
-                rid = getattr(request.state, "request_id", "") or str(uuid.uuid4())
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Unauthorized", "request_id": rid},
-                    headers={
-                        "WWW-Authenticate": "Bearer",
-                        "X-Request-ID": rid,
-                    },
-                )
-        return await call_next(request)
-
-
-# -----------------------------
-# Request ID + security headers (outermost)
-# -----------------------------
-class _RequestIdAndSecurityMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        request.state.request_id = rid
-        resp = await call_next(request)
-        # Always attach headers
-        resp.headers.setdefault("X-Request-ID", rid)
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("X-Frame-Options", "DENY")
-        resp.headers.setdefault("X-XSS-Protection", "0")
-        resp.headers.setdefault("Referrer-Policy", "no-referrer")
-        return resp
-
-
-# -----------------------------
-# Optional routers (legacy)
-# -----------------------------
-guardrail_router: Optional["APIRouter"] = None
-threat_admin_router: Optional["APIRouter"] = None
-proxy_router: Optional["APIRouter"] = None
-batch_router: Optional["APIRouter"] = None
-output_router: Optional["APIRouter"] = None
-
-try:  # pragma: no cover
-    from app.routes.guardrail import router as _guardrail_router
-    from app.routes.guardrail import threat_admin_router as _threat_admin_router
-    guardrail_router = _guardrail_router
-    threat_admin_router = _threat_admin_router
+    LatencyHistogramMW = _LatencyHistogramMiddleware
 except Exception:  # pragma: no cover
-    pass
-
-try:  # pragma: no cover
-    from app.routes.proxy import router as _proxy_router
-    proxy_router = _proxy_router
-except Exception:  # pragma: no cover
-    pass
-
-try:  # pragma: no cover
-    from app.routes.batch import router as _batch_router
-    batch_router = _batch_router
-except Exception:  # pragma: no cover
-    pass
-
-try:  # pragma: no cover
-    from app.routes.output import router as _output_router
-    output_router = _output_router
-except Exception:  # pragma: no cover
-    pass
+    LatencyHistogramMW = None
 
 
-def _init_rate_limit_state(app: FastAPI) -> None:
+def _include_if_present(app: FastAPI, dotted: str, attr: str = "router") -> None:
     """
-    Initialize rate limit config on app.state from environment variables.
-    Tests flip env via temp_env() and rebuild the app, so reading here
-    ensures middleware sees the correct values.
+    Import module by dotted path if it exists at runtime and include its 'router'
+    (or custom attr) if present. Uses importlib to keep mypy happy.
     """
-    enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
-    per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
-    burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
+    try:
+        mod = importlib.import_module(dotted)
+        r = getattr(mod, attr, None)
+        if r is not None:
+            app.include_router(r)
+    except Exception:
+        # Silently ignore missing/failed optional modules
+        pass
 
-    app.state.rate_limit_enabled = enabled
-    app.state.rate_limit_per_minute = per_min
-    app.state.rate_limit_burst = burst
 
+def create_app() -> FastAPI:
+    s = get_settings()
+    configure_logging()
 
-def _create_app() -> FastAPI:
-    app = FastAPI(title="LLM Guardrail API", version="next")
+    app = FastAPI(title=s.APP_NAME)
 
-    # --- CORS (optional) ---
-    allow_origins = (os.environ.get("CORS_ALLOW_ORIGINS") or "").strip()
-    if allow_origins:
-        origins = [o.strip() for o in allow_origins.split(",") if o.strip()]
+    # CORS (handle wildcard + credentials constraint)
+    origins_raw = (s.CORS_ALLOW_ORIGINS or "").strip()
+    origins = [o.strip() for o in origins_raw.split(",") if o.strip()]
+    if origins:
+        allow_credentials = True
+        if origins == ["*"]:
+            # Starlette constraint: cannot combine "*" with allow_credentials=True
+            allow_credentials = False
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_credentials=allow_credentials,
             allow_methods=["*"],
             allow_headers=["*"],
         )
 
-    # Initialize rate-limit state from env so middleware has correct values
-    _init_rate_limit_state(app)
+    # Request ID first so every response gets X-Request-ID
+    app.add_middleware(RequestIDMiddleware)
 
-    # --- Latency histogram (if available) ---
-    if _LatencyMW is not None:
-        app.add_middleware(_LatencyMW)
+    # Access logging early to capture everything
+    app.add_middleware(AccessLogMiddleware)
 
-    # --- Rate limit middleware (prefer new location, fall back to old) ---
-    for mod_name in ("app.middleware.rate_limit", "app.services.rate_limit"):
-        try:  # pragma: no cover
-            rl_mod = importlib.import_module(mod_name)
-            RL = getattr(rl_mod, "RateLimitMiddleware", None)
-            if RL is not None:
-                app.add_middleware(RL)
-                break
-        except Exception:
-            continue
+    # Security headers
+    app.add_middleware(SecurityHeadersMiddleware)
 
-    # --- Auth guard for /proxy/* ---
-    app.add_middleware(_AuthProxyMiddleware)
+    # Optional latency histogram
+    if LatencyHistogramMW is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
+        app.add_middleware(LatencyHistogramMW)  # type: ignore[arg-type]
 
-    # --- Exception handlers (404/500 JSON contract) ---
-    @app.exception_handler(StarletteHTTPException)
-    async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
-        if exc.status_code != 404:
-            # Let other HTTP errors bubble with request id attached
-            return JSONResponse(
-                status_code=exc.status_code,
-                content={"detail": exc.detail},
-                headers={"X-Request-ID": getattr(request.state, "request_id", "")},
-            )
-        rid = getattr(request.state, "request_id", "")
-        body = {"code": "not_found", "detail": "not found", "request_id": rid}
-        return JSONResponse(status_code=404, content=body, headers={"X-Request-ID": rid})
+    # Rate limiter: always add if available; it handles enabled vs headers-only itself
+    try:
+        from app.middleware.rate_limit import RateLimitMiddleware as _LocalRateLimitMW
 
-    @app.exception_handler(Exception)
-    async def _unhandled_exc_handler(request: Request, _: Exception):
-        rid = getattr(request.state, "request_id", "")
-        body = {"code": "internal_error", "detail": "internal error", "request_id": rid}
-        return JSONResponse(status_code=500, content=body, headers={"X-Request-ID": rid})
+        app.add_middleware(_LocalRateLimitMW)
+    except Exception:
+        if RateLimitMW is not None:
+            app.add_middleware(RateLimitMW)  # type: ignore[arg-type]
 
-    # --- Routers (public API first) ---
+    # Core routers
+    app.include_router(health_router)
+    app.include_router(ready_router)
+    app.include_router(admin_router)
+
+    # Threat admin router (optional)
+    _include_if_present(app, "app.routes.admin_threat")
+
+    app.include_router(metrics_router)
     app.include_router(oai_router)
     app.include_router(azure_router)
 
-    # health + admin contract routes
-    app.include_router(health_router)
-    app.include_router(admin_router)
+    # Feature routers (optional)
+    _include_if_present(app, "app.routes.guardrail")
+    _include_if_present(app, "app.routes.batch")
+    _include_if_present(app, "app.routes.output")
+    _include_if_present(app, "app.routes.proxy")
 
-    # Optional routes if present
-    if proxy_router is not None:
-        app.include_router(proxy_router)
-    if batch_router is not None:
-        app.include_router(batch_router)
-    if output_router is not None:
-        app.include_router(output_router)
-    if guardrail_router is not None:
-        app.include_router(guardrail_router)
-    if threat_admin_router is not None:
-        app.include_router(threat_admin_router)
+    # Error handlers (also set X-Request-ID, though RequestIDMiddleware already does)
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        rid = (
+            getattr(request.state, "request_id", None)
+            or request.headers.get("X-Request-ID")
+            or str(uuid.uuid4())
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            headers={"X-Request-ID": rid},
+            content={
+                "code": "not_found" if exc.status_code == 404 else "error",
+                "detail": exc.detail,
+                "request_id": rid,
+            },
+        )
 
-    # Prometheus /metrics
-    app.include_router(metrics_router)
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        rid = (
+            getattr(request.state, "request_id", None)
+            or request.headers.get("X-Request-ID")
+            or str(uuid.uuid4())
+        )
+        return JSONResponse(
+            status_code=500,
+            headers={"X-Request-ID": rid},
+            content={
+                "code": "internal_error",
+                "detail": "internal error",
+                "request_id": rid,
+            },
+        )
 
-    # Place request-id/security OUTERMOST so it wraps everything
-    app.add_middleware(_RequestIdAndSecurityMiddleware)
     return app
 
 
-def build_app() -> FastAPI:  # pragma: no cover
-    return _create_app()
+# Tests import `build_app` from app.main
+build_app = create_app
 
-
-def create_app() -> FastAPI:
-    return _create_app()
-
-
-app = _create_app()
+# Module-level app instance (also used by uvicorn)
+app = create_app()
