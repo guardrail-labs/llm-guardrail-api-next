@@ -78,6 +78,22 @@ Environment
 
 See .env.example for all keys and defaults.
 
+### Compliance (Phase 2)
+- Hashing helpers (email/phone) via salted SHA-256: `PII_SALT`, `PII_HASH_ALGO`.
+- Redact + hash utility: `app/compliance/pii.py`.
+- Admin endpoints:
+  - `GET /admin/compliance/status`
+  - `POST /admin/compliance/hash` (fields: `email`, `phone`, `text`)
+- Retention knob (policy-level): `DATA_RETENTION_DAYS`.
+
+**Quick try:**
+```bash
+curl -s localhost:8000/admin/compliance/status | jq
+curl -s -X POST localhost:8000/admin/compliance/hash \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"email a@b.co, phone 555-123-4567"}' | jq
+```
+
 Testing
 ruff check --fix .
 mypy .

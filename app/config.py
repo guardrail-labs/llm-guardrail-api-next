@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from pydantic import Field, BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 
@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     SECURITY_HEADERS_ENABLED: bool = Field(default=True)
     ADD_COOP: bool = Field(default=True)                # Cross-Origin-Opener-Policy
     ADD_PERMISSIONS_POLICY: bool = Field(default=True)  # Permissions-Policy
+    ADD_HSTS: bool = Field(default=True)                 # Strict-Transport-Security
+    HSTS_MAX_AGE: int = Field(default=15552000)          # 180 days
+
+    # --- Compliance / Privacy (new) ---
+    COMPLIANCE_ENABLED: bool = Field(default=True)
+    DATA_RETENTION_DAYS: int = Field(default=30)         # for docs/policy, not enforced
+    PII_SALT: str = Field(default="change-me")           # for salted hashing
+    PII_HASH_ALGO: str = Field(default="sha256")         # sha256 only for now
+    PII_EMAIL_HASH_ENABLED: bool = Field(default=True)
+    PII_PHONE_HASH_ENABLED: bool = Field(default=True)
 
     # --- Header names (new) ---
     API_KEY_HEADER: str = Field(default="X-API-Key")
@@ -79,9 +89,7 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
     }
 
-
 def get_settings() -> Settings:
-    # No caching: tests change environment between app instances.
     return Settings()
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import importlib
 import uuid
-from typing import Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Type
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +14,6 @@ from app.config import get_settings
 from app.middleware.access_log import AccessLogMiddleware
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.telemetry.logging import configure_logging
 
 # Always-on routers
 from app.routes.admin import router as admin_router
@@ -22,13 +21,11 @@ from app.routes.health import router as health_router
 from app.routes.metrics_route import router as metrics_router
 from app.routes.openai_compat import azure_router, router as oai_router
 from app.routes.ready import router as ready_router
+from app.telemetry.logging import configure_logging
 
 # Optional middleware imports (mypy-safe pattern)
 if TYPE_CHECKING:
-    from app.middleware.rate_limit import RateLimitMiddleware as RateLimitMiddlewareType
-    from app.telemetry.latency import (
-        LatencyHistogramMiddleware as LatencyHistogramMiddlewareType,
-    )
+    pass
 
 RateLimitMW: Optional[Type[object]] = None
 LatencyHistogramMW: Optional[Type[object]] = None
@@ -115,6 +112,8 @@ def create_app() -> FastAPI:
 
     # Threat admin router (optional)
     _include_if_present(app, "app.routes.admin_threat")
+    # Compliance admin router (optional)
+    _include_if_present(app, "app.routes.admin_compliance")
 
     app.include_router(metrics_router)
     app.include_router(oai_router)

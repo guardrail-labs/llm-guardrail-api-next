@@ -1,28 +1,44 @@
 from __future__ import annotations
 
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import get_settings
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add standard security headers to all responses."""
+class SecurityHeadersMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-    def __init__(self, app) -> None:
-        super().__init__(app)
-        self.settings = get_settings()
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
 
-    async def dispatch(self, request: Request, call_next):
-        resp = await call_next(request)
-        if self.settings.SECURITY_HEADERS_ENABLED:
-            hdrs = resp.headers
-            hdrs.setdefault("X-Content-Type-Options", "nosniff")
-            hdrs.setdefault("X-Frame-Options", "DENY")
-            hdrs.setdefault("X-XSS-Protection", "0")
-            hdrs.setdefault("Referrer-Policy", "no-referrer")
-            if self.settings.ADD_COOP:
-                hdrs.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-            if self.settings.ADD_PERMISSIONS_POLICY:
-                hdrs.setdefault("Permissions-Policy", "interest-cohort=()")
-        return resp
+        async def send_wrapped(message):
+            if message.get("type") == "http.response.start":
+                headers = message.setdefault("headers", [])
+
+                def set_header(key: str, value: str) -> None:
+                    headers.append((key.encode("latin-1"), value.encode("latin-1")))
+
+                s = get_settings()
+                if s.SECURITY_HEADERS_ENABLED:
+                    set_header("X-Content-Type-Options", "nosniff")
+                    set_header("X-Frame-Options", "DENY")
+                    set_header("X-XSS-Protection", "0")
+                    set_header("Referrer-Policy", "no-referrer")
+                    if s.ADD_PERMISSIONS_POLICY:
+                        set_header("Permissions-Policy", "interest-cohort=()")
+                    if s.ADD_COOP:
+                        set_header("Cross-Origin-Opener-Policy", "same-origin")
+                    if s.ADD_HSTS:
+                        # Always-on for simplicity; for strict setups you can gate
+                        # by X-Forwarded-Proto = https if desired.
+                        max_age = str(int(s.HSTS_MAX_AGE))
+                        set_header(
+                            "Strict-Transport-Security",
+                            f"max-age={max_age}; includeSubDomains",
+                        )
+            await send(message)
+
+        await self.app(scope, receive, send_wrapped)
