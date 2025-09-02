@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from typing import List, TYPE_CHECKING
+from typing import List
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 
 from app.telemetry import metrics as tmetrics
-
-if TYPE_CHECKING:
-    # Only needed for type hints; avoids runtime unused-import lint.
-    from fastapi import Request
 
 router = APIRouter(tags=["metrics"])
 
@@ -78,7 +74,7 @@ def _export_rate_limited_lines() -> List[str]:
 
 
 @router.get("/metrics")
-async def prometheus_metrics(_: "Request") -> PlainTextResponse:
+async def prometheus_metrics(_: Request) -> PlainTextResponse:
     """
     Prometheus exposition format:
       - Built-in registry metrics via prometheus_client.generate_latest
