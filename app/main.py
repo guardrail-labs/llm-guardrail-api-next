@@ -1,105 +1,73 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import List
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.types import ASGIApp
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.telemetry.tracing import TracingMiddleware
 
-class TracingMiddleware(BaseHTTPMiddleware):
-    """
-    Lightweight optional OpenTelemetry wiring.
-
-    - If OTEL_ENABLED is not truthy, this is a no-op.
-    - If opentelemetry packages are not installed, this is a no-op.
-    - We import OTel lazily at runtime to keep imports optional and avoid mypy issues.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        super().__init__(app)
-        self.enabled = _truthy(os.getenv("OTEL_ENABLED", "false"))
-        self._initialized = False
-        self._trace: Any = None  # set on init if libs are available
-
-    async def dispatch(self, request: Request, call_next):
-        if not self.enabled:
-            return await call_next(request)
-
-        # Lazy init to avoid side effects during import time.
-        if not self._initialized:
-            self._initialized = self._ensure_tracer_provider()
-
-        if not self._initialized or self._trace is None:
-            # Tracing unavailable; proceed normally.
-            return await call_next(request)
-
-        tracer = self._trace.get_tracer("llm-guardrail")
-        route = request.url.path
-        peer_ip = request.client.host if request.client else "unknown"
-
-        # Minimal span around the request
-        with self._trace.use_span(tracer.start_span(route), end_on_exit=True) as span:
-            span.set_attribute("http.method", request.method)
-            span.set_attribute("http.route", route)
-            span.set_attribute("net.peer.ip", peer_ip)
-            response = await call_next(request)
-            span.set_attribute("http.status_code", response.status_code)
-        return response
-
-    def _ensure_tracer_provider(self) -> bool:
-        # Import here to keep dependencies optional and avoid static type noise.
-        try:  # pragma: no cover
-            from opentelemetry import trace as _trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.resources import Resource
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        except Exception:
-            return False
-
-        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-        service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
-
-        try:  # pragma: no cover
-            resource = Resource.create({"service.name": service_name})
-            provider = TracerProvider(resource=resource)
-            if endpoint:
-                exporter = OTLPSpanExporter(endpoint=endpoint)
-                processor = BatchSpanProcessor(exporter)
-                provider.add_span_processor(processor)
-            _trace.set_tracer_provider(provider)
-            self._trace = _trace
-            return True
-        except Exception:
-            return False
+# Routers (must exist in your repo; tests import app.main.app/build_app/create_app)
+from app.routes import guardrail as _guardrail
+from app.routes import output as _output
+from app.routes import batch as _batch
+from app.routes import proxy as _proxy
+from app.routes import openai_compat as _openai
+from app.routes import admin_threat as _admin_threat
 
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
-# ---- adapters for tests and scripts ----
 
-# If you already have create_app(), this will reuse it.
-try:
-    create_app  # type: ignore[name-defined]
-except NameError:
-    # If you don't, but have a factory named build_app() already:
-    try:
-        def create_app():
-            return build_app()  # type: ignore[name-defined]
-    except NameError:
-        # Fallback: if your module-level FastAPI instance is named something else,
-        # import or construct it here. This is a last resort and should rarely run.
-        from fastapi import FastAPI
-        def create_app() -> FastAPI:  # pragma: no cover
-            return FastAPI(title="llm-guardrail")
+def create_app() -> FastAPI:
+    app = FastAPI(title="llm-guardrail-api")
 
-def build_app():
-    # Keep tests happy; delegates to create_app so there is one source of truth.
-    return create_app()
+    # --- Middlewares: request id first so every response gets X-Request-ID ---
+    app.add_middleware(RequestIDMiddleware)
 
-# Expose a module-level app object for imports like `from app.main import app`.
+    # Tracing (optional via env)
+    if _truthy(os.getenv("OTEL_ENABLED", "false")):
+        app.add_middleware(TracingMiddleware)
+
+    # Rate limit (behavior controlled by env in middleware)
+    app.add_middleware(RateLimitMiddleware)
+
+    # CORS
+    raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
+    origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
+    if origins:
+        allow_credentials = True
+        if origins == ["*"]:
+            # Starlette constraint: "*" cannot be combined with allow_credentials=True
+            allow_credentials = False
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=allow_credentials,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # --- Routers ---
+    app.include_router(_guardrail.router, prefix="/guardrail", tags=["guardrail"])
+    app.include_router(_output.router, prefix="/guardrail", tags=["output"])
+    app.include_router(_batch.router, prefix="/guardrail", tags=["batch"])
+    app.include_router(_proxy.router, prefix="/proxy", tags=["proxy"])
+    app.include_router(_openai.router, prefix="/v1", tags=["openai-compat"])
+    app.include_router(_admin_threat.router, prefix="/admin/threat", tags=["admin"])
+
+    # Health
+    @app.get("/health")
+    async def health():
+        return {"ok": True}
+
+    return app
+
+
+# Keep tests and external scripts happy:
+build_app = create_app
 app = create_app()
-
