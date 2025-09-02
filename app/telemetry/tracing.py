@@ -39,7 +39,7 @@ class _UseSpanCtx:
     def __enter__(self) -> _NoopSpan:
         return self._span
 
-    def __exit__(self, exc_type, exc, tb) -> Optional[bool]:
+    def __exit__(self, exc_type, exc, tb) -> None:
         # Do not suppress exceptions
         return False
 
