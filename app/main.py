@@ -1,27 +1,37 @@
 from __future__ import annotations
 
+from typing import Optional, TYPE_CHECKING
+
 from fastapi import FastAPI
 
-# Core routes
-try:  # pragma: no cover
-    from app.routes.guardrail import router as guardrail_router  # legacy ingress
-    from app.routes.guardrail import threat_admin_router
-except Exception:  # pragma: no cover
-    guardrail_router = None
-    threat_admin_router = None
+if TYPE_CHECKING:
+    # Only for type checking; avoids runtime unused-import lint.
+    from fastapi import APIRouter
 
-from app.routes.openai_compat import router as oai_router, azure_router
+# Optional legacy guardrail routes (present in some builds)
+guardrail_router: Optional["APIRouter"] = None
+threat_admin_router: Optional["APIRouter"] = None
+try:  # pragma: no cover
+    from app.routes.guardrail import router as _guardrail_router
+    from app.routes.guardrail import threat_admin_router as _threat_admin_router
+
+    guardrail_router = _guardrail_router
+    threat_admin_router = _threat_admin_router
+except Exception:  # pragma: no cover
+    pass
+
 from app.routes.metrics_route import router as metrics_router
+from app.routes.openai_compat import azure_router, router as oai_router
 
 
 def _create_app() -> FastAPI:
     app = FastAPI(title="LLM Guardrail API", version="next")
 
-    # Include OpenAI/Azure compatibility routes
+    # OpenAI/Azure compatibility routes
     app.include_router(oai_router)
     app.include_router(azure_router)
 
-    # Include legacy guardrail routes if available
+    # Legacy guardrail routes if available
     if guardrail_router is not None:
         app.include_router(guardrail_router)
     if threat_admin_router is not None:
@@ -42,4 +52,3 @@ def create_app() -> FastAPI:  # backwards compatibility alias
 
 
 app = _create_app()
-
