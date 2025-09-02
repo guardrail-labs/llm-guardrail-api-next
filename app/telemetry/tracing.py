@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
+
+
+logger = logging.getLogger("app.telemetry")
 
 
 class TracingMiddleware(BaseHTTPMiddleware):
@@ -60,7 +64,11 @@ class TracingMiddleware(BaseHTTPMiddleware):
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
-            return False
+            logger.warning(
+                "OTel enabled but opentelemetry is not installed; tracing disabled"
+            )
+            self._trace = None
+            return True
 
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
         service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
