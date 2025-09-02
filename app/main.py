@@ -1,6 +1,7 @@
 # app/main.py
 from __future__ import annotations
 
+import importlib
 import uuid
 from typing import Optional, Type, TYPE_CHECKING
 
@@ -22,7 +23,7 @@ from app.routes.metrics_route import router as metrics_router
 from app.routes.openai_compat import azure_router, router as oai_router
 from app.routes.ready import router as ready_router
 
-# ---- Optional middleware imports (mypy-safe pattern) ----
+# Optional middleware imports (mypy-safe pattern)
 if TYPE_CHECKING:
     from app.middleware.rate_limit import RateLimitMiddleware as RateLimitMiddlewareType
     from app.telemetry.latency import (
@@ -46,7 +47,21 @@ try:
     LatencyHistogramMW = _LatencyHistogramMiddleware
 except Exception:  # pragma: no cover
     LatencyHistogramMW = None
-# --------------------------------------------------------
+
+
+def _include_if_present(app: FastAPI, dotted: str, attr: str = "router") -> None:
+    """
+    Import module by dotted path if it exists at runtime and include its 'router'
+    (or custom attr) if present. Uses importlib to keep mypy happy.
+    """
+    try:
+        mod = importlib.import_module(dotted)
+        r = getattr(mod, attr, None)
+        if r is not None:
+            app.include_router(r)
+    except Exception:
+        # Silently ignore missing/failed optional modules
+        pass
 
 
 def create_app() -> FastAPI:
@@ -86,7 +101,6 @@ def create_app() -> FastAPI:
 
     # Rate limiter: always add if available; it handles enabled vs headers-only itself
     try:
-        # Prefer local file if present (keeps tests aligned with expected behavior)
         from app.middleware.rate_limit import RateLimitMiddleware as _LocalRateLimitMW
 
         app.add_middleware(_LocalRateLimitMW)
@@ -99,52 +113,18 @@ def create_app() -> FastAPI:
     app.include_router(ready_router)
     app.include_router(admin_router)
 
-    # Threat admin router (if present)
-    try:
-        from app.routes import admin_threat as _admin_threat
-
-        if hasattr(_admin_threat, "router"):
-            app.include_router(_admin_threat.router)
-    except Exception:
-        pass
+    # Threat admin router (optional)
+    _include_if_present(app, "app.routes.admin_threat")
 
     app.include_router(metrics_router)
     app.include_router(oai_router)
     app.include_router(azure_router)
 
-    # ---- Feature routers if present ----
-    try:
-        from app.routes import guardrail as _guardrail
-
-        if hasattr(_guardrail, "router"):
-            app.include_router(_guardrail.router)
-    except Exception:
-        pass
-
-    try:
-        from app.routes import batch as _batch
-
-        if hasattr(_batch, "router"):
-            app.include_router(_batch.router)
-    except Exception:
-        pass
-
-    try:
-        from app.routes import output as _output
-
-        if hasattr(_output, "router"):
-            app.include_router(_output.router)
-    except Exception:
-        pass
-
-    try:
-        from app.routes import proxy as _proxy
-
-        if hasattr(_proxy, "router"):
-            app.include_router(_proxy.router)
-    except Exception:
-        pass
-    # -----------------------------------
+    # Feature routers (optional)
+    _include_if_present(app, "app.routes.guardrail")
+    _include_if_present(app, "app.routes.batch")
+    _include_if_present(app, "app.routes.output")
+    _include_if_present(app, "app.routes.proxy")
 
     # Error handlers (also set X-Request-ID, though RequestIDMiddleware already does)
     @app.exception_handler(StarletteHTTPException)
