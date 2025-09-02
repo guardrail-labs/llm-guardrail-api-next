@@ -106,6 +106,21 @@ except Exception:  # pragma: no cover
     pass
 
 
+def _init_rate_limit_state(app: FastAPI) -> None:
+    """
+    Initialize rate limit config on app.state from environment variables.
+    Tests flip env via temp_env() and rebuild the app, so reading here
+    ensures middleware sees the correct values.
+    """
+    enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
+    per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
+    burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
+
+    app.state.rate_limit_enabled = enabled
+    app.state.rate_limit_per_minute = per_min
+    app.state.rate_limit_burst = burst
+
+
 def _create_app() -> FastAPI:
     app = FastAPI(title="LLM Guardrail API", version="next")
 
@@ -119,6 +134,9 @@ def _create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Initialize rate-limit state from env so middleware has correct values
+    _init_rate_limit_state(app)
 
     # --- Latency histogram (if available) ---
     if _LatencyMW is not None:
