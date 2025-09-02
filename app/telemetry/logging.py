@@ -159,12 +159,17 @@ class ContextAdapter(logging.LoggerAdapter):
         self, msg: Any, kwargs: MutableMapping[str, Any]
     ) -> Tuple[Any, MutableMapping[str, Any]]:
         extra: Dict[str, Any] = {}
-        if "extra" in kwargs and isinstance(kwargs["extra"], Mapping):
-            # Make a shallow copy to avoid mutating caller's mapping
-            extra.update(dict(kwargs["extra"]))  # type: ignore[arg-type]
+
+        # Merge caller-provided extra if present and a Mapping
+        caller_extra = kwargs.get("extra")
+        if isinstance(caller_extra, Mapping):
+            extra.update(dict(caller_extra))
+
         # Adapter context wins unless caller explicitly overrides
-        for k, v in self.extra.items():
+        bound_extra: Mapping[str, Any] = self.extra or {}
+        for k, v in bound_extra.items():
             extra.setdefault(k, v)
+
         kwargs["extra"] = extra
         return msg, kwargs
 
