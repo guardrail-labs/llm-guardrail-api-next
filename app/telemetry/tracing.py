@@ -1,4 +1,3 @@
-# app/telemetry/tracing.py
 from __future__ import annotations
 
 import logging
@@ -40,7 +39,7 @@ class _UseSpanCtx:
     def __enter__(self) -> _NoopSpan:
         return self._span
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type, exc, tb) -> Optional[bool]:
         # Do not suppress exceptions
         return False
 
