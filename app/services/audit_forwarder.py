@@ -6,9 +6,9 @@ import random
 import socket
 import ssl
 import time
+from http.client import HTTPConnection, HTTPSConnection  # <- explicit imports
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
-from http.client import HTTPConnection, HTTPSConnection  # <- explicit imports
 
 from app.telemetry.logging import get_audit_logger
 from app.telemetry.tracing import get_request_id, get_trace_id
@@ -147,7 +147,12 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
             # Accept any 2xx as success
             if 200 <= status < 300:
                 return
-        except (socket.timeout, ConnectionError, OSError, ssl.SSLError) as exc:  # pragma: no cover - network
+        except (
+            socket.timeout,
+            ConnectionError,
+            OSError,
+            ssl.SSLError,
+        ) as exc:  # pragma: no cover
             last_exc = exc
         # backoff before next try, except after last attempt
         if i < attempts - 1 and backoff:
