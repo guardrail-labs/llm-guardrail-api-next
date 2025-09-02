@@ -10,6 +10,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import get_settings
 from app.telemetry.metrics import inc_rate_limited  # tests patch this
+from app.telemetry.tracing import get_trace_id as _get_trace_id
 
 logger = logging.getLogger("app.ratelimit")
 
@@ -100,12 +101,16 @@ class RateLimitMiddleware:
             rid = incoming.get(b"x-request-id")
             request_id = rid.decode() if rid else str(uuid.uuid4())
 
+            trace_id = _get_trace_id()
+
             body = {
                 "code": "rate_limited",
                 "detail": "rate limit exceeded",
                 "retry_after": 60,
                 "request_id": request_id,
             }
+            if trace_id:
+                body["trace_id"] = trace_id
 
             async def _send_429(message):
                 if message.get("type") == "http.response.start":
@@ -113,6 +118,8 @@ class RateLimitMiddleware:
                     headers_list = message.setdefault("headers", [])
                     headers_list.append((b"Retry-After", b"60"))
                     headers_list.append((b"X-Request-ID", request_id.encode("latin-1")))
+                    if trace_id:
+                        headers_list.append((b"X-Trace-ID", trace_id.encode("latin-1")))
                 await send(message)
 
             response = JSONResponse(status_code=429, content=body)
