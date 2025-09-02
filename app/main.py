@@ -1,29 +1,31 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import pkgutil
 import time
-from typing import List
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRouter
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.telemetry.tracing import TracingMiddleware
 
-try:
-    # Optional but present in tests environment
-    from prometheus_client import Histogram
+# Prometheus (optional, but expected in tests)
+try:  # pragma: no cover
+    from prometheus_client import Histogram, REGISTRY
 except Exception:  # pragma: no cover
-    Histogram = None  # type: ignore
+    Histogram = None  # type: ignore[assignment]
+    REGISTRY = None   # type: ignore[assignment]
 
 
 def _truthy(val: object) -> bool:
@@ -44,23 +46,90 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return resp
 
 
-# Lightweight latency histogram so /metrics exposes guardrail_latency_seconds_*.
-# No labels required for the tests.
-_REQUEST_LATENCY = None
-if Histogram is not None:  # pragma: no cover - exercised indirectly by tests
-    _REQUEST_LATENCY = Histogram(
-        "guardrail_latency_seconds", "Request latency in seconds"
-    )
+def _get_or_create_latency_histogram() -> Optional[Any]:
+    """
+    Create the guardrail_latency_seconds histogram exactly once per process.
+
+    If it's already registered in the default REGISTRY (e.g., because the module
+    was reloaded in tests), return the existing collector instead of creating
+    a new one to avoid 'Duplicated timeseries' errors.
+    """
+    if Histogram is None or REGISTRY is None:  # pragma: no cover
+        return None
+
+    name = "guardrail_latency_seconds"
+    # If already registered, reuse it.
+    try:
+        existing = REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
+        if existing is not None:
+            return existing
+    except Exception:
+        # Fall through and try to create; if it fails we'll catch ValueError below.
+        pass
+
+    try:
+        return Histogram(name, "Request latency in seconds")
+    except ValueError:
+        # Another import path created it in the same process — fetch and reuse.
+        try:
+            return REGISTRY._names_to_collectors.get(name)  # type: ignore[attr-defined]
+        except Exception:
+            return None
 
 
 class _LatencyMiddleware(BaseHTTPMiddleware):
+    """Observe request latency into guardrail_latency_seconds (if available)."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._hist = _get_or_create_latency_histogram()
+
     async def dispatch(self, request: StarletteRequest, call_next):
         start = time.perf_counter()
         try:
             return await call_next(request)
         finally:
-            if _REQUEST_LATENCY is not None:
-                _REQUEST_LATENCY.observe(max(time.perf_counter() - start, 0.0))
+            if self._hist is not None:
+                try:
+                    self._hist.observe(max(time.perf_counter() - start, 0.0))
+                except Exception:
+                    # Never break requests due to metrics errors
+                    pass
+
+
+class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
+    """
+    Some auth middleware may return a bare {'detail': 'Unauthorized'} JSON
+    without a request_id. Ensure 401 bodies include the standard shape.
+    """
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        resp: StarletteResponse = await call_next(request)
+        if resp.status_code != 401:
+            return resp
+
+        # Consume body
+        body_chunks: list[bytes] = []
+        if hasattr(resp, "body_iterator") and resp.body_iterator is not None:
+            async for chunk in resp.body_iterator:
+                body_chunks.append(chunk)
+        raw = b"".join(body_chunks) if body_chunks else b""
+
+        detail: str = "Unauthorized"
+        try:
+            if raw:
+                parsed = json.loads(raw.decode() or "{}")
+                detail = str(parsed.get("detail", detail))
+        except Exception:
+            pass
+
+        payload = {
+            "code": "unauthorized",
+            "detail": detail,
+            "request_id": get_request_id() or "",
+        }
+        # Preserve headers set earlier.
+        return JSONResponse(payload, status_code=401, headers=dict(resp.headers))
 
 
 def _include_all_route_modules(app: FastAPI) -> int:
@@ -120,12 +189,13 @@ def create_app() -> FastAPI:
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
 
-    # Rate limiting (internally env-controlled)
+    # Rate limiting (env-controlled)
     app.add_middleware(RateLimitMiddleware)
 
-    # Security headers + latency histogram
+    # Security headers + latency histogram + normalize 401 body
     app.add_middleware(_SecurityHeadersMiddleware)
     app.add_middleware(_LatencyMiddleware)
+    app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
     # CORS
     raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
