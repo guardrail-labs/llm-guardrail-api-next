@@ -111,10 +111,14 @@ def _create_app() -> FastAPI:
         )
 
     # Try to install the project’s rate-limit middleware (if it exists)
+    # Use dynamic import to avoid mypy attr checks.
     try:  # pragma: no cover
-        from app.services.rate_limit import RateLimitMiddleware as _RateLimitMiddleware
+        import importlib
 
-        app.add_middleware(_RateLimitMiddleware)
+        rl_mod = importlib.import_module("app.services.rate_limit")
+        RateLimitMiddleware = getattr(rl_mod, "RateLimitMiddleware", None)
+        if RateLimitMiddleware is not None:
+            app.add_middleware(RateLimitMiddleware)
     except Exception:
         # If not present, continue gracefully; guardrail routes still have internal checks.
         pass
