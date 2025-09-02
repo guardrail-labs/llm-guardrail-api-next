@@ -91,6 +91,25 @@ def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# Optional helper to expose current trace id (if any) without requiring callers
+# to import OpenTelemetry directly. Returns a 32-character hex string or None.
+def get_trace_id() -> Optional[str]:
+    try:  # pragma: no cover - opentelemetry is optional
+        from opentelemetry.trace import get_current_span
+    except Exception:
+        return None
+
+    try:
+        span = get_current_span()
+        ctx = span.get_span_context()  # type: ignore[assignment]
+        trace_id = getattr(ctx, "trace_id", 0)
+        if not trace_id:
+            return None
+        return f"{trace_id:032x}"
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------
 # Back-compat shim: some modules used to import get_request_id from here.
 # We proxy to app.middleware.request_id at runtime without static imports.
