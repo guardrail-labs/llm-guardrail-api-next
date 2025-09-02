@@ -16,14 +16,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
-from app.middleware.request_id import RequestIDMiddleware, get_request_id
+from app.metrics.route_label import route_label
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
-    from prometheus_client import Histogram as _PromHistogramCls
-    from prometheus_client import REGISTRY as _PromRegistryObj
+    from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -72,7 +72,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         pass
 
     try:
-        return PromHistogram(name, "Request latency in seconds")
+        return PromHistogram(name, "Request latency in seconds", ["route", "method"])
     except ValueError:
         # Another import path created it — fetch and reuse.
         try:
@@ -98,7 +98,9 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
         finally:
             if self._hist is not None:
                 try:
-                    self._hist.observe(max(time.perf_counter() - start, 0.0))
+                    dur = max(time.perf_counter() - start, 0.0)
+                    safe_route = route_label(request.url.path)
+                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
                 except Exception:
                     # Never break requests due to metrics errors
                     pass

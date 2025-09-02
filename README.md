@@ -62,6 +62,16 @@ Metrics & Audit
 
 Prometheus counters for decision families, per-tenant/bot breakdown, verifier outcomes, and quota rejects.
 
+To avoid high-cardinality route labels in the latency histogram, clamp raw paths
+with the helper:
+
+```python
+from app.metrics.route_label import route_label
+
+safe_route = route_label(request.url.path)
+hist.labels(route=safe_route, method=request.method).observe(latency)
+```
+
 Audit events include tenant_id, bot_id, request_id, policy version, bytes, hashes, and meta.client.
 
 Examples
