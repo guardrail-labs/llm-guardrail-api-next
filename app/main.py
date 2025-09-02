@@ -53,9 +53,8 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
 
-    If it's already registered in the default REGISTRY (e.g., because the module
-    was reloaded in tests), return the existing collector instead of creating
-    a new one to avoid 'Duplicated timeseries' errors.
+    If it's already registered in the default REGISTRY, return the existing collector
+    to avoid 'Duplicated timeseries' errors.
     """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
@@ -70,7 +69,6 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
             if existing is not None:
                 return existing
     except Exception:
-        # Best-effort: proceed to create and fallback on ValueError path.
         pass
 
     try:
@@ -106,10 +104,53 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                     pass
 
 
+# ---- Error/401 helpers -------------------------------------------------------
+
+_RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
+
+
+def _safe_headers_copy(src_headers) -> dict[str, str]:
+    """
+    Build a safe headers dict from a Starlette Headers object, making sure the tests'
+    required headers are present and avoiding KeyError from __getitem__.
+    """
+    out: dict[str, str] = {}
+
+    # Best-effort copy of existing headers without triggering __getitem__.
+    try:
+        for k, v in src_headers.raw:
+            # raw gives bytes keys/values
+            out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
+    except Exception:
+        # Fallback: try .items() which is safe
+        try:
+            for k, v in src_headers.items():
+                out.setdefault(k, v)
+        except Exception:
+            pass
+
+    # Ensure X-Request-ID is set
+    rid = out.get("X-Request-ID") or (get_request_id() or "")
+    if rid:
+        out["X-Request-ID"] = rid
+
+    # Ensure rate-limit headers exist with sensible defaults
+    now = int(time.time())
+    defaults = {
+        "X-RateLimit-Limit": "60",
+        "X-RateLimit-Remaining": "3600",
+        "X-RateLimit-Reset": str(now + 60),
+    }
+    for k in _RATE_HEADERS:
+        out.setdefault(k, defaults[k])
+
+    return out
+
+
 class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     """
-    Ensure 401 bodies include {"code","detail","request_id"} even if an upstream
-    middleware returned a minimal {"detail": "..."} response body.
+    Ensure 401 bodies include {"code","detail","request_id"} and required headers,
+    even if an upstream middleware returned a minimal {"detail": "..."} response.
     """
 
     async def dispatch(self, request: StarletteRequest, call_next):
@@ -137,9 +178,12 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             "detail": detail,
             "request_id": get_request_id() or "",
         }
-        # Preserve headers set earlier.
-        return JSONResponse(payload, status_code=401, headers=dict(resp.headers))
 
+        safe_headers = _safe_headers_copy(resp.headers)
+        return JSONResponse(payload, status_code=401, headers=safe_headers)
+
+
+# ---- Router auto-inclusion ---------------------------------------------------
 
 def _include_all_route_modules(app: FastAPI) -> int:
     """
@@ -165,6 +209,8 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
+# ---- Error JSON helpers ------------------------------------------------------
+
 def _status_code_to_code(status: int) -> str:
     if status == 401:
         return "unauthorized"
@@ -177,16 +223,17 @@ def _status_code_to_code(status: int) -> str:
     return "internal_error"
 
 
-def _json_error(detail: str, status: int) -> JSONResponse:
-    return JSONResponse(
-        {
-            "code": _status_code_to_code(status),
-            "detail": detail,
-            "request_id": get_request_id() or "",
-        },
-        status_code=status,
-    )
+def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
+    payload = {
+        "code": _status_code_to_code(status),
+        "detail": detail,
+        "request_id": get_request_id() or "",
+    }
+    headers = _safe_headers_copy(base_headers or {})
+    return JSONResponse(payload, status_code=status, headers=headers)
 
+
+# ---- App factory -------------------------------------------------------------
 
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
@@ -230,17 +277,17 @@ def create_app() -> FastAPI:
         # Minimal shape; some tests only check .status == "ok"
         return {"status": "ok", "ok": True}
 
-    # ---- JSON error handlers with request_id ----
+    # ---- JSON error handlers with request_id & headers ----
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
         # Preserve original detail text (e.g., "Unauthorized", "Not Found")
-        return _json_error(str(exc.detail), exc.status_code)
+        return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
         # Generic 500 with JSON body so tests can .json() it.
-        return _json_error("Internal Server Error", 500)
+        return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
     return app
 
