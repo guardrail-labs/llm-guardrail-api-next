@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import time
 import uuid
 import importlib
 from typing import Optional, TYPE_CHECKING
@@ -26,9 +25,10 @@ if TYPE_CHECKING:
 # Latency histogram middleware
 # -----------------------------
 try:
-    from app.telemetry.latency import GuardrailLatencyMiddleware
+    # Use a local variable so we don't assign None to a class symbol (mypy-safe)
+    from app.telemetry.latency import GuardrailLatencyMiddleware as _LatencyMW  # type: ignore[assignment]
 except Exception:  # pragma: no cover
-    GuardrailLatencyMiddleware = None  # type: ignore[assignment]
+    _LatencyMW = None
 
 
 # -----------------------------
@@ -123,17 +123,19 @@ def _create_app() -> FastAPI:
         )
 
     # --- Latency histogram (if available) ---
-    if GuardrailLatencyMiddleware is not None:
-        app.add_middleware(GuardrailLatencyMiddleware)
+    if _LatencyMW is not None:
+        app.add_middleware(_LatencyMW)
 
-    # --- Rate limit middleware (dynamic import, optional) ---
-    try:  # pragma: no cover
-        rl_mod = importlib.import_module("app.services.rate_limit")
-        RL = getattr(rl_mod, "RateLimitMiddleware", None)
-        if RL is not None:
-            app.add_middleware(RL)
-    except Exception:
-        pass
+    # --- Rate limit middleware (prefer new location, fall back to old) ---
+    for mod_name in ("app.middleware.rate_limit", "app.services.rate_limit"):
+        try:  # pragma: no cover
+            rl_mod = importlib.import_module(mod_name)
+            RL = getattr(rl_mod, "RateLimitMiddleware", None)
+            if RL is not None:
+                app.add_middleware(RL)
+                break
+        except Exception:
+            continue
 
     # --- Auth guard for /proxy/* ---
     app.add_middleware(_AuthProxyMiddleware)
