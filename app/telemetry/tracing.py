@@ -62,8 +62,10 @@ class TracingMiddleware(BaseHTTPMiddleware):
     Lightweight optional OpenTelemetry wiring.
 
     - If OTEL_ENABLED is not truthy, this is a no-op.
-    - If opentelemetry packages are not installed, we log a warning and proceed with tracing disabled.
-    - We import OTel lazily at runtime to keep imports optional and avoid mypy issues.
+    - If opentelemetry packages are not installed, we log a warning and proceed
+      with tracing disabled.
+    - We import OTel lazily at runtime to keep imports optional and avoid mypy
+      issues.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -128,7 +130,10 @@ class TracingMiddleware(BaseHTTPMiddleware):
             return True
         except Exception as e:
             # Initialization failed; keep tracing disabled and log.
-            log.warning("Failed to initialize OpenTelemetry provider; tracing disabled. %s", e)
+            log.warning(
+                "Failed to initialize OpenTelemetry provider; tracing disabled. %s",
+                e,
+            )
             self._trace = None
             return True
 
