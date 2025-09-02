@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import http.client
 import json
 import os
 import random
@@ -9,6 +8,7 @@ import ssl
 import time
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
+from http.client import HTTPConnection, HTTPSConnection  # <- explicit imports
 
 from app.telemetry.logging import get_audit_logger
 from app.telemetry.tracing import get_request_id, get_trace_id
@@ -57,11 +57,13 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
+    # Annotate to supertype so both HTTPConnection and HTTPSConnection assign cleanly
+    conn: HTTPConnection
     if use_tls:
         context = ssl.create_default_context()
-        conn = http.client.HTTPSConnection(host, port, timeout=5, context=context)
+        conn = HTTPSConnection(host, port, timeout=5, context=context)
     else:
-        conn = http.client.HTTPConnection(host, port, timeout=5)
+        conn = HTTPConnection(host, port, timeout=5)
 
     body = json.dumps(payload).encode("utf-8")
     headers = {
@@ -145,21 +147,14 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
             # Accept any 2xx as success
             if 200 <= status < 300:
                 return
-        except (
-            socket.timeout,
-            ConnectionError,
-            OSError,
-            ssl.SSLError,
-        ) as exc:  # pragma: no cover - network
+        except (socket.timeout, ConnectionError, OSError, ssl.SSLError) as exc:  # pragma: no cover - network
             last_exc = exc
         # backoff before next try, except after last attempt
         if i < attempts - 1 and backoff:
             time.sleep(backoff)  # pragma: no cover - timing
 
     # If we exhausted retries, we swallow the error (audit logging is best-effort).
-    # Optionally, we could emit a local error log; keeping quiet to avoid noisy CI.
     if last_exc:
-        # Debug-only breadcrumb without raising
         _audit_log.debug(
             "audit forward failed",
             extra={"extra": {"error": str(last_exc)}},
