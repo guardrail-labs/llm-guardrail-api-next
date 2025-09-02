@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 from typing import Any, Optional
 
@@ -83,13 +84,13 @@ def _truthy(val: object) -> bool:
 
 
 # ---------------------------------------------------------------------
-# Back-compat shim: some modules may import get_request_id from here.
-# Prefer importing from app.middleware.request_id directly, but we
-# provide a thin wrapper to avoid breaking older imports.
+# Back-compat shim: some modules used to import get_request_id from here.
+# We proxy to app.middleware.request_id at runtime without static imports.
 # ---------------------------------------------------------------------
 def get_request_id() -> Optional[str]:
-    try:
-        from app.middleware.request_id import get_request_id as _get
-    except Exception:
-        return None
-    return _get()
+    mod = importlib.import_module("app.middleware.request_id")
+    func = getattr(mod, "get_request_id", None)
+    if callable(func):
+        rid = func()
+        return str(rid) if rid is not None else None
+    return None
