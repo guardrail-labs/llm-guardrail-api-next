@@ -1,6 +1,7 @@
 # app/main.py
 from __future__ import annotations
 import uuid
+from typing import Optional, Type, TYPE_CHECKING
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -19,16 +20,30 @@ from app.routes.health import router as health_router
 from app.routes.admin import router as admin_router
 from app.routes.ready import router as ready_router
 
-# Optional imports (rate limiter, latency)
+# ---- Optional middleware imports (mypy-safe) ----
+# We avoid assigning None to imported class names by using alias variables.
+if TYPE_CHECKING:
+    # Only for type checking; not imported at runtime
+    from app.middleware.rate_limit import RateLimitMiddleware as RateLimitMiddlewareType
+    from app.telemetry.latency import LatencyHistogramMiddleware as LatencyHistogramMiddlewareType
+
+RateLimitMW: Optional[Type[object]] = None
+LatencyHistogramMW: Optional[Type[object]] = None
 try:
-    from app.middleware.rate_limit import RateLimitMiddleware
+    # Import under private names, then assign to our alias variables
+    from app.middleware.rate_limit import RateLimitMiddleware as _RateLimitMiddleware
+
+    RateLimitMW = _RateLimitMiddleware
 except Exception:  # pragma: no cover
-    RateLimitMiddleware = None  # type: ignore[assignment]
+    RateLimitMW = None
 
 try:
-    from app.telemetry.latency import LatencyHistogramMiddleware
+    from app.telemetry.latency import LatencyHistogramMiddleware as _LatencyHistogramMiddleware
+
+    LatencyHistogramMW = _LatencyHistogramMiddleware
 except Exception:  # pragma: no cover
-    LatencyHistogramMiddleware = None  # type: ignore[assignment]
+    LatencyHistogramMW = None
+# -------------------------------------------------
 
 
 def create_app() -> FastAPI:
@@ -60,12 +75,12 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
 
     # Optional latency histogram
-    if LatencyHistogramMiddleware is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
-        app.add_middleware(LatencyHistogramMiddleware)
+    if LatencyHistogramMW is not None and getattr(s, "ENABLE_LATENCY_HISTOGRAM", True):
+        app.add_middleware(LatencyHistogramMW)  # type: ignore[arg-type]
 
     # Optional rate limiter (uses your existing settings fields)
-    if RateLimitMiddleware is not None and getattr(s, "RATE_LIMIT_ENABLED", False):
-        app.add_middleware(RateLimitMiddleware)
+    if RateLimitMW is not None and getattr(s, "RATE_LIMIT_ENABLED", False):
+        app.add_middleware(RateLimitMW)  # type: ignore[arg-type]
 
     # Routers
     app.include_router(health_router)
@@ -99,4 +114,8 @@ def create_app() -> FastAPI:
     return app
 
 
+# Tests import `build_app` from app.main; keep this alias for compatibility.
+build_app = create_app
+
+# Module-level app instance (also used by uvicorn)
 app = create_app()
