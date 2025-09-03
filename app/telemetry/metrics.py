@@ -114,22 +114,26 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
 # --------------------------------- collectors ---------------------------------
 
 
-def _mk_counter(name: str, doc: str, labels: Iterable[str] | None = None) -> CounterLike:
+def _mk_counter(
+    name: str, doc: str, labels: Iterable[str] | None = None
+) -> CounterLike:
     def _factory() -> Any:
         if labels:
             return PromCounter(name, doc, list(labels))
         return PromCounter(name, doc)
+    # Cast so mypy knows this is a CounterLike
+    return cast(CounterLike, _get_or_create(name, _factory))
 
-    return _get_or_create(name, _factory)
 
-
-def _mk_histogram(name: str, doc: str, labels: Iterable[str] | None = None) -> HistogramLike:
+def _mk_histogram(
+    name: str, doc: str, labels: Iterable[str] | None = None
+) -> HistogramLike:
     def _factory() -> Any:
         if labels:
             return PromHistogram(name, doc, list(labels))
         return PromHistogram(name, doc)
-
-    return _get_or_create(name, _factory)
+    # Cast so mypy knows this is a HistogramLike
+    return cast(HistogramLike, _get_or_create(name, _factory))
 
 
 # Core metrics used throughout the app/tests.
