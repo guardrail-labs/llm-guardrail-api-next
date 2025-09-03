@@ -35,11 +35,14 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
         return True
     return False
 
+
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
+RE_PHONE = re.compile(
+    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
+)
 RE_PRIVATE_KEY = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
     re.S,
@@ -66,7 +69,11 @@ def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
 
 
 def emit_audit_event(payload: Dict[str, Any]) -> None:
-    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {"1", "true", "yes"}
+    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if not enabled:
         return
     url = os.getenv("AUDIT_FORWARD_URL", "")
@@ -82,7 +89,7 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
 
 def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
     # Fold specific families into normalized wildcard keys required by tests.
-    if any(k.startswith("pii:") or k.startswith("pi:") for k in rule_hits.keys()):
+    if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
     if any(k.startswith("secrets:") for k in rule_hits.keys()):
         rule_hits.setdefault("secrets:*", [])
@@ -116,7 +123,9 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
     # OpenAI-like secret
     if RE_SECRET.search(redacted):
         redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
-        rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
+        rule_hits.setdefault("secrets:openai_key", []).append(
+            RE_SECRET.pattern
+        )
         m.inc_redaction("openai_key")
         redactions += 1
 
@@ -210,7 +219,9 @@ def _audit(
     rule_hits: Dict[str, List[str]] | List[str],
     redaction_count: int,
 ) -> None:
-    decision = action_or_decision if action_or_decision in {"allow", "block"} else "allow"
+    decision = (
+        action_or_decision if action_or_decision in {"allow", "block"} else "allow"
+    )
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
         "direction": direction,
@@ -236,14 +247,14 @@ def _bump_family(endpoint: str, action: str, tenant: str, bot: str) -> None:
 
 def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     hits: List[str] = []
-    # Keep legacy "block" for payload blobs; secrets now masked but allowed
+    # Keep legacy "block" for payload blobs
     if RE_LONG_BASE64ISH.search(prompt or ""):
         hits.append(PAYLOAD_BLOB_ID)
         return "block", hits
+    # Secrets on legacy path -> block (tests expect block + masks)
     if RE_SECRET.search(prompt or ""):
-        # Tests expect sanitize but not block on legacy path
         hits.append(SECRETS_API_KEY_ID)
-        return "allow", hits
+        return "block", hits
     return "allow", hits
 
 
@@ -275,22 +286,16 @@ def _egress_policy(
     text: str,
     want_debug: bool,
 ) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    dbg: Optional[Dict[str, Any]] = None
     if RE_PRIVATE_KEY.search(text or ""):
         rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope"]}
         _normalize_wildcards(rule_hits, is_deny=True)
-        dbg: Optional[Dict[str, Any]]
         if want_debug:
             dbg = {"explanations": ["private_key_detected"]}
-        else:
-            dbg = None
         return ("deny", "", rule_hits, dbg)
-
     rule_hits_allow: Dict[str, List[str]] = {}
-    dbg: Optional[Dict[str, Any]]
     if want_debug:
         dbg = {"note": "redactions_may_apply"}
-    else:
-        dbg = None
     return ("allow", text, rule_hits_allow, dbg)
 
 # ------------------------------- form parsing -------------------------------
@@ -393,7 +398,12 @@ async def guardrail_legacy(
         rule_hits,
         redactions,
     )
-    _bump_family("guardrail_legacy", "allow" if action == "allow" else "deny", tenant, bot)
+    _bump_family(
+        "guardrail_legacy",
+        "allow" if action == "allow" else "deny",
+        tenant,
+        bot,
+    )
 
     if action == "block":
         return _respond_legacy_block(request_id, rule_hits, redacted)
