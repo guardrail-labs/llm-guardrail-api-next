@@ -168,6 +168,12 @@ def inc_requests_total(endpoint: str = "unknown") -> None:
     guardrail_latency_seconds.labels(endpoint).observe(0.0)
     _REQ_TOTAL += 1.0
 
+    # --- NEW: seed labeled counters so Prometheus text includes them even if
+    # a path didn't increment tenant/bot counters yet. This does not change totals.
+    guardrail_decisions_family_total.labels("allow").inc(0.0)
+    guardrail_decisions_family_tenant_total.labels("default", "allow").inc(0.0)
+    guardrail_decisions_family_bot_total.labels("default", "default", "allow").inc(0.0)
+
 def inc_decisions_total(action: str = "unknown") -> None:
     global _DEC_TOTAL
     guardrail_decisions_total.labels(action).inc()
