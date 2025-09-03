@@ -276,13 +276,13 @@ def _egress_policy(
     want_debug: bool,
 ) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     if RE_PRIVATE_KEY.search(text or ""):
-        hits: Dict[str, List[str]] = {"deny": ["private_key_envelope"]}
-        _normalize_wildcards(hits, is_deny=True)
+        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope"]}
+        _normalize_wildcards(rule_hits, is_deny=True)
         dbg = {"explanations": ["private_key_detected"]} if want_debug else None
-        return ("deny", "", hits, dbg)
-    hits: Dict[str, List[str]] = {}
+        return ("deny", "", rule_hits, dbg)
+    rule_hits_allow: Dict[str, List[str]] = {}
     dbg = {"note": "redactions_may_apply"} if want_debug else None
-    return ("allow", text, hits, dbg)
+    return ("allow", text, rule_hits_allow, dbg)
 
 # ------------------------------- form parsing -------------------------------
 
@@ -437,10 +437,7 @@ async def guardrail_evaluate(request: Request):
             if is_known_harmful(fp):
                 action = "deny"
         else:
-            # Try providers (classification-only)
             verdict, used = Verifier(providers).assess_intent(combined_text, {})
-            # We don't change action here unless your tests require; they only
-            # assert debug presence. Keep action from policy path.
             verifier_info = {
                 "enabled": True,
                 "providers": providers,
@@ -504,7 +501,7 @@ async def guardrail_egress(request: Request):
     action, transformed, rule_hits, debug_info = _egress_policy(text, want_debug)
     redacted, redaction_hits, redaction_count = _apply_redactions(transformed)
 
-    # Threat feed on egress as well (keeps behavior consistent)
+    # Threat feed on egress as well
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
         redaction_count += tf_count
