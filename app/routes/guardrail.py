@@ -24,15 +24,24 @@ router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
 
-RE_REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "false").lower() in {"1", "true", "yes"}
+RE_REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 # Simple patterns aligned with tests
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_PROMPT_INJECTION = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
-RE_PRIVATE_KEY = re.compile(r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S)
+RE_PRIVATE_KEY = re.compile(
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    re.S,
+)
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
-RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")  # “A” * 256 in tests triggers
+RE_PHONE = re.compile(
+    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
+)
+RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 
 def _req_id(existing: Optional[str]) -> str:
     return existing or str(uuid.uuid4())
@@ -40,7 +49,10 @@ def _req_id(existing: Optional[str]) -> str:
 def _fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
-def _tenant_bot(headers_tenant: Optional[str], headers_bot: Optional[str]) -> Tuple[str, str]:
+def _tenant_bot(
+    headers_tenant: Optional[str],
+    headers_bot: Optional[str],
+) -> Tuple[str, str]:
     t = (headers_tenant or "default").strip() or "default"
     b = (headers_bot or "default").strip() or "default"
     return t, b
@@ -55,7 +67,12 @@ def emit_audit_event(payload: Dict) -> None:
     Wrapper the tests patch at import-site (they monkeypatch guardrail.emit_audit_event).
     If forwarding is enabled in env, send through the forwarder too.
     """
-    if os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {"1", "true", "yes"}:
+    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if enabled:
         url = os.getenv("AUDIT_FORWARD_URL", "")
         key = os.getenv("AUDIT_FORWARD_API_KEY", "")
         if url and key:
@@ -66,7 +83,11 @@ def emit_audit_event(payload: Dict) -> None:
                 pass
 
 
-def _respond_allow(text: str, request_id: str, rule_hits: Dict[str, List[str]]) -> JSONResponse:
+def _respond_allow(
+    text: str,
+    request_id: str,
+    rule_hits: Dict[str, List[str]],
+) -> JSONResponse:
     m.inc_decisions_total("allow")
     return JSONResponse(
         {
@@ -78,7 +99,11 @@ def _respond_allow(text: str, request_id: str, rule_hits: Dict[str, List[str]]) 
     )
 
 
-def _respond_block(request_id: str, rule_hits: Dict[str, List[str]], debug: Optional[Dict] = None) -> JSONResponse:
+def _respond_block(
+    request_id: str,
+    rule_hits: Dict[str, List[str]],
+    debug: Optional[Dict] = None,
+) -> JSONResponse:
     m.inc_decisions_total("deny")
     body = {
         "request_id": request_id,
@@ -91,9 +116,10 @@ def _respond_block(request_id: str, rule_hits: Dict[str, List[str]], debug: Opti
 
 
 def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]]]:
-    """Return redacted text and rule hits; tests expect emails/phones to be redacted on egress."""
+    """Return redacted text and rule hits; tests expect emails/phones redacted on egress."""
     rule_hits: Dict[str, List[str]] = {}
-    def _tag(tag: str, patt: str):
+
+    def _tag(tag: str, patt: str) -> None:
         rule_hits.setdefault(tag, []).append(patt)
 
     redacted = text
@@ -112,7 +138,9 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]]]:
     return redacted, rule_hits
 
 
-def _run_ingress_policy(text: str) -> Tuple[str, Dict[str, List[str]], Optional[Dict]]:
+def _run_ingress_policy(
+    text: str,
+) -> Tuple[str, Dict[str, List[str]], Optional[Dict]]:
     """
     Returns (decision, rule_hits, debug) for /guardrail and /guardrail/evaluate.
     Tests:
@@ -129,17 +157,24 @@ def _run_ingress_policy(text: str) -> Tuple[str, Dict[str, List[str]], Optional[
 
     if RE_LONG_BASE64ISH.search(text or ""):
         rule_hits.setdefault("unsafe", []).append("long_base64")
-        return "block", rule_hits, {"explanations": ["suspicious_long_base64_like_blob"]}
+        return "block", rule_hits, {
+            "explanations": ["suspicious_long_base64_like_blob"]
+        }
 
     if RE_SECRET.search(text or ""):
         rule_hits.setdefault("unsafe", []).append(RE_SECRET.pattern)
-        return "block", rule_hits, {"explanations": ["secret_token_like_string"]}
+        return "block", rule_hits, {
+            "explanations": ["secret_token_like_string"]
+        }
 
     # default allow
     return "allow", rule_hits, debug or None
 
 
-def _run_egress_policy(text: str, want_debug: bool) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict]]:
+def _run_egress_policy(
+    text: str,
+    want_debug: bool,
+) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict]]:
     """
     For /guardrail/egress_evaluate the tests expect:
       - private key => block
@@ -150,7 +185,8 @@ def _run_egress_policy(text: str, want_debug: bool) -> Tuple[str, str, Dict[str,
 
     if RE_PRIVATE_KEY.search(text or ""):
         rule_hits.setdefault("deny", []).append("private_key_envelope")
-        return "block", text, rule_hits, ({"explanations": ["private_key_detected"]} if want_debug else None)
+        dbg = {"explanations": ["private_key_detected"]} if want_debug else None
+        return "block", text, rule_hits, dbg
 
     redacted, rh = _apply_redactions(text or "")
     # Merge rule hits if any redactions happened
@@ -163,7 +199,14 @@ def _run_egress_policy(text: str, want_debug: bool) -> Tuple[str, str, Dict[str,
     return "allow", redacted, rule_hits, debug
 
 
-def _audit(direction: str, text: str, decision: str, tenant: str, bot: str, request_id: str) -> None:
+def _audit(
+    direction: str,
+    text: str,
+    decision: str,
+    tenant: str,
+    bot: str,
+    request_id: str,
+) -> None:
     payload = {
         "event": "prompt_decision",
         "direction": direction,  # tests assert this exists & matches
@@ -179,8 +222,9 @@ def _audit(direction: str, text: str, decision: str, tenant: str, bot: str, requ
 
 def _bump_metrics(endpoint: str, decision_family: str, tenant: str, bot: str) -> None:
     m.inc_requests_total(endpoint)
-    # decision family strings the tests expect to appear include "allow" and "deny"
-    m.inc_decision_family_tenant_bot("allow" if decision_family == "allow" else "deny", tenant, bot)
+    # decision family strings tests expect to appear include "allow" and "deny"
+    fam = "allow" if decision_family == "allow" else "deny"
+    m.inc_decision_family_tenant_bot(fam, tenant, bot)
 
 
 # ------------------------------ dependencies ------------------------------
@@ -188,7 +232,7 @@ def _bump_metrics(endpoint: str, decision_family: str, tenant: str, bot: str) ->
 def _auth_dep(x_api_key: Optional[str] = Header(default=None)) -> None:
     if RE_REQUIRE_API_KEY and not x_api_key:
         # Mirror the tests: 401 only when REQUIRE_API_KEY=true
-        raise JSONResponse({"detail": "Unauthorized"}, status_code=401)  # type: ignore[return-value]
+        raise JSONResponse({"detail": "Unauthorized"}, status_code=401)  # type: ignore
 
 
 # ------------------------------- endpoints --------------------------------
@@ -211,7 +255,8 @@ def guardrail_legacy(
 
     decision, rule_hits, debug = _run_ingress_policy(prompt)
     _audit("ingress", prompt, decision, tenant, bot, request_id)
-    _bump_metrics("guardrail_legacy", "allow" if decision == "allow" else "deny", tenant, bot)
+    fam = "allow" if decision == "allow" else "deny"
+    _bump_metrics("guardrail_legacy", fam, tenant, bot)
 
     if decision == "block":
         return _respond_block(request_id, rule_hits, debug)
@@ -241,15 +286,14 @@ def guardrail_evaluate_json(
         debug["debug_header"] = True
 
     _audit("ingress", text, decision, tenant, bot, request_id)
-    _bump_metrics("ingress_evaluate", "allow" if decision == "allow" else "deny", tenant, bot)
+    fam = "allow" if decision == "allow" else "deny"
+    _bump_metrics("ingress_evaluate", fam, tenant, bot)
 
     if decision == "block":
         return _respond_block(request_id, rule_hits, debug)
 
-    # Allow path may still include redactions (e.g., openai key sanitize in some tests).
+    # Allow path may still include redactions (e.g., openai key sanitize).
     redacted, redaction_hits = _apply_redactions(text)
-    # IMPORTANT: tests that assert "block" for sk-... rely on _run_ingress_policy above.
-    # If it wasn't blocked, we merge redaction hits (still dict type).
     for k, v in redaction_hits.items():
         rule_hits.setdefault(k, []).extend(v)
 
@@ -279,7 +323,7 @@ async def guardrail_evaluate_multipart_alt(
                 try:
                     combined_text += "\n" + raw.decode("utf-8")
                 except Exception:
-                    # best-effort: still allow request; don't bubble decoding errors to FastAPI encoder
+                    # best-effort: still allow request; avoid bubbling decoding errors
                     pass
             except Exception:
                 pass
@@ -293,7 +337,8 @@ async def guardrail_evaluate_multipart_alt(
         debug["debug_header"] = True
 
     _audit("ingress", combined_text, decision, tenant, bot, request_id)
-    _bump_metrics("ingress_evaluate", "allow" if decision == "allow" else "deny", tenant, bot)
+    fam = "allow" if decision == "allow" else "deny"
+    _bump_metrics("ingress_evaluate", fam, tenant, bot)
 
     if decision == "block":
         return _respond_block(request_id, rule_hits, debug)
@@ -325,7 +370,7 @@ async def guardrail_evaluate_multipart(
                 try:
                     combined_text += "\n" + raw.decode("utf-8")
                 except Exception:
-                    # swallow binary decode errors to avoid FastAPI jsonable_encoder crashes
+                    # Swallow binary decode errors to avoid FastAPI encoder crashes
                     pass
             except Exception:
                 pass
@@ -339,7 +384,8 @@ async def guardrail_evaluate_multipart(
         debug["debug_header"] = True
 
     _audit("multipart_ingress", combined_text, decision, tenant, bot, request_id)
-    _bump_metrics("ingress_multipart", "allow" if decision == "allow" else "deny", tenant, bot)
+    fam = "allow" if decision == "allow" else "deny"
+    _bump_metrics("ingress_multipart", fam, tenant, bot)
 
     if decision == "block":
         return _respond_block(request_id, rule_hits, debug)
@@ -370,7 +416,8 @@ def guardrail_egress(
 
     decision, transformed, rule_hits, debug = _run_egress_policy(text, want_debug)
     _audit("egress", text, decision, tenant, bot, request_id)
-    _bump_metrics("egress_evaluate", "allow" if decision == "allow" else "deny", tenant, bot)
+    fam = "allow" if decision == "allow" else "deny"
+    _bump_metrics("egress_evaluate", fam, tenant, bot)
 
     if decision == "block":
         return _respond_block(request_id, rule_hits, debug)
