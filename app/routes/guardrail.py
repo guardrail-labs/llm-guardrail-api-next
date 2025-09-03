@@ -15,9 +15,9 @@ from app.services.audit_forwarder import emit_audit_event
 # Prometheus (optional). Import into a private runtime name so we don't
 # reassign a type symbol (which triggers mypy "Cannot assign to a type").
 try:
-    from prometheus_client import Counter as _Counter  # type: ignore
+    from prometheus_client import Counter as _Counter
 except Exception:  # pragma: no cover
-    _Counter = None  # type: ignore
+    _Counter = None  # type: ignore[assignment]
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
