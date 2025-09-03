@@ -11,8 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.telemetry import metrics as m
 from app.services import audit_forwarder as af
-from app.services.policy import current_rules_version as _policy_version  # still used elsewhere
-from app.services.policy_loader import get_policy as _get_policy
+from app.services.policy import current_rules_version as _policy_version
 from app.services.threat_feed import (
     apply_dynamic_redactions as tf_apply,
     threat_feed_enabled as tf_enabled,
@@ -36,7 +35,7 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
         return True
     return False
 
-RE_DAN_PRETEND = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
+
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
@@ -70,7 +69,11 @@ def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
 
 
 def emit_audit_event(payload: Dict[str, Any]) -> None:
-    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {"1", "true", "yes"}
+    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if not enabled:
         return
     url = os.getenv("AUDIT_FORWARD_URL", "")
@@ -85,7 +88,7 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
 
 
 def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
-    # Fold specific families into normalized wildcard keys required by tests.
+    # Fold specific families into wildcard keys required by tests.
     if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
     if any(k.startswith("secrets:") for k in rule_hits.keys()):
@@ -98,7 +101,7 @@ def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None
 
 def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
     """
-    Apply redactions for PII, secrets, injection markers, and private-key envelopes.
+    Apply redactions for PII, secrets, and injection markers.
     Return (redacted_text, rule_hits, redaction_count).
     """
     rule_hits: Dict[str, List[str]] = {}
@@ -133,20 +136,15 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
         m.inc_redaction("aws_access_key_id")
         redactions += 1
 
-    # Private key envelope (multi-line)
-    if RE_PRIVATE_KEY.search(redacted):
-        redacted = RE_PRIVATE_KEY.sub("[REDACTED:PRIVATE_KEY]", redacted)
-        rule_hits.setdefault("secrets:private_key", []).append(RE_PRIVATE_KEY.pattern)
-        m.inc_redaction("private_key")
-        redactions += 1
-
-    # Injection phrase (mask on allow paths)
+    # Injection phrase (mask on allow/clarify paths)
     if RE_PROMPT_INJ.search(redacted):
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        # Also tag as payload:* family to satisfy tests
         rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         redactions += 1
 
+    # Wildcards for allow/clarify paths (deny handled at call sites)
     _normalize_wildcards(rule_hits, is_deny=False)
     return redacted, rule_hits, redactions
 
@@ -236,7 +234,9 @@ def _audit(
     rule_hits: Dict[str, List[str]] | List[str],
     redaction_count: int,
 ) -> None:
-    decision = action_or_decision if action_or_decision in {"allow", "block"} else "allow"
+    decision = (
+        action_or_decision if action_or_decision in {"allow", "block"} else "allow"
+    )
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
         "direction": direction,
@@ -274,18 +274,18 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     if RE_PROMPT_INJ.search(prompt or ""):
         hits.append(PAYLOAD_PROMPT_INJ_ID)
         return "block", hits
-    # YAML-policy deny rules (if any)
-    blob = _get_policy()
-    for rid, rx in blob.deny_compiled:
-        if rx.search(prompt):
-            hits.append(f"policy:deny:{rid}")
-            return "block", hits
     return "allow", hits
 
 
 def _evaluate_ingress_policy(
     text: str,
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    """
+    Return (action, rule_hits_dict, debug).
+    - Injection phrases => clarify
+    - Explicit illicit intent => deny
+    - Else allow
+    """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
 
@@ -294,8 +294,8 @@ def _evaluate_ingress_policy(
         dbg["explanations"] = ["illicit_request"]
         return "deny", hits, dbg
 
-    # Injection / gray-area -> clarify
-    if RE_PROMPT_INJ.search(text or "") or RE_DAN_PRETEND.search(text or ""):
+    # Injection -> clarify (masking applied by _apply_redactions)
+    if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         _normalize_wildcards(hits, is_deny=False)
@@ -324,9 +324,8 @@ def _egress_policy(
 
 async def _read_form_and_merge(request: Request) -> str:
     """
-    Merge 'text' plus files from multipart form-data.
-    - Adds markers for images/audio/unknown files
-    - Decodes text/plain and application/pdf to text
+    Merge 'text' plus files.
+    Produce markers for non-text media, and decode .txt/.pdf into text.
     """
     form = await request.form()
     combined: List[str] = []
@@ -334,9 +333,10 @@ async def _read_form_and_merge(request: Request) -> str:
     if txt:
         combined.append(txt)
 
+    # Track UploadFile objects we've handled so we don't duplicate.
     seen: set[int] = set()
 
-    def _handle_file(obj: Any) -> None:
+    async def _handle_file(obj: Any) -> None:
         vid = id(obj)
         if vid in seen:
             return
@@ -346,35 +346,35 @@ async def _read_form_and_merge(request: Request) -> str:
         ctype = (getattr(obj, "content_type", "") or "").lower()
 
         try:
+            # Media markers (do not read bodies)
             if ctype.startswith("image/"):
                 combined.append(f"[IMAGE:{name}]")
                 return
             if ctype.startswith("audio/"):
                 combined.append(f"[AUDIO:{name}]")
                 return
-
-            # For text and pdf, read and decode bytes -> add inline text
+            # Simple text-ish types we can decode
             if ctype in {"text/plain", "application/pdf"}:
                 raw = await obj.read()
                 combined.append(raw.decode("utf-8", errors="ignore"))
                 return
-
             # Fallback generic marker
             combined.append(f"[FILE:{name}]")
         except Exception:
             combined.append(f"[FILE:{name}]")
 
-    # Pass A: iterate over all stored values (covers both data and files)
+    # Pass 1: iterate known keys and their lists
     for key in form.keys():
-        for v in form.getlist(key):
-            if hasattr(v, "filename") and hasattr(v, "read"):
-                _handle_file(v)
+        values = form.getlist(key)
+        for v in values:
+            if isinstance(v, UploadFile):
+                await _handle_file(v)
 
-    # Pass B: multi_items for providers that only expose via this path
+    # Pass 2: multi_items (provider differences)
     try:
         for _, val in form.multi_items():
-            if hasattr(val, "filename") and hasattr(val, "read"):
-                _handle_file(val)
+            if isinstance(val, UploadFile):
+                await _handle_file(val)
     except Exception:
         pass
 
@@ -409,9 +409,8 @@ async def guardrail_legacy(
         }
         return JSONResponse(body, status_code=413)
 
-    # Policy version must come from YAML for legacy route
-    policy_blob = _get_policy()
-    policy_version = str(policy_blob.version)
+    # Policy version from compiled rules (reflects /admin/policy/reload)
+    policy_version = _policy_version()
 
     action, legacy_hits_list = _legacy_policy(prompt)
     tenant, bot = _tenant_bot(
