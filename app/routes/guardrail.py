@@ -8,18 +8,16 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.metrics.metrics import (
-    inc_decision_family_tenant_bot,
-    inc_decisions_total,
-    inc_requests_total,
-)
-from app.services.audit_forwarder import emit_audit_event
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
 from app.services.policy import current_rules_version, sanitize_text
-from app.services.threat_feed import (
-    apply_dynamic_redactions,
-    threat_feed_enabled,
+from app.services.threat_feed import apply_dynamic_redactions, threat_feed_enabled
+from app.services.audit_forwarder import emit_audit_event
+from app.telemetry.metrics import (
+    inc_requests_total,
+    inc_decisions_total,
+    inc_decision_family,
+    inc_decision_family_tenant_bot,
 )
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -40,15 +38,11 @@ def _resolve_ids(
 
 def _auth_or_401(request: Request) -> None:
     """
-    Endpoints require either X-API-Key or Authorization: Bearer ...,
-    unless GUARDRAIL_DISABLE_AUTH=1 (test bypass).
+    Tests indicate /guardrail/ requires either X-API-Key or Authorization: Bearer ...
     """
-    if (os.getenv("GUARDRAIL_DISABLE_AUTH") or "0") == "1":
-        return
     api_key = request.headers.get("X-API-Key")
     auth = request.headers.get("Authorization") or ""
     if not api_key and not auth.startswith("Bearer "):
-        # Tests expect exactly this string
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -115,7 +109,6 @@ def _ingress_logic(
     # Size guard (default 200KB, override with env)
     max_bytes = int(os.environ.get("GUARDRAIL_MAX_PROMPT_BYTES") or "204800")
     if _blen(raw_text) > max_bytes:
-        # Emit audit on 413s as tests expect audit even on errors
         try:
             emit_audit_event(
                 {
@@ -135,12 +128,9 @@ def _ingress_logic(
             detail={"code": "payload_too_large", "request_id": rid},
         )
 
-    # Base sanitization + optional threat feed
     sanitized, families, redaction_count, _ = sanitize_text(raw_text, debug=False)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=False
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=False)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -149,17 +139,16 @@ def _ingress_logic(
         if dyn_reds:
             redaction_count = (redaction_count or 0) + dyn_reds
 
-    # Detector
     det = evaluate_prompt(sanitized) or {}
     action = str(det.get("action", "allow"))
     transformed = det.get("transformed_text", sanitized) or sanitized
     rule_hits = det.get("rule_hits") or {}
 
     family = _family_from_result(action, transformed, raw_text, rule_hits)
-    inc_decisions_total(action)
+    inc_decisions_total()
+    inc_decision_family(family)
     inc_decision_family_tenant_bot(family, tenant_id, bot_id)
 
-    # Audit (best-effort)
     try:
         emit_audit_event(
             {
@@ -210,13 +199,13 @@ def _egress_logic(
     else:
         fam = "allow"
 
-    inc_decisions_total(action)
+    inc_decisions_total()
+    inc_decision_family(fam)
     inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
 
     payload.setdefault("policy_version", policy_version)
     payload.setdefault("request_id", rid)
 
-    # Audit (best-effort)
     try:
         emit_audit_event(
             {
@@ -250,20 +239,13 @@ async def guardrail_root(
         convert_underscores=False,
     ),
 ) -> Dict[str, Any]:
-    """
-    Primary endpoint used by tests: accepts JSON {'prompt': ...} or multipart form.
-    Requires either X-API-Key or Authorization: Bearer ... header,
-    unless GUARDRAIL_DISABLE_AUTH=1.
-    """
     _auth_or_401(request)
-    inc_requests_total("guardrail")
+    inc_requests_total("root")
 
     tenant_id = request.headers.get("X-Tenant-ID") or "default"
     bot_id = request.headers.get("X-Bot-ID") or "default"
 
-    # Accept JSON and multipart/form-data
     ctype = (request.headers.get("content-type") or "").lower()
-
     text: str = ""
     if "application/json" in ctype:
         body = await request.json()
@@ -271,9 +253,7 @@ async def guardrail_root(
     elif "multipart/form-data" in ctype:
         form = await request.form()
         text = str(form.get("text") or form.get("prompt") or "")
-        # Ignore binary file parts for decision to avoid decode errors.
     else:
-        # Fallback: body as text, ignoring decode errors.
         try:
             raw = await request.body()
             text = raw.decode("utf-8", errors="ignore")
@@ -300,9 +280,6 @@ async def evaluate(
         convert_underscores=False,
     ),
 ) -> Dict[str, Any]:
-    """
-    JSON ingress evaluation (back-compat with earlier clients).
-    """
     _auth_or_401(request)
     inc_requests_total("evaluate")
     tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
@@ -319,9 +296,6 @@ async def egress(
         convert_underscores=False,
     ),
 ) -> Dict[str, Any]:
-    """
-    JSON egress evaluation (alias).
-    """
     _auth_or_401(request)
     inc_requests_total("egress")
     text = (body.text or "").strip()
@@ -345,11 +319,8 @@ async def egress_evaluate(
         convert_underscores=False,
     ),
 ) -> Dict[str, Any]:
-    """
-    JSON egress evaluation (back-compat).
-    """
     _auth_or_401(request)
-    inc_requests_total("egress")
+    inc_requests_total("egress_evaluate")
     text = (body.text or "").strip()
     if not text:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
