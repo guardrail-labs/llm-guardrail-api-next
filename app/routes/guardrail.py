@@ -98,7 +98,7 @@ def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None
 
 def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
     """
-    Apply redactions for PII, secrets, and injection markers.
+    Apply redactions for PII, secrets, injection markers, and private-key envelopes.
     Return (redacted_text, rule_hits, redaction_count).
     """
     rule_hits: Dict[str, List[str]] = {}
@@ -133,15 +133,20 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
         m.inc_redaction("aws_access_key_id")
         redactions += 1
 
-    # Injection phrase (mask on allow/clarify paths)
+    # Private key envelope (multi-line)
+    if RE_PRIVATE_KEY.search(redacted):
+        redacted = RE_PRIVATE_KEY.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(RE_PRIVATE_KEY.pattern)
+        m.inc_redaction("private_key")
+        redactions += 1
+
+    # Injection phrase (mask on allow paths)
     if RE_PROMPT_INJ.search(redacted):
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        # Also tag as payload:* family to satisfy tests
         rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         redactions += 1
 
-    # Wildcards for allow/clarify paths (deny handled at call sites)
     _normalize_wildcards(rule_hits, is_deny=False)
     return redacted, rule_hits, redactions
 
@@ -283,8 +288,8 @@ def _evaluate_ingress_policy(
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     """
     Return (action, rule_hits_dict, debug).
-    - Injection phrases => clarify
-    - Explicit illicit intent => deny
+    - Injection phrases sanitized -> allow
+    - Explicit illicit intent -> deny
     - Else allow
     """
     hits: Dict[str, List[str]] = {}
@@ -295,14 +300,12 @@ def _evaluate_ingress_policy(
         dbg["explanations"] = ["illicit_request"]
         return "deny", hits, dbg
 
-    # Injection -> clarify (masking applied by _apply_redactions)
+    # Injection noted (actual masking in _apply_redactions); still allow
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        _normalize_wildcards(hits, is_deny=False)
-        return "clarify", hits, (dbg if dbg else None)
 
-    return "allow", hits, None
+    return "allow", hits, (dbg if dbg else None)
 
 
 def _egress_policy(
@@ -362,7 +365,7 @@ async def _read_form_and_merge(request: Request) -> str:
             except Exception:
                 combined.append(f"[FILE:{name}]")
 
-    # Pass 2: multi_items (catches providers where keys iteration differs)
+    # Pass 2: multi_items (provider differences)
     try:
         for _, val in form.multi_items():
             if not isinstance(val, UploadFile):
