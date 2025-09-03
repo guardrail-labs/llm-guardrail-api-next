@@ -1,6 +1,6 @@
+# app/routes/guardrail.py
 from __future__ import annotations
 
-import importlib
 import os
 import time
 import uuid
@@ -9,84 +9,21 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.metrics.metrics import (
+    inc_decision_family_tenant_bot,
+    inc_decisions_total,
+    inc_requests_total,
+)
+from app.services.audit_forwarder import emit_audit_event
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
 from app.services.policy import current_rules_version, sanitize_text
-from app.services.threat_feed import apply_dynamic_redactions, threat_feed_enabled
-from app.services.audit_forwarder import emit_audit_event
-
-router = APIRouter(prefix="/guardrail", tags=["guardrail"])
-
-# -----------------------------------------------------------------------------
-# Optional Prometheus metrics (loaded dynamically) with duplicate-safe creation
-# -----------------------------------------------------------------------------
-PromCounter: Optional[Any]
-PromREGISTRY: Optional[Any]
-try:
-    _prom = importlib.import_module("prometheus_client")
-    PromCounter = getattr(_prom, "Counter", None)
-    PromREGISTRY = getattr(_prom, "REGISTRY", None)
-except Exception:  # pragma: no cover
-    PromCounter = None
-    PromREGISTRY = None
-
-
-def _safe_counter(
-    name: str,
-    doc: str,
-    labelnames: Tuple[str, ...] = (),
-) -> Optional[Any]:
-    """
-    Create or fetch a Counter from the default registry without raising on duplicates.
-    Returns None if prometheus_client is unavailable.
-    """
-    if PromCounter is None:
-        return None
-    try:
-        return PromCounter(name, doc, labelnames)
-    except Exception:
-        # Already registered? Try to fetch the collector from the registry.
-        try:
-            if PromREGISTRY is not None:
-                collector = getattr(
-                    PromREGISTRY, "_names_to_collectors", {}
-                ).get(name)
-                if collector is not None:
-                    return collector
-        except Exception:
-            pass
-    return None
-
-
-# -----------------------
-# Metrics
-# -----------------------
-_REQUESTS_TOTAL = _safe_counter("guardrail_requests_total", "Total guardrail requests")
-_DECISIONS_TOTAL = _safe_counter("guardrail_decisions_total", "Total guardrail decisions")
-_DECISIONS_FAMILY_TB = _safe_counter(
-    "guardrail_decisions_family_bot_total",
-    "Decisions by family and tenant/bot",
-    ("family", "tenant", "bot"),
+from app.services.threat_feed import (
+    apply_dynamic_redactions,
+    threat_feed_enabled,
 )
 
-
-def _inc_requests() -> None:
-    if _REQUESTS_TOTAL is not None:
-        _REQUESTS_TOTAL.inc()
-
-
-def _inc_decisions() -> None:
-    if _DECISIONS_TOTAL is not None:
-        _DECISIONS_TOTAL.inc()
-
-
-def _inc_family(family: str, tenant_id: str, bot_id: str) -> None:
-    if _DECISIONS_FAMILY_TB is not None:
-        _DECISIONS_FAMILY_TB.labels(
-            family=family or "-",
-            tenant=tenant_id or "-",
-            bot=bot_id or "-",
-        ).inc()
+router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
 
 # -----------------
@@ -104,12 +41,13 @@ def _resolve_ids(
 
 def _auth_or_401(request: Request) -> None:
     """
-    Tests indicate /guardrail/ requires either X-API-Key or Authorization: Bearer ...
+    Tests indicate /guardrail/* requires either X-API-Key or Authorization: Bearer ...
     """
     api_key = request.headers.get("X-API-Key")
     auth = request.headers.get("Authorization") or ""
     if not api_key and not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing API key")
+        # IMPORTANT: tests expect this exact string
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _family_from_result(
@@ -216,8 +154,8 @@ def _ingress_logic(
     rule_hits = det.get("rule_hits") or {}
 
     family = _family_from_result(action, transformed, raw_text, rule_hits)
-    _inc_decisions()
-    _inc_family(family, tenant_id, bot_id)
+    inc_decisions_total(action)
+    inc_decision_family_tenant_bot(family, tenant_id, bot_id)
 
     # Audit (best-effort)
     try:
@@ -270,8 +208,8 @@ def _egress_logic(
     else:
         fam = "allow"
 
-    _inc_decisions()
-    _inc_family(fam, tenant_id, bot_id)
+    inc_decisions_total(action)
+    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
 
     payload.setdefault("policy_version", policy_version)
     payload.setdefault("request_id", rid)
@@ -315,7 +253,7 @@ async def guardrail_root(
     Requires either X-API-Key or Authorization: Bearer ... header.
     """
     _auth_or_401(request)
-    _inc_requests()
+    inc_requests_total("guardrail")
 
     tenant_id = request.headers.get("X-Tenant-ID") or "default"
     bot_id = request.headers.get("X-Bot-ID") or "default"
@@ -363,7 +301,7 @@ async def evaluate(
     JSON ingress evaluation (back-compat with earlier clients).
     """
     _auth_or_401(request)
-    _inc_requests()
+    inc_requests_total("evaluate")
     tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
     return _ingress_logic(request, body.text, tenant_id, bot_id)
 
@@ -382,7 +320,7 @@ async def egress(
     JSON egress evaluation (alias).
     """
     _auth_or_401(request)
-    _inc_requests()
+    inc_requests_total("egress")
     text = (body.text or "").strip()
     if not text:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
@@ -408,7 +346,7 @@ async def egress_evaluate(
     JSON egress evaluation (back-compat).
     """
     _auth_or_401(request)
-    _inc_requests()
+    inc_requests_total("egress")
     text = (body.text or "").strip()
     if not text:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
