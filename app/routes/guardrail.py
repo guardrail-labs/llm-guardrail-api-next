@@ -29,7 +29,11 @@ except Exception:  # pragma: no cover
     PromREGISTRY = None
 
 
-def _safe_counter(name: str, doc: str, labelnames: Optional[Tuple[str, ...]] = None) -> Optional[Any]:
+def _safe_counter(
+    name: str,
+    doc: str,
+    labelnames: Optional[Tuple[str, ...]] = None,
+) -> Optional[Any]:
     """
     Create or fetch a Counter from the default registry without raising on duplicates.
     Returns None if prometheus_client is unavailable.
@@ -40,15 +44,14 @@ def _safe_counter(name: str, doc: str, labelnames: Optional[Tuple[str, ...]] = N
     try:
         return PromCounter(name, doc, labelnames)
     except Exception:
-        # Likely already registered; try to fetch existing from registry
+        # Likely already registered; try to fetch from registry.
         try:
             if PromREGISTRY is not None:
-                # In prometheus_client, collectors are stored under metric base name (without _total)
-                # e.g., Counter('foo_total') -> registry key 'foo'
+                # prometheus_client stores collectors by base name (no "_total").
                 base_name = name
-                # Counter names are given without _total to the constructor,
-                # but samples expose foo_total. Callers here pass base metric name.
-                collector = getattr(PromREGISTRY, "_names_to_collectors", {}).get(base_name)
+                collector = getattr(PromREGISTRY, "_names_to_collectors", {}).get(
+                    base_name
+                )
                 if collector is not None:
                     return collector
         except Exception:
@@ -63,13 +66,17 @@ _requests_total_int = 0
 _decisions_total_int = 0
 
 _REQUESTS_TOTAL: Optional[Any] = _safe_counter(
-    "guardrail_requests", "Total guardrail requests"
+    "guardrail_requests",
+    "Total guardrail requests",
 )
 _DECISIONS_TOTAL: Optional[Any] = _safe_counter(
-    "guardrail_decisions", "Total guardrail decisions"
+    "guardrail_decisions",
+    "Total guardrail decisions",
 )
 _DECISION_FAMILY: Optional[Any] = _safe_counter(
-    "guardrail_decision_family_total", "Decisions by family and tenant/bot", ("family", "tenant", "bot")
+    "guardrail_decision_family_total",
+    "Decisions by family and tenant/bot",
+    ("family", "tenant", "bot"),
 )
 
 
@@ -96,7 +103,9 @@ def inc_decision_family(family: str) -> None:
 def inc_decision_family_tenant_bot(family: str, tenant_id: str, bot_id: str) -> None:
     if _DECISION_FAMILY is not None:
         _DECISION_FAMILY.labels(
-            family=family, tenant=tenant_id or "-", bot=bot_id or "-"
+            family=family,
+            tenant=tenant_id or "-",
+            bot=bot_id or "-",
         ).inc()
 
 
@@ -137,7 +146,9 @@ class EgressEvaluateRequest(BaseModel):
 # Helper functions
 # -----------------
 def _resolve_ids(
-    request: Request, body_tenant: Optional[str], body_bot: Optional[str]
+    request: Request,
+    body_tenant: Optional[str],
+    body_bot: Optional[str],
 ) -> Tuple[str, str]:
     tenant_id = request.headers.get("X-Tenant-ID") or (body_tenant or "")
     bot_id = request.headers.get("X-Bot-ID") or (body_bot or "")
@@ -145,7 +156,10 @@ def _resolve_ids(
 
 
 def _family_from_result(
-    action: str, transformed: str, original: str, hits: Dict[str, Any]
+    action: str,
+    transformed: str,
+    original: str,
+    hits: Dict[str, Any],
 ) -> str:
     """
     Normalize to: allow | sanitize | block
@@ -168,7 +182,9 @@ async def evaluate(
     request: Request,
     req: EvaluateRequest,
     x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
+        default=None,
+        alias="X-Debug",
+        convert_underscores=False,
     ),
 ) -> Dict[str, Any]:
     """
@@ -235,7 +251,9 @@ async def egress_evaluate(
     request: Request,
     req: EgressEvaluateRequest,
     x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
+        default=None,
+        alias="X-Debug",
+        convert_underscores=False,
     ),
 ) -> Dict[str, Any]:
     """
@@ -248,7 +266,8 @@ async def egress_evaluate(
 
     if not check_input:
         raise HTTPException(
-            status_code=400, detail="Missing content to evaluate for egress."
+            status_code=400,
+            detail="Missing content to evaluate for egress.",
         )
 
     payload_raw, _hits = egress_check(check_input)
@@ -271,7 +290,8 @@ async def egress_evaluate(
     # Attach policy info + request id for consistency
     payload.setdefault("policy_version", current_rules_version())
     payload.setdefault(
-        "request_id", request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        "request_id",
+        request.headers.get("X-Request-ID") or str(uuid.uuid4()),
     )
 
     # Best-effort audit
