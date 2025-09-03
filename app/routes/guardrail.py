@@ -371,9 +371,9 @@ async def _handle_upload_to_text(
     obj: UploadFile,
     decode_pdf: bool,
     mods: Dict[str, int],
-) -> str:
+) -> Tuple[str, str]:
     """
-    Turn an UploadFile into a text fragment:
+    Turn an UploadFile into a text fragment and return (fragment, filename):
       - image/* -> marker
       - audio/* -> marker
       - text/plain -> read and decode
@@ -388,38 +388,39 @@ async def _handle_upload_to_text(
     try:
         if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
             mods["image"] = mods.get("image", 0) + 1
-            return f"[IMAGE:{name}]"
+            return f"[IMAGE:{name}]", name
         if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
             mods["audio"] = mods.get("audio", 0) + 1
-            return f"[AUDIO:{name}]"
+            return f"[AUDIO:{name}]", name
         if ctype == "text/plain" or ext == "txt":
             raw = await obj.read()
-            return raw.decode("utf-8", errors="ignore")
+            return raw.decode("utf-8", errors="ignore"), name
         if ctype == "application/pdf" or ext == "pdf":
             if decode_pdf:
                 raw = await obj.read()
-                return raw.decode("utf-8", errors="ignore")
+                return raw.decode("utf-8", errors="ignore"), name
             mods["file"] = mods.get("file", 0) + 1
-            return f"[FILE:{name}]"
+            return f"[FILE:{name}]", name
         mods["file"] = mods.get("file", 0) + 1
-        return f"[FILE:{name}]"
+        return f"[FILE:{name}]", name
     except Exception:
         mods["file"] = mods.get("file", 0) + 1
-        return f"[FILE:{name}]"
+        return f"[FILE:{name}]", name
 
 
 async def _read_form_and_merge(
     request: Request,
     decode_pdf: bool,
-) -> Tuple[str, Dict[str, int]]:
+) -> Tuple[str, Dict[str, int], List[Dict[str, str]]]:
     """
     Merge 'text' plus files from multipart form data. Iterate over
     form.multi_items() to capture *all* file fields. Any file-like value
-    (has filename + read) is handled. Returns (text, modality_counts).
+    (has filename + read) is handled. Returns (text, modality_counts, sources).
     """
     form = await request.form()
     combined: List[str] = []
     mods: Dict[str, int] = {}
+    sources: List[Dict[str, str]] = []
 
     base = str(form.get("text") or "")
     if base:
@@ -435,7 +436,10 @@ async def _read_form_and_merge(
             if vid in seen:
                 return
             seen.add(vid)
-            combined.append(await _handle_upload_to_text(val, decode_pdf, mods))
+            frag, fname = await _handle_upload_to_text(val, decode_pdf, mods)
+            combined.append(frag)
+            # Always record filename for debug["sources"]
+            sources.append({"filename": fname})
 
     try:
         for _, v in form.multi_items():
@@ -445,7 +449,7 @@ async def _read_form_and_merge(
             await _maybe_add(v)
 
     text = "\n".join([s for s in combined if s])
-    return text, mods
+    return text, mods, sources
 
 # ------------------------------- endpoints -------------------------------
 
@@ -476,7 +480,6 @@ async def guardrail_legacy(
         }
         return JSONResponse(body, status_code=413)
 
-    # Version from YAML loader (legacy behavior)
     policy_blob = _get_policy()
     policy_version = str(policy_blob.version)
 
@@ -539,6 +542,7 @@ async def guardrail_evaluate(request: Request):
     combined_text = ""
     explicit_request_id: Optional[str] = None
     mods: Dict[str, int] = {}
+    sources: List[Dict[str, str]] = []
 
     if content_type.startswith("application/json"):
         payload = await request.json()
@@ -546,7 +550,9 @@ async def guardrail_evaluate(request: Request):
         explicit_request_id = str(payload.get("request_id") or "") or None
     else:
         # Generic multipart: do NOT decode PDFs (emit [FILE:...])
-        combined_text, mods = await _read_form_and_merge(request, decode_pdf=False)
+        combined_text, mods, sources = await _read_form_and_merge(
+            request, decode_pdf=False
+        )
 
     request_id = _req_id(explicit_request_id)
 
@@ -584,10 +590,11 @@ async def guardrail_evaluate(request: Request):
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            sources = list(redaction_hits.keys())
-            dbg["redaction_sources"] = sources
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+        # Provide structured file sources with filenames
+        if sources:
             dbg["sources"] = list(sources)
-
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
         if verifier_info:
@@ -625,7 +632,9 @@ async def guardrail_evaluate_multipart(request: Request):
     force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
 
     # Multipart with decoding PDFs (for redaction-in-PDF test)
-    combined_text, mods = await _read_form_and_merge(request, decode_pdf=True)
+    combined_text, mods, sources = await _read_form_and_merge(
+        request, decode_pdf=True
+    )
     request_id = _req_id(None)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
@@ -662,8 +671,10 @@ async def guardrail_evaluate_multipart(request: Request):
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            sources = list(redaction_hits.keys())
-            dbg["redaction_sources"] = sources
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+        # Provide structured file sources with filenames
+        if sources:
             dbg["sources"] = list(sources)
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
@@ -722,9 +733,9 @@ async def guardrail_egress(request: Request):
         matches = [{"tag": k, "patterns": list(v)} for k, v in rule_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            sources = list(redaction_hits.keys())
-            dbg["redaction_sources"] = sources
-            dbg["sources"] = list(sources)
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+            dbg["sources"] = list(src_keys)  # keep older alias shape
             dbg.setdefault("explanations", []).append("redactions_applied")
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
