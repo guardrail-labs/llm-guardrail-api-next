@@ -36,7 +36,7 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
         return True
     return False
 
-
+RE_DAN_PRETEND = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
@@ -286,12 +286,6 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
 def _evaluate_ingress_policy(
     text: str,
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
-    """
-    Return (action, rule_hits_dict, debug).
-    - Injection phrases sanitized -> allow
-    - Explicit illicit intent -> deny
-    - Else allow
-    """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
 
@@ -300,12 +294,14 @@ def _evaluate_ingress_policy(
         dbg["explanations"] = ["illicit_request"]
         return "deny", hits, dbg
 
-    # Injection noted (actual masking in _apply_redactions); still allow
-    if RE_PROMPT_INJ.search(text or ""):
+    # Injection / gray-area -> clarify
+    if RE_PROMPT_INJ.search(text or "") or RE_DAN_PRETEND.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        _normalize_wildcards(hits, is_deny=False)
+        return "clarify", hits, (dbg if dbg else None)
 
-    return "allow", hits, (dbg if dbg else None)
+    return "allow", hits, None
 
 
 def _egress_policy(
@@ -328,8 +324,9 @@ def _egress_policy(
 
 async def _read_form_and_merge(request: Request) -> str:
     """
-    Merge 'text' plus files.
-    Produce markers for non-text media, and decode .txt/.pdf into text.
+    Merge 'text' plus files from multipart form-data.
+    - Adds markers for images/audio/unknown files
+    - Decodes text/plain and application/pdf to text
     """
     form = await request.form()
     combined: List[str] = []
@@ -337,57 +334,47 @@ async def _read_form_and_merge(request: Request) -> str:
     if txt:
         combined.append(txt)
 
-    # Iterate both by keys and multi_items to be robust across frameworks/versions.
     seen: set[int] = set()
 
-    # Pass 1: by key/getlist
-    for key in form.keys():
-        values = form.getlist(key)
-        for v in values:
-            if not isinstance(v, UploadFile):
-                continue
-            vid = id(v)
-            if vid in seen:
-                continue
-            seen.add(vid)
-            name = v.filename or "file"
-            ctype = (v.content_type or "").lower()
-            try:
-                if ctype.startswith("image/"):
-                    combined.append(f"[IMAGE:{name}]")
-                elif ctype.startswith("audio/"):
-                    combined.append(f"[AUDIO:{name}]")
-                elif ctype in {"text/plain", "application/pdf"}:
-                    raw = await v.read()
-                    combined.append(raw.decode("utf-8", errors="ignore"))
-                else:
-                    combined.append(f"[FILE:{name}]")
-            except Exception:
-                combined.append(f"[FILE:{name}]")
+    def _handle_file(obj: Any) -> None:
+        vid = id(obj)
+        if vid in seen:
+            return
+        seen.add(vid)
 
-    # Pass 2: multi_items (provider differences)
+        name = getattr(obj, "filename", None) or "file"
+        ctype = (getattr(obj, "content_type", "") or "").lower()
+
+        try:
+            if ctype.startswith("image/"):
+                combined.append(f"[IMAGE:{name}]")
+                return
+            if ctype.startswith("audio/"):
+                combined.append(f"[AUDIO:{name}]")
+                return
+
+            # For text and pdf, read and decode bytes -> add inline text
+            if ctype in {"text/plain", "application/pdf"}:
+                raw = await obj.read()
+                combined.append(raw.decode("utf-8", errors="ignore"))
+                return
+
+            # Fallback generic marker
+            combined.append(f"[FILE:{name}]")
+        except Exception:
+            combined.append(f"[FILE:{name}]")
+
+    # Pass A: iterate over all stored values (covers both data and files)
+    for key in form.keys():
+        for v in form.getlist(key):
+            if hasattr(v, "filename") and hasattr(v, "read"):
+                _handle_file(v)
+
+    # Pass B: multi_items for providers that only expose via this path
     try:
         for _, val in form.multi_items():
-            if not isinstance(val, UploadFile):
-                continue
-            vid = id(val)
-            if vid in seen:
-                continue
-            seen.add(vid)
-            name = val.filename or "file"
-            ctype = (val.content_type or "").lower()
-            try:
-                if ctype.startswith("image/"):
-                    combined.append(f"[IMAGE:{name}]")
-                elif ctype.startswith("audio/"):
-                    combined.append(f"[AUDIO:{name}]")
-                elif ctype in {"text/plain", "application/pdf"}:
-                    raw = await val.read()
-                    combined.append(raw.decode("utf-8", errors="ignore"))
-                else:
-                    combined.append(f"[FILE:{name}]")
-            except Exception:
-                combined.append(f"[FILE:{name}]")
+            if hasattr(val, "filename") and hasattr(val, "read"):
+                _handle_file(val)
     except Exception:
         pass
 
