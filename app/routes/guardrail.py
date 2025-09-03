@@ -107,7 +107,7 @@ def _policy_version() -> str:
         try:
             # Lazy YAML parse; fall back to naive scan if yaml not available
             try:
-                import yaml  # type: ignore
+                import yaml
                 with open(path, "r", encoding="utf-8", errors="ignore") as fh:
                     data = yaml.safe_load(fh) or {}
                 v = data.get("version")
