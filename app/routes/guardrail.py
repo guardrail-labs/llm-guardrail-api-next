@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
@@ -12,18 +13,18 @@ from app.services.egress import egress_check
 from app.services.policy import current_rules_version
 from app.services.audit_forwarder import emit_audit_event
 
-# Prometheus (optional). Import into a private runtime name so we don't
-# reassign a type symbol (which triggers mypy "Cannot assign to a type").
-try:
-    from prometheus_client import Counter as _Counter
-except Exception:  # pragma: no cover
-    _Counter = None  # type: ignore[assignment]
-
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
 # -----------------------
-# Simple metrics registry
+# Optional Prometheus metrics (loaded dynamically)
 # -----------------------
+PromCounter: Optional[Any]
+try:
+    _prom = importlib.import_module("prometheus_client")
+    PromCounter = getattr(_prom, "Counter", None)
+except Exception:  # pragma: no cover
+    PromCounter = None
+
 _requests_total_int = 0
 _decisions_total_int = 0
 
@@ -31,10 +32,12 @@ _REQUESTS_TOTAL: Optional[Any] = None
 _DECISIONS_TOTAL: Optional[Any] = None
 _DECISION_FAMILY: Optional[Any] = None
 
-if _Counter is not None:
-    _REQUESTS_TOTAL = _Counter("guardrail_requests_total", "Total guardrail requests")
-    _DECISIONS_TOTAL = _Counter("guardrail_decisions_total", "Total guardrail decisions")
-    _DECISION_FAMILY = _Counter(
+if PromCounter is not None:
+    _REQUESTS_TOTAL = PromCounter("guardrail_requests_total", "Total guardrail requests")
+    _DECISIONS_TOTAL = PromCounter(
+        "guardrail_decisions_total", "Total guardrail decisions"
+    )
+    _DECISION_FAMILY = PromCounter(
         "guardrail_decision_family_total",
         "Decisions by family and tenant/bot",
         ["family", "tenant", "bot"],
@@ -81,7 +84,6 @@ def get_decisions_total() -> int:
 # ------------
 class EvaluateRequest(BaseModel):
     text: str = Field(..., description="Raw user prompt or content to evaluate.")
-    # Optional context (also accepted via headers)
     tenant_id: Optional[str] = None
     bot_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
