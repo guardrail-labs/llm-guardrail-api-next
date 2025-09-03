@@ -1,108 +1,166 @@
 from __future__ import annotations
 
-import json
-import logging
-import os
-import re
-import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
-from fastapi import (
-    APIRouter,
-    File,
-    Form,
-    Header,
-    HTTPException,
-    Request,
-    Response,
-    UploadFile,
-    status,
-)
-from pydantic import BaseModel
+from fastapi import APIRouter, Header, HTTPException, Request
+from pydantic import BaseModel, Field
 
-from app.services.audit_forwarder import emit_audit_event
+# Services
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
-from app.services.extractors import extract_from_bytes
-from app.services.policy import (
-    _normalize_family,
-    current_rules_version,
-    reload_rules,
-    sanitize_text,
-)
-from app.services.threat_feed import (
-    apply_dynamic_redactions,
-    refresh_from_env,
-    threat_feed_enabled,
-)
-from app.services.verifier import (
-    Verdict,
-    Verifier,
-    content_fingerprint,
-    is_known_harmful,
-    load_providers_order,
-    mark_harmful,
-    verifier_enabled,
-)
-from app.shared.headers import BOT_HEADER, TENANT_HEADER
-from app.shared.request_meta import get_client_meta
-from app.shared.quotas import check_and_consume
-from app.telemetry.metrics import (
-    inc_decision_family,
-    inc_decision_family_tenant_bot,
-    inc_quota_reject_tenant_bot,
-    inc_requests_total,
-    inc_decisions_total,
-)
+from app.services.policy import current_rules_version, sanitize_text
+from app.services.audit_forwarder import emit_audit_event
+
+# Prometheus (simple in-process counters + accessors used by main.py)
+try:
+    from prometheus_client import Counter
+except Exception:  # pragma: no cover - keep server alive if prometheus not present
+    Counter = None  # type: ignore
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
-TEST_AUTH_BYPASS = (os.getenv("GUARDRAIL_DISABLE_AUTH") or "") == "1"
+# -----------------------
+# Simple metrics registry
+# -----------------------
+_requests_total_int = 0
+_decisions_total_int = 0
 
-# Simple per-process counters now tracked in telemetry.metrics
+if Counter:
+    _REQUESTS_TOTAL = Counter("guardrail_requests_total", "Total guardrail requests")
+    _DECISIONS_TOTAL = Counter("guardrail_decisions_total", "Total guardrail decisions")
+    _DECISION_FAMILY = Counter(
+        "guardrail_decision_family_total",
+        "Decisions by family and tenant/bot",
+        ["family", "tenant", "bot"],
+    )
+else:
+    _REQUESTS_TOTAL = _DECISIONS_TOTAL = _DECISION_FAMILY = None  # type: ignore
 
-# Rate limiting state (per-process token buckets)
-_RATE_LOCK = threading.RLock()
-_BUCKETS: Dict[str, List[float]] = {}  # per-client rolling window timestamps
-_LAST_RATE_CFG: Tuple[bool, int, int] = (False, 60, 60)
-_LAST_APP_ID: Optional[int] = None  # reset buckets when app instance changes
+
+def inc_requests_total() -> None:
+    global _requests_total_int
+    _requests_total_int += 1
+    if _REQUESTS_TOTAL:
+        _REQUESTS_TOTAL.inc()
 
 
-def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
-    """Resolve tenant/bot from headers with safe defaults."""
-    tenant = request.headers.get(TENANT_HEADER) or "default"
-    bot = request.headers.get(BOT_HEADER) or "default"
-    return tenant, bot
+def inc_decisions_total() -> None:
+    global _decisions_total_int
+    _decisions_total_int += 1
+    if _DECISIONS_TOTAL:
+        _DECISIONS_TOTAL.inc()
 
-# ... (unchanged helpers elided for brevity)
 
-@router.post("/", response_model=None)
-async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]:
+def inc_decision_family(family: str) -> None:
+    """Family-only increment (kept for compatibility)."""
+    if _DECISION_FAMILY:
+        _DECISION_FAMILY.labels(family=family, tenant="-", bot="-").inc()
+
+
+def inc_decision_family_tenant_bot(family: str, tenant_id: str, bot_id: str) -> None:
+    if _DECISION_FAMILY:
+        _DECISION_FAMILY.labels(family=family, tenant=tenant_id or "-", bot=bot_id or "-").inc()
+
+
+def get_requests_total() -> int:
+    return _requests_total_int
+
+
+def get_decisions_total() -> int:
+    return _decisions_total_int
+
+
+# ------------
+# Data models
+# ------------
+class EvaluateRequest(BaseModel):
+    text: str = Field(..., description="Raw user prompt or content to evaluate.")
+    # Optional context (also accepted via headers)
+    tenant_id: Optional[str] = None
+    bot_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class EvaluateResponse(BaseModel):
+    decision: str  # "allow" | "block" | "sanitize"
+    transformed_text: str
+    rule_hits: Dict[str, Any]
+    policy_version: str
+    request_id: str
+
+
+class EgressEvaluateRequest(BaseModel):
+    text: Optional[str] = None
+    # If your egress checker accepts other shapes (files, URLs, etc.), extend later.
+    tenant_id: Optional[str] = None
+    bot_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# -----------------
+# Helper functions
+# -----------------
+def _resolve_ids(
+    request: Request, body_tenant: Optional[str], body_bot: Optional[str]
+) -> tuple[str, str]:
+    tenant_id = (
+        request.headers.get("X-Tenant-ID")
+        or (body_tenant or "")
+    )
+    bot_id = request.headers.get("X-Bot-ID") or (body_bot or "")
+    return tenant_id, bot_id
+
+
+def _family_from_result(action: str, transformed: str, original: str, hits: Dict[str, Any]) -> str:
     """
-    Legacy ingress guardrail (JSON body: {"prompt": "..."}).
+    Normalize to: allow | sanitize | block
+    - block: detector action is not 'allow'
+    - sanitize: action allow but text changed or hits present
+    - allow: otherwise
     """
-    # ... (checks elided)
+    if action != "allow":
+        return "block"
+    if (transformed != original) or (hits and len(hits) > 0):
+        return "sanitize"
+    return "allow"
 
+
+# -------
+# Routes
+# -------
+@router.post("/evaluate", response_model=EvaluateResponse)
+async def evaluate(
+    request: Request,
+    req: EvaluateRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> Dict[str, Any]:
+    """
+    Evaluate inbound prompt for policy compliance and optionally sanitize.
+    """
     inc_requests_total()
 
-    det = evaluate_prompt(prompt)
-    action = str(det.get("action", "allow"))
-    decision = "block" if action != "allow" else "allow"
-    transformed = det.get("transformed_text", prompt)
+    # IDs
+    tenant_id, bot_id = _resolve_ids(request, req.tenant_id, req.bot_id)
 
-    # ... (normalize hits, fallback, etc.)
+    # Core decision
+    det: Dict[str, Any] = evaluate_prompt(req.text) or {}
+    action: str = str(det.get("action", "allow"))
+    transformed: str = det.get("transformed_text", req.text) or req.text
+    rule_hits: Dict[str, Any] = det.get("rule_hits") or {}
 
+    # Final decision family + counters
+    decision = "block" if action != "allow" else ("sanitize" if (transformed != req.text or rule_hits) else "allow")
+    family = _family_from_result(action, transformed, req.text, rule_hits)
     inc_decisions_total()
+    inc_decision_family(family)
+    inc_decision_family_tenant_bot(family, tenant_id, bot_id)
 
-    fam = "block" if decision == "block" else "allow"
-    inc_decision_family(fam)
-    # ORDER: (family, tenant, bot)
-    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+    policy_version = current_rules_version()
+    rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
-    # ... (audit + response unchanged)
-    return {
+    payload: Dict[str, Any] = {
         "decision": decision,
         "transformed_text": transformed,
         "rule_hits": rule_hits,
@@ -110,71 +168,83 @@ async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]
         "request_id": rid,
     }
 
+    # Best-effort audit
+    try:
+        emit_audit_event(
+            event_type="prompt_decision",
+            payload={
+                "request_id": rid,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "decision": decision,
+                "family": family,
+                "rule_hits": rule_hits,
+                "policy_version": policy_version,
+                "ts": int(time.time()),
+                "metadata": req.metadata or {},
+            },
+        )
+    except Exception:
+        # Don't break the route if auditing sinks fail
+        pass
 
-@router.post("/evaluate", response_model=None)
-async def evaluate(
-    request: Request,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
-    x_force_unclear: Optional[str] = Header(
-        default=None, alias="X-Force-Unclear", convert_underscores=False
-    ),
-) -> Dict[str, Any]:
-    """
-    Evaluate ingress content via JSON request body:
-      {"text": "...", "request_id": "...?"}
-    Returns detectors/decisions and possible redactions.
-    """
-    # ... (setup elided)
-
-    inc_decisions_total()
-
-    # ... (determine family)
-
-    # When returning early in the UNCLEAR path:
-    #   inc_decision_family(family)
-    #   inc_decision_family_tenant_bot(family, tenant_id, bot_id)
-    #
-    # And in the other return path as well:
-
-    inc_decision_family(family)
-    # ORDER: (family, tenant, bot)
-    inc_decision_family_tenant_bot(family, tenant_id, bot_id)
-    return resp
-
-# ... (rest unchanged)
-
-@router.post("/evaluate_multipart")
-async def evaluate_guardrail_multipart(
-    request: Request,
-    text: Optional[str] = Form(default=""),
-    files: List[UploadFile] = File(default=[]),
-    request_id: Optional[str] = Form(default=None),
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
-) -> Dict[str, Any]:
-    # ... (unchanged until increment)
-    inc_decision_family(family)
-    # ORDER: (family, tenant, bot)
-    inc_decision_family_tenant_bot(family, tenant_id, bot_id)
-    return resp
+    return payload
 
 
-@router.post("/egress_evaluate")
+@router.post("/egress/evaluate", response_model=Dict[str, Any])
 async def egress_evaluate(
     request: Request,
     req: EgressEvaluateRequest,
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
-    # ... (unchanged until increment)
+    """
+    Evaluate outbound (egress) content for sensitive data leakage; may return redactions.
+    """
+    inc_requests_total()
+
+    tenant_id, bot_id = _resolve_ids(request, req.tenant_id, req.bot_id)
+    check_input = (req.text or "").strip()
+
+    if not check_input:
+        raise HTTPException(status_code=400, detail="Missing content to evaluate for egress.")
+
+    payload: Dict[str, Any] = egress_check(check_input) or {}
+    action: str = str(payload.get("action", "allow"))
+    redactions = int(payload.get("redactions") or 0)
+
+    # Map to family
     if action == "deny":
         fam = "block"
-    elif int(payload.get("redactions") or 0) > 0:
+    elif redactions > 0:
         fam = "sanitize"
     else:
         fam = "allow"
+
+    inc_decisions_total()
     inc_decision_family(fam)
-    # ORDER: (family, tenant, bot)
     inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
 
-    return payload
+    # Attach policy info + request id for consistency
+    payload.setdefault("policy_version", current_rules_version())
+    payload.setdefault("request_id", request.headers.get("X-Request-ID") or str(uuid.uuid4()))
 
-# admin endpoints unchanged
+    # Best-effort audit
+    try:
+        emit_audit_event(
+            event_type="egress_decision",
+            payload={
+                "request_id": payload["request_id"],
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "decision": fam,
+                "raw_action": action,
+                "redactions": redactions,
+                "policy_version": payload["policy_version"],
+                "ts": int(time.time()),
+                "metadata": req.metadata or {},
+            },
+        )
+    except Exception:
+        pass
+
+    return payload
