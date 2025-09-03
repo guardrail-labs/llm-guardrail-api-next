@@ -88,6 +88,18 @@ Environment
 
 See .env.example for all keys and defaults.
 
+### Clarify vs Block defaults
+
+By default, the Guardrail API **blocks** injection/jailbreak attempts.
+Switch baseline to **clarify** with:
+
+```bash
+export POLICY_DEFAULT_INJECTION_ACTION=clarify
+```
+
+Per-rule `on_match` still takes precedence. If no rule sets an action,
+the default above is applied.
+
 ### Compliance (Phase 2)
 - Hashing helpers (email/phone) via salted SHA-256: `PII_SALT`, `PII_HASH_ALGO`.
 - Redact + hash utility: `app/compliance/pii.py`.

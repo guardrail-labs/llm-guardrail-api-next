@@ -3,8 +3,11 @@ from __future__ import annotations
 import os
 import re
 import threading
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Pattern, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Pattern, Tuple
+
+from app.config import get_settings
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
@@ -26,6 +29,57 @@ _RULES: Dict[str, List[Pattern[str]]] = {
 
 # Redaction patterns: (compiled_regex, replacement_label)
 _REDACTIONS: List[Tuple[Pattern[str], str]] = []
+
+
+class Action(str, Enum):
+    ALLOW = "allow"
+    BLOCK = "block"
+    CLARIFY = "clarify"
+
+
+_INJECTION_FAMILIES = {"injection", "jailbreak"}
+
+
+def _has_family(rule_hits: Mapping[str, Any], families: Iterable[str]) -> bool:
+    fams = tuple(f + ":" for f in families)
+    for key in (rule_hits or {}).keys():
+        if key.startswith(fams):
+            return True
+    return False
+
+
+def _coerce_action(val: str | None) -> Action | None:
+    if not val:
+        return None
+    v = val.strip().lower()
+    if v == Action.BLOCK.value:
+        return Action.BLOCK
+    if v == Action.CLARIFY.value:
+        return Action.CLARIFY
+    if v == Action.ALLOW.value:
+        return Action.ALLOW
+    return None
+
+
+def resolve_injection_default_action() -> Action:
+    s = get_settings()
+    val = os.getenv("POLICY_DEFAULT_INJECTION_ACTION") or getattr(
+        s, "default_injection_action", None
+    )
+    coerced = _coerce_action(val)
+    return coerced or Action.BLOCK
+
+
+def apply_injection_default(decision: dict) -> dict:
+    action = decision.get("action")
+    hits = decision.get("rule_hits") or {}
+
+    if action and action != Action.ALLOW.value:
+        return decision
+
+    if _has_family(hits, _INJECTION_FAMILIES):
+        decision["action"] = resolve_injection_default_action().value
+    return decision
 
 
 def _env(name: str) -> Optional[str]:
