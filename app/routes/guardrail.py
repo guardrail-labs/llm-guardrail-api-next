@@ -48,8 +48,9 @@ def _safe_counter(
         # Already registered? Try to fetch the collector from the registry.
         try:
             if PromREGISTRY is not None:
-                # prometheus_client stores collectors by the base metric name.
-                collector = getattr(PromREGISTRY, "_names_to_collectors", {}).get(name)
+                collector = getattr(
+                    PromREGISTRY, "_names_to_collectors", {}
+                ).get(name)
                 if collector is not None:
                     return collector
         except Exception:
@@ -91,7 +92,11 @@ def _inc_family(family: str, tenant_id: str, bot_id: str) -> None:
 # -----------------
 # Common helpers
 # -----------------
-def _resolve_ids(request: Request, body_tenant: Optional[str], body_bot: Optional[str]) -> Tuple[str, str]:
+def _resolve_ids(
+    request: Request,
+    body_tenant: Optional[str],
+    body_bot: Optional[str],
+) -> Tuple[str, str]:
     tenant_id = request.headers.get("X-Tenant-ID") or (body_tenant or "default")
     bot_id = request.headers.get("X-Bot-ID") or (body_bot or "default")
     return tenant_id, bot_id
@@ -107,7 +112,12 @@ def _auth_or_401(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Missing API key")
 
 
-def _family_from_result(action: str, transformed: str, original: str, hits: Dict[str, Any]) -> str:
+def _family_from_result(
+    action: str,
+    transformed: str,
+    original: str,
+    hits: Dict[str, Any],
+) -> str:
     """
     Normalize to: allow | sanitize | block
     - block: detector action is not 'allow'
@@ -153,7 +163,12 @@ class EgressEvaluateRequest(BaseModel):
 # -------------
 # Core logic
 # -------------
-def _ingress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str) -> Dict[str, Any]:
+def _ingress_logic(
+    request: Request,
+    raw_text: str,
+    tenant_id: str,
+    bot_id: str,
+) -> Dict[str, Any]:
     policy_version = current_rules_version()
     rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
@@ -175,12 +190,17 @@ def _ingress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str)
             )
         except Exception:
             pass
-        raise HTTPException(status_code=413, detail={"code": "payload_too_large", "request_id": rid})
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "payload_too_large", "request_id": rid},
+        )
 
     # Base sanitization + optional threat feed
     sanitized, families, redaction_count, _ = sanitize_text(raw_text, debug=False)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=False)
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
+            sanitized, debug=False
+        )
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -229,7 +249,12 @@ def _ingress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str)
     }
 
 
-def _egress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str) -> Dict[str, Any]:
+def _egress_logic(
+    request: Request,
+    raw_text: str,
+    tenant_id: str,
+    bot_id: str,
+) -> Dict[str, Any]:
     policy_version = current_rules_version()
     rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
@@ -279,7 +304,11 @@ def _egress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str) 
 @router.post("/", response_model=EvaluateResponse)
 async def guardrail_root(
     request: Request,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_debug: Optional[str] = Header(
+        default=None,
+        alias="X-Debug",
+        convert_underscores=False,
+    ),
 ) -> Dict[str, Any]:
     """
     Primary endpoint used by tests: accepts JSON {'prompt': ...} or multipart form.
@@ -297,16 +326,13 @@ async def guardrail_root(
     text: str = ""
     if "application/json" in ctype:
         body = await request.json()
-        # Tests appear to send {"prompt": "..."}
         text = str((body or {}).get("prompt") or "")
     elif "multipart/form-data" in ctype:
         form = await request.form()
-        # Common fields: 'text' or 'prompt'
         text = str(form.get("text") or form.get("prompt") or "")
-        # If files included, we do NOT decode them as UTF-8 blindly; ignore for decision.
-        # (Avoids UnicodeDecodeError during collection.)
+        # Ignore binary file parts for decision to avoid decode errors.
     else:
-        # As a fallback, try to read body as text
+        # Fallback: body as text, ignoring decode errors.
         try:
             raw = await request.body()
             text = raw.decode("utf-8", errors="ignore")
@@ -314,9 +340,11 @@ async def guardrail_root(
             text = ""
 
     if not text:
-        # Still provide a request id on errors
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        raise HTTPException(status_code=422, detail={"code": "invalid_request", "request_id": rid})
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_request", "request_id": rid},
+        )
 
     return _ingress_logic(request, text, tenant_id, bot_id)
 
@@ -325,7 +353,11 @@ async def guardrail_root(
 async def evaluate(
     request: Request,
     body: EvaluateRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_debug: Optional[str] = Header(
+        default=None,
+        alias="X-Debug",
+        convert_underscores=False,
+    ),
 ) -> Dict[str, Any]:
     """
     JSON ingress evaluation (back-compat with earlier clients).
@@ -340,7 +372,11 @@ async def evaluate(
 async def egress(
     request: Request,
     body: EgressEvaluateRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_debug: Optional[str] = Header(
+        default=None,
+        alias="X-Debug",
+        convert_underscores=False,
+    ),
 ) -> Dict[str, Any]:
     """
     JSON egress evaluation (alias).
@@ -350,7 +386,10 @@ async def egress(
     text = (body.text or "").strip()
     if not text:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        raise HTTPException(status_code=422, detail={"code": "invalid_request", "request_id": rid})
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_request", "request_id": rid},
+        )
     tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
     return _egress_logic(request, text, tenant_id, bot_id)
 
@@ -359,7 +398,11 @@ async def egress(
 async def egress_evaluate(
     request: Request,
     body: EgressEvaluateRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_debug: Optional[str] = Header(
+        default=None,
+        alias="X-Debug",
+        convert_underscores=False,
+    ),
 ) -> Dict[str, Any]:
     """
     JSON egress evaluation (back-compat).
@@ -369,6 +412,9 @@ async def egress_evaluate(
     text = (body.text or "").strip()
     if not text:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        raise HTTPException(status_code=422, detail={"code": "invalid_request", "request_id": rid})
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_request", "request_id": rid},
+        )
     tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
     return _egress_logic(request, text, tenant_id, bot_id)
