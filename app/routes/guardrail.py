@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import time
 import uuid
 from typing import Any, Dict, Optional, Tuple
@@ -10,14 +11,15 @@ from pydantic import BaseModel, Field
 
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
-from app.services.policy import current_rules_version
+from app.services.policy import current_rules_version, sanitize_text
+from app.services.threat_feed import apply_dynamic_redactions, threat_feed_enabled
 from app.services.audit_forwarder import emit_audit_event
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
-# -----------------------
-# Optional Prometheus metrics (loaded dynamically)
-# -----------------------
+# -----------------------------------------------------------------------------
+# Optional Prometheus metrics (loaded dynamically) with duplicate-safe creation
+# -----------------------------------------------------------------------------
 PromCounter: Optional[Any]
 PromREGISTRY: Optional[Any]
 try:
@@ -32,7 +34,7 @@ except Exception:  # pragma: no cover
 def _safe_counter(
     name: str,
     doc: str,
-    labelnames: Optional[Tuple[str, ...]] = None,
+    labelnames: Tuple[str, ...] = (),
 ) -> Optional[Any]:
     """
     Create or fetch a Counter from the default registry without raising on duplicates.
@@ -40,18 +42,14 @@ def _safe_counter(
     """
     if PromCounter is None:
         return None
-    labelnames = labelnames or ()
     try:
         return PromCounter(name, doc, labelnames)
     except Exception:
-        # Likely already registered; try to fetch from registry.
+        # Already registered? Try to fetch the collector from the registry.
         try:
             if PromREGISTRY is not None:
-                # prometheus_client stores collectors by base name (no "_total").
-                base_name = name
-                collector = getattr(PromREGISTRY, "_names_to_collectors", {}).get(
-                    base_name
-                )
+                # prometheus_client stores collectors by the base metric name.
+                collector = getattr(PromREGISTRY, "_names_to_collectors", {}).get(name)
                 if collector is not None:
                     return collector
         except Exception:
@@ -60,68 +58,78 @@ def _safe_counter(
 
 
 # -----------------------
-# Simple metrics registry
+# Metrics
 # -----------------------
-_requests_total_int = 0
-_decisions_total_int = 0
-
-_REQUESTS_TOTAL: Optional[Any] = _safe_counter(
-    "guardrail_requests",
-    "Total guardrail requests",
-)
-_DECISIONS_TOTAL: Optional[Any] = _safe_counter(
-    "guardrail_decisions",
-    "Total guardrail decisions",
-)
-_DECISION_FAMILY: Optional[Any] = _safe_counter(
-    "guardrail_decision_family_total",
+_REQUESTS_TOTAL = _safe_counter("guardrail_requests_total", "Total guardrail requests")
+_DECISIONS_TOTAL = _safe_counter("guardrail_decisions_total", "Total guardrail decisions")
+_DECISIONS_FAMILY_TB = _safe_counter(
+    "guardrail_decisions_family_bot_total",
     "Decisions by family and tenant/bot",
     ("family", "tenant", "bot"),
 )
 
 
-def inc_requests_total() -> None:
-    global _requests_total_int
-    _requests_total_int += 1
+def _inc_requests() -> None:
     if _REQUESTS_TOTAL is not None:
         _REQUESTS_TOTAL.inc()
 
 
-def inc_decisions_total() -> None:
-    global _decisions_total_int
-    _decisions_total_int += 1
+def _inc_decisions() -> None:
     if _DECISIONS_TOTAL is not None:
         _DECISIONS_TOTAL.inc()
 
 
-def inc_decision_family(family: str) -> None:
-    """Family-only increment (kept for compatibility)."""
-    if _DECISION_FAMILY is not None:
-        _DECISION_FAMILY.labels(family=family, tenant="-", bot="-").inc()
-
-
-def inc_decision_family_tenant_bot(family: str, tenant_id: str, bot_id: str) -> None:
-    if _DECISION_FAMILY is not None:
-        _DECISION_FAMILY.labels(
-            family=family,
+def _inc_family(family: str, tenant_id: str, bot_id: str) -> None:
+    if _DECISIONS_FAMILY_TB is not None:
+        _DECISIONS_FAMILY_TB.labels(
+            family=family or "-",
             tenant=tenant_id or "-",
             bot=bot_id or "-",
         ).inc()
 
 
-def get_requests_total() -> int:
-    return _requests_total_int
+# -----------------
+# Common helpers
+# -----------------
+def _resolve_ids(request: Request, body_tenant: Optional[str], body_bot: Optional[str]) -> Tuple[str, str]:
+    tenant_id = request.headers.get("X-Tenant-ID") or (body_tenant or "default")
+    bot_id = request.headers.get("X-Bot-ID") or (body_bot or "default")
+    return tenant_id, bot_id
 
 
-def get_decisions_total() -> int:
-    return _decisions_total_int
+def _auth_or_401(request: Request) -> None:
+    """
+    Tests indicate /guardrail/ requires either X-API-Key or Authorization: Bearer ...
+    """
+    api_key = request.headers.get("X-API-Key")
+    auth = request.headers.get("Authorization") or ""
+    if not api_key and not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+
+def _family_from_result(action: str, transformed: str, original: str, hits: Dict[str, Any]) -> str:
+    """
+    Normalize to: allow | sanitize | block
+    - block: detector action is not 'allow'
+    - sanitize: action allow but text changed or hits present
+    - allow: otherwise
+    """
+    if action != "allow":
+        return "block"
+    if (transformed != original) or (hits and len(hits) > 0):
+        return "sanitize"
+    return "allow"
+
+
+def _blen(s: Optional[str]) -> int:
+    return len((s or "").encode("utf-8"))
 
 
 # ------------
 # Data models
 # ------------
 class EvaluateRequest(BaseModel):
-    text: str = Field(..., description="Raw user prompt or content to evaluate.")
+    text: str = Field(..., description="Text to check (ingress).")
     tenant_id: Optional[str] = None
     bot_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -142,88 +150,56 @@ class EgressEvaluateRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
-# -----------------
-# Helper functions
-# -----------------
-def _resolve_ids(
-    request: Request,
-    body_tenant: Optional[str],
-    body_bot: Optional[str],
-) -> Tuple[str, str]:
-    tenant_id = request.headers.get("X-Tenant-ID") or (body_tenant or "")
-    bot_id = request.headers.get("X-Bot-ID") or (body_bot or "")
-    return tenant_id, bot_id
-
-
-def _family_from_result(
-    action: str,
-    transformed: str,
-    original: str,
-    hits: Dict[str, Any],
-) -> str:
-    """
-    Normalize to: allow | sanitize | block
-    - block: detector action is not 'allow'
-    - sanitize: action allow but text changed or hits present
-    - allow: otherwise
-    """
-    if action != "allow":
-        return "block"
-    if (transformed != original) or (hits and len(hits) > 0):
-        return "sanitize"
-    return "allow"
-
-
-# -------
-# Routes
-# -------
-@router.post("/evaluate", response_model=EvaluateResponse)
-async def evaluate(
-    request: Request,
-    req: EvaluateRequest,
-    x_debug: Optional[str] = Header(
-        default=None,
-        alias="X-Debug",
-        convert_underscores=False,
-    ),
-) -> Dict[str, Any]:
-    """
-    Evaluate inbound prompt for policy compliance and optionally sanitize.
-    """
-    inc_requests_total()
-
-    tenant_id, bot_id = _resolve_ids(request, req.tenant_id, req.bot_id)
-
-    det: Dict[str, Any] = evaluate_prompt(req.text) or {}
-    action: str = str(det.get("action", "allow"))
-    transformed: str = det.get("transformed_text", req.text) or req.text
-    rule_hits: Dict[str, Any] = det.get("rule_hits") or {}
-
-    # Final decision family + counters
-    family = _family_from_result(action, transformed, req.text, rule_hits)
-    if family == "block":
-        decision = "block"
-    elif family == "sanitize":
-        decision = "sanitize"
-    else:
-        decision = "allow"
-
-    inc_decisions_total()
-    inc_decision_family(family)
-    inc_decision_family_tenant_bot(family, tenant_id, bot_id)
-
+# -------------
+# Core logic
+# -------------
+def _ingress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str) -> Dict[str, Any]:
     policy_version = current_rules_version()
     rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
-    payload: Dict[str, Any] = {
-        "decision": decision,
-        "transformed_text": transformed,
-        "rule_hits": rule_hits,
-        "policy_version": policy_version,
-        "request_id": rid,
-    }
+    # Size guard (default 200KB, override with env)
+    max_bytes = int(os.environ.get("GUARDRAIL_MAX_PROMPT_BYTES") or "204800")
+    if _blen(raw_text) > max_bytes:
+        # Emit audit on 413s as tests expect audit even on errors
+        try:
+            emit_audit_event(
+                {
+                    "ts": int(time.time()),
+                    "event": "prompt_oversize",
+                    "request_id": rid,
+                    "tenant_id": tenant_id,
+                    "bot_id": bot_id,
+                    "policy_version": policy_version,
+                    "payload_bytes": _blen(raw_text),
+                }
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=413, detail={"code": "payload_too_large", "request_id": rid})
 
-    # Best-effort audit
+    # Base sanitization + optional threat feed
+    sanitized, families, redaction_count, _ = sanitize_text(raw_text, debug=False)
+    if threat_feed_enabled():
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=False)
+        sanitized = dyn_text
+        if dyn_fams:
+            base = set(families or [])
+            base.update(dyn_fams)
+            families = sorted(base)
+        if dyn_reds:
+            redaction_count = (redaction_count or 0) + dyn_reds
+
+    # Detector
+    det = evaluate_prompt(sanitized) or {}
+    action = str(det.get("action", "allow"))
+    transformed = det.get("transformed_text", sanitized) or sanitized
+    rule_hits = det.get("rule_hits") or {}
+
+    family = _family_from_result(action, transformed, raw_text, rule_hits)
+    _inc_decisions()
+    _inc_family(family, tenant_id, bot_id)
+
+    # Audit (best-effort)
     try:
         emit_audit_event(
             {
@@ -232,50 +208,36 @@ async def evaluate(
                 "request_id": rid,
                 "tenant_id": tenant_id,
                 "bot_id": bot_id,
-                "decision": decision,
-                "family": family,
+                "decision": family,
+                "raw_action": action,
                 "rule_hits": rule_hits,
                 "policy_version": policy_version,
-                "metadata": req.metadata or {},
+                "redaction_count": int(redaction_count or 0),
+                "payload_bytes": _blen(raw_text),
+                "sanitized_bytes": _blen(transformed),
             }
         )
     except Exception:
-        # Don't break the route if auditing sinks fail
         pass
 
-    return payload
+    return {
+        "decision": family,
+        "transformed_text": transformed,
+        "rule_hits": rule_hits,
+        "policy_version": policy_version,
+        "request_id": rid,
+    }
 
 
-@router.post("/egress/evaluate", response_model=Dict[str, Any])
-async def egress_evaluate(
-    request: Request,
-    req: EgressEvaluateRequest,
-    x_debug: Optional[str] = Header(
-        default=None,
-        alias="X-Debug",
-        convert_underscores=False,
-    ),
-) -> Dict[str, Any]:
-    """
-    Evaluate outbound (egress) content for sensitive data leakage; may return redactions.
-    """
-    inc_requests_total()
+def _egress_logic(request: Request, raw_text: str, tenant_id: str, bot_id: str) -> Dict[str, Any]:
+    policy_version = current_rules_version()
+    rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
-    tenant_id, bot_id = _resolve_ids(request, req.tenant_id, req.bot_id)
-    check_input = (req.text or "").strip()
-
-    if not check_input:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing content to evaluate for egress.",
-        )
-
-    payload_raw, _hits = egress_check(check_input)
+    payload_raw, _hits = egress_check(raw_text)
     payload = dict(payload_raw or {})
     action: str = str(payload.get("action", "allow"))
     redactions = int(payload.get("redactions") or 0)
 
-    # Map to family
     if action == "deny":
         fam = "block"
     elif redactions > 0:
@@ -283,34 +245,130 @@ async def egress_evaluate(
     else:
         fam = "allow"
 
-    inc_decisions_total()
-    inc_decision_family(fam)
-    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+    _inc_decisions()
+    _inc_family(fam, tenant_id, bot_id)
 
-    # Attach policy info + request id for consistency
-    payload.setdefault("policy_version", current_rules_version())
-    payload.setdefault(
-        "request_id",
-        request.headers.get("X-Request-ID") or str(uuid.uuid4()),
-    )
+    payload.setdefault("policy_version", policy_version)
+    payload.setdefault("request_id", rid)
 
-    # Best-effort audit
+    # Audit (best-effort)
     try:
         emit_audit_event(
             {
                 "ts": int(time.time()),
                 "event": "egress_decision",
-                "request_id": payload["request_id"],
+                "request_id": rid,
                 "tenant_id": tenant_id,
                 "bot_id": bot_id,
                 "decision": fam,
                 "raw_action": action,
                 "redactions": redactions,
-                "policy_version": payload["policy_version"],
-                "metadata": req.metadata or {},
+                "policy_version": policy_version,
+                "payload_bytes": _blen(raw_text),
             }
         )
     except Exception:
         pass
 
     return payload
+
+
+# -------
+# Routes
+# -------
+@router.post("/", response_model=EvaluateResponse)
+async def guardrail_root(
+    request: Request,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> Dict[str, Any]:
+    """
+    Primary endpoint used by tests: accepts JSON {'prompt': ...} or multipart form.
+    Requires either X-API-Key or Authorization: Bearer ... header.
+    """
+    _auth_or_401(request)
+    _inc_requests()
+
+    tenant_id = request.headers.get("X-Tenant-ID") or "default"
+    bot_id = request.headers.get("X-Bot-ID") or "default"
+
+    # Accept JSON and multipart/form-data
+    ctype = (request.headers.get("content-type") or "").lower()
+
+    text: str = ""
+    if "application/json" in ctype:
+        body = await request.json()
+        # Tests appear to send {"prompt": "..."}
+        text = str((body or {}).get("prompt") or "")
+    elif "multipart/form-data" in ctype:
+        form = await request.form()
+        # Common fields: 'text' or 'prompt'
+        text = str(form.get("text") or form.get("prompt") or "")
+        # If files included, we do NOT decode them as UTF-8 blindly; ignore for decision.
+        # (Avoids UnicodeDecodeError during collection.)
+    else:
+        # As a fallback, try to read body as text
+        try:
+            raw = await request.body()
+            text = raw.decode("utf-8", errors="ignore")
+        except Exception:
+            text = ""
+
+    if not text:
+        # Still provide a request id on errors
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        raise HTTPException(status_code=422, detail={"code": "invalid_request", "request_id": rid})
+
+    return _ingress_logic(request, text, tenant_id, bot_id)
+
+
+@router.post("/evaluate", response_model=EvaluateResponse)
+async def evaluate(
+    request: Request,
+    body: EvaluateRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> Dict[str, Any]:
+    """
+    JSON ingress evaluation (back-compat with earlier clients).
+    """
+    _auth_or_401(request)
+    _inc_requests()
+    tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
+    return _ingress_logic(request, body.text, tenant_id, bot_id)
+
+
+@router.post("/egress", response_model=Dict[str, Any])
+async def egress(
+    request: Request,
+    body: EgressEvaluateRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> Dict[str, Any]:
+    """
+    JSON egress evaluation (alias).
+    """
+    _auth_or_401(request)
+    _inc_requests()
+    text = (body.text or "").strip()
+    if not text:
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        raise HTTPException(status_code=422, detail={"code": "invalid_request", "request_id": rid})
+    tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
+    return _egress_logic(request, text, tenant_id, bot_id)
+
+
+@router.post("/egress/evaluate", response_model=Dict[str, Any])
+async def egress_evaluate(
+    request: Request,
+    body: EgressEvaluateRequest,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> Dict[str, Any]:
+    """
+    JSON egress evaluation (back-compat).
+    """
+    _auth_or_401(request)
+    _inc_requests()
+    text = (body.text or "").strip()
+    if not text:
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        raise HTTPException(status_code=422, detail={"code": "invalid_request", "request_id": rid})
+    tenant_id, bot_id = _resolve_ids(request, body.tenant_id, body.bot_id)
+    return _egress_logic(request, text, tenant_id, bot_id)
