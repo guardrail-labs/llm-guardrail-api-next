@@ -39,6 +39,7 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
+RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -280,8 +281,8 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     """
     Legacy route behavior:
       - Block secrets and payload blobs
+      - Block prompt-injection phrases (incl. 'reveal system prompt')
       - Apply external deny regex (yaml) -> block
-      - Do NOT block on injection phrase (allow with redaction)
     """
     hits: List[str] = []
 
@@ -293,14 +294,16 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
         hits.append(SECRETS_API_KEY_ID)
         return "block", hits
 
-    # External deny regex via policy_loader
+    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(prompt or ""):
+        hits.append(PAYLOAD_PROMPT_INJ_ID)
+        return "block", hits
+
     blob = _get_policy()
     for rid, rx in blob.deny_compiled:
         if rx.search(prompt):
             hits.append(f"policy:deny:{rid}")
             return "block", hits
 
-    # Injection → allow (masked later)
     return "allow", hits
 
 
@@ -327,7 +330,6 @@ def _evaluate_ingress_policy(
         _normalize_wildcards(hits, is_deny=False)
         return "clarify", hits, (dbg if dbg else None)
 
-    # Plain ignore-previous-instructions → allow; still masked in redaction
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
@@ -368,7 +370,6 @@ async def _handle_upload_to_text(obj: UploadFile) -> str:
     """
     name = getattr(obj, "filename", None) or "file"
     ctype = (getattr(obj, "content_type", "") or "").lower()
-    # Fallbacks by extension when content type is missing/odd
     ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
 
     try:
@@ -386,16 +387,15 @@ async def _handle_upload_to_text(obj: UploadFile) -> str:
 
 async def _read_form_and_merge(request: Request) -> str:
     """
-    Merge 'text' plus files. Robustly walk values and multi_items to cover
-    provider differences and always include markers/content.
+    Merge 'text' plus files. Iterate keys->getlist and then multi_items()
+    to cover provider differences. Always include markers/content.
     """
     form = await request.form()
     combined: List[str] = []
 
-    # Base text if present
-    txt = str(form.get("text") or "")
-    if txt:
-        combined.append(txt)
+    base = str(form.get("text") or "")
+    if base:
+        combined.append(base)
 
     seen: set[int] = set()
 
@@ -407,15 +407,16 @@ async def _read_form_and_merge(request: Request) -> str:
             seen.add(vid)
             combined.append(await _handle_upload_to_text(v))
 
-    # Pass 1: values()
-    for v in form.values():
-        if isinstance(v, list):
-            for item in v:
-                await _maybe_add(item)
-        else:
+    # Pass 1: by keys/getlist
+    for key in form.keys():
+        try:
+            values = form.getlist(key)
+        except Exception:
+            values = [form.get(key)]
+        for v in values:
             await _maybe_add(v)
 
-    # Pass 2: multi_items()
+    # Pass 2: multi_items fallback
     try:
         for _, val in form.multi_items():
             await _maybe_add(val)
