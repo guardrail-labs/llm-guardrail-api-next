@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # --- Policy ---
     POLICY_AUTORELOAD: bool = Field(default=True)
     POLICY_RULES_PATH: str = Field(default=os.environ.get("POLICY_RULES_PATH", ""))
+    # Default action when an injection/jailbreak is detected (unless a rule overrides it)
+    default_injection_action: Literal["block", "clarify"] = Field(
+        default="block",
+        description="Default action for injection/jailbreak hits",
+    )
 
     # --- Limits ---
     MAX_PROMPT_CHARS: int = 20000

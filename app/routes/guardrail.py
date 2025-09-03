@@ -9,20 +9,21 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.telemetry import metrics as m
 from app.services import audit_forwarder as af
+from app.services.policy import apply_injection_default
 from app.services.policy_loader import get_policy as _get_policy
 from app.services.threat_feed import (
     apply_dynamic_redactions as tf_apply,
     threat_feed_enabled as tf_enabled,
 )
 from app.services.verifier import (
-    verifier_enabled as vr_enabled,
-    load_providers_order,
     Verifier,
     content_fingerprint,
     is_known_harmful,
+    load_providers_order,
+    verifier_enabled as vr_enabled,
 )
+from app.telemetry import metrics as m
 
 router = APIRouter()
 
@@ -57,6 +58,8 @@ RE_HACK_WIFI = re.compile(r"(?i)(hack\s+a\s+wifi|bypass\s+wpa2)")
 
 PI_PROMPT_INJ_ID = "pi:prompt_injection"
 PAYLOAD_PROMPT_INJ_ID = "payload:prompt_injection"
+INJECTION_PROMPT_INJ_ID = "injection:prompt_injection"
+JAILBREAK_DAN_ID = "jailbreak:dan"
 SECRETS_API_KEY_ID = "secrets:api_key_like"
 PAYLOAD_BLOB_ID = "payload:encoded_blob"
 
@@ -100,6 +103,10 @@ def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None
         rule_hits.setdefault("secrets:*", [])
     if any(k.startswith("payload:") for k in rule_hits.keys()):
         rule_hits.setdefault("payload:*", [])
+    if any(k.startswith("injection:") for k in rule_hits.keys()):
+        rule_hits.setdefault("injection:*", [])
+    if any(k.startswith("jailbreak:") for k in rule_hits.keys()):
+        rule_hits.setdefault("jailbreak:*", [])
     if is_deny:
         rule_hits.setdefault("policy:deny:*", [])
 
@@ -162,6 +169,9 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
         rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
             RE_PROMPT_INJ.pattern
         )
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
         redactions += 1
 
     _normalize_wildcards(rule_hits, is_deny=False)
@@ -204,6 +214,7 @@ def _respond_action(
     }
     if debug is not None:
         body["debug"] = debug
+    body = apply_injection_default(body)
     return JSONResponse(body)
 
 
@@ -335,12 +346,15 @@ def _evaluate_ingress_policy(
     if RE_DAN.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(JAILBREAK_DAN_ID, []).append(RE_DAN.pattern)
         _normalize_wildcards(hits, is_deny=False)
         return "clarify", hits, (dbg if dbg else None)
 
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         _normalize_wildcards(hits, is_deny=False)
         return "allow", hits, (dbg if dbg else None)
 
