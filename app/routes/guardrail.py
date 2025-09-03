@@ -18,7 +18,6 @@ router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
 
-# Legacy route always requires an API key (tests expect this)
 def _has_api_key(x_api_key: Optional[str]) -> bool:
     return bool(x_api_key)
 
@@ -33,7 +32,6 @@ RE_PRIVATE_KEY = re.compile(
 )
 RE_HACK_WIFI = re.compile(r"(?i)(hack\s+a\s+wifi|bypass\s+wpa2)")
 
-# Policy IDs expected by tests for legacy route
 PI_PROMPT_INJ_ID = "pi:prompt_injection"
 SECRETS_API_KEY_ID = "secrets:api_key_like"
 PAYLOAD_BLOB_ID = "payload:encoded_blob"
@@ -61,7 +59,6 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
                 pass
 
 def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
-    """Return (redacted_text, rule_hits, count). rule_hits is a dict for /evaluate & egress."""
     rule_hits: Dict[str, List[str]] = {}
     redactions = 0
     redacted = text
@@ -90,8 +87,9 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
     return bool(x_debug)
 
 def _policy_version() -> Optional[str]:
-    # The policy loader in tests sets this env
     return os.getenv("POLICY_VERSION")
+
+# ------------------------------- responses -------------------------------
 
 def _respond_legacy_allow(prompt: str, request_id: str, rule_hits: List[str]) -> JSONResponse:
     m.inc_decisions_total("allow")
@@ -99,7 +97,7 @@ def _respond_legacy_allow(prompt: str, request_id: str, rule_hits: List[str]) ->
         "request_id": request_id,
         "decision": "allow",
         "transformed_text": prompt,
-        "rule_hits": rule_hits,  # list for legacy contract
+        "rule_hits": rule_hits,
     }
     pv = _policy_version()
     if pv:
@@ -131,11 +129,13 @@ def _respond_action(
         "request_id": request_id,
         "action": action,
         "transformed_text": transformed_text,
-        "rule_hits": rule_hits,  # dict for evaluate/egress contract
+        "rule_hits": rule_hits,
     }
     if debug:
         body["debug"] = debug
     return JSONResponse(body)
+
+# ------------------------------- audit -------------------------------
 
 def _audit(
     direction: str,
@@ -151,7 +151,7 @@ def _audit(
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
         "direction": direction,
-        "decision": action if action in {"allow", "deny"} else "allow",  # family
+        "decision": action if action in {"allow", "deny"} else "allow",
         "tenant_id": tenant,
         "bot_id": bot,
         "request_id": request_id,
@@ -168,10 +168,9 @@ def _bump_family(endpoint: str, action: str, tenant: str, bot: str) -> None:
     fam = "allow" if action == "allow" else "deny"
     m.inc_decision_family_tenant_bot(fam, tenant, bot)
 
-# ------------------------------- policies --------------------------------
+# ------------------------------- policies -------------------------------
 
 def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
-    """Return decision, rule_hits(list-of-ids)."""
     hits: List[str] = []
     if RE_PROMPT_INJ.search(prompt or ""):
         hits.append(PI_PROMPT_INJ_ID)
@@ -184,12 +183,14 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
         return "block", hits
     return "allow", hits
 
-def _evaluate_ingress_policy(text: str) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+def _evaluate_ingress_policy(
+    text: str,
+) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     """
     Return (action, rule_hits_dict, debug).
     - Prompt injection => clarify
     - Explicit illicit intent => deny
-    - Else allow; redactions applied separately
+    - Else allow
     """
     hits: Dict[str, List[str]] = {}
     dbg: Optional[Dict[str, Any]] = None
@@ -200,27 +201,34 @@ def _evaluate_ingress_policy(text: str) -> Tuple[str, Dict[str, List[str]], Opti
 
     if RE_HACK_WIFI.search(text or ""):
         hits.setdefault("unsafe:illicit", []).append("hack_wifi_or_bypass_wpa2")
-      # deny
         return "deny", hits, {"explanations": ["illicit_request"]}
 
     return "allow", hits, dbg
 
-def _egress_policy(text: str, want_debug: bool) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+def _egress_policy(
+    text: str, want_debug: bool
+) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     if RE_PRIVATE_KEY.search(text or ""):
-        return "deny", text, {"deny": ["private_key_envelope"]}, (
-            {"explanations": ["private_key_detected"]} if want_debug else None
+        return (
+            "deny",
+            text,
+            {"deny": ["private_key_envelope"]},
+            ({"explanations": ["private_key_detected"]} if want_debug else None),
         )
-    # otherwise allow; redactions applied separately
-    return "allow", text, {}, ({"note": "redactions_may_apply"} if want_debug else None)
+    return (
+        "allow",
+        text,
+        {},
+        ({"note": "redactions_may_apply"} if want_debug else None),
+    )
 
-# ------------------------------- endpoints --------------------------------
+# ------------------------------- endpoints -------------------------------
 
 @router.post("/guardrail")
 async def guardrail_legacy(
     request: Request,
     x_api_key: Optional[str] = Header(default=None),
 ):
-    # Require API key on legacy route
     if not _has_api_key(x_api_key):
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
@@ -234,30 +242,30 @@ async def guardrail_legacy(
         request.headers.get("X-Bot-ID"),
     )
 
-    # Legacy auditing & metrics
-    transformed, rh_dict, redactions = _apply_redactions(prompt)
-    _audit("ingress", prompt, transformed, "deny" if action == "block" else "allow",
-           tenant, bot, request_id, hits, redactions)
+    transformed, _, redactions = _apply_redactions(prompt)
+    _audit(
+        "ingress",
+        prompt,
+        transformed,
+        "deny" if action == "block" else "allow",
+        tenant,
+        bot,
+        request_id,
+        hits,
+        redactions,
+    )
     _bump_family("guardrail_legacy", "allow" if action == "allow" else "deny", tenant, bot)
 
     if action == "block":
         return _respond_legacy_block(request_id, hits)
-
-    # allow
     return _respond_legacy_allow(transformed, request_id, hits)
 
 @router.post("/guardrail/evaluate")
 async def guardrail_evaluate(request: Request):
-    """
-    Single handler for JSON and multipart:
-    - JSON: { "text": "...", "request_id"?: "..." }
-    - Multipart: form fields "text" plus any files; we try to decode text files and ignore binary.
-    """
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
 
-    # Parse body based on content-type
     content_type = headers.get("content-type", "")
     combined_text = ""
     explicit_request_id: Optional[str] = None
@@ -268,27 +276,24 @@ async def guardrail_evaluate(request: Request):
         explicit_request_id = str(payload.get("request_id") or "") or None
     else:
         form = await request.form()
-        # collect text + try to read any text-like uploads
         if "text" in form:
             combined_text = str(form.get("text") or "")
-        for key, val in form.multi_items():
+        for _, val in form.multi_items():
             if isinstance(val, UploadFile):
                 try:
                     raw = await val.read()
                     try:
                         combined_text += "\n" + raw.decode("utf-8")
                     except Exception:
-                        # swallow decode issues (binary images/audio) to avoid FastAPI encoder crashes
+                        # swallow decode errors on binary files
                         pass
                 except Exception:
                     pass
 
     request_id = _req_id(explicit_request_id)
 
-    # Policy (evaluate ingress)
     action, rule_hits, debug = _evaluate_ingress_policy(combined_text)
     redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
-    # merge redaction hits even on allow/clarify
     for k, v in redaction_hits.items():
         rule_hits.setdefault(k, []).extend(v)
 
@@ -297,15 +302,23 @@ async def guardrail_evaluate(request: Request):
         if redaction_hits:
             debug["redaction_sources"] = list(redaction_hits.keys())
 
-    # Audit + metrics (direction should be "ingress" also for multipart)
-    _audit("ingress", combined_text, redacted, action, tenant, bot, request_id, rule_hits, redaction_count)
+    _audit(
+        "ingress",
+        combined_text,
+        redacted,
+        action,
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redaction_count,
+    )
     _bump_family("ingress_evaluate", action, tenant, bot)
 
     return _respond_action(action, redacted, request_id, rule_hits, debug)
 
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
-    # This path is used explicitly in a few tests; delegate to the unified handler above.
     return await guardrail_evaluate(request)
 
 @router.post("/guardrail/egress_evaluate")
@@ -328,7 +341,17 @@ async def guardrail_egress(request: Request):
         if redaction_hits:
             debug["redaction_sources"] = list(redaction_hits.keys())
 
-    _audit("egress", text, redacted, action, tenant, bot, request_id, rule_hits, redaction_count)
+    _audit(
+        "egress",
+        text,
+        redacted,
+        action,
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redaction_count,
+    )
     _bump_family("egress_evaluate", action, tenant, bot)
 
     return _respond_action(action, redacted, request_id, rule_hits, debug)
