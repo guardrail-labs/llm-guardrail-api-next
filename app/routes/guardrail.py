@@ -173,6 +173,40 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
 
 # ------------------------------- responses -------------------------------
 
+def _respond_action(
+    action: str,
+    transformed_text: str,
+    request_id: str,
+    rule_hits: Dict[str, List[str]],
+    debug: Optional[Dict[str, Any]] = None,
+    redaction_count: int = 0,
+    modalities: Optional[Dict[str, int]] = None,
+) -> JSONResponse:
+    fam = "allow" if action == "allow" else "deny"
+    m.inc_decisions_total(fam)
+
+    decisions: List[Dict[str, Any]] = []
+    if redaction_count > 0:
+        decisions.append({"type": "redaction", "count": redaction_count})
+    if modalities:
+        for tag, count in modalities.items():
+            if count > 0:
+                decisions.append({"type": "modality", "tag": tag, "count": count})
+
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "action": action,
+        "transformed_text": transformed_text,
+        "text": transformed_text,
+        "rule_hits": rule_hits,
+        "decisions": decisions,
+        "redactions": int(redaction_count),
+    }
+    if debug is not None:
+        body["debug"] = debug
+    return JSONResponse(body)
+
+
 def _respond_legacy_allow(
     prompt: str,
     request_id: str,
@@ -210,34 +244,6 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    return JSONResponse(body)
-
-
-def _respond_action(
-    action: str,
-    transformed_text: str,
-    request_id: str,
-    rule_hits: Dict[str, List[str]],
-    debug: Optional[Dict[str, Any]] = None,
-    redaction_count: int = 0,
-) -> JSONResponse:
-    fam = "allow" if action == "allow" else "deny"
-    m.inc_decisions_total(fam)
-    decisions: List[Dict[str, Any]] = []
-    if redaction_count > 0:
-        decisions.append({"type": "redaction", "count": redaction_count})
-
-    body: Dict[str, Any] = {
-        "request_id": request_id,
-        "action": action,
-        "transformed_text": transformed_text,
-        "text": transformed_text,
-        "rule_hits": rule_hits,
-        "decisions": decisions,
-        "redactions": int(redaction_count),
-    }
-    if debug is not None:
-        body["debug"] = debug
     return JSONResponse(body)
 
 # ------------------------------- audit -------------------------------
@@ -361,12 +367,17 @@ def _egress_policy(
 
 # ------------------------------- form parsing -------------------------------
 
-async def _handle_upload_to_text(obj: UploadFile) -> str:
+async def _handle_upload_to_text(
+    obj: UploadFile,
+    decode_pdf: bool,
+    mods: Dict[str, int],
+) -> str:
     """
     Turn an UploadFile into a text fragment:
       - image/* -> marker
       - audio/* -> marker
-      - text/plain, application/pdf -> read and decode
+      - text/plain -> read and decode
+      - application/pdf -> decode if decode_pdf=True, else marker
       - other -> generic marker
     Also falls back on filename extension when content_type is missing.
     """
@@ -376,25 +387,39 @@ async def _handle_upload_to_text(obj: UploadFile) -> str:
 
     try:
         if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+            mods["image"] = mods.get("image", 0) + 1
             return f"[IMAGE:{name}]"
         if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
+            mods["audio"] = mods.get("audio", 0) + 1
             return f"[AUDIO:{name}]"
-        if ctype in {"text/plain", "application/pdf"} or ext in {"txt", "pdf"}:
+        if ctype == "text/plain" or ext == "txt":
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore")
+        if ctype == "application/pdf" or ext == "pdf":
+            if decode_pdf:
+                raw = await obj.read()
+                return raw.decode("utf-8", errors="ignore")
+            mods["file"] = mods.get("file", 0) + 1
+            return f"[FILE:{name}]"
+        mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]"
     except Exception:
+        mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]"
 
 
-async def _read_form_and_merge(request: Request) -> str:
+async def _read_form_and_merge(
+    request: Request,
+    decode_pdf: bool,
+) -> Tuple[str, Dict[str, int]]:
     """
-    Merge 'text' plus files from multipart form data. We iterate over
-    form.multi_items() to robustly capture *all* file fields regardless of
-    provider quirks. Any file-like value (has filename + read) is handled.
+    Merge 'text' plus files from multipart form data. Iterate over
+    form.multi_items() to capture *all* file fields. Any file-like value
+    (has filename + read) is handled. Returns (text, modality_counts).
     """
     form = await request.form()
     combined: List[str] = []
+    mods: Dict[str, int] = {}
 
     base = str(form.get("text") or "")
     if base:
@@ -403,7 +428,6 @@ async def _read_form_and_merge(request: Request) -> str:
     seen: set[int] = set()
 
     async def _maybe_add(val: Any) -> None:
-        # Accept UploadFile *or* any file-like with the needed attributes
         if isinstance(val, UploadFile) or (
             hasattr(val, "filename") and hasattr(val, "read")
         ):
@@ -411,18 +435,17 @@ async def _read_form_and_merge(request: Request) -> str:
             if vid in seen:
                 return
             seen.add(vid)
-            combined.append(await _handle_upload_to_text(val))
+            combined.append(await _handle_upload_to_text(val, decode_pdf, mods))
 
-    # Single pass over all form entries (covers keys with one or many files)
     try:
         for _, v in form.multi_items():
             await _maybe_add(v)
     except Exception:
-        # Fallback: best-effort scan of values()
         for v in form.values():
             await _maybe_add(v)
 
-    return "\n".join([s for s in combined if s])
+    text = "\n".join([s for s in combined if s])
+    return text, mods
 
 # ------------------------------- endpoints -------------------------------
 
@@ -440,7 +463,7 @@ async def guardrail_legacy(
     prompt = str(payload.get("prompt") or "")
     request_id = _req_id(str(payload.get("request_id") or ""))
 
-    # 413 guard (tests expect this behavior)
+    # 413 guard
     try:
         max_chars = int(os.getenv("MAX_PROMPT_CHARS", "0"))
     except Exception:
@@ -453,7 +476,7 @@ async def guardrail_legacy(
         }
         return JSONResponse(body, status_code=413)
 
-    # Version must come from YAML loader for legacy behavior/tests
+    # Version from YAML loader (legacy behavior)
     policy_blob = _get_policy()
     policy_version = str(policy_blob.version)
 
@@ -463,17 +486,14 @@ async def guardrail_legacy(
         request.headers.get("X-Bot-ID"),
     )
 
-    # Apply redactions
     redacted, redaction_hits, redactions = _apply_redactions(prompt)
 
-    # Threat feed (optional)
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
         redactions += tf_count
         for tag in fams.keys():
             redaction_hits.setdefault(tag, []).append("<threat_feed>")
 
-    # Merge legacy + redaction hits
     rule_hits: Dict[str, List[str]] = {}
     for item in legacy_hits_list:
         rule_hits.setdefault(item, [])
@@ -518,33 +538,31 @@ async def guardrail_evaluate(request: Request):
     content_type = (headers.get("content-type") or "").lower()
     combined_text = ""
     explicit_request_id: Optional[str] = None
+    mods: Dict[str, int] = {}
 
     if content_type.startswith("application/json"):
         payload = await request.json()
         combined_text = str(payload.get("text") or "")
         explicit_request_id = str(payload.get("request_id") or "") or None
     else:
-        combined_text = await _read_form_and_merge(request)
+        # Generic multipart: do NOT decode PDFs (emit [FILE:...])
+        combined_text, mods = await _read_form_and_merge(request, decode_pdf=False)
 
     request_id = _req_id(explicit_request_id)
 
-    # Base policy (clarify only for DAN-style)
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
     redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
 
-    # Threat feed
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
         redaction_count += tf_count
         for tag in fams.keys():
             redaction_hits.setdefault(tag, []).append("<threat_feed>")
 
-    # Merge hits and normalize
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
-    # Verifier flow (optional)
     verifier_info: Optional[Dict[str, Any]] = None
     if vr_enabled() and force_unclear:
         providers = load_providers_order()
@@ -561,13 +579,15 @@ async def guardrail_evaluate(request: Request):
                 "verdict": (str(verdict) if verdict else None),
             }
 
-    # Build debug block
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            dbg["redaction_sources"] = list(redaction_hits.keys())
+            sources = list(redaction_hits.keys())
+            dbg["redaction_sources"] = sources
+            dbg["sources"] = list(sources)
+
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
         if verifier_info:
@@ -593,13 +613,85 @@ async def guardrail_evaluate(request: Request):
         policy_hits,
         dbg,
         redaction_count=redaction_count,
+        modalities=mods,
     )
 
 
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
-    # Same behavior; tests expect direction "ingress"
-    return await guardrail_evaluate(request)
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
+    force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
+
+    # Multipart with decoding PDFs (for redaction-in-PDF test)
+    combined_text, mods = await _read_form_and_merge(request, decode_pdf=True)
+    request_id = _req_id(None)
+
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
+    redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
+
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
+
+    for k, v in redaction_hits.items():
+        policy_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
+
+    verifier_info: Optional[Dict[str, Any]] = None
+    if vr_enabled() and force_unclear:
+        providers = load_providers_order()
+        fp = content_fingerprint(combined_text)
+        if not providers:
+            if is_known_harmful(fp):
+                action = "deny"
+        else:
+            verdict, used = Verifier(providers).assess_intent(combined_text, {})
+            verifier_info = {
+                "enabled": True,
+                "providers": providers,
+                "used": used,
+                "verdict": (str(verdict) if verdict else None),
+            }
+
+    dbg: Optional[Dict[str, Any]] = None
+    if want_debug:
+        matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+        dbg = {"matches": matches}
+        if redaction_hits:
+            sources = list(redaction_hits.keys())
+            dbg["redaction_sources"] = sources
+            dbg["sources"] = list(sources)
+        if policy_dbg and "explanations" in policy_dbg:
+            dbg["explanations"] = list(policy_dbg["explanations"])
+        if verifier_info:
+            dbg["verifier"] = verifier_info
+
+    _audit(
+        "ingress",
+        combined_text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        policy_hits,
+        redaction_count,
+    )
+    _bump_family("ingress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        policy_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=mods,
+    )
 
 
 @router.post("/guardrail/egress_evaluate")
@@ -615,7 +707,6 @@ async def guardrail_egress(request: Request):
     action, transformed, rule_hits, debug_info = _egress_policy(text, want_debug)
     redacted, redaction_hits, redaction_count = _apply_redactions(transformed)
 
-    # Threat feed on egress as well
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
         redaction_count += tf_count
@@ -631,7 +722,9 @@ async def guardrail_egress(request: Request):
         matches = [{"tag": k, "patterns": list(v)} for k, v in rule_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            dbg["redaction_sources"] = list(redaction_hits.keys())
+            sources = list(redaction_hits.keys())
+            dbg["redaction_sources"] = sources
+            dbg["sources"] = list(sources)
             dbg.setdefault("explanations", []).append("redactions_applied")
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
@@ -657,4 +750,5 @@ async def guardrail_egress(request: Request):
         rule_hits,
         dbg,
         redaction_count=redaction_count,
+        modalities=None,
     )
