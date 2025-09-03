@@ -1,23 +1,27 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple, TypeVar, Protocol, cast
+from typing import Any, Callable, Dict, Iterable, List, Tuple, TypeVar, Protocol, cast
 
 # ---- Protocols describing only what we use (works for real + shims) ----------
+
 
 class CounterLike(Protocol):
     def labels(self, *label_values: Any) -> "CounterLike": ...
     def inc(self, amount: float = 1.0) -> None: ...
 
+
 class HistogramLike(Protocol):
     def labels(self, *label_values: Any) -> "HistogramLike": ...
     def observe(self, value: float) -> None: ...
+
 
 # ---- Try real prometheus, else provide shims with the same surface ------------
 
 try:
     from prometheus_client import Counter as PromCounterImpl
     from prometheus_client import Histogram as PromHistogramImpl
-    from prometheus_client import REGISTRY as PROM_REGISTRY  # type: ignore
+    from prometheus_client import REGISTRY as _PROM_REGISTRY
+    PROM_REGISTRY: Any = _PROM_REGISTRY
     PROM_OK = True
 except Exception:  # pragma: no cover
     PROM_OK = False
@@ -58,7 +62,7 @@ except Exception:  # pragma: no cover
         def __init__(self) -> None:
             self._names_to_collectors: Dict[str, Any] = {}
 
-    PROM_REGISTRY = _DummyRegistry()  # type: ignore[assignment]
+    PROM_REGISTRY: Any = _DummyRegistry()
 
 # Bind active implementations used below.
 PromCounter = PromCounterImpl if PROM_OK else PromCounterShim
@@ -78,6 +82,7 @@ _RULES_VERSION = "unknown"
 
 # --------------------------- registry-safe constructors ------------------------
 
+
 def _registry_map() -> Dict[str, Any]:
     mapping = getattr(PROM_REGISTRY, "_names_to_collectors", {})
     # Ensure a dict for typing purposes
@@ -85,12 +90,15 @@ def _registry_map() -> Dict[str, Any]:
         return mapping
     return {}
 
+
 def _register(name: str, collector: Any) -> Any:
     mapping = _registry_map()
     mapping[name] = collector
     return collector
 
+
 T = TypeVar("T")
+
 
 def _get_or_create(name: str, factory: Callable[[], T]) -> T:
     existing = _registry_map().get(name)
@@ -99,7 +107,9 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
     created = _register(name, factory())
     return cast(T, created)
 
+
 # --------------------------------- collectors ---------------------------------
+
 
 def _mk_counter(
     name: str,
@@ -110,7 +120,9 @@ def _mk_counter(
         if labels:
             return PromCounter(name, doc, list(labels))
         return PromCounter(name, doc)
-    return _get_or_create(name, _factory)
+    # mypy needs a nudge here because _get_or_create is generic over Any factory
+    return cast(CounterLike, _get_or_create(name, _factory))
+
 
 def _mk_histogram(
     name: str,
@@ -121,7 +133,9 @@ def _mk_histogram(
         if labels:
             return PromHistogram(name, doc, list(labels))
         return PromHistogram(name, doc)
-    return _get_or_create(name, _factory)
+    # mypy needs a nudge here because _get_or_create is generic over Any factory
+    return cast(HistogramLike, _get_or_create(name, _factory))
+
 
 # Core metrics used throughout the app/tests.
 guardrail_requests_total: CounterLike = _mk_counter(
@@ -154,64 +168,81 @@ guardrail_verifier_outcome_total: CounterLike = _mk_counter(
 
 # --------------------------------- incrementers --------------------------------
 
+
 def inc_requests_total(endpoint: str = "unknown") -> None:
     global _REQ_TOTAL
     guardrail_requests_total.labels(endpoint).inc()
     _REQ_TOTAL += 1.0
+
 
 def inc_decisions_total(action: str = "unknown") -> None:
     global _DEC_TOTAL
     guardrail_decisions_total.labels(action).inc()
     _DEC_TOTAL += 1.0
 
+
 def inc_rate_limited(amount: float = 1.0) -> None:
     global _RATE_LIMITED
     guardrail_rate_limited_total.inc(amount)
     _RATE_LIMITED += float(amount)
 
+
 def inc_decision_family(family: str) -> None:
     guardrail_family_total.labels(family).inc()
     _FAMILY_TOTALS[family] = _FAMILY_TOTALS.get(family, 0.0) + 1.0
+
 
 def inc_decision_family_tenant_bot(family: str, tenant: str, bot: str) -> None:
     guardrail_family_tenant_bot_total.labels(family, tenant, bot).inc()
     key = (family, tenant, bot)
     _FAMILY_TENANT_BOT[key] = _FAMILY_TENANT_BOT.get(key, 0.0) + 1.0
 
+
 def inc_verifier_outcome(verifier: str, outcome: str) -> None:
     guardrail_verifier_outcome_total.labels(verifier, outcome).inc()
     key = (verifier, outcome)
     _VERIFIER_OUTCOMES[key] = _VERIFIER_OUTCOMES.get(key, 0.0) + 1.0
 
+
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     inc_decision_family("deny")
     inc_decision_family_tenant_bot("deny", tenant, bot)
 
+
 # ----------------------------------- getters -----------------------------------
+
 
 def get_requests_total() -> float:
     return float(_REQ_TOTAL)
 
+
 def get_decisions_total() -> float:
     return float(_DEC_TOTAL)
+
 
 def get_rate_limited_total() -> float:
     return float(_RATE_LIMITED)
 
+
 def get_decisions_family_total(family: str) -> float:
     return float(_FAMILY_TOTALS.get(family, 0.0))
+
 
 def get_all_family_totals() -> Dict[str, float]:
     return dict(_FAMILY_TOTALS)
 
+
 def get_rules_version() -> str:
     return _RULES_VERSION
+
 
 def set_rules_version(v: str) -> None:
     global _RULES_VERSION
     _RULES_VERSION = str(v)
 
+
 # ------------------------------- export helpers --------------------------------
+
 
 def export_verifier_lines() -> List[str]:
     lines: List[str] = []
@@ -219,18 +250,20 @@ def export_verifier_lines() -> List[str]:
         lines.append(f"verifier={verifier} outcome={outcome} count={int(count)}")
     return lines
 
+
 def export_family_breakdown_lines() -> List[str]:
     lines: List[str] = []
     for family, count in sorted(_FAMILY_TOTALS.items()):
         lines.append(f"family={family} count={int(count)}")
     for (family, tenant, bot), count in sorted(_FAMILY_TENANT_BOT.items()):
         lines.append(
-            "family_tenant_bot="
-            f"{family}:{tenant}:{bot} count={int(count)}"
+            "family_tenant_bot=" f"{family}:{tenant}:{bot} count={int(count)}"
         )
     return lines
 
+
 # ------------------------------ misc introspection -----------------------------
+
 
 def get_metric(name: str) -> Any:
     """Return the raw collector by name if present in the registry mapping."""
