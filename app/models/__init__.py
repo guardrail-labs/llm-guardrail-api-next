@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .debug import DebugPayload, RedactionSpan, SourceDebug
+
 
 class HealthResponse(BaseModel):
     ok: bool
@@ -26,8 +28,21 @@ class EvaluateResponse(BaseModel):
     action: str
     transformed_text: str
     decisions: List[Decision] = Field(default_factory=list)
+    debug: Optional[DebugPayload] = None
 
 class AdminReloadResponse(BaseModel):
     reloaded: bool
     version: str
     rules_loaded: int
+
+
+__all__ = [
+    "HealthResponse",
+    "EvaluateRequest",
+    "Decision",
+    "EvaluateResponse",
+    "AdminReloadResponse",
+    "DebugPayload",
+    "SourceDebug",
+    "RedactionSpan",
+]

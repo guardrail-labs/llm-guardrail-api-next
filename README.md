@@ -118,6 +118,31 @@ curl -s -X POST localhost:8000/admin/compliance/hash \
 
 Testing
 ruff check --fix .
+
+### Debugging provenance (X-Debug)
+
+Add the header `X-Debug: 1` to any request to receive a structured `debug.sources` array:
+
+```json
+{
+  "debug": {
+    "sources": [
+      {
+        "origin": "ingress",
+        "modality": "text",
+        "filename": null,
+        "mime_type": "text/plain",
+        "size_bytes": 42,
+        "sha256": "…",
+        "rule_hits": {"pii:email": ["…"]},
+        "redactions": [{"start": 11, "end": 27, "label": "[REDACTED:EMAIL]"}]
+      }
+    ]
+  }
+}
+```
+
+Raw content is never included in debug; only fingerprints and spans are returned.
 mypy .
 pytest -q
 
