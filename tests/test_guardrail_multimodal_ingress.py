@@ -52,7 +52,7 @@ def test_multipart_text_file_with_pii_is_redacted_and_debug_sources():
     assert "debug" in body
     assert "sources" in body["debug"]
     assert isinstance(body["debug"]["sources"], list)
-    assert body["debug"]["sources"][0]["filename"] == "note.txt"
+    assert any(s.get("filename") == "note.txt" for s in body["debug"]["sources"])
 
 
 def test_multipart_generates_request_id():

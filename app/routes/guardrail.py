@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.models.debug import SourceDebug
 from app.services import audit_forwarder as af
+from app.services.debug_sources import make_source
 from app.services.policy import apply_injection_default
 from app.services.policy_loader import get_policy as _get_policy
 from app.services.threat_feed import (
@@ -111,71 +113,128 @@ def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None
         rule_hits.setdefault("policy:deny:*", [])
 
 
-def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
+def _apply_redactions(
+    text: str,
+) -> Tuple[
+    str,
+    Dict[str, List[str]],
+    int,
+    List[Tuple[int, int, str, Optional[str]]],
+]:
     """
     Apply redactions for PII, secrets, and injection markers.
-    Return (redacted_text, rule_hits, redaction_count).
+    Return (redacted_text, rule_hits, redaction_count, spans).
     """
     rule_hits: Dict[str, List[str]] = {}
     redactions = 0
     redacted = text
+    spans: List[Tuple[int, int, str, Optional[str]]] = []
 
-    # Email
-    if RE_EMAIL.search(redacted):
+    original = text
+
+    matches = list(RE_EMAIL.finditer(original))
+    if matches:
         redacted = RE_EMAIL.sub("[REDACTED:EMAIL]", redacted)
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
-        m.inc_redaction("email")
-        redactions += 1
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
+            m.inc_redaction("email")
+        redactions += len(matches)
 
-    # Phone
-    if RE_PHONE.search(redacted):
+    matches = list(RE_PHONE.finditer(original))
+    if matches:
         redacted = RE_PHONE.sub("[REDACTED:PHONE]", redacted)
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
-        m.inc_redaction("phone")
-        redactions += 1
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
+            m.inc_redaction("phone")
+        redactions += len(matches)
 
-    # OpenAI-like secret
-    if RE_SECRET.search(redacted):
+    matches = list(RE_SECRET.finditer(original))
+    if matches:
         redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
         rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
-        m.inc_redaction("openai_key")
-        redactions += 1
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:OPENAI_KEY]",
+                    "secrets:openai_key",
+                )
+            )
+            m.inc_redaction("openai_key")
+        redactions += len(matches)
 
-    # AWS access key id
-    if RE_AWS.search(redacted):
+    matches = list(RE_AWS.finditer(original))
+    if matches:
         redacted = RE_AWS.sub("[REDACTED:AWS_ACCESS_KEY_ID]", redacted)
         rule_hits.setdefault("secrets:aws_key", []).append(RE_AWS.pattern)
-        m.inc_redaction("aws_access_key_id")
-        redactions += 1
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:AWS_ACCESS_KEY_ID]",
+                    "secrets:aws_key",
+                )
+            )
+            m.inc_redaction("aws_access_key_id")
+        redactions += len(matches)
 
-    # Private key envelope or header/footer markers
-    if RE_PRIVATE_KEY_ENVELOPE.search(redacted):
+    matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
+    if matches:
         redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_ENVELOPE.pattern
         )
-        redactions += 1
-    if RE_PRIVATE_KEY_MARKER.search(redacted):
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
+            )
+        redactions += len(matches)
+
+    matches = list(RE_PRIVATE_KEY_MARKER.finditer(original))
+    if matches:
         redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_MARKER.pattern
         )
-        redactions += 1
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
+            )
+        redactions += len(matches)
 
-    # Injection phrase (mask; decision handled by caller)
-    if RE_PROMPT_INJ.search(redacted):
+    matches = list(RE_PROMPT_INJ.finditer(original))
+    if matches:
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
-        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
-        redactions += 1
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:INJECTION]",
+                    INJECTION_PROMPT_INJ_ID,
+                )
+            )
+        redactions += len(matches)
 
     _normalize_wildcards(rule_hits, is_deny=False)
-    return redacted, rule_hits, redactions
+    return redacted, rule_hits, redactions, spans
 
 
 def _debug_requested(x_debug: Optional[str]) -> bool:
@@ -269,6 +328,7 @@ def _audit(
     request_id: str,
     rule_hits: Dict[str, List[str]] | List[str],
     redaction_count: int,
+    debug_sources: Optional[List[SourceDebug]] = None,
 ) -> None:
     decision = (
         action_or_decision if action_or_decision in {"allow", "block"} else "allow"
@@ -286,6 +346,8 @@ def _audit(
         "rule_hits": rule_hits,
         "redaction_count": redaction_count,
     }
+    if debug_sources:
+        payload["debug_sources"] = [s.model_dump() for s in debug_sources]
     emit_audit_event(payload)
 
 
@@ -503,7 +565,7 @@ async def guardrail_legacy(
         request.headers.get("X-Bot-ID"),
     )
 
-    redacted, redaction_hits, redactions = _apply_redactions(prompt)
+    redacted, redaction_hits, redactions, _red_spans = _apply_redactions(prompt)
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
@@ -528,6 +590,7 @@ async def guardrail_legacy(
         request_id,
         rule_hits,
         redactions,
+        debug_sources=None,
     )
     _bump_family(
         "guardrail_legacy",
@@ -571,7 +634,12 @@ async def guardrail_evaluate(request: Request):
     request_id = _req_id(explicit_request_id)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
-    redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
+    (
+        redacted,
+        redaction_hits,
+        redaction_count,
+        redaction_spans,
+    ) = _apply_redactions(combined_text)
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
@@ -599,6 +667,7 @@ async def guardrail_evaluate(request: Request):
                 "verdict": (str(verdict) if verdict else None),
             }
 
+    dbg_sources: List[SourceDebug] = []
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
@@ -606,13 +675,30 @@ async def guardrail_evaluate(request: Request):
         if redaction_hits:
             src_keys = list(redaction_hits.keys())
             dbg["redaction_sources"] = src_keys
-        # Provide structured file sources with filenames
-        if sources:
-            dbg["sources"] = list(sources)
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
         if verifier_info:
             dbg["verifier"] = verifier_info
+        dbg_sources.append(
+            make_source(
+                origin="ingress",
+                modality="text",
+                mime_type="text/plain",
+                size_bytes=len(combined_text.encode("utf-8")),
+                content_bytes=combined_text.encode("utf-8"),
+                rule_hits=policy_hits,
+                redactions=redaction_spans,
+            )
+        )
+        for src in sources:
+            dbg_sources.append(
+                make_source(
+                    origin="ingress",
+                    modality="file",
+                    filename=src.get("filename"),
+                )
+            )
+        dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
     _audit(
         "ingress",
@@ -624,6 +710,7 @@ async def guardrail_evaluate(request: Request):
         request_id,
         policy_hits,
         redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
     )
     _bump_family("ingress_evaluate", action, tenant, bot)
 
@@ -652,7 +739,12 @@ async def guardrail_evaluate_multipart(request: Request):
     request_id = _req_id(None)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
-    redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
+    (
+        redacted,
+        redaction_hits,
+        redaction_count,
+        redaction_spans,
+    ) = _apply_redactions(combined_text)
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
@@ -680,6 +772,7 @@ async def guardrail_evaluate_multipart(request: Request):
                 "verdict": (str(verdict) if verdict else None),
             }
 
+    dbg_sources: List[SourceDebug] = []
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
@@ -687,13 +780,30 @@ async def guardrail_evaluate_multipart(request: Request):
         if redaction_hits:
             src_keys = list(redaction_hits.keys())
             dbg["redaction_sources"] = src_keys
-        # Provide structured file sources with filenames
-        if sources:
-            dbg["sources"] = list(sources)
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
         if verifier_info:
             dbg["verifier"] = verifier_info
+        dbg_sources.append(
+            make_source(
+                origin="ingress",
+                modality="text",
+                mime_type="text/plain",
+                size_bytes=len(combined_text.encode("utf-8")),
+                content_bytes=combined_text.encode("utf-8"),
+                rule_hits=policy_hits,
+                redactions=redaction_spans,
+            )
+        )
+        for src in sources:
+            dbg_sources.append(
+                make_source(
+                    origin="ingress",
+                    modality="file",
+                    filename=src.get("filename"),
+                )
+            )
+        dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
     _audit(
         "ingress",
@@ -705,6 +815,7 @@ async def guardrail_evaluate_multipart(request: Request):
         request_id,
         policy_hits,
         redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
     )
     _bump_family("ingress_evaluate", action, tenant, bot)
 
@@ -730,7 +841,12 @@ async def guardrail_egress(request: Request):
     request_id = _req_id(str(payload.get("request_id") or ""))
 
     action, transformed, rule_hits, debug_info = _egress_policy(text, want_debug)
-    redacted, redaction_hits, redaction_count = _apply_redactions(transformed)
+    (
+        redacted,
+        redaction_hits,
+        redaction_count,
+        redaction_spans,
+    ) = _apply_redactions(transformed)
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
@@ -742,6 +858,7 @@ async def guardrail_egress(request: Request):
         rule_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(rule_hits, is_deny=(action == "deny"))
 
+    dbg_sources: List[SourceDebug] = []
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in rule_hits.items()]
@@ -749,11 +866,22 @@ async def guardrail_egress(request: Request):
         if redaction_hits:
             src_keys = list(redaction_hits.keys())
             dbg["redaction_sources"] = src_keys
-            dbg["sources"] = list(src_keys)  # keep older alias shape
             dbg.setdefault("explanations", []).append("redactions_applied")
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
             dbg["explanations"].extend(list(debug_info["explanations"]))
+        dbg_sources.append(
+            make_source(
+                origin="egress",
+                modality="text",
+                mime_type="text/plain",
+                size_bytes=len(redacted.encode("utf-8")),
+                content_bytes=redacted.encode("utf-8"),
+                rule_hits=rule_hits,
+                redactions=redaction_spans,
+            )
+        )
+        dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
     _audit(
         "egress",
@@ -765,6 +893,7 @@ async def guardrail_egress(request: Request):
         request_id,
         rule_hits,
         redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
     )
     _bump_family("egress_evaluate", action, tenant, bot)
 
