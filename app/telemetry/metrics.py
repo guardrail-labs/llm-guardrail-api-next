@@ -256,6 +256,9 @@ def set_rules_version(v: str) -> None:
     global _RULES_VERSION
     _RULES_VERSION = str(v)
 
+def get_decisions_family_total(family: str) -> float:
+    """Return the total decisions for a given family label."""
+    return float(_FAMILY_TOTALS.get(family, 0.0))
 
 # ---- Text export helpers used by /metrics ------------------------------------
 
