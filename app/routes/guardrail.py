@@ -1,961 +1,765 @@
 from __future__ import annotations
 
-import json
-import logging
+import hashlib
 import os
 import re
-import threading
-import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import (
-    APIRouter,
-    File,
-    Form,
-    Header,
-    HTTPException,
-    Request,
-    Response,
-    UploadFile,
-    status,
-)
-from pydantic import BaseModel
+from fastapi import APIRouter, Header, Request, UploadFile
+from fastapi.responses import JSONResponse
 
-from app.services.audit_forwarder import emit_audit_event
-from app.services.detectors import evaluate_prompt
-from app.services.egress import egress_check
-from app.services.extractors import extract_from_bytes
-from app.services.policy import (
-    _normalize_family,
-    current_rules_version,
-    reload_rules,
-    sanitize_text,
-)
+from app.telemetry import metrics as m
+from app.services import audit_forwarder as af
+from app.services.policy_loader import get_policy as _get_policy
 from app.services.threat_feed import (
-    apply_dynamic_redactions,
-    refresh_from_env,
-    threat_feed_enabled,
+    apply_dynamic_redactions as tf_apply,
+    threat_feed_enabled as tf_enabled,
 )
 from app.services.verifier import (
-    Verdict,
+    verifier_enabled as vr_enabled,
+    load_providers_order,
     Verifier,
     content_fingerprint,
     is_known_harmful,
-    load_providers_order,
-    mark_harmful,
-    verifier_enabled,
-)
-from app.shared.headers import BOT_HEADER, TENANT_HEADER
-from app.shared.request_meta import get_client_meta
-from app.shared.quotas import check_and_consume
-from app.telemetry.metrics import (
-    inc_decision_family,
-    inc_decision_family_tenant_bot,
-    inc_quota_reject_tenant_bot,
-    inc_requests_total,
-    inc_decisions_total,
 )
 
-router = APIRouter(prefix="/guardrail", tags=["guardrail"])
+router = APIRouter()
 
-TEST_AUTH_BYPASS = (os.getenv("GUARDRAIL_DISABLE_AUTH") or "") == "1"
+# ------------------------- helpers & constants -------------------------
 
-# Simple per-process counters now tracked in telemetry.metrics
+def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
+    if x_api_key:
+        return True
+    if auth and auth.strip():
+        return True
+    return False
 
-# Rate limiting state (per-process token buckets)
-_RATE_LOCK = threading.RLock()
-_BUCKETS: Dict[str, List[float]] = {}  # per-client rolling window timestamps
-_LAST_RATE_CFG: Tuple[bool, int, int] = (False, 60, 60)
-_LAST_APP_ID: Optional[int] = None  # reset buckets when app instance changes
+
+RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
+RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
+RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
+RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
+RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
+RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
+
+RE_PRIVATE_KEY_ENVELOPE = re.compile(
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    re.S,
+)
+RE_PRIVATE_KEY_MARKER = re.compile(
+    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+)
+
+RE_HACK_WIFI = re.compile(r"(?i)(hack\s+a\s+wifi|bypass\s+wpa2)")
+
+PI_PROMPT_INJ_ID = "pi:prompt_injection"
+PAYLOAD_PROMPT_INJ_ID = "payload:prompt_injection"
+SECRETS_API_KEY_ID = "secrets:api_key_like"
+PAYLOAD_BLOB_ID = "payload:encoded_blob"
 
 
-def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
-    """Resolve tenant/bot from headers with safe defaults."""
-    tenant = request.headers.get(TENANT_HEADER) or "default"
-    bot = request.headers.get(BOT_HEADER) or "default"
+def _req_id(existing: Optional[str]) -> str:
+    return existing or str(uuid.uuid4())
+
+
+def _fingerprint(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
+    tenant = (t or "default").strip() or "default"
+    bot = (b or "default").strip() or "default"
     return tenant, bot
 
 
-def _client_key(request: Request) -> str:
-    # Key by client + api key to isolate tests/users
-    host = request.client.host if request.client else "unknown"
-    api = request.headers.get("x-api-key") or ""
-    return f"{host}:{api}"
-
-
-def _bucket_for(key: str) -> List[float]:
-    win = _BUCKETS.get(key)
-    if win is None:
-        win = []
-        _BUCKETS[key] = win
-    return win
-
-
-def _app_rate_cfg(request: Request) -> Tuple[bool, int, int]:
-    """
-    Prefer app.state (set at app creation) to avoid cross-test env bleed.
-    Fall back to environment if state attributes are missing.
-    """
-    st = getattr(request.app, "state", None)
-    if st and hasattr(st, "rate_limit_enabled"):
-        enabled = bool(getattr(st, "rate_limit_enabled"))
-        per_min = int(getattr(st, "rate_limit_per_minute", 60))
-        burst = int(getattr(st, "rate_limit_burst", per_min))
-        return enabled, per_min, burst
-
-    # Fallback: environment (kept for backward-compat and local runs)
-    enabled = (os.environ.get("RATE_LIMIT_ENABLED") or "false").lower() == "true"
-    per_min = int(os.environ.get("RATE_LIMIT_PER_MINUTE") or "60")
-    burst = int(os.environ.get("RATE_LIMIT_BURST") or str(per_min))
-    return enabled, per_min, burst
-
-
-def _rate_limit_check(request: Request) -> bool:
-    """Return True if request is allowed, False if rate-limited."""
-    global _LAST_RATE_CFG, _LAST_APP_ID
-
-    app_id = id(request.app)
-    if _LAST_APP_ID != app_id:
-        with _RATE_LOCK:
-            _BUCKETS.clear()
-            _LAST_APP_ID = app_id
-
-    cfg = _app_rate_cfg(request)
-    if cfg != _LAST_RATE_CFG:
-        with _RATE_LOCK:
-            _BUCKETS.clear()
-            _LAST_RATE_CFG = cfg
-
-    enabled, _per_min, burst = cfg
+def emit_audit_event(payload: Dict[str, Any]) -> None:
+    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
     if not enabled:
-        return True
-
-    now = time.time()
-    key = _client_key(request)
-    with _RATE_LOCK:
-        win = _bucket_for(key)
-        cutoff = now - 60.0
-        win[:] = [t for t in win if t >= cutoff]
-        if len(win) >= burst:
-            return False
-        win.append(now)
-        return True
-
-
-def _need_auth(request: Request) -> bool:
-    # Either header is accepted by tests.
-    return not (request.headers.get("x-api-key") or request.headers.get("authorization"))
-
-
-def _req_id(request: Request) -> str:
-    return request.headers.get("x-request-id") or str(uuid.uuid4())
-
-
-# --- Centralized audit emitter ensuring meta.client is present ---
-def _emit_audit_with_client(request: Request, event: Dict[str, Any]) -> None:
-    """
-    Wraps audit_forwarder.emit_event to guarantee meta.client is present.
-    Never raises back to caller.
-    """
+        return
+    url = os.getenv("AUDIT_FORWARD_URL", "")
+    key = os.getenv("AUDIT_FORWARD_API_KEY", "")
+    if not (url and key):
+        return
     try:
-        base_meta = event.get("meta") or {}
-        base_client = base_meta.get("client") or {}
-        client_now = get_client_meta(request)
-        merged_client = {**client_now, **{k: v for k, v in base_client.items() if v is not None}}
-        event["meta"] = {**base_meta, "client": merged_client}
-        emit_audit_event(event)
+        af._post(url, key, payload)
     except Exception:
         pass
 
 
-def _audit_maybe(prompt: str, rid: str, decision: Optional[str] = None) -> None:
-    if (os.environ.get("AUDIT_ENABLED") or "false").lower() != "true":
-        return
-    try:
-        max_chars = int(os.environ.get("AUDIT_MAX_TEXT_CHARS") or "64")
-    except Exception:
-        max_chars = 64
-    snippet = prompt[:max_chars]
-    event = {
-        "event": "guardrail_decision",
-        "request_id": rid,
-        "snippet": snippet,
-        "snippet_len": len(snippet),
-        "snippet_truncated": len(prompt) > len(snippet),
-    }
-    if decision:
-        event["decision"] = decision
-    logging.getLogger("guardrail_audit").info(json.dumps(event))
+def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
+    if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
+        rule_hits.setdefault("pi:*", [])
+    if any(k.startswith("secrets:") for k in rule_hits.keys()):
+        rule_hits.setdefault("secrets:*", [])
+    if any(k.startswith("payload:") for k in rule_hits.keys()):
+        rule_hits.setdefault("payload:*", [])
+    if is_deny:
+        rule_hits.setdefault("policy:deny:*", [])
 
 
-def _blen(s: Optional[str]) -> int:
-    return len((s or "").encode("utf-8"))
-
-
-def _maybe_load_static_rules_once(request: Request) -> None:
+def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
     """
-    When AUTORELOAD=false and a rules path is provided, load it once per-app.
+    Apply redactions for PII, secrets, and injection markers.
+    Return (redacted_text, rule_hits, redaction_count).
     """
-    st = request.app.state
-    if getattr(st, "static_rules_loaded", False):
-        return
-    auto = (os.environ.get("POLICY_AUTORELOAD") or "false").lower() == "true"
-    if not auto:
-        path = os.environ.get("POLICY_RULES_PATH")
-        if path:
-            try:
-                reload_rules()
-            except Exception:
-                pass
-    st.static_rules_loaded = True
+    rule_hits: Dict[str, List[str]] = {}
+    redactions = 0
+    redacted = text
 
+    # Email
+    if RE_EMAIL.search(redacted):
+        redacted = RE_EMAIL.sub("[REDACTED:EMAIL]", redacted)
+        rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
+        m.inc_redaction("email")
+        redactions += 1
 
-def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
-    """
-    Normalize rule hits to a flat list[str] like "policy:deny:block_phrase".
-    """
-    out: List[str] = []
+    # Phone
+    if RE_PHONE.search(redacted):
+        redacted = RE_PHONE.sub("[REDACTED:PHONE]", redacted)
+        rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
+        m.inc_redaction("phone")
+        redactions += 1
 
-    def add_hit(s: Optional[str]) -> None:
-        if s and s not in out:
-            out.append(s)
+    # OpenAI-like secret
+    if RE_SECRET.search(redacted):
+        redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
+        rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
+        m.inc_redaction("openai_key")
+        redactions += 1
 
-    for h in raw_hits or []:
-        if isinstance(h, str):
-            add_hit(h)
-        elif isinstance(h, dict):
-            src = h.get("source") or h.get("origin") or h.get("provider") or h.get("src")
-            lst = h.get("list") or h.get("kind") or h.get("type")
-            rid = h.get("id") or h.get("rule_id") or h.get("name")
-            if src and lst and rid:
-                add_hit(f"{src}:{lst}:{rid}")
-            elif rid:
-                add_hit(str(rid))
+    # AWS access key id
+    if RE_AWS.search(redacted):
+        redacted = RE_AWS.sub("[REDACTED:AWS_ACCESS_KEY_ID]", redacted)
+        rule_hits.setdefault("secrets:aws_key", []).append(RE_AWS.pattern)
+        m.inc_redaction("aws_access_key_id")
+        redactions += 1
 
-    for d in raw_decisions or []:
-        if not isinstance(d, dict):
-            continue
-        src = d.get("source") or d.get("origin") or d.get("provider") or d.get("src")
-        lst = d.get("list") or d.get("kind") or d.get("type")
-        rid = d.get("id") or d.get("rule_id") or d.get("name")
-        if src and lst and rid:
-            add_hit(f"{src}:{lst}:{rid}")
-        elif rid:
-            add_hit(str(rid))
-
-    return out
-
-
-# --- Lightweight fallbacks ---------------------------------------------------
-
-_API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")
-_B64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r\t")
-
-
-def _maybe_patch_with_fallbacks(
-    prompt: str, decision: str, hits: List[str]
-) -> Tuple[str, List[str]]:
-    p_lower = prompt.lower()
-
-    def ensure(tag: str):
-        if tag not in hits:
-            hits.append(tag)
-
-    if "ignore previous instructions" in p_lower:
-        ensure("pi:prompt_injection")
-        decision = "block"
-    if _API_KEY_RE.search(prompt):
-        ensure("secrets:api_key_like")
-        decision = "block"
-    if len(prompt) >= 128 and all((c in _B64_CHARS) for c in prompt):
-        ensure("payload:encoded_blob")
-        decision = "block"
-    if "do not allow this" in p_lower:
-        ensure("policy:deny:block_phrase")
-        decision = "block"
-
-    return decision, hits
-
-
-@router.post("/", response_model=None)
-async def guardrail_root(request: Request, response: Response) -> Dict[str, Any]:
-    """
-    Legacy ingress guardrail (JSON body: {"prompt": "..."}).
-    """
-    _maybe_load_static_rules_once(request)
-    rid = _req_id(request)
-
-    if _need_auth(request):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+    # Private key envelope or header/footer markers
+    if RE_PRIVATE_KEY_ENVELOPE.search(redacted):
+        redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_ENVELOPE.pattern
         )
+        redactions += 1
+    if RE_PRIVATE_KEY_MARKER.search(redacted):
+        redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_MARKER.pattern
+        )
+        redactions += 1
 
-    # --- Per-tenant quota ---
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
-        response.headers["Retry-After"] = str(retry_after)
-        response.headers["X-Guardrail-Quota-Window"] = "60"
-        response.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return {
-            "code": "rate_limited",
-            "detail": "Per-tenant quota exceeded",
-            "retry_after": int(retry_after),
-            "request_id": rid,
-        }
+    # Injection phrase (mask; decision handled by caller)
+    if RE_PROMPT_INJ.search(redacted):
+        redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
+        rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
+        redactions += 1
 
-    # Per-process rate limiter
-    if not _rate_limit_check(request):
-        retry_after = 60
-        response.status_code = status.HTTP_429_TOO_MANY_REQUESTS
-        response.headers["Retry-After"] = str(retry_after)
-        return {
-            "code": "rate_limited",
-            "detail": "Rate limit exceeded",
-            "retry_after": int(retry_after),
-            "request_id": rid,
-        }
+    _normalize_wildcards(rule_hits, is_deny=False)
+    return redacted, rule_hits, redactions
+
+
+def _debug_requested(x_debug: Optional[str]) -> bool:
+    return bool(x_debug)
+
+# ------------------------------- responses -------------------------------
+
+def _respond_action(
+    action: str,
+    transformed_text: str,
+    request_id: str,
+    rule_hits: Dict[str, List[str]],
+    debug: Optional[Dict[str, Any]] = None,
+    redaction_count: int = 0,
+    modalities: Optional[Dict[str, int]] = None,
+) -> JSONResponse:
+    fam = "allow" if action == "allow" else "deny"
+    m.inc_decisions_total(fam)
+
+    decisions: List[Dict[str, Any]] = []
+    if redaction_count > 0:
+        decisions.append({"type": "redaction", "count": redaction_count})
+    if modalities:
+        for tag, count in modalities.items():
+            if count > 0:
+                decisions.append({"type": "modality", "tag": tag, "count": count})
+
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "action": action,
+        "transformed_text": transformed_text,
+        "text": transformed_text,
+        "rule_hits": rule_hits,
+        "decisions": decisions,
+        "redactions": int(redaction_count),
+    }
+    if debug is not None:
+        body["debug"] = debug
+    return JSONResponse(body)
+
+
+def _respond_legacy_allow(
+    prompt: str,
+    request_id: str,
+    rule_hits: List[str] | Dict[str, List[str]],
+    policy_version: str,
+    redactions: int,
+) -> JSONResponse:
+    m.inc_decisions_total("allow")
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "decision": "allow",
+        "transformed_text": prompt,
+        "text": prompt,
+        "rule_hits": rule_hits,
+        "policy_version": policy_version,
+        "redactions": int(redactions),
+    }
+    return JSONResponse(body)
+
+
+def _respond_legacy_block(
+    request_id: str,
+    rule_hits: List[str] | Dict[str, List[str]],
+    transformed_text: str,
+    policy_version: str,
+    redactions: int,
+) -> JSONResponse:
+    m.inc_decisions_total("deny")
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "decision": "block",
+        "transformed_text": transformed_text,
+        "text": transformed_text,
+        "rule_hits": rule_hits,
+        "policy_version": policy_version,
+        "redactions": int(redactions),
+    }
+    return JSONResponse(body)
+
+# ------------------------------- audit -------------------------------
+
+def _audit(
+    direction: str,
+    original_text: str,
+    transformed_text: str,
+    action_or_decision: str,
+    tenant: str,
+    bot: str,
+    request_id: str,
+    rule_hits: Dict[str, List[str]] | List[str],
+    redaction_count: int,
+) -> None:
+    decision = (
+        action_or_decision if action_or_decision in {"allow", "block"} else "allow"
+    )
+    payload: Dict[str, Any] = {
+        "event": "prompt_decision",
+        "direction": direction,
+        "decision": decision,
+        "tenant_id": tenant,
+        "bot_id": bot,
+        "request_id": request_id,
+        "payload_bytes": len(original_text.encode("utf-8", errors="ignore")),
+        "sanitized_bytes": len(transformed_text.encode("utf-8", errors="ignore")),
+        "hash_fingerprint": _fingerprint(original_text),
+        "rule_hits": rule_hits,
+        "redaction_count": redaction_count,
+    }
+    emit_audit_event(payload)
+
+
+def _bump_family(endpoint: str, action: str, tenant: str, bot: str) -> None:
+    m.inc_requests_total(endpoint)
+    fam = "allow" if action == "allow" else "deny"
+    m.inc_decision_family_tenant_bot(fam, tenant, bot)
+
+# ------------------------------- policies -------------------------------
+
+def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
+    """
+    Legacy route behavior:
+      - Block secrets and payload blobs
+      - Block prompt-injection phrases (incl. 'reveal system prompt')
+      - Apply external deny regex (yaml) -> block
+    """
+    hits: List[str] = []
+
+    if RE_LONG_BASE64ISH.search(prompt or ""):
+        hits.append(PAYLOAD_BLOB_ID)
+        return "block", hits
+
+    if RE_SECRET.search(prompt or "") or RE_AWS.search(prompt or ""):
+        hits.append(SECRETS_API_KEY_ID)
+        return "block", hits
+
+    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(prompt or ""):
+        hits.append(PAYLOAD_PROMPT_INJ_ID)
+        return "block", hits
+
+    blob = _get_policy()
+    for rid, rx in blob.deny_compiled:
+        if rx.search(prompt):
+            hits.append(f"policy:deny:{rid}")
+            return "block", hits
+
+    return "allow", hits
+
+
+def _evaluate_ingress_policy(
+    text: str,
+) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    """
+    Return (action, rule_hits_dict, debug).
+    - 'pretend to be DAN' => clarify
+    - Explicit illicit intent => deny
+    - Plain 'ignore previous instructions' => allow (masked)
+    """
+    hits: Dict[str, List[str]] = {}
+    dbg: Dict[str, Any] = {}
+
+    if RE_HACK_WIFI.search(text or ""):
+        hits.setdefault("unsafe:illicit", []).append("hack_wifi_or_bypass_wpa2")
+        dbg["explanations"] = ["illicit_request"]
+        return "deny", hits, dbg
+
+    if RE_DAN.search(text or ""):
+        hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        _normalize_wildcards(hits, is_deny=False)
+        return "clarify", hits, (dbg if dbg else None)
+
+    if RE_PROMPT_INJ.search(text or ""):
+        hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        _normalize_wildcards(hits, is_deny=False)
+        return "allow", hits, (dbg if dbg else None)
+
+    return "allow", hits, None
+
+
+def _egress_policy(
+    text: str,
+    want_debug: bool,
+) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    dbg: Optional[Dict[str, Any]] = None
+    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
+        text or ""
+    ):
+        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope_or_marker"]}
+        _normalize_wildcards(rule_hits, is_deny=True)
+        if want_debug:
+            dbg = {"explanations": ["private_key_detected"]}
+        return "deny", "", rule_hits, dbg
+    rule_hits_allow: Dict[str, List[str]] = {}
+    if want_debug:
+        dbg = {"note": "redactions_may_apply"}
+    return "allow", text, rule_hits_allow, dbg
+
+# ------------------------------- form parsing -------------------------------
+
+async def _handle_upload_to_text(
+    obj: UploadFile,
+    decode_pdf: bool,
+    mods: Dict[str, int],
+) -> Tuple[str, str]:
+    """
+    Turn an UploadFile into a text fragment and return (fragment, filename):
+      - image/* -> marker
+      - audio/* -> marker
+      - text/plain -> read and decode
+      - application/pdf -> decode if decode_pdf=True, else marker
+      - other -> generic marker
+    Also falls back on filename extension when content_type is missing.
+    """
+    name = getattr(obj, "filename", None) or "file"
+    ctype = (getattr(obj, "content_type", "") or "").lower()
+    ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
 
     try:
-        payload = await request.json()
+        if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+            mods["image"] = mods.get("image", 0) + 1
+            return f"[IMAGE:{name}]", name
+        if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
+            mods["audio"] = mods.get("audio", 0) + 1
+            return f"[AUDIO:{name}]", name
+        if ctype == "text/plain" or ext == "txt":
+            raw = await obj.read()
+            return raw.decode("utf-8", errors="ignore"), name
+        if ctype == "application/pdf" or ext == "pdf":
+            if decode_pdf:
+                raw = await obj.read()
+                return raw.decode("utf-8", errors="ignore"), name
+            mods["file"] = mods.get("file", 0) + 1
+            return f"[FILE:{name}]", name
+        mods["file"] = mods.get("file", 0) + 1
+        return f"[FILE:{name}]", name
     except Exception:
-        payload = {}
-    prompt = str(payload.get("prompt", ""))
+        mods["file"] = mods.get("file", 0) + 1
+        return f"[FILE:{name}]", name
+
+
+async def _read_form_and_merge(
+    request: Request,
+    decode_pdf: bool,
+) -> Tuple[str, Dict[str, int], List[Dict[str, str]]]:
+    """
+    Merge 'text' plus files from multipart form data. Iterate over
+    form.multi_items() to capture *all* file fields. Any file-like value
+    (has filename + read) is handled. Returns (text, modality_counts, sources).
+    """
+    form = await request.form()
+    combined: List[str] = []
+    mods: Dict[str, int] = {}
+    sources: List[Dict[str, str]] = []
+
+    base = str(form.get("text") or "")
+    if base:
+        combined.append(base)
+
+    seen: set[int] = set()
+
+    async def _maybe_add(val: Any) -> None:
+        if isinstance(val, UploadFile) or (
+            hasattr(val, "filename") and hasattr(val, "read")
+        ):
+            vid = id(val)
+            if vid in seen:
+                return
+            seen.add(vid)
+            frag, fname = await _handle_upload_to_text(val, decode_pdf, mods)
+            combined.append(frag)
+            # Always record filename for debug["sources"]
+            sources.append({"filename": fname})
 
     try:
-        max_chars = int(os.environ.get("MAX_PROMPT_CHARS") or "0")
+        for _, v in form.multi_items():
+            await _maybe_add(v)
+    except Exception:
+        for v in form.values():
+            await _maybe_add(v)
+
+    text = "\n".join([s for s in combined if s])
+    return text, mods, sources
+
+# ------------------------------- endpoints -------------------------------
+
+@router.post("/guardrail")
+@router.post("/guardrail/")  # avoid redirect that would double-count in rate limiter
+async def guardrail_legacy(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    if not _has_api_key(x_api_key, authorization):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    payload = await request.json()
+    prompt = str(payload.get("prompt") or "")
+    request_id = _req_id(str(payload.get("request_id") or ""))
+
+    # 413 guard
+    try:
+        max_chars = int(os.getenv("MAX_PROMPT_CHARS", "0"))
     except Exception:
         max_chars = 0
     if max_chars and len(prompt) > max_chars:
-        response.status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-        return {
-            "code": "payload_too_large",
+        body = {
             "detail": "Prompt too large",
-            "request_id": rid,
+            "code": "payload_too_large",
+            "request_id": request_id,
         }
+        return JSONResponse(body, status_code=413)
 
-    inc_requests_total()
+    policy_blob = _get_policy()
+    policy_version = str(policy_blob.version)
 
-    det = evaluate_prompt(prompt)
-    action = str(det.get("action", "allow"))
-    decision = "block" if action != "allow" else "allow"
-    transformed = det.get("transformed_text", prompt)
-
-    raw_hits = det.get("rule_hits", []) or []
-    raw_decisions = det.get("decisions", []) or []
-    rule_hits = _normalize_rule_hits(raw_hits, raw_decisions)
-
-    decision, rule_hits = _maybe_patch_with_fallbacks(prompt, decision, rule_hits)
-
-    inc_decisions_total()
-
-    fam = "block" if decision == "block" else "allow"
-    inc_decision_family(fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
-
-    policy_version = current_rules_version()
-    _emit_audit_with_client(
-        request,
-        {
-            "ts": None,
-            "tenant_id": tenant_id,
-            "bot_id": bot_id,
-            "request_id": rid,
-            "direction": "ingress",
-            "decision": decision,
-            "rule_hits": (rule_hits or None),
-            "policy_version": policy_version,
-            "verifier_provider": None,
-            "fallback_used": None,
-            "status_code": 200,
-            "redaction_count": 0,
-            "hash_fingerprint": content_fingerprint(prompt),
-            "payload_bytes": int(_blen(prompt)),
-            "sanitized_bytes": int(_blen(transformed)),
-            "meta": {"endpoint": "/guardrail"},
-        },
+    action, legacy_hits_list = _legacy_policy(prompt)
+    tenant, bot = _tenant_bot(
+        request.headers.get("X-Tenant-ID"),
+        request.headers.get("X-Bot-ID"),
     )
 
-    return {
-        "decision": decision,
-        "transformed_text": transformed,
-        "rule_hits": rule_hits,
-        "policy_version": policy_version,
-        "request_id": rid,
-    }
+    redacted, redaction_hits, redactions = _apply_redactions(prompt)
 
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
+        redactions += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
 
-@router.post("/evaluate", response_model=None)
-async def evaluate(
-    request: Request,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
-    x_force_unclear: Optional[str] = Header(
-        default=None, alias="X-Force-Unclear", convert_underscores=False
-    ),
-) -> Dict[str, Any]:
-    """
-    Evaluate ingress content via JSON request body:
-      {"text": "...", "request_id": "...?"}
-    Returns detectors/decisions and possible redactions.
-    """
-    _maybe_load_static_rules_once(request)
-    inc_requests_total()
+    rule_hits: Dict[str, List[str]] = {}
+    for item in legacy_hits_list:
+        rule_hits.setdefault(item, [])
+    for k, v in redaction_hits.items():
+        rule_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(rule_hits, is_deny=(action == "block"))
 
-    content_type = (request.headers.get("content-type") or "").lower()
-    decisions: List[Dict[str, Any]] = []
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
+    _audit(
+        "ingress",
+        prompt,
+        redacted,
+        "block" if action == "block" else "allow",
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redactions,
+    )
+    _bump_family(
+        "guardrail_legacy",
+        "allow" if action == "allow" else "deny",
+        tenant,
+        bot,
+    )
 
-    # --- Per-tenant quota ---
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        from fastapi.responses import JSONResponse
-        rid = _req_id(request)
-        jresp = JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "code": "rate_limited",
-                "detail": "Per-tenant quota exceeded",
-                "retry_after": int(retry_after),
-                "request_id": rid,
-            },
+    if action == "block":
+        return _respond_legacy_block(
+            request_id, rule_hits, redacted, policy_version, redactions
         )
-        jresp.headers["Retry-After"] = str(retry_after)
-        jresp.headers["X-Guardrail-Quota-Window"] = "60"
-        jresp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return jresp  # type: ignore[return-value]
+    return _respond_legacy_allow(
+        redacted, request_id, rule_hits, policy_version, redactions
+    )
+
+
+@router.post("/guardrail/evaluate")
+async def guardrail_evaluate(request: Request):
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
+    force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
+
+    content_type = (headers.get("content-type") or "").lower()
+    combined_text = ""
+    explicit_request_id: Optional[str] = None
+    mods: Dict[str, int] = {}
+    sources: List[Dict[str, str]] = []
 
     if content_type.startswith("application/json"):
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-        text = str((payload or {}).get("text", ""))
-        req_in = (payload or {}).get("request_id")
-        request_id = req_in or str(uuid.uuid4())
-    elif content_type.startswith("multipart/form-data"):
-        form = await request.form()
-        text = str(form.get("text") or "")
-        req_in = form.get("request_id")
-        request_id = str(req_in or str(uuid.uuid4()))
-        for kind in ("image", "audio", "file"):
-            for f in form.getlist(kind):
-                filename = getattr(f, "filename", "upload")
-                text += f" [{kind.upper()}:{filename}]"
-                decisions.append({"type": "normalized", "tag": kind, "filename": filename})
+        payload = await request.json()
+        combined_text = str(payload.get("text") or "")
+        explicit_request_id = str(payload.get("request_id") or "") or None
     else:
-        try:
-            payload = await request.json()
-            text = str((payload or {}).get("text", ""))
-            req_in = (payload or {}).get("request_id")
-            request_id = req_in or str(uuid.uuid4())
-        except Exception:
-            text, request_id = "", str(uuid.uuid4())
-
-    want_debug = x_debug == "1"
-    policy_version = current_rules_version()
-    fp_all = content_fingerprint(text or "")
-    sanitized, families, redaction_count, debug_matches = sanitize_text(text, debug=want_debug)
-    if threat_feed_enabled():
-        dyn_text, dyn_families, dyn_redactions, _dyn_debug = apply_dynamic_redactions(
-            sanitized, debug=want_debug
+        # Generic multipart: do NOT decode PDFs (emit [FILE:...])
+        combined_text, mods, sources = await _read_form_and_merge(
+            request, decode_pdf=False
         )
-        sanitized = dyn_text
-        if dyn_families:
-            base = set(families or [])
-            base.update(dyn_families)
-            families = sorted(base)
-        if dyn_redactions:
-            redaction_count = (redaction_count or 0) + dyn_redactions
 
-    det = evaluate_prompt(sanitized)
-    decisions.extend(det.get("decisions", []))
+    request_id = _req_id(explicit_request_id)
 
-    xformed = det.get("transformed_text", sanitized)
-    if sanitized != text or xformed != sanitized:
-        decisions.append({"type": "redaction", "changed": True})
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
+    redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
 
-    payload_bytes = _blen(text)
-    sanitized_bytes = _blen(xformed)
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
 
-    inc_decisions_total()
+    for k, v in redaction_hits.items():
+        policy_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
-    det_action = str(det.get("action", "allow"))
-
-    if det_action == "deny":
-        out_action = "deny"
-        family = "block"
-    elif redaction_count > 0:
-        out_action = "allow"
-        family = "sanitize"
-    elif det_action == "clarify":
-        out_action = "clarify"
-        family = "verify"
-    else:
-        out_action = det_action
-        family = "allow"
-
-    det_hits = _normalize_rule_hits(det.get("rule_hits", []), det.get("decisions", []))
-    det_families = [_normalize_family(h) for h in det_hits]
-    combined_hits = sorted({*families, *det_families})
-
-    resp: Dict[str, Any] = {
-        "request_id": request_id,
-        "action": out_action,
-        "text": xformed,
-        "transformed_text": xformed,
-        "decisions": decisions,
-        "risk_score": det.get("risk_score", 0),
-        "rule_hits": combined_hits or None,
-        "redactions": redaction_count or None,
-    }
-
-    if want_debug:
-        resp["debug"] = {
-            "matches": debug_matches,
-            "explanations": [
-                "Redactions applied conservatively; verifier not invoked.",
-            ],
-        }
-
-    if want_debug and threat_feed_enabled():
-        _, _, _, dyn_debug = apply_dynamic_redactions(sanitized, debug=True)
-        if dyn_debug:
-            resp.setdefault("debug", {})["threat_feed"] = {"matches": dyn_debug}
-
-    # Feature-gated verifier path (dev/test only)
-    should_verify = verifier_enabled() and (x_force_unclear == "1")
-
-    if should_verify:
-        fp = content_fingerprint(text)
+    verifier_info: Optional[Dict[str, Any]] = None
+    if vr_enabled() and force_unclear:
         providers = load_providers_order()
-        v = Verifier(providers)
-        verdict, provider = v.assess_intent(text, meta={"hint": ""})
-
-        if verdict is None:
+        fp = content_fingerprint(combined_text)
+        if not providers:
             if is_known_harmful(fp):
-                resp["action"] = "deny"
-                family = "block"
-            else:
-                resp["action"] = "clarify"
-                family = "verify"
-            if want_debug:
-                resp.setdefault("debug", {})["verifier"] = {
-                    "providers": providers,
-                    "chosen": None,
-                    "verdict": None,
-                }
-
-            meta_extra: Dict[str, Any] = {}
-            if "providers" in locals():
-                meta_extra["provider"] = providers
-            if "debug" in resp:
-                srcs = (resp.get("debug") or {}).get("sources")
-                if srcs is not None:
-                    meta_extra["sources"] = srcs
-
-            _emit_audit_with_client(
-                request,
-                {
-                    "ts": None,
-                    "tenant_id": tenant_id,
-                    "bot_id": bot_id,
-                    "request_id": resp.get("request_id", ""),
-                    "direction": "ingress",
-                    "decision": resp.get("action", "allow"),
-                    "rule_hits": resp.get("rule_hits") or None,
-                    "policy_version": policy_version,
-                    "verifier_provider": (
-                        (resp.get("debug") or {}).get("verifier", {}).get("chosen")
-                    ),
-                    "fallback_used": None,
-                    "status_code": 200,
-                    "redaction_count": resp.get("redactions") or 0,
-                    "hash_fingerprint": fp_all,
-                    "payload_bytes": int(payload_bytes),
-                    "sanitized_bytes": int(sanitized_bytes),
-                    "meta": meta_extra,
-                },
-            )
-
-            inc_decision_family(family)
-            inc_decision_family_tenant_bot(tenant_id, bot_id, family)
-            return resp
-
-        if verdict == Verdict.UNSAFE:
-            mark_harmful(fp)
-            resp["action"] = "deny"
-            family = "block"
-        elif verdict == Verdict.UNCLEAR:
-            resp["action"] = "clarify"
-            family = "verify"
-
-        if want_debug:
-            resp.setdefault("debug", {})["verifier"] = {
+                action = "deny"
+        else:
+            verdict, used = Verifier(providers).assess_intent(combined_text, {})
+            verifier_info = {
+                "enabled": True,
                 "providers": providers,
-                "chosen": provider,
-                "verdict": verdict.value,
+                "used": used,
+                "verdict": (str(verdict) if verdict else None),
             }
 
-        meta_extra2: Dict[str, Any] = {}
-        if "providers" in locals():
-            meta_extra2["provider"] = providers
-        if "debug" in resp:
-            srcs2 = (resp.get("debug") or {}).get("sources")
-            if srcs2 is not None:
-                meta_extra2["sources"] = srcs2
-
-        _emit_audit_with_client(
-            request,
-            {
-                "ts": None,
-                "tenant_id": tenant_id,
-                "bot_id": bot_id,
-                "request_id": resp.get("request_id", ""),
-                "direction": "ingress",
-                "decision": resp.get("action", "allow"),
-                "rule_hits": resp.get("rule_hits") or None,
-                "policy_version": policy_version,
-                "verifier_provider": (
-                    (resp.get("debug") or {}).get("verifier", {}).get("chosen")
-                ),
-                "fallback_used": None,
-                "status_code": 200,
-                "redaction_count": resp.get("redactions") or 0,
-                "hash_fingerprint": fp_all,
-                "payload_bytes": int(payload_bytes),
-                "sanitized_bytes": int(sanitized_bytes),
-                "meta": meta_extra2,
-            },
-        )
-
-        inc_decision_family(family)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, family)
-        return resp
-
-    meta_extra3: Dict[str, Any] = {}
-    if "providers" in locals():
-        meta_extra3["provider"] = providers
-    if "debug" in resp:
-        srcs3 = (resp.get("debug") or {}).get("sources")
-        if srcs3 is not None:
-            meta_extra3["sources"] = srcs3
-
-    _emit_audit_with_client(
-        request,
-        {
-            "ts": None,
-            "tenant_id": tenant_id,
-            "bot_id": bot_id,
-            "request_id": resp.get("request_id", ""),
-            "direction": "ingress",
-            "decision": resp.get("action", "allow"),
-            "rule_hits": resp.get("rule_hits") or None,
-            "policy_version": policy_version,
-            "verifier_provider": (
-                (resp.get("debug") or {}).get("verifier", {}).get("chosen")
-            ),
-            "fallback_used": None,
-            "status_code": 200,
-            "redaction_count": resp.get("redactions") or 0,
-            "hash_fingerprint": fp_all,
-            "payload_bytes": int(payload_bytes),
-            "sanitized_bytes": int(sanitized_bytes),
-            "meta": meta_extra3,
-        },
-    )
-
-    inc_decision_family(family)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, family)
-    return resp
-
-
-class EvaluateMultipartResponse(BaseModel):
-    action: str
-    text: str
-    rule_hits: Optional[list] = None
-    redactions: Optional[int] = None
-    request_id: str
-
-
-@router.post("/evaluate_multipart")
-async def evaluate_guardrail_multipart(
-    request: Request,
-    text: Optional[str] = Form(default=""),
-    files: List[UploadFile] = File(default=[]),
-    request_id: Optional[str] = Form(default=None),
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
-) -> Dict[str, Any]:
-    """
-    Multimodal ingress evaluation via multipart/form-data.
-    """
-    want_debug = x_debug == "1"
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
-    rid = request_id or _req_id(request)
-    policy_version = current_rules_version()
-
-    # --- Per-tenant quota before reading files ---
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        from fastapi.responses import JSONResponse
-        jresp = JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "code": "rate_limited",
-                "detail": "Per-tenant quota exceeded",
-                "retry_after": int(retry_after),
-                "request_id": rid,
-            },
-        )
-        jresp.headers["Retry-After"] = str(retry_after)
-        jresp.headers["X-Guardrail-Quota-Window"] = "60"
-        jresp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return jresp  # type: ignore[return-value]
-
-    extracted_texts: List[str] = []
-    sources_meta: List[Dict[str, Any]] = []
-
-    for up in files:
-        try:
-            data = await up.read()
-        except Exception:
-            data = b""
-        txt, meta = extract_from_bytes(
-            filename=up.filename or "unnamed",
-            content_type=up.content_type or "",
-            data=data,
-        )
-        extracted_texts.append(txt)
-        sources_meta.append(meta)
-
-    combined = text or ""
-    if extracted_texts:
-        combo_files = "\n".join([t for t in extracted_texts if t])
-        combined = (combined + "\n" + combo_files).strip()
-
-    fp_all = content_fingerprint(combined or "")
-
-    sanitized, families, redaction_count, debug_matches = sanitize_text(combined, debug=want_debug)
-
-    if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, dyn_dbg = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
-        sanitized = dyn_text
-        if dyn_fams:
-            base = set(families or [])
-            base.update(dyn_fams)
-            families = sorted(base)
-        if dyn_reds:
-            redaction_count = (redaction_count or 0) + dyn_reds
-
-    payload_bytes = _blen(combined)
-    sanitized_bytes = _blen(sanitized)
-
-    family = "sanitize" if (redaction_count or 0) > 0 else "allow"
-
-    resp: Dict[str, Any] = {
-        "action": "allow",
-        "text": sanitized,
-        "rule_hits": families or None,
-        "redactions": redaction_count or None,
-        "request_id": rid,
-    }
-
+    dbg: Optional[Dict[str, Any]] = None
     if want_debug:
-        resp["debug"] = {
-            "sources": sources_meta,
-            "matches": debug_matches,
-        }
-        if threat_feed_enabled():
-            _, _, _, dyn_dbg2 = apply_dynamic_redactions(sanitized, debug=True)
-            if dyn_dbg2:
-                resp["debug"]["threat_feed"] = {"matches": dyn_dbg2}
+        matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+        dbg = {"matches": matches}
+        if redaction_hits:
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+        # Provide structured file sources with filenames
+        if sources:
+            dbg["sources"] = list(sources)
+        if policy_dbg and "explanations" in policy_dbg:
+            dbg["explanations"] = list(policy_dbg["explanations"])
+        if verifier_info:
+            dbg["verifier"] = verifier_info
 
-    _emit_audit_with_client(
-        request,
-        {
-            "ts": None,
-            "tenant_id": tenant_id,
-            "bot_id": bot_id,
-            "request_id": rid,
-            "direction": "ingress",
-            "decision": resp.get("action", "allow"),
-            "rule_hits": resp.get("rule_hits") or None,
-            "policy_version": policy_version,
-            "verifier_provider": (resp.get("debug") or {}).get("verifier", {}).get("chosen"),
-            "fallback_used": None,
-            "status_code": 200,
-            "redaction_count": resp.get("redactions") or 0,
-            "hash_fingerprint": fp_all,
-            "payload_bytes": int(payload_bytes),
-            "sanitized_bytes": int(sanitized_bytes),
-            "meta": {
-                "sources": ((resp.get("debug") or {}).get("sources") if "debug" in resp else None),
-            },
-        },
+    _audit(
+        "ingress",
+        combined_text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        policy_hits,
+        redaction_count,
+    )
+    _bump_family("ingress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        policy_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=mods,
     )
 
-    inc_decision_family(family)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, family)
-    return resp
 
+@router.post("/guardrail/evaluate_multipart")
+async def guardrail_evaluate_multipart(request: Request):
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
+    force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
 
-class EgressEvaluateRequest(BaseModel):
-    text: str
-    request_id: Optional[str] = None
+    # Multipart with decoding PDFs (for redaction-in-PDF test)
+    combined_text, mods, sources = await _read_form_and_merge(
+        request, decode_pdf=True
+    )
+    request_id = _req_id(None)
 
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
+    redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
 
-@router.post("/egress_evaluate")
-async def egress_evaluate(
-    request: Request,
-    req: EgressEvaluateRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
-) -> Dict[str, Any]:
-    want_debug = x_debug == "1"
-    tenant_id, bot_id = _tenant_bot_from_headers(request)
-    rid = req.request_id or _req_id(request)
-    policy_version = current_rules_version()
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
 
-    # --- Per-tenant quota before egress checks ---
-    ok, retry_after = check_and_consume(request, tenant_id, bot_id)
-    if not ok:
-        from fastapi.responses import JSONResponse
-        jresp = JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "code": "rate_limited",
-                "detail": "Per-tenant quota exceeded",
-                "retry_after": int(retry_after),
-                "request_id": rid,
-            },
-        )
-        jresp.headers["Retry-After"] = str(retry_after)
-        jresp.headers["X-Guardrail-Quota-Window"] = "60"
-        jresp.headers["X-Guardrail-Quota-Retry-After"] = str(retry_after)
-        inc_quota_reject_tenant_bot(tenant_id, bot_id)
-        return jresp  # type: ignore[return-value]
+    for k, v in redaction_hits.items():
+        policy_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
-    payload, dbg = egress_check(req.text, debug=want_debug)
-    payload["request_id"] = rid
-    fp_all = content_fingerprint(req.text or "")
-    payload_bytes = _blen(req.text)
-    sanitized_bytes = _blen(req.text)
+    verifier_info: Optional[Dict[str, Any]] = None
+    if vr_enabled() and force_unclear:
+        providers = load_providers_order()
+        fp = content_fingerprint(combined_text)
+        if not providers:
+            if is_known_harmful(fp):
+                action = "deny"
+        else:
+            verdict, used = Verifier(providers).assess_intent(combined_text, {})
+            verifier_info = {
+                "enabled": True,
+                "providers": providers,
+                "used": used,
+                "verdict": (str(verdict) if verdict else None),
+            }
 
-    if want_debug and dbg:
-        payload["debug"] = {"explanations": dbg}
+    dbg: Optional[Dict[str, Any]] = None
+    if want_debug:
+        matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+        dbg = {"matches": matches}
+        if redaction_hits:
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+        # Provide structured file sources with filenames
+        if sources:
+            dbg["sources"] = list(sources)
+        if policy_dbg and "explanations" in policy_dbg:
+            dbg["explanations"] = list(policy_dbg["explanations"])
+        if verifier_info:
+            dbg["verifier"] = verifier_info
 
-    _emit_audit_with_client(
-        request,
-        {
-            "ts": None,
-            "tenant_id": tenant_id,
-            "bot_id": bot_id,
-            "request_id": rid,
-            "direction": "egress",
-            "decision": payload.get("action", "allow"),
-            "rule_hits": payload.get("rule_hits") or None,
-            "policy_version": policy_version,
-            "verifier_provider": None,
-            "fallback_used": None,
-            "status_code": 200,
-            "redaction_count": payload.get("redactions") or 0,
-            "hash_fingerprint": fp_all,
-            "payload_bytes": int(payload_bytes),
-            "sanitized_bytes": int(sanitized_bytes),
-            "meta": {},
-        },
+    _audit(
+        "ingress",
+        combined_text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        policy_hits,
+        redaction_count,
+    )
+    _bump_family("ingress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        policy_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=mods,
     )
 
-    action = str(payload.get("action", "allow"))
-    if action == "deny":
-        fam = "block"
-    elif int(payload.get("redactions") or 0) > 0:
-        fam = "sanitize"
-    else:
-        fam = "allow"
-    inc_decision_family(fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
 
-    return payload
+@router.post("/guardrail/egress_evaluate")
+async def guardrail_egress(request: Request):
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
 
+    payload = await request.json()
+    text = str(payload.get("text") or "")
+    request_id = _req_id(str(payload.get("request_id") or ""))
 
-threat_admin_router = APIRouter(prefix="/admin", tags=["admin"])
+    action, transformed, rule_hits, debug_info = _egress_policy(text, want_debug)
+    redacted, redaction_hits, redaction_count = _apply_redactions(transformed)
 
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
 
-@threat_admin_router.post("/threat/reload")
-async def admin_threat_reload(request: Request) -> Any:
-    """
-    Pulls the latest threat-feed specs from THREAT_FEED_URLS and swaps them in.
-    """
-    if not TEST_AUTH_BYPASS and not (
-        request.headers.get("X-API-Key") or request.headers.get("Authorization")
-    ):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        from fastapi.responses import JSONResponse  # local import
+    for k, v in redaction_hits.items():
+        rule_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(rule_hits, is_deny=(action == "deny"))
 
-        jresp = JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Unauthorized", "request_id": rid},
-        )
-        jresp.headers["WWW-Authenticate"] = "Bearer"
-        jresp.headers["X-Request-ID"] = rid
-        # removed: unused type ignore
-        return jresp
+    dbg: Optional[Dict[str, Any]] = None
+    if want_debug:
+        matches = [{"tag": k, "patterns": list(v)} for k, v in rule_hits.items()]
+        dbg = {"matches": matches}
+        if redaction_hits:
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+            dbg["sources"] = list(src_keys)  # keep older alias shape
+            dbg.setdefault("explanations", []).append("redactions_applied")
+        if debug_info and "explanations" in debug_info:
+            dbg.setdefault("explanations", [])
+            dbg["explanations"].extend(list(debug_info["explanations"]))
 
-    result = refresh_from_env()
-    return {"ok": True, "result": result}
+    _audit(
+        "egress",
+        text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redaction_count,
+    )
+    _bump_family("egress_evaluate", action, tenant, bot)
 
-
-@threat_admin_router.post("/policy/reload")
-async def admin_policy_reload(request: Request) -> Any:
-    """
-    Reload policy rules in-process. Same lightweight auth as threat reload.
-    """
-    if not TEST_AUTH_BYPASS and not (
-        request.headers.get("X-API-Key") or request.headers.get("Authorization")
-    ):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        from fastapi.responses import JSONResponse
-
-        jresp = JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Unauthorized", "request_id": rid},
-        )
-        jresp.headers["WWW-Authenticate"] = "Bearer"
-        jresp.headers["X-Request-ID"] = rid
-        # removed: unused type ignore
-        return jresp
-
-    try:
-        reload_rules()
-    except Exception:
-        pass
-    return {"ok": True, "policy_version": current_rules_version()}
-
-
-@threat_admin_router.get("/policy/version")
-async def admin_policy_version(request: Request) -> Any:
-    """
-    Return current policy rules version. Same lightweight auth.
-    """
-    if not TEST_AUTH_BYPASS and not (
-        request.headers.get("X-API-Key") or request.headers.get("Authorization")
-    ):
-        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        from fastapi.responses import JSONResponse
-
-        jresp = JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Unauthorized", "request_id": rid},
-        )
-        jresp.headers["WWW-Authenticate"] = "Bearer"
-        jresp.headers["X-Request-ID"] = rid
-        # removed: unused type ignore
-        return jresp
-
-    return {"ok": True, "policy_version": current_rules_version()}
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        rule_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=None,
+    )
