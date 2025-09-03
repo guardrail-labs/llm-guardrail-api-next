@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Tuple, TypeVar, Protocol, cast
+from typing import Any, Callable, Dict, Iterable, List, Tuple, TypeVar, Protocol, cast
 
 # ---- Protocols describing only what we use (works for real + shims) ----------
 
@@ -15,14 +15,24 @@ class HistogramLike(Protocol):
     def observe(self, value: float) -> None: ...
 
 
+# ---- Prepare names we will assign in branches to keep mypy happy --------------
+
+PROM_REGISTRY: Any
+CounterClass: Any
+HistogramClass: Any
+PROM_OK = True
+
 # ---- Try real prometheus, else provide shims with the same surface ------------
 
-PROM_OK = True
 try:
-    # Import real client; keep aliases short/local to avoid redefinition issues.
-    from prometheus_client import Counter as _RealCounter
-    from prometheus_client import Histogram as _RealHistogram
-    from prometheus_client import REGISTRY as PROM_REGISTRY
+    # Use local aliases so we don't reassign imported type names.
+    from prometheus_client import Counter as _PCounter
+    from prometheus_client import Histogram as _PHistogram
+    from prometheus_client import REGISTRY as _PREG
+
+    PROM_REGISTRY = _PREG
+    CounterClass = _PCounter
+    HistogramClass = _PHistogram
 except Exception:  # pragma: no cover
     PROM_OK = False
 
@@ -62,13 +72,9 @@ except Exception:  # pragma: no cover
         def __init__(self) -> None:
             self._names_to_collectors: Dict[str, Any] = {}
 
-    PROM_REGISTRY: Any = _DummyRegistry()
-    _RealCounter = _ShimCounter  # type: ignore[assignment]
-    _RealHistogram = _ShimHistogram  # type: ignore[assignment]
-
-# Active implementations used below.
-PromCounter = _RealCounter
-PromHistogram = _RealHistogram
+    PROM_REGISTRY = _DummyRegistry()
+    CounterClass = _ShimCounter
+    HistogramClass = _ShimHistogram
 
 # ------------------------------ in-memory tallies ------------------------------
 
@@ -92,13 +98,13 @@ def _registry_map() -> Dict[str, Any]:
     return {}
 
 
+T = TypeVar("T")
+
+
 def _register(name: str, collector: Any) -> Any:
     mapping = _registry_map()
     mapping[name] = collector
     return collector
-
-
-T = TypeVar("T")
 
 
 def _get_or_create(name: str, factory: Callable[[], T]) -> T:
@@ -115,8 +121,8 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
 def _mk_counter(name: str, doc: str, labels: Iterable[str] | None = None) -> CounterLike:
     def _factory() -> Any:
         if labels:
-            return PromCounter(name, doc, list(labels))
-        return PromCounter(name, doc)
+            return CounterClass(name, doc, list(labels))
+        return CounterClass(name, doc)
 
     return cast(CounterLike, _get_or_create(name, _factory))
 
@@ -126,8 +132,8 @@ def _mk_histogram(
 ) -> HistogramLike:
     def _factory() -> Any:
         if labels:
-            return PromHistogram(name, doc, list(labels))
-        return PromHistogram(name, doc)
+            return HistogramClass(name, doc, list(labels))
+        return HistogramClass(name, doc)
 
     return cast(HistogramLike, _get_or_create(name, _factory))
 
@@ -140,7 +146,9 @@ guardrail_decisions_total: CounterLike = _mk_counter(
     "guardrail_decisions_total", "Total guardrail decisions.", labels=["action"]
 )
 guardrail_latency_seconds: HistogramLike = _mk_histogram(
-    "guardrail_latency_seconds", "Latency of guardrail endpoints in seconds.", ["endpoint"]
+    "guardrail_latency_seconds",
+    "Latency of guardrail endpoints in seconds.",
+    ["endpoint"],
 )
 guardrail_rate_limited_total: CounterLike = _mk_counter(
     "guardrail_rate_limited_total", "Requests rejected by legacy rate limiter."
@@ -168,7 +176,9 @@ guardrail_redactions_total: CounterLike = _mk_counter(
 
 # Verifier breakdowns (kept for completeness; tests print plain lines for these).
 guardrail_verifier_outcome_total: CounterLike = _mk_counter(
-    "guardrail_verifier_outcome_total", "Verifier outcome totals.", ["verifier", "outcome"]
+    "guardrail_verifier_outcome_total",
+    "Verifier outcome totals.",
+    ["verifier", "outcome"],
 )
 
 # --------------------------------- incrementers --------------------------------
