@@ -278,10 +278,11 @@ def _egress_policy(
     if RE_PRIVATE_KEY.search(text or ""):
         rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope"]}
         _normalize_wildcards(rule_hits, is_deny=True)
-        dbg = {"explanations": ["private_key_detected"]} if want_debug else None
+        dbg: Optional[Dict[str, Any]] = {"explanations": ["private_key_detected"]} if want_debug else None
         return ("deny", "", rule_hits, dbg)
+
     rule_hits_allow: Dict[str, List[str]] = {}
-    dbg = {"note": "redactions_may_apply"} if want_debug else None
+    dbg: Optional[Dict[str, Any]] = {"note": "redactions_may_apply"} if want_debug else None
     return ("allow", text, rule_hits_allow, dbg)
 
 # ------------------------------- form parsing -------------------------------
