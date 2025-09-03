@@ -16,7 +16,7 @@ from app.services.audit_forwarder import emit_audit_event
 try:
     from prometheus_client import Counter
 except Exception:  # pragma: no cover
-    Counter = None  # type: ignore
+    Counter = None  # type: ignore[assignment]
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -26,7 +26,11 @@ router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 _requests_total_int = 0
 _decisions_total_int = 0
 
-if Counter:
+_REQUESTS_TOTAL: Optional[Any] = None
+_DECISIONS_TOTAL: Optional[Any] = None
+_DECISION_FAMILY: Optional[Any] = None
+
+if Counter is not None:
     _REQUESTS_TOTAL = Counter("guardrail_requests_total", "Total guardrail requests")
     _DECISIONS_TOTAL = Counter("guardrail_decisions_total", "Total guardrail decisions")
     _DECISION_FAMILY = Counter(
@@ -34,32 +38,30 @@ if Counter:
         "Decisions by family and tenant/bot",
         ["family", "tenant", "bot"],
     )
-else:
-    _REQUESTS_TOTAL = _DECISIONS_TOTAL = _DECISION_FAMILY = None  # type: ignore
 
 
 def inc_requests_total() -> None:
     global _requests_total_int
     _requests_total_int += 1
-    if _REQUESTS_TOTAL:
+    if _REQUESTS_TOTAL is not None:
         _REQUESTS_TOTAL.inc()
 
 
 def inc_decisions_total() -> None:
     global _decisions_total_int
     _decisions_total_int += 1
-    if _DECISIONS_TOTAL:
+    if _DECISIONS_TOTAL is not None:
         _DECISIONS_TOTAL.inc()
 
 
 def inc_decision_family(family: str) -> None:
     """Family-only increment (kept for compatibility)."""
-    if _DECISION_FAMILY:
+    if _DECISION_FAMILY is not None:
         _DECISION_FAMILY.labels(family=family, tenant="-", bot="-").inc()
 
 
 def inc_decision_family_tenant_bot(family: str, tenant_id: str, bot_id: str) -> None:
-    if _DECISION_FAMILY:
+    if _DECISION_FAMILY is not None:
         _DECISION_FAMILY.labels(
             family=family, tenant=tenant_id or "-", bot=bot_id or "-"
         ).inc()
@@ -176,8 +178,9 @@ async def evaluate(
     # Best-effort audit
     try:
         emit_audit_event(
-            event_type="prompt_decision",
-            payload={
+            {
+                "ts": int(time.time()),
+                "event": "prompt_decision",
                 "request_id": rid,
                 "tenant_id": tenant_id,
                 "bot_id": bot_id,
@@ -185,9 +188,8 @@ async def evaluate(
                 "family": family,
                 "rule_hits": rule_hits,
                 "policy_version": policy_version,
-                "ts": int(time.time()),
                 "metadata": req.metadata or {},
-            },
+            }
         )
     except Exception:
         # Don't break the route if auditing sinks fail
@@ -213,9 +215,12 @@ async def egress_evaluate(
     check_input = (req.text or "").strip()
 
     if not check_input:
-        raise HTTPException(status_code=400, detail="Missing content to evaluate for egress.")
+        raise HTTPException(
+            status_code=400, detail="Missing content to evaluate for egress."
+        )
 
-    payload: Dict[str, Any] = egress_check(check_input) or {}
+    payload, _ = egress_check(check_input)
+    payload = dict(payload or {})
     action: str = str(payload.get("action", "allow"))
     redactions = int(payload.get("redactions") or 0)
 
@@ -233,13 +238,16 @@ async def egress_evaluate(
 
     # Attach policy info + request id for consistency
     payload.setdefault("policy_version", current_rules_version())
-    payload.setdefault("request_id", request.headers.get("X-Request-ID") or str(uuid.uuid4()))
+    payload.setdefault(
+        "request_id", request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    )
 
     # Best-effort audit
     try:
         emit_audit_event(
-            event_type="egress_decision",
-            payload={
+            {
+                "ts": int(time.time()),
+                "event": "egress_decision",
                 "request_id": payload["request_id"],
                 "tenant_id": tenant_id,
                 "bot_id": bot_id,
@@ -247,9 +255,8 @@ async def egress_evaluate(
                 "raw_action": action,
                 "redactions": redactions,
                 "policy_version": payload["policy_version"],
-                "ts": int(time.time()),
                 "metadata": req.metadata or {},
-            },
+            }
         )
     except Exception:
         pass
