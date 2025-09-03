@@ -17,15 +17,17 @@ class HistogramLike(Protocol):
 
 # ---- Try real prometheus, else provide shims with the same surface ------------
 
+PROM_REGISTRY: Any  # single declaration to avoid mypy redefinition
+PROM_OK = False
+
 try:
     from prometheus_client import Counter as PromCounterImpl
     from prometheus_client import Histogram as PromHistogramImpl
     from prometheus_client import REGISTRY as _PROM_REGISTRY
-    PROM_REGISTRY: Any = _PROM_REGISTRY
+
+    PROM_REGISTRY = _PROM_REGISTRY
     PROM_OK = True
 except Exception:  # pragma: no cover
-    PROM_OK = False
-
     class PromCounterShim:
         """Minimal counter shim (inc, labels)."""
 
@@ -62,11 +64,12 @@ except Exception:  # pragma: no cover
         def __init__(self) -> None:
             self._names_to_collectors: Dict[str, Any] = {}
 
-    PROM_REGISTRY: Any = _DummyRegistry()
+    PROM_REGISTRY = _DummyRegistry()
 
 # Bind active implementations used below.
 PromCounter = PromCounterImpl if PROM_OK else PromCounterShim
 PromHistogram = PromHistogramImpl if PROM_OK else PromHistogramShim
+
 
 # ------------------------------ in-memory tallies ------------------------------
 
@@ -80,12 +83,12 @@ _VERIFIER_OUTCOMES: Dict[Tuple[str, str], float] = {}
 
 _RULES_VERSION = "unknown"
 
+
 # --------------------------- registry-safe constructors ------------------------
 
 
 def _registry_map() -> Dict[str, Any]:
     mapping = getattr(PROM_REGISTRY, "_names_to_collectors", {})
-    # Ensure a dict for typing purposes
     if isinstance(mapping, dict):
         return mapping
     return {}
@@ -111,30 +114,22 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
 # --------------------------------- collectors ---------------------------------
 
 
-def _mk_counter(
-    name: str,
-    doc: str,
-    labels: Iterable[str] | None = None,
-) -> CounterLike:
+def _mk_counter(name: str, doc: str, labels: Iterable[str] | None = None) -> CounterLike:
     def _factory() -> Any:
         if labels:
             return PromCounter(name, doc, list(labels))
         return PromCounter(name, doc)
-    # mypy needs a nudge here because _get_or_create is generic over Any factory
-    return cast(CounterLike, _get_or_create(name, _factory))
+
+    return _get_or_create(name, _factory)
 
 
-def _mk_histogram(
-    name: str,
-    doc: str,
-    labels: Iterable[str] | None = None,
-) -> HistogramLike:
+def _mk_histogram(name: str, doc: str, labels: Iterable[str] | None = None) -> HistogramLike:
     def _factory() -> Any:
         if labels:
             return PromHistogram(name, doc, list(labels))
         return PromHistogram(name, doc)
-    # mypy needs a nudge here because _get_or_create is generic over Any factory
-    return cast(HistogramLike, _get_or_create(name, _factory))
+
+    return _get_or_create(name, _factory)
 
 
 # Core metrics used throughout the app/tests.
@@ -145,9 +140,7 @@ guardrail_decisions_total: CounterLike = _mk_counter(
     "guardrail_decisions_total", "Total guardrail decisions.", labels=["action"]
 )
 guardrail_latency_seconds: HistogramLike = _mk_histogram(
-    "guardrail_latency_seconds",
-    "Guardrail endpoint latency in seconds.",
-    labels=["endpoint"],
+    "guardrail_latency_seconds", "Guardrail endpoint latency in seconds.", labels=["endpoint"]
 )
 guardrail_rate_limited_total: CounterLike = _mk_counter(
     "guardrail_rate_limited_total", "Requests rejected by legacy rate limiter."
@@ -166,7 +159,8 @@ guardrail_verifier_outcome_total: CounterLike = _mk_counter(
     labels=["verifier", "outcome"],
 )
 
-# --------------------------------- incrementers --------------------------------
+
+# --------------------------------- incrementers -------------------------------
 
 
 def inc_requests_total(endpoint: str = "unknown") -> None:
@@ -209,7 +203,7 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     inc_decision_family_tenant_bot("deny", tenant, bot)
 
 
-# ----------------------------------- getters -----------------------------------
+# ----------------------------------- getters ----------------------------------
 
 
 def get_requests_total() -> float:
@@ -256,9 +250,7 @@ def export_family_breakdown_lines() -> List[str]:
     for family, count in sorted(_FAMILY_TOTALS.items()):
         lines.append(f"family={family} count={int(count)}")
     for (family, tenant, bot), count in sorted(_FAMILY_TENANT_BOT.items()):
-        lines.append(
-            "family_tenant_bot=" f"{family}:{tenant}:{bot} count={int(count)}"
-        )
+        lines.append(f"family_tenant_bot={family}:{tenant}:{bot} count={int(count)}")
     return lines
 
 
