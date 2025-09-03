@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guardrail
+  namespace: guardrail
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: guardrail }
+  template:
+    metadata:
+      labels: { app: guardrail }
+    spec:
+      containers:
+      - name: api
+        image: guardrail:local
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: RULES_PATH
+          value: /etc/guardrail/rules.yaml
+        - name: POLICY_DEFAULT_INJECTION_ACTION
+          value: block
+        envFrom:
+        - secretRef: { name: guardrail-secrets }
+        volumeMounts:
+        - name: rules
+          mountPath: /etc/guardrail
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet: { path: /health, port: 8000 }
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /health, port: 8000 }
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: rules
+        configMap: { name: guardrail-rules }
