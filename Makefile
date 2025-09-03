@@ -1,24 +1,28 @@
-.PHONY: help up down logs k8s-apply k8s-delete
+.PHONY: install lint type test run docker-build docker-run compose-up compose-down
 
-help:
-	@echo "Targets:"
-	@echo "  up           - docker compose up (deploy/compose)"
-	@echo "  down         - docker compose down"
-	@echo "  logs         - docker compose logs -f"
-	@echo "  k8s-apply    - kubectl apply -k deploy/k8s"
-	@echo "  k8s-delete   - kubectl delete -k deploy/k8s"
+install:
+	pip install -r requirements.txt || pip install .
 
-up:
-	cd deploy/compose && docker compose --env-file .env up -d
+lint:
+	ruff check --fix .
+	test -f mypy.ini && mypy . || true
 
-down:
-	cd deploy/compose && docker compose down
+test:
+	pytest -q
 
-logs:
-	cd deploy/compose && docker compose logs -f
+run:
+	python -m app.run
 
-k8s-apply:
-	kubectl apply -k deploy/k8s
+docker-build:
+	docker build -t guardrail:local -f docker/Dockerfile .
 
-k8s-delete:
-	kubectl delete -k deploy/k8s
+docker-run:
+	docker run --rm -p 8000:8000 --env-file .env \
+	  -v $$(pwd)/rules.yaml:/etc/guardrail/rules.yaml:ro \
+	  guardrail:local
+
+compose-up:
+	docker compose up --build
+
+compose-down:
+	docker compose down -v

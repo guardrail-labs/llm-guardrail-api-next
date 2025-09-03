@@ -1,14 +1,17 @@
 version: "3.9"
-
 services:
-  api:
-    build: .
-    image: llm-guardrail-api-next:local
-    environment:
-      - API_KEY=dev-local-key
-      # You can also use API_KEYS=key1,key2
-      - LOG_LEVEL=INFO
-      - PORT=8080
+  guardrail:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: guardrail:local
     ports:
-      - "8080:8080"
-    restart: unless-stopped
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./rules.yaml:/etc/guardrail/rules.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
