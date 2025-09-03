@@ -1,4 +1,3 @@
-# app/routes/guardrail.py
 from __future__ import annotations
 
 import os
@@ -41,12 +40,15 @@ def _resolve_ids(
 
 def _auth_or_401(request: Request) -> None:
     """
-    Tests indicate /guardrail/* requires either X-API-Key or Authorization: Bearer ...
+    Endpoints require either X-API-Key or Authorization: Bearer ...,
+    unless GUARDRAIL_DISABLE_AUTH=1 (test bypass).
     """
+    if (os.getenv("GUARDRAIL_DISABLE_AUTH") or "0") == "1":
+        return
     api_key = request.headers.get("X-API-Key")
     auth = request.headers.get("Authorization") or ""
     if not api_key and not auth.startswith("Bearer "):
-        # IMPORTANT: tests expect this exact string
+        # Tests expect exactly this string
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -250,7 +252,8 @@ async def guardrail_root(
 ) -> Dict[str, Any]:
     """
     Primary endpoint used by tests: accepts JSON {'prompt': ...} or multipart form.
-    Requires either X-API-Key or Authorization: Bearer ... header.
+    Requires either X-API-Key or Authorization: Bearer ... header,
+    unless GUARDRAIL_DISABLE_AUTH=1.
     """
     _auth_or_401(request)
     inc_requests_total("guardrail")
