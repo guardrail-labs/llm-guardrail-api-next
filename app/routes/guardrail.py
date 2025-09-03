@@ -6,14 +6,11 @@ import re
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
+from fastapi import APIRouter, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
 # Metrics module lives in telemetry (tests expect names exposed by that file)
 from app.telemetry import metrics as m
-
-# Route label helper (existing file name is route_lable.py)
-from app.metrics import route_lable as route_label  # noqa: F401
 
 # Optional: external forwarder that tests monkeypatch indirectly via our local symbol
 from app.services import audit_forwarder as af
@@ -43,11 +40,14 @@ RE_PHONE = re.compile(
 )
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 
+
 def _req_id(existing: Optional[str]) -> str:
     return existing or str(uuid.uuid4())
 
+
 def _fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
 
 def _tenant_bot(
     headers_tenant: Optional[str],
@@ -57,10 +57,12 @@ def _tenant_bot(
     b = (headers_bot or "default").strip() or "default"
     return t, b
 
+
 def _maybe_auth(x_api_key: Optional[str]) -> bool:
     if not RE_REQUIRE_API_KEY:
         return True
     return bool(x_api_key)
+
 
 def emit_audit_event(payload: Dict) -> None:
     """
@@ -225,14 +227,6 @@ def _bump_metrics(endpoint: str, decision_family: str, tenant: str, bot: str) ->
     # decision family strings tests expect to appear include "allow" and "deny"
     fam = "allow" if decision_family == "allow" else "deny"
     m.inc_decision_family_tenant_bot(fam, tenant, bot)
-
-
-# ------------------------------ dependencies ------------------------------
-
-def _auth_dep(x_api_key: Optional[str] = Header(default=None)) -> None:
-    if RE_REQUIRE_API_KEY and not x_api_key:
-        # Mirror the tests: 401 only when REQUIRE_API_KEY=true
-        raise JSONResponse({"detail": "Unauthorized"}, status_code=401)  # type: ignore
 
 
 # ------------------------------- endpoints --------------------------------
