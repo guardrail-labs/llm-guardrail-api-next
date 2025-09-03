@@ -43,11 +43,8 @@ RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(
-    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
-)
+RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
 
-# Private key: envelope or header/footer markers
 RE_PRIVATE_KEY_ENVELOPE = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
     re.S,
@@ -93,7 +90,6 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     try:
         af._post(url, key, payload)
     except Exception:
-        # best-effort only
         pass
 
 
@@ -147,19 +143,13 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
 
     # Private key envelope or header/footer markers
     if RE_PRIVATE_KEY_ENVELOPE.search(redacted):
-        redacted = RE_PRIVATE_KEY_ENVELOPE.sub(
-            "[REDACTED:PRIVATE_KEY]",
-            redacted,
-        )
+        redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_ENVELOPE.pattern
         )
         redactions += 1
     if RE_PRIVATE_KEY_MARKER.search(redacted):
-        redacted = RE_PRIVATE_KEY_MARKER.sub(
-            "[REDACTED:PRIVATE_KEY]",
-            redacted,
-        )
+        redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_MARKER.pattern
         )
@@ -399,8 +389,9 @@ async def _handle_upload_to_text(obj: UploadFile) -> str:
 
 async def _read_form_and_merge(request: Request) -> str:
     """
-    Merge 'text' plus files. Iterate keys->getlist and then multi_items()
-    to cover provider differences. Always include markers/content.
+    Merge 'text' plus files from multipart form data. We iterate over
+    form.multi_items() to robustly capture *all* file fields regardless of
+    provider quirks. Any file-like value (has filename + read) is handled.
     """
     form = await request.form()
     combined: List[str] = []
@@ -411,30 +402,25 @@ async def _read_form_and_merge(request: Request) -> str:
 
     seen: set[int] = set()
 
-    async def _maybe_add(v: Any) -> None:
-        if isinstance(v, UploadFile):
-            vid = id(v)
+    async def _maybe_add(val: Any) -> None:
+        # Accept UploadFile *or* any file-like with the needed attributes
+        if isinstance(val, UploadFile) or (
+            hasattr(val, "filename") and hasattr(val, "read")
+        ):
+            vid = id(val)
             if vid in seen:
                 return
             seen.add(vid)
-            combined.append(await _handle_upload_to_text(v))
+            combined.append(await _handle_upload_to_text(val))
 
-    # Pass 1: by keys/getlist
-    for key in form.keys():
-        try:
-            values: List[Any] = form.getlist(key)
-        except Exception:
-            item = form.get(key)
-            values = [item] if item is not None else []
-        for v in values:
-            await _maybe_add(v)
-
-    # Pass 2: multi_items fallback
+    # Single pass over all form entries (covers keys with one or many files)
     try:
-        for _, val in form.multi_items():
-            await _maybe_add(val)
+        for _, v in form.multi_items():
+            await _maybe_add(v)
     except Exception:
-        pass
+        # Fallback: best-effort scan of values()
+        for v in form.values():
+            await _maybe_add(v)
 
     return "\n".join([s for s in combined if s])
 
