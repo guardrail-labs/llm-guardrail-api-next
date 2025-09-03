@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-# Services
 from app.services.detectors import evaluate_prompt
 from app.services.egress import egress_check
-from app.services.policy import current_rules_version, sanitize_text
+from app.services.policy import current_rules_version
 from app.services.audit_forwarder import emit_audit_event
 
-# Prometheus (simple in-process counters + accessors used by main.py)
+# Prometheus (optional)
 try:
     from prometheus_client import Counter
-except Exception:  # pragma: no cover - keep server alive if prometheus not present
+except Exception:  # pragma: no cover
     Counter = None  # type: ignore
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -61,7 +60,9 @@ def inc_decision_family(family: str) -> None:
 
 def inc_decision_family_tenant_bot(family: str, tenant_id: str, bot_id: str) -> None:
     if _DECISION_FAMILY:
-        _DECISION_FAMILY.labels(family=family, tenant=tenant_id or "-", bot=bot_id or "-").inc()
+        _DECISION_FAMILY.labels(
+            family=family, tenant=tenant_id or "-", bot=bot_id or "-"
+        ).inc()
 
 
 def get_requests_total() -> int:
@@ -93,7 +94,6 @@ class EvaluateResponse(BaseModel):
 
 class EgressEvaluateRequest(BaseModel):
     text: Optional[str] = None
-    # If your egress checker accepts other shapes (files, URLs, etc.), extend later.
     tenant_id: Optional[str] = None
     bot_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -104,16 +104,15 @@ class EgressEvaluateRequest(BaseModel):
 # -----------------
 def _resolve_ids(
     request: Request, body_tenant: Optional[str], body_bot: Optional[str]
-) -> tuple[str, str]:
-    tenant_id = (
-        request.headers.get("X-Tenant-ID")
-        or (body_tenant or "")
-    )
+) -> Tuple[str, str]:
+    tenant_id = request.headers.get("X-Tenant-ID") or (body_tenant or "")
     bot_id = request.headers.get("X-Bot-ID") or (body_bot or "")
     return tenant_id, bot_id
 
 
-def _family_from_result(action: str, transformed: str, original: str, hits: Dict[str, Any]) -> str:
+def _family_from_result(
+    action: str, transformed: str, original: str, hits: Dict[str, Any]
+) -> str:
     """
     Normalize to: allow | sanitize | block
     - block: detector action is not 'allow'
@@ -134,25 +133,31 @@ def _family_from_result(action: str, transformed: str, original: str, hits: Dict
 async def evaluate(
     request: Request,
     req: EvaluateRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
 ) -> Dict[str, Any]:
     """
     Evaluate inbound prompt for policy compliance and optionally sanitize.
     """
     inc_requests_total()
 
-    # IDs
     tenant_id, bot_id = _resolve_ids(request, req.tenant_id, req.bot_id)
 
-    # Core decision
     det: Dict[str, Any] = evaluate_prompt(req.text) or {}
     action: str = str(det.get("action", "allow"))
     transformed: str = det.get("transformed_text", req.text) or req.text
     rule_hits: Dict[str, Any] = det.get("rule_hits") or {}
 
     # Final decision family + counters
-    decision = "block" if action != "allow" else ("sanitize" if (transformed != req.text or rule_hits) else "allow")
     family = _family_from_result(action, transformed, req.text, rule_hits)
+    if family == "block":
+        decision = "block"
+    elif family == "sanitize":
+        decision = "sanitize"
+    else:
+        decision = "allow"
+
     inc_decisions_total()
     inc_decision_family(family)
     inc_decision_family_tenant_bot(family, tenant_id, bot_id)
@@ -195,7 +200,9 @@ async def evaluate(
 async def egress_evaluate(
     request: Request,
     req: EgressEvaluateRequest,
-    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_debug: Optional[str] = Header(
+        default=None, alias="X-Debug", convert_underscores=False
+    ),
 ) -> Dict[str, Any]:
     """
     Evaluate outbound (egress) content for sensitive data leakage; may return redactions.
