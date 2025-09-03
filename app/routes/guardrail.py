@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.telemetry import metrics as m
 from app.services import audit_forwarder as af
-from app.services.policy import current_rules_version as _policy_version
+from app.services.policy_loader import get_policy as _get_policy
 from app.services.threat_feed import (
     apply_dynamic_redactions as tf_apply,
     threat_feed_enabled as tf_enabled,
@@ -39,13 +39,19 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
 RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
+RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
-RE_PRIVATE_KEY = re.compile(
-    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
-    re.S,
+
+# Private key patterns: full envelope or headers alone
+RE_PRIVATE_KEY_ENVELOPE = re.compile(
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
 )
+RE_PRIVATE_KEY_MARKER = re.compile(
+    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+)
+
 RE_HACK_WIFI = re.compile(r"(?i)(hack\s+a\s+wifi|bypass\s+wpa2)")
 
 PI_PROMPT_INJ_ID = "pi:prompt_injection"
@@ -83,12 +89,10 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     try:
         af._post(url, key, payload)
     except Exception:
-        # best-effort only
         pass
 
 
 def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
-    # Fold specific families into wildcard keys required by tests.
     if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
     if any(k.startswith("secrets:") for k in rule_hits.keys()):
@@ -136,15 +140,27 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
         m.inc_redaction("aws_access_key_id")
         redactions += 1
 
-    # Injection phrase (mask on allow/clarify paths)
+    # Private key envelope or header/footer markers
+    if RE_PRIVATE_KEY_ENVELOPE.search(redacted):
+        redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_ENVELOPE.pattern
+        )
+        redactions += 1
+    if RE_PRIVATE_KEY_MARKER.search(redacted):
+        redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_MARKER.pattern
+        )
+        redactions += 1
+
+    # Injection phrase (mask; decision handled by caller)
     if RE_PROMPT_INJ.search(redacted):
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        # Also tag as payload:* family to satisfy tests
         rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         redactions += 1
 
-    # Wildcards for allow/clarify paths (deny handled at call sites)
     _normalize_wildcards(rule_hits, is_deny=False)
     return redacted, rule_hits, redactions
 
@@ -261,19 +277,30 @@ def _bump_family(endpoint: str, action: str, tenant: str, bot: str) -> None:
 # ------------------------------- policies -------------------------------
 
 def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
+    """
+    Legacy route behavior:
+      - Block secrets and payload blobs
+      - Apply external deny regex (yaml) -> block
+      - Do NOT block on injection phrase (allow with redaction)
+    """
     hits: List[str] = []
-    # Keep legacy "block" for payload blobs
+
     if RE_LONG_BASE64ISH.search(prompt or ""):
         hits.append(PAYLOAD_BLOB_ID)
         return "block", hits
-    # Block secrets on legacy path (tests expect block + masks)
+
     if RE_SECRET.search(prompt or "") or RE_AWS.search(prompt or ""):
         hits.append(SECRETS_API_KEY_ID)
         return "block", hits
-    # Block prompt-injection phrase on legacy path
-    if RE_PROMPT_INJ.search(prompt or ""):
-        hits.append(PAYLOAD_PROMPT_INJ_ID)
-        return "block", hits
+
+    # External deny regex via policy_loader
+    blob = _get_policy()
+    for rid, rx in blob.deny_compiled:
+        if rx.search(prompt):
+            hits.append(f"policy:deny:{rid}")
+            return "block", hits
+
+    # Injection → allow (masked later)
     return "allow", hits
 
 
@@ -282,9 +309,9 @@ def _evaluate_ingress_policy(
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     """
     Return (action, rule_hits_dict, debug).
-    - Injection phrases => clarify
+    - 'pretend to be DAN' => clarify
     - Explicit illicit intent => deny
-    - Else allow
+    - Plain 'ignore previous instructions' => allow (masked)
     """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
@@ -294,12 +321,18 @@ def _evaluate_ingress_policy(
         dbg["explanations"] = ["illicit_request"]
         return "deny", hits, dbg
 
-    # Injection -> clarify (masking applied by _apply_redactions)
+    if RE_DAN.search(text or ""):
+        hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        _normalize_wildcards(hits, is_deny=False)
+        return "clarify", hits, (dbg if dbg else None)
+
+    # Plain ignore-previous-instructions → allow; still masked in redaction
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         _normalize_wildcards(hits, is_deny=False)
-        return "clarify", hits, (dbg if dbg else None)
+        return "allow", hits, (dbg if dbg else None)
 
     return "allow", hits, None
 
@@ -309,8 +342,10 @@ def _egress_policy(
     want_debug: bool,
 ) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     dbg: Optional[Dict[str, Any]] = None
-    if RE_PRIVATE_KEY.search(text or ""):
-        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope"]}
+    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
+        text or ""
+    ):
+        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope_or_marker"]}
         _normalize_wildcards(rule_hits, is_deny=True)
         if want_debug:
             dbg = {"explanations": ["private_key_detected"]}
@@ -322,59 +357,68 @@ def _egress_policy(
 
 # ------------------------------- form parsing -------------------------------
 
+async def _handle_upload_to_text(obj: UploadFile) -> str:
+    """
+    Turn an UploadFile into a text fragment:
+      - image/* -> marker
+      - audio/* -> marker
+      - text/plain, application/pdf -> read and decode
+      - other -> generic marker
+    Also falls back on filename extension when content_type is missing.
+    """
+    name = getattr(obj, "filename", None) or "file"
+    ctype = (getattr(obj, "content_type", "") or "").lower()
+    # Fallbacks by extension when content type is missing/odd
+    ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
+
+    try:
+        if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+            return f"[IMAGE:{name}]"
+        if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
+            return f"[AUDIO:{name}]"
+        if ctype in {"text/plain", "application/pdf"} or ext in {"txt", "pdf"}:
+            raw = await obj.read()
+            return raw.decode("utf-8", errors="ignore")
+        return f"[FILE:{name}]"
+    except Exception:
+        return f"[FILE:{name}]"
+
+
 async def _read_form_and_merge(request: Request) -> str:
     """
-    Merge 'text' plus files.
-    Produce markers for non-text media, and decode .txt/.pdf into text.
+    Merge 'text' plus files. Robustly walk values and multi_items to cover
+    provider differences and always include markers/content.
     """
     form = await request.form()
     combined: List[str] = []
+
+    # Base text if present
     txt = str(form.get("text") or "")
     if txt:
         combined.append(txt)
 
-    # Track UploadFile objects we've handled so we don't duplicate.
     seen: set[int] = set()
 
-    async def _handle_file(obj: Any) -> None:
-        vid = id(obj)
-        if vid in seen:
-            return
-        seen.add(vid)
-
-        name = getattr(obj, "filename", None) or "file"
-        ctype = (getattr(obj, "content_type", "") or "").lower()
-
-        try:
-            # Media markers (do not read bodies)
-            if ctype.startswith("image/"):
-                combined.append(f"[IMAGE:{name}]")
+    async def _maybe_add(v: Any) -> None:
+        if isinstance(v, UploadFile):
+            vid = id(v)
+            if vid in seen:
                 return
-            if ctype.startswith("audio/"):
-                combined.append(f"[AUDIO:{name}]")
-                return
-            # Simple text-ish types we can decode
-            if ctype in {"text/plain", "application/pdf"}:
-                raw = await obj.read()
-                combined.append(raw.decode("utf-8", errors="ignore"))
-                return
-            # Fallback generic marker
-            combined.append(f"[FILE:{name}]")
-        except Exception:
-            combined.append(f"[FILE:{name}]")
+            seen.add(vid)
+            combined.append(await _handle_upload_to_text(v))
 
-    # Pass 1: iterate known keys and their lists
-    for key in form.keys():
-        values = form.getlist(key)
-        for v in values:
-            if isinstance(v, UploadFile):
-                await _handle_file(v)
+    # Pass 1: values()
+    for v in form.values():
+        if isinstance(v, list):
+            for item in v:
+                await _maybe_add(item)
+        else:
+            await _maybe_add(v)
 
-    # Pass 2: multi_items (provider differences)
+    # Pass 2: multi_items()
     try:
         for _, val in form.multi_items():
-            if isinstance(val, UploadFile):
-                await _handle_file(val)
+            await _maybe_add(val)
     except Exception:
         pass
 
@@ -409,8 +453,9 @@ async def guardrail_legacy(
         }
         return JSONResponse(body, status_code=413)
 
-    # Policy version from compiled rules (reflects /admin/policy/reload)
-    policy_version = _policy_version()
+    # Version must come from YAML loader for legacy behavior/tests
+    policy_blob = _get_policy()
+    policy_version = str(policy_blob.version)
 
     action, legacy_hits_list = _legacy_policy(prompt)
     tenant, bot = _tenant_bot(
@@ -418,7 +463,7 @@ async def guardrail_legacy(
         request.headers.get("X-Bot-ID"),
     )
 
-    # Apply static redactions
+    # Apply redactions
     redacted, redaction_hits, redactions = _apply_redactions(prompt)
 
     # Threat feed (optional)
@@ -436,7 +481,6 @@ async def guardrail_legacy(
         rule_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(rule_hits, is_deny=(action == "block"))
 
-    # Audit uses "allow"/"block"
     _audit(
         "ingress",
         prompt,
@@ -466,7 +510,7 @@ async def guardrail_evaluate(request: Request):
     want_debug = _debug_requested(headers.get("X-Debug"))
     force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
 
-    content_type = headers.get("content-type", "")
+    content_type = (headers.get("content-type") or "").lower()
     combined_text = ""
     explicit_request_id: Optional[str] = None
 
@@ -479,7 +523,7 @@ async def guardrail_evaluate(request: Request):
 
     request_id = _req_id(explicit_request_id)
 
-    # Base policy
+    # Base policy (clarify only for DAN-style)
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
     redacted, redaction_hits, redaction_count = _apply_redactions(combined_text)
 
@@ -495,7 +539,7 @@ async def guardrail_evaluate(request: Request):
         policy_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
-    # Verifier flow
+    # Verifier flow (optional)
     verifier_info: Optional[Dict[str, Any]] = None
     if vr_enabled() and force_unclear:
         providers = load_providers_order()
