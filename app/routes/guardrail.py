@@ -19,29 +19,58 @@ router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 # Optional Prometheus metrics (loaded dynamically)
 # -----------------------
 PromCounter: Optional[Any]
+PromREGISTRY: Optional[Any]
 try:
     _prom = importlib.import_module("prometheus_client")
     PromCounter = getattr(_prom, "Counter", None)
+    PromREGISTRY = getattr(_prom, "REGISTRY", None)
 except Exception:  # pragma: no cover
     PromCounter = None
+    PromREGISTRY = None
 
+
+def _safe_counter(name: str, doc: str, labelnames: Optional[Tuple[str, ...]] = None) -> Optional[Any]:
+    """
+    Create or fetch a Counter from the default registry without raising on duplicates.
+    Returns None if prometheus_client is unavailable.
+    """
+    if PromCounter is None:
+        return None
+    labelnames = labelnames or ()
+    try:
+        return PromCounter(name, doc, labelnames)
+    except Exception:
+        # Likely already registered; try to fetch existing from registry
+        try:
+            if PromREGISTRY is not None:
+                # In prometheus_client, collectors are stored under metric base name (without _total)
+                # e.g., Counter('foo_total') -> registry key 'foo'
+                base_name = name
+                # Counter names are given without _total to the constructor,
+                # but samples expose foo_total. Callers here pass base metric name.
+                collector = getattr(PromREGISTRY, "_names_to_collectors", {}).get(base_name)
+                if collector is not None:
+                    return collector
+        except Exception:
+            pass
+    return None
+
+
+# -----------------------
+# Simple metrics registry
+# -----------------------
 _requests_total_int = 0
 _decisions_total_int = 0
 
-_REQUESTS_TOTAL: Optional[Any] = None
-_DECISIONS_TOTAL: Optional[Any] = None
-_DECISION_FAMILY: Optional[Any] = None
-
-if PromCounter is not None:
-    _REQUESTS_TOTAL = PromCounter("guardrail_requests_total", "Total guardrail requests")
-    _DECISIONS_TOTAL = PromCounter(
-        "guardrail_decisions_total", "Total guardrail decisions"
-    )
-    _DECISION_FAMILY = PromCounter(
-        "guardrail_decision_family_total",
-        "Decisions by family and tenant/bot",
-        ["family", "tenant", "bot"],
-    )
+_REQUESTS_TOTAL: Optional[Any] = _safe_counter(
+    "guardrail_requests", "Total guardrail requests"
+)
+_DECISIONS_TOTAL: Optional[Any] = _safe_counter(
+    "guardrail_decisions", "Total guardrail decisions"
+)
+_DECISION_FAMILY: Optional[Any] = _safe_counter(
+    "guardrail_decision_family_total", "Decisions by family and tenant/bot", ("family", "tenant", "bot")
+)
 
 
 def inc_requests_total() -> None:
