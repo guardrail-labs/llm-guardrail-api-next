@@ -16,39 +16,39 @@ class HistogramLike(Protocol):
 # ---- Try real prometheus, else provide shims with the same surface ------------
 
 try:
-    from prometheus_client import Counter as PromCounterImpl
-    from prometheus_client import Histogram as PromHistogramImpl
+    from prometheus_client import Counter as _PromCounterImpl
+    from prometheus_client import Histogram as _PromHistogramImpl
     from prometheus_client import REGISTRY as PROM_REGISTRY
     PROM_OK = True
 except Exception:  # pragma: no cover
     PROM_OK = False
 
-    class PromCounterImpl:
+    class _ShimCounter:
         """Minimal counter shim (inc, labels)."""
 
         def __init__(self, *_: Any, **__: Any) -> None:
             self._value = 0.0
-            self._children: Dict[Tuple[Any, ...], "PromCounterImpl"] = {}
+            self._children: Dict[Tuple[Any, ...], "_ShimCounter"] = {}
 
-        def labels(self, *label_values: Any) -> "PromCounterImpl":
+        def labels(self, *label_values: Any) -> "_ShimCounter":
             if label_values not in self._children:
-                self._children[label_values] = PromCounterImpl()
+                self._children[label_values] = _ShimCounter()
             return self._children[label_values]
 
         def inc(self, amount: float = 1.0) -> None:
             self._value += float(amount)
 
-    class PromHistogramImpl:
+    class _ShimHistogram:
         """Minimal histogram shim (observe, labels)."""
 
         def __init__(self, *_: Any, **__: Any) -> None:
             self._sum = 0.0
             self._count = 0
-            self._children: Dict[Tuple[Any, ...], "PromHistogramImpl"] = {}
+            self._children: Dict[Tuple[Any, ...], "_ShimHistogram"] = {}
 
-        def labels(self, *label_values: Any) -> "PromHistogramImpl":
+        def labels(self, *label_values: Any) -> "_ShimHistogram":
             if label_values not in self._children:
-                self._children[label_values] = PromHistogramImpl()
+                self._children[label_values] = _ShimHistogram()
             return self._children[label_values]
 
         def observe(self, value: float) -> None:
@@ -61,9 +61,13 @@ except Exception:  # pragma: no cover
 
     PROM_REGISTRY = _DummyRegistry()  # type: ignore[assignment]
 
-# Bind active implementations used below.
-PromCounter = PromCounterImpl
-PromHistogram = PromHistogramImpl
+# Bind active implementations used below. Use Any to avoid constructor checks.
+if PROM_OK:
+    PromCounter: Any = _PromCounterImpl
+    PromHistogram: Any = _PromHistogramImpl
+else:  # pragma: no cover
+    PromCounter = _ShimCounter
+    PromHistogram = _ShimHistogram
 
 # ------------------------------ in-memory tallies ------------------------------
 
