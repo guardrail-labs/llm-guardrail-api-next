@@ -43,11 +43,14 @@ RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
+RE_PHONE = re.compile(
+    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
+)
 
-# Private key patterns: full envelope or headers alone
+# Private key: envelope or header/footer markers
 RE_PRIVATE_KEY_ENVELOPE = re.compile(
-    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    re.S,
 )
 RE_PRIVATE_KEY_MARKER = re.compile(
     r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
@@ -90,6 +93,7 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     try:
         af._post(url, key, payload)
     except Exception:
+        # best-effort only
         pass
 
 
@@ -143,13 +147,19 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
 
     # Private key envelope or header/footer markers
     if RE_PRIVATE_KEY_ENVELOPE.search(redacted):
-        redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        redacted = RE_PRIVATE_KEY_ENVELOPE.sub(
+            "[REDACTED:PRIVATE_KEY]",
+            redacted,
+        )
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_ENVELOPE.pattern
         )
         redactions += 1
     if RE_PRIVATE_KEY_MARKER.search(redacted):
-        redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        redacted = RE_PRIVATE_KEY_MARKER.sub(
+            "[REDACTED:PRIVATE_KEY]",
+            redacted,
+        )
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_MARKER.pattern
         )
@@ -159,7 +169,9 @@ def _apply_redactions(text: str) -> Tuple[str, Dict[str, List[str]], int]:
     if RE_PROMPT_INJ.search(redacted):
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
         redactions += 1
 
     _normalize_wildcards(rule_hits, is_deny=False)
@@ -410,9 +422,10 @@ async def _read_form_and_merge(request: Request) -> str:
     # Pass 1: by keys/getlist
     for key in form.keys():
         try:
-            values = form.getlist(key)
+            values: List[Any] = form.getlist(key)
         except Exception:
-            values = [form.get(key)]
+            item = form.get(key)
+            values = [item] if item is not None else []
         for v in values:
             await _maybe_add(v)
 
@@ -493,7 +506,12 @@ async def guardrail_legacy(
         rule_hits,
         redactions,
     )
-    _bump_family("guardrail_legacy", "allow" if action == "allow" else "deny", tenant, bot)
+    _bump_family(
+        "guardrail_legacy",
+        "allow" if action == "allow" else "deny",
+        tenant,
+        bot,
+    )
 
     if action == "block":
         return _respond_legacy_block(
