@@ -12,11 +12,12 @@ from app.services.egress import egress_check
 from app.services.policy import current_rules_version
 from app.services.audit_forwarder import emit_audit_event
 
-# Prometheus (optional)
+# Prometheus (optional). Import into a private runtime name so we don't
+# reassign a type symbol (which triggers mypy "Cannot assign to a type").
 try:
-    from prometheus_client import Counter
+    from prometheus_client import Counter as _Counter  # type: ignore
 except Exception:  # pragma: no cover
-    Counter = None  # type: ignore[assignment]
+    _Counter = None  # type: ignore
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -30,10 +31,10 @@ _REQUESTS_TOTAL: Optional[Any] = None
 _DECISIONS_TOTAL: Optional[Any] = None
 _DECISION_FAMILY: Optional[Any] = None
 
-if Counter is not None:
-    _REQUESTS_TOTAL = Counter("guardrail_requests_total", "Total guardrail requests")
-    _DECISIONS_TOTAL = Counter("guardrail_decisions_total", "Total guardrail decisions")
-    _DECISION_FAMILY = Counter(
+if _Counter is not None:
+    _REQUESTS_TOTAL = _Counter("guardrail_requests_total", "Total guardrail requests")
+    _DECISIONS_TOTAL = _Counter("guardrail_decisions_total", "Total guardrail decisions")
+    _DECISION_FAMILY = _Counter(
         "guardrail_decision_family_total",
         "Decisions by family and tenant/bot",
         ["family", "tenant", "bot"],
@@ -219,8 +220,8 @@ async def egress_evaluate(
             status_code=400, detail="Missing content to evaluate for egress."
         )
 
-    payload, _ = egress_check(check_input)
-    payload = dict(payload or {})
+    payload_raw, _hits = egress_check(check_input)
+    payload = dict(payload_raw or {})
     action: str = str(payload.get("action", "allow"))
     redactions = int(payload.get("redactions") or 0)
 
