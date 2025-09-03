@@ -364,7 +364,7 @@ async def _read_form_and_merge(request: Request) -> str:
 
     # Pass 2: multi_items (catches providers where keys iteration differs)
     try:
-        for _, val in form.multi_items():  # type: ignore[attr-defined]
+        for _, val in form.multi_items():
             if not isinstance(val, UploadFile):
                 continue
             vid = id(val)
