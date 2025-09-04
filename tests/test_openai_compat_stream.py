@@ -1,18 +1,66 @@
 from __future__ import annotations
 
+import json
+from typing import Any, Awaitable, Callable, Dict
+
 from fastapi.testclient import TestClient
 
-# Your FastAPI ASGI app should be exposed as `app` here
+# Your FastAPI app
 import app.main as main
+
+
+class _AfterBodyRequestBecomesDisconnect:
+    """
+    ASGI test shim:
+    - For HTTP scopes, once we see a request frame with `more_body=False`
+      (end-of-body), any subsequent `http.request` frames are converted
+      to `http.disconnect`.
+    - This works around BaseHTTPMiddleware raising
+      "Unexpected message received: http.request" while a StreamingResponse
+      listens for disconnects.
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[Any]]):
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: Dict[str, Any],
+        receive: Callable[[], Awaitable[Dict[str, Any]]],
+        send: Callable[[Dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        seen_eof = False
+
+        async def patched_receive() -> Dict[str, Any]:
+            nonlocal seen_eof
+            msg = await receive()
+
+            if msg.get("type") == "http.request":
+                # Mark EOF when more_body=False (end of body)
+                if not msg.get("more_body", False):
+                    if seen_eof:
+                        # Any further http.request after EOF -> disconnect
+                        return {"type": "http.disconnect"}
+                    seen_eof = True
+                return msg
+
+            # Pass through anything else (e.g., http.disconnect)
+            return msg
+
+        await self.app(scope, patched_receive, send)
 
 
 def test_openai_streaming_sse() -> None:
     """
     Validate SSE behavior for OpenAI-compatible /v1/chat/completions.
 
-    We use FastAPI's sync TestClient to avoid Event Loop/plugin dependencies
-    and to sidestep Starlette BaseHTTPMiddleware issues that can appear when
-    exercising client-side streaming with ASGI transports.
+    We wrap the app with a small ASGI shim that converts any stray
+    post-EOF `http.request` frames to `http.disconnect`, avoiding
+    Starlette BaseHTTPMiddleware's strict check during streaming.
     """
 
     payload = {
@@ -21,23 +69,15 @@ def test_openai_streaming_sse() -> None:
         "messages": [{"role": "user", "content": "please reply"}],
     }
 
-    # Build headers typical for the gateway
     headers = {
         "X-API-Key": "k",
         "X-Tenant-ID": "acme",
         "X-Bot-ID": "assistant-1",
-        # We expect an SSE response:
         "Accept": "text/event-stream",
     }
 
-    with TestClient(main.app) as client:
-        # Send JSON body in one shot; TestClient ensures a single, complete request
-        resp = client.post(
-            "/v1/chat/completions",
-            headers=headers,
-            json=payload,  # <- typed correctly for TestClient
-            timeout=15,
-        )
+    with TestClient(_AfterBodyRequestBecomesDisconnect(main.app)) as client:
+        resp = client.post("/v1/chat/completions", headers=headers, json=payload)
 
         assert resp.status_code == 200
 
