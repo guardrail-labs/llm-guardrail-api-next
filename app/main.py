@@ -239,6 +239,59 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
     return JSONResponse(payload, status_code=status, headers=headers)
 
 
+# ---- ASGI wrapper to stabilize streaming/SSE --------------------------------
+
+class _PreDrainBodyThenDisconnectASGI:
+    """
+    ASGI wrapper that:
+      1) Fully drains the incoming request body once.
+      2) Replays the drained frames to the inner app.
+      3) After replay, any further `receive()` calls yield `http.disconnect`.
+
+    This prevents Starlette's BaseHTTPMiddleware from ever seeing an extra
+    `http.request` *after* it believes the body is finished (a common race
+    with StreamingResponse / SSE under stacked BaseHTTPMiddleware).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        # (1) Drain the entire body once up-front.
+        drained: list[dict] = []
+        while True:
+            msg = await receive()
+            drained.append(msg)
+            typ = msg.get("type")
+            if typ == "http.disconnect":
+                break
+            if typ == "http.request" and not msg.get("more_body", False):
+                # End of request body
+                break
+
+        # (2) Replay drained frames to downstream, then (3) only disconnect.
+        idx = 0
+
+        async def patched_receive():
+            nonlocal idx
+            if idx < len(drained):
+                m = drained[idx]
+                idx += 1
+                return m
+            # After the original body has been consumed by downstream,
+            # present only a disconnect for any subsequent reads.
+            return {"type": "http.disconnect"}
+
+        async def patched_send(message):
+            # Transparent pass-through
+            await send(message)
+
+        await self.app(scope, patched_receive, patched_send)
+
+
 # ---- App factory -------------------------------------------------------------
 
 def create_app() -> FastAPI:
@@ -303,3 +356,7 @@ def create_app() -> FastAPI:
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
+
+# Make the pre-drain wrapper OUTERMOST so all inner BaseHTTPMiddleware
+# (CORS, rate-limit, etc.) see only `http.disconnect` after body consumption.
+app = _PreDrainBodyThenDisconnectASGI(app)
