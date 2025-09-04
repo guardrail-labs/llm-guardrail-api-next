@@ -1,11 +1,16 @@
-# app/services/detectors/ingress_pipeline.py
 """
-Ingress helpers for PDF preprocessing.
+Ingress helpers for PDF/DOCX/Image preprocessing.
 
-- Optionally sanitize PDFs by stripping hidden/transparent text.
-- Safe defaults when the detector is unavailable or disabled.
+- PDF: optionally sanitize hidden/transparent text (detector is optional).
+- DOCX: detect jailbreak/social-engineering lines and sanitize.
+- Image: safe-transform, mark as non-interpretable, optional re-encode.
 
-This module is import- and type-safe for mypy and Ruff.
+Each function returns a small dict suitable for downstream ingress evaluation:
+  * PDF  -> {"text", "rule_hits", "debug"}
+  * DOCX -> {"text", "rule_hits", "debug"}
+  * IMG  -> {"image_bytes", "rule_hits", "debug"}
+
+All functions include a `debug.sources` array with per-source breadcrumbs.
 """
 
 from __future__ import annotations
@@ -13,25 +18,25 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
+from app.services.detectors.docx_jb import (
+    DocxExtractor,
+    detect_and_sanitize_docx,
+)
+from app.services.media.safe_image import (
+    ImageReencoder,
+    safe_transform,
+)
+
 # Callable signature returned by the PDF sanitizer:
 #   (sanitized_visible_text, rule_hits, debug)
 PdfSanitizer = Callable[[bytes], Tuple[str, List[str], Dict[str, Any]]]
 
-# Feature flag (defaults ON). Lets ops disable detector without code changes.
-_PDF_DETECTOR_ENABLED = os.getenv("PDF_DETECTOR_ENABLED", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-
+# --- Optional import of the PDF sanitizer implementation ---------------------
+# The detector re-exports `pdf_sanitize_for_downstream` from
+# `app.services.detectors.__init__`. If it is not available, we fall back
+# gracefully without raising import errors or confusing mypy.
 
 def _load_pdf_sanitizer() -> Optional[PdfSanitizer]:
-    """
-    Import the sanitizer function if available and cast it to the precise type.
-    Using a loader function avoids assigning None to a name that mypy inferred
-    as a callable, which caused type errors in CI.
-    """
     try:
         from app.services.detectors import (
             pdf_sanitize_for_downstream as _impl,
@@ -41,25 +46,58 @@ def _load_pdf_sanitizer() -> Optional[PdfSanitizer]:
     return cast(PdfSanitizer, _impl)
 
 
-# Load once at import time; remains Optional for guarded use below.
 _pdf_sanitize: Optional[PdfSanitizer] = _load_pdf_sanitizer()
 
+# Feature flags (default ON) ---------------------------------------------------
+
+def _enabled(env: str, default: bool = True) -> bool:
+    raw = os.getenv(env)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+_PDF_DETECTOR_ENABLED = _enabled("PDF_DETECTOR_ENABLED", True)
+_DOCX_DETECTOR_ENABLED = _enabled("DOCX_DETECTOR_ENABLED", True)
+_IMAGE_SAFE_TRANSFORM_ENABLED = _enabled("IMAGE_SAFE_TRANSFORM_ENABLED", True)
+
+
+# ---------------- PDF ---------------------------------------------------------
 
 def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
     """
     Extract safe, visible-only text from a PDF for ingress evaluation.
-    If the detector is disabled or unavailable, return an empty text with
-    informative debug breadcrumbs (no exceptions).
+    Includes debug.sources entry with detector availability/enabled flags.
     """
+    sources: List[Dict[str, Any]] = []
+
     if _PDF_DETECTOR_ENABLED and _pdf_sanitize is not None:
         text, rule_hits, debug = _pdf_sanitize(pdf_bytes)
+        sources.append(
+            {
+                "type": "pdf",
+                "enabled": True,
+                "available": True,
+                "rule_hits": rule_hits,
+                "meta": {"spans_count": debug.get("spans_count", 0)},
+            }
+        )
         return {
             "text": text,
             "rule_hits": rule_hits,
-            "debug": {"pdf_hidden": debug},
+            "debug": {"pdf_hidden": debug, "sources": sources},
         }
 
     # Fallback: detector disabled or not available
+    sources.append(
+        {
+            "type": "pdf",
+            "enabled": _PDF_DETECTOR_ENABLED,
+            "available": _pdf_sanitize is not None,
+            "rule_hits": [],
+            "meta": {"spans_count": 0},
+        }
+    )
     return {
         "text": "",
         "rule_hits": [],
@@ -68,6 +106,85 @@ def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
                 "spans_count": 0,
                 "detector_enabled": _PDF_DETECTOR_ENABLED,
                 "available": _pdf_sanitize is not None,
-            }
+            },
+            "sources": sources,
         },
+    }
+
+
+# ---------------- DOCX --------------------------------------------------------
+
+def process_docx_ingress(
+    docx_bytes: bytes, extractor: Optional[DocxExtractor] = None
+) -> Dict[str, Any]:
+    """
+    Scan a DOCX for jailbreak/social-engineering prompts and return sanitized text.
+    Accepts an optional extractor (useful for tests); when disabled, returns empty text.
+    """
+    sources: List[Dict[str, Any]] = []
+    if _DOCX_DETECTOR_ENABLED:
+        res = detect_and_sanitize_docx(docx_bytes, extractor=extractor)
+        sources.append(
+            {
+                "type": "docx",
+                "enabled": True,
+                "available": True,
+                "rule_hits": res.rule_hits,
+                "meta": {
+                    "kept_count": res.debug.get("kept_count", 0),
+                    "lines_scanned": res.debug.get("lines_scanned", 0),
+                },
+            }
+        )
+        return {
+            "text": res.sanitized_text,
+            "rule_hits": res.rule_hits,
+            "debug": {"docx": res.debug, "sources": sources},
+        }
+
+    sources.append(
+        {"type": "docx", "enabled": False, "available": True, "rule_hits": [], "meta": {}}
+    )
+    return {"text": "", "rule_hits": [], "debug": {"docx": {}, "sources": sources}}
+
+
+# ---------------- Image -------------------------------------------------------
+
+def process_image_ingress(
+    image_bytes: bytes, reencoder: Optional[ImageReencoder] = None
+) -> Dict[str, Any]:
+    """
+    Safe-transform an image and mark it as non-interpretable for instruction purposes.
+    Returns the (possibly) re-encoded bytes so downstream can continue.
+    """
+    sources: List[Dict[str, Any]] = []
+    if _IMAGE_SAFE_TRANSFORM_ENABLED:
+        res = safe_transform(image_bytes, reencoder=reencoder)
+        sources.append(
+            {
+                "type": "image",
+                "enabled": True,
+                "available": True,
+                "rule_hits": res.rule_hits,
+                "meta": {
+                    "reencoded": res.debug.get("reencoded", False),
+                    "input_size": res.debug.get("input_size", 0),
+                    "output_size": res.debug.get("output_size", 0),
+                },
+            }
+        )
+        return {
+            "image_bytes": res.image_bytes,
+            "rule_hits": res.rule_hits,
+            "debug": {"image": res.debug, "sources": sources},
+        }
+
+    # Disabled: pass-through, but still communicate intent via sources.
+    sources.append(
+        {"type": "image", "enabled": False, "available": True, "rule_hits": [], "meta": {}}
+    )
+    return {
+        "image_bytes": image_bytes,
+        "rule_hits": [],
+        "debug": {"image": {"reencoded": False}, "sources": sources},
     }
