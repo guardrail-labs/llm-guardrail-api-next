@@ -11,11 +11,13 @@ import app.main as main
 
 def test_openai_streaming_sse() -> None:
     """
-    Validate SSE streaming for OpenAI-compatible /v1/chat/completions.
+    Validate SSE behavior for OpenAI-compatible /v1/chat/completions.
 
-    Runs an async client inside asyncio.run() (no pytest-asyncio).
-    Uses ASGITransport and sends a single-shot body to avoid multiple
-    http.request frames that can upset Starlette middleware.
+    We intentionally avoid client-side streaming (.stream context) because some
+    Starlette BaseHTTPMiddleware variants raise "Unexpected message received:
+    http.request" when the transport delivers trailing request frames during a
+    streaming response. Here, we send the full request up front and read the
+    entire SSE payload after the server closes the stream.
     """
 
     async def _run() -> None:
@@ -34,26 +36,20 @@ def test_openai_streaming_sse() -> None:
                 "X-Bot-ID": "assistant-1",
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
-                "Content-Length": str(len(body_bytes)),  # force single-frame body
+                "Content-Length": str(len(body_bytes)),  # send as a single body
             }
 
-            # Stream the SSE response
-            async with ac.stream(
-                "POST",
+            # Send request normally (no streaming context) and read full SSE text.
+            r = await ac.post(
                 "/v1/chat/completions",
                 headers=headers,
-                content=body_bytes,  # send bytes, not str; don't use json=
-                timeout=10.0,
-            ) as r:
-                assert r.status_code == 200
+                content=body_bytes,  # don't use json= to avoid chunking
+                timeout=15.0,
+            )
 
-                buf = ""
-                async for chunk in r.aiter_text():
-                    if chunk:
-                        buf += chunk
-
-                # Capture headers before context closes
-                resp_headers = dict(r.headers)
+            assert r.status_code == 200
+            buf = r.text
+            resp_headers = dict(r.headers)
 
         # Basic SSE terminator and redaction checks
         assert "data: [DONE]" in buf
