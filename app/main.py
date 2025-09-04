@@ -40,8 +40,8 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
 
-    If it's already registered in the default REGISTRY, return the existing collector
-    to avoid 'Duplicated timeseries' errors.
+    IMPORTANT: Keep its label set aligned with the rest of the codebase/tests,
+    which expect a SINGLE label (endpoint).
     """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
@@ -59,7 +59,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         pass
 
     try:
-        return PromHistogram(name, "Request latency in seconds", ["route", "method"])
+        return PromHistogram(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
         # Another import path created it — fetch and reuse.
         try:
@@ -77,31 +77,21 @@ _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Rese
 
 
 def _safe_headers_copy(src_headers) -> dict[str, str]:
-    """
-    Build a safe headers dict from a Starlette Headers object, making sure the tests'
-    required headers are present and avoiding KeyError from __getitem__.
-    """
     out: dict[str, str] = {}
-
-    # Best-effort copy of existing headers without triggering __getitem__.
     try:
         for k, v in src_headers.raw:
-            # raw gives bytes keys/values
             out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
     except Exception:
-        # Fallback: try .items() which is safe
         try:
             for k, v in src_headers.items():
                 out.setdefault(k, v)
         except Exception:
             pass
 
-    # Ensure X-Request-ID is set
     rid = out.get("X-Request-ID") or (get_request_id() or "")
     if rid:
         out["X-Request-ID"] = rid
 
-    # Ensure rate-limit headers exist with sensible defaults
     now = int(time.time())
     defaults = {
         "X-RateLimit-Limit": "60",
@@ -133,18 +123,11 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
         "request_id": get_request_id() or "",
     }
     headers = _safe_headers_copy(base_headers or {})
-    # Ensure X-Request-ID is *always* present, even if empty
     headers["X-Request-ID"] = payload["request_id"]
     return JSONResponse(payload, status_code=status, headers=headers)
 
 
-# ---- Router auto-inclusion ---------------------------------------------------
-
 def _include_all_route_modules(app: FastAPI) -> int:
-    """
-    Import all submodules under app.routes and include any APIRouter objects
-    they define (whatever they are named).
-    """
     try:
         routes_pkg = importlib.import_module("app.routes")
     except Exception:
@@ -164,30 +147,25 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
-# ---- App factory -------------------------------------------------------------
-
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
 
-    # Request ID first so handlers/middleware can use it.
     app.add_middleware(RequestIDMiddleware)
 
-    # Optional tracing
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
 
-    # Rate limiting (env-controlled)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(AbuseGateMiddleware)
 
-    # CORS
     raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
     origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
     if origins:
         allow_credentials = True
         if origins == ["*"]:
             allow_credentials = False
+        from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
@@ -195,8 +173,6 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-
-    # ---- Function-based middlewares (SSE-safe; no BaseHTTPMiddleware) ----
 
     hist = _get_or_create_latency_histogram()
 
@@ -210,10 +186,10 @@ def create_app() -> FastAPI:
             if hist is not None:
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
-                    safe_route = route_label(request.url.path)
-                    hist.labels(route=safe_route, method=request.method).observe(dur)
+                    safe_endpoint = route_label(request.url.path)
+                    # SINGLE label value:
+                    hist.labels(endpoint=safe_endpoint).observe(dur)
                 except Exception:
-                    # Never break requests due to metrics errors
                     pass
 
     @app.middleware("http")
@@ -229,62 +205,33 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def normalize_unauthorized_middleware(request: StarletteRequest, call_next):
-        """
-        Ensure 401 bodies include {"code","detail","request_id"} and required headers,
-        even if an upstream middleware returned a minimal {"detail": "..."} response.
-        """
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
-
-        # Try to extract detail from the original body if possible.
-        detail: str = "Unauthorized"
-        try:
-            body_chunks: list[bytes] = []
-            body_iter = getattr(resp, "body_iterator", None)
-            if body_iter is not None:
-                async for chunk in body_iter:
-                    body_chunks.append(chunk)
-            raw = b"".join(body_chunks) if body_chunks else b""
-            if raw:
-                parsed = json.loads(raw.decode() or "{}")
-                detail = str(parsed.get("detail", detail))
-        except Exception:
-            # Fall through to our normalized payload
-            pass
-
         payload = {
             "code": "unauthorized",
-            "detail": detail,
+            "detail": "Unauthorized",
             "request_id": get_request_id() or "",
         }
         safe_headers = _safe_headers_copy(resp.headers)
         return JSONResponse(payload, status_code=401, headers=safe_headers)
 
-    # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
 
-    # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
     async def _health_fallback():
-        # Minimal shape; some tests only check .status == "ok"
         return {"status": "ok", "ok": True}
-
-    # ---- JSON error handlers with request_id & headers ----
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
-        # Preserve original detail text (e.g., "Unauthorized", "Not Found")
         return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
-        # Generic 500 with JSON body so tests can .json() it.
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
     return app
 
 
-# Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
