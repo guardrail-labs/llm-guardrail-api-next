@@ -136,6 +136,17 @@ export POLICY_DEFAULT_INJECTION_ACTION=clarify
 Per-rule `on_match` still takes precedence. If no rule sets an action,
 the default above is applied.
 
+### Verifier (MVP)
+Enable a non-executing intent verifier for gray-area cases (injection/jailbreak/illicit families).
+
+```bash
+export VERIFIER_ENABLED=true
+export VERIFIER_PROVIDER=mock   # or openai|anthropic|azure (future)
+```
+
+Behavior: if a request hits gray families and the local decision isn’t decisive, the API calls the
+verifier, which returns `block | clarify | allow`. A minimal trace appears under `debug.verifier`.
+
 ### Compliance (Phase 2)
 - Hashing helpers (email/phone) via salted SHA-256: `PII_SALT`, `PII_HASH_ALGO`.
 - Redact + hash utility: `app/compliance/pii.py`.

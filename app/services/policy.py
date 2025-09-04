@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Pattern, Tuple
 
 from app.config import get_settings
+from app.models.verifier import VerifierInput
+from app.services import verifier_client as vcli
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
@@ -79,6 +81,40 @@ def apply_injection_default(decision: dict) -> dict:
 
     if _has_family(hits, _INJECTION_FAMILIES):
         decision["action"] = resolve_injection_default_action().value
+    return decision
+
+
+def maybe_route_to_verifier(decision: dict, *, text: str) -> dict:
+    """Route to verifier if gray-area conditions are met."""
+    s = get_settings()
+    if not getattr(s, "verifier_enabled", False):
+        return decision
+
+    action = (decision.get("action") or "allow").lower()
+    if action == "clarify":
+        return decision
+
+    hits = decision.get("rule_hits") or {}
+    inp = VerifierInput(text=text, rule_hits=hits, context=None)
+    try:
+        res = vcli.call_verifier(inp)
+        v_dec = res.decision
+        if v_dec in {"block", "clarify", "allow"}:
+            decision["action"] = v_dec
+            if decision.get("debug") is not None:
+                dbg = decision["debug"]
+                dbg.setdefault("verifier", {})
+                dbg["verifier"].update(
+                    {
+                        "provider": res.provider,
+                        "decision": v_dec,
+                        "latency_ms": res.latency_ms,
+                    }
+                )
+        else:
+            decision["action"] = s.verifier_default_action
+    except Exception:
+        decision["action"] = s.verifier_default_action
     return decision
 
 

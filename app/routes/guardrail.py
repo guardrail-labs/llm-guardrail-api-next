@@ -12,18 +12,11 @@ from fastapi.responses import JSONResponse
 from app.models.debug import SourceDebug
 from app.services import audit_forwarder as af
 from app.services.debug_sources import make_source
-from app.services.policy import apply_injection_default
+from app.services.policy import apply_injection_default, maybe_route_to_verifier
 from app.services.policy_loader import get_policy as _get_policy
 from app.services.threat_feed import (
     apply_dynamic_redactions as tf_apply,
     threat_feed_enabled as tf_enabled,
-)
-from app.services.verifier import (
-    Verifier,
-    content_fingerprint,
-    is_known_harmful,
-    load_providers_order,
-    verifier_enabled as vr_enabled,
 )
 from app.telemetry import metrics as m
 
@@ -613,7 +606,6 @@ async def guardrail_evaluate(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
-    force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
 
     content_type = (headers.get("content-type") or "").lower()
     combined_text = ""
@@ -651,22 +643,6 @@ async def guardrail_evaluate(request: Request):
         policy_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
-    verifier_info: Optional[Dict[str, Any]] = None
-    if vr_enabled() and force_unclear:
-        providers = load_providers_order()
-        fp = content_fingerprint(combined_text)
-        if not providers:
-            if is_known_harmful(fp):
-                action = "deny"
-        else:
-            verdict, used = Verifier(providers).assess_intent(combined_text, {})
-            verifier_info = {
-                "enabled": True,
-                "providers": providers,
-                "used": used,
-                "verdict": (str(verdict) if verdict else None),
-            }
-
     dbg_sources: List[SourceDebug] = []
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
@@ -677,8 +653,6 @@ async def guardrail_evaluate(request: Request):
             dbg["redaction_sources"] = src_keys
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
-        if verifier_info:
-            dbg["verifier"] = verifier_info
         dbg_sources.append(
             make_source(
                 origin="ingress",
@@ -699,6 +673,14 @@ async def guardrail_evaluate(request: Request):
                 )
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
+
+    decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+    if dbg is not None:
+        decision["debug"] = dbg
+    decision = apply_injection_default(decision)
+    decision = maybe_route_to_verifier(decision, text=combined_text)
+    action = decision.get("action", action)
+    dbg = decision.get("debug")
 
     _audit(
         "ingress",
@@ -730,7 +712,6 @@ async def guardrail_evaluate_multipart(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
-    force_unclear = headers.get("X-Force-Unclear") in {"1", "true", "yes"}
 
     # Multipart with decoding PDFs (for redaction-in-PDF test)
     combined_text, mods, sources = await _read_form_and_merge(
@@ -756,22 +737,6 @@ async def guardrail_evaluate_multipart(request: Request):
         policy_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
-    verifier_info: Optional[Dict[str, Any]] = None
-    if vr_enabled() and force_unclear:
-        providers = load_providers_order()
-        fp = content_fingerprint(combined_text)
-        if not providers:
-            if is_known_harmful(fp):
-                action = "deny"
-        else:
-            verdict, used = Verifier(providers).assess_intent(combined_text, {})
-            verifier_info = {
-                "enabled": True,
-                "providers": providers,
-                "used": used,
-                "verdict": (str(verdict) if verdict else None),
-            }
-
     dbg_sources: List[SourceDebug] = []
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
@@ -782,8 +747,6 @@ async def guardrail_evaluate_multipart(request: Request):
             dbg["redaction_sources"] = src_keys
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
-        if verifier_info:
-            dbg["verifier"] = verifier_info
         dbg_sources.append(
             make_source(
                 origin="ingress",
@@ -804,6 +767,14 @@ async def guardrail_evaluate_multipart(request: Request):
                 )
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
+
+    decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+    if dbg is not None:
+        decision["debug"] = dbg
+    decision = apply_injection_default(decision)
+    decision = maybe_route_to_verifier(decision, text=combined_text)
+    action = decision.get("action", action)
+    dbg = decision.get("debug")
 
     _audit(
         "ingress",
