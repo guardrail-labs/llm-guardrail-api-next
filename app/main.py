@@ -241,8 +241,9 @@ def create_app() -> FastAPI:
         detail: str = "Unauthorized"
         try:
             body_chunks: list[bytes] = []
-            if hasattr(resp, "body_iterator") and resp.body_iterator is not None:
-                async for chunk in resp.body_iterator:  # type: ignore[attr-defined]
+            body_iter = getattr(resp, "body_iterator", None)
+            if body_iter is not None:
+                async for chunk in body_iter:
                     body_chunks.append(chunk)
             raw = b"".join(body_chunks) if body_chunks else b""
             if raw:
