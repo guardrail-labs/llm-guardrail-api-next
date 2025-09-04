@@ -65,11 +65,15 @@ class QuotaMiddleware:
 
         def attach_headers(message: Message) -> None:
             hdrs = message.setdefault("headers", [])
+            day_rem = max(0, int(decision["day_remaining"]))
+            mon_rem = max(0, int(decision["month_remaining"]))
+            retry = max(1, int(decision["retry_after_s"]))
+
             hdrs.append((b"X-Quota-Limit-Day", str(self.per_day).encode()))
             hdrs.append((b"X-Quota-Limit-Month", str(self.per_month).encode()))
-            hdrs.append((b"X-Quota-Remaining-Day", str(max(0, int(decision["day_remaining"]))).encode()))
-            hdrs.append((b"X-Quota-Remaining-Month", str(max(0, int(decision["month_remaining"]))).encode()))
-            hdrs.append((b"X-Quota-Reset", str(max(1, int(decision["retry_after_s"]))).encode()))
+            hdrs.append((b"X-Quota-Remaining-Day", str(day_rem).encode()))
+            hdrs.append((b"X-Quota-Remaining-Month", str(mon_rem).encode()))
+            hdrs.append((b"X-Quota-Reset", str(retry).encode()))
 
         if not decision["allowed"]:
             body = {
@@ -80,7 +84,6 @@ class QuotaMiddleware:
             }
             resp = JSONResponse(body, status_code=429)
             resp.headers["Retry-After"] = str(decision["retry_after_s"])
-            # Attach quota headers
             await _send_with_extra_headers(resp, scope, receive, send, attach_headers)
             return
 
