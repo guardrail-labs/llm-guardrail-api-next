@@ -13,18 +13,23 @@ def test_bucket_allows_then_blocks_until_refill(monkeypatch):
     assert tb.allow("k") is True
     assert tb.allow("k") is False  # exhausted
 
-    # advance 1.0s -> +1 token
+    # advance 1s => +1 token
     fake_now[0] += 1.0
     assert tb.allow("k") is True
     assert tb.allow("k") is False
 
 
-def test_remaining_reflects_tokens(monkeypatch):
-    tb = TokenBucket(capacity=1, refill_per_sec=0.5)
+def test_estimate_wait_seconds(monkeypatch):
+    tb = TokenBucket(capacity=1, refill_per_sec=2.0)  # 2 tokens/sec
     fake_now = [2000.0]
     monkeypatch.setattr(tb, "_now", lambda: fake_now[0])
 
-    assert tb.remaining("k") == 0.0
-    assert tb.allow("k") is True  # initializes with capacity
-    assert tb.remaining("k") < 1.0
+    # first call initializes with capacity and consumes it
+    assert tb.allow("k") is True
+    # now empty; need 0.5s for next token
+    wait = tb.estimate_wait_seconds("k")
+    assert 0.0 < wait <= 0.6
+
+    fake_now[0] += 0.5
+    assert tb.allow("k") is True
 

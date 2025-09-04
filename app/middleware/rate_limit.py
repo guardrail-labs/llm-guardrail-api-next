@@ -1,135 +1,136 @@
+"""
+FastAPI middleware for per-API-key and per-IP rate limiting.
+
+- Returns 429 with Retry-After when limits exceeded.
+- Emits helpful headers for observability.
+"""
+
 from __future__ import annotations
 
-import logging
-import time
-import uuid
-from typing import Dict, Tuple
+import hashlib
+import os
+from typing import Awaitable, Callable, Optional
 
-from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from fastapi import Request
+from fastapi.responses import JSONResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import get_settings
-from app.telemetry.metrics import inc_rate_limited  # tests patch this
-from app.telemetry.tracing import get_trace_id as _get_trace_id
-
-logger = logging.getLogger("app.ratelimit")
+from app.services.rate_limit import TokenBucket
 
 
-def _tenant_bot_from_scope(scope: Scope) -> Tuple[str, str]:
-    headers = dict(scope.get("headers", []))
-    tenant = headers.get(b"x-tenant-id", b"").decode() or "default"
-    bot = headers.get(b"x-bot-id", b"").decode() or "default"
-    return tenant, bot
+def _hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-class RateLimitMiddleware:
+def _parse_limits_from_env() -> tuple[bool, int, int]:
+    enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    per_key = int(os.getenv("RATE_LIMIT_PER_API_KEY_PER_MIN", "60"))
+    per_ip = int(os.getenv("RATE_LIMIT_PER_IP_PER_MIN", "120"))
+    return enabled, per_key, per_ip
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
     """
-    Token-bucket limiter that:
-      - Enforces when RATE_LIMIT_ENABLED=true
-      - Always sets X-RateLimit-* headers (even when disabled)
-      - Emits inc_rate_limited() and logs "inc_rate_limited failed" on exception
-      - Produces 429 body with exact contract and includes request_id
-      - Keeps buckets per-app-instance (no cross-test leakage)
+    Two independent token buckets:
+      - per API key (if present)
+      - per IP address (always)
+    A request must pass both buckets.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-        # Per-instance buckets: {(tenant, bot): {"tokens": float, "ts": float}}
-        self._buckets: Dict[Tuple[str, str], Dict[str, float]] = {}
+    def __init__(
+        self,
+        app: Callable,
+        enabled: Optional[bool] = None,
+        per_api_key_per_min: Optional[int] = None,
+        per_ip_per_min: Optional[int] = None,
+    ) -> None:
+        super().__init__(app)
+        env_enabled, env_key, env_ip = _parse_limits_from_env()
+        self.enabled = env_enabled if enabled is None else enabled
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http":
-            await self.app(scope, receive, send)
-            return
+        key_cap = env_key if per_api_key_per_min is None else per_api_key_per_min
+        ip_cap = env_ip if per_ip_per_min is None else per_ip_per_min
 
-        s = get_settings()
-        tenant, bot = _tenant_bot_from_scope(scope)
+        # Convert per-minute capacities into per-second refill rates
+        self.key_bucket = TokenBucket(capacity=key_cap, refill_per_sec=key_cap / 60.0)
+        self.ip_bucket = TokenBucket(capacity=ip_cap, refill_per_sec=ip_cap / 60.0)
 
-        # per-minute -> per-second
-        rps = max(1, int(s.RATE_LIMIT_PER_MINUTE)) / 60.0
-        burst = max(1, int(s.RATE_LIMIT_BURST))
-        now = time.time()
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if not self.enabled:
+            return await call_next(request)
 
-        k = (tenant, bot)
-        bucket = self._buckets.get(k)
-        if bucket is None:
-            bucket = {"tokens": float(burst), "ts": now}
-            self._buckets[k] = bucket
+        # Identify caller
+        api_key_raw = (
+            request.headers.get("x-api-key")
+            or self._parse_bearer(request.headers.get("authorization") or "")
+            or ""
+        )
+        ip = self._client_ip(request) or "0.0.0.0"
 
-        # Refill
-        elapsed = max(0.0, now - float(bucket["ts"]))
-        bucket["ts"] = now
-        tokens = float(bucket["tokens"]) + elapsed * rps
-        if tokens > burst:
-            tokens = float(burst)
+        api_key_hash = _hash(api_key_raw) if api_key_raw else "anon"
+        ip_hash = _hash(ip)
 
-        enforce = bool(s.RATE_LIMIT_ENABLED)
-        allowed = True
-        if enforce:
-            if tokens >= 1.0:
-                tokens -= 1.0
-            else:
-                allowed = False
+        # Check buckets (cost is 1 per request by default)
+        allow_key = self.key_bucket.allow(api_key_hash)
+        allow_ip = self.ip_bucket.allow(ip_hash)
 
-        # Persist tokens
-        bucket["tokens"] = tokens
+        if allow_key and allow_ip:
+            resp = await call_next(request)
+            # Add helpful headers
+            resp.headers["X-RateLimit-Limit-ApiKey"] = str(self.key_bucket.capacity)
+            resp.headers["X-RateLimit-Remaining-ApiKey"] = (
+                f"{self.key_bucket.remaining(api_key_hash):.2f}"
+            )
+            resp.headers["X-RateLimit-Limit-IP"] = str(self.ip_bucket.capacity)
+            resp.headers["X-RateLimit-Remaining-IP"] = (
+                f"{self.ip_bucket.remaining(ip_hash):.2f}"
+            )
+            return resp
 
-        # Prepare standard rate-limit headers
-        reset_epoch = int(now + max(0.0, (1.0 - tokens) / rps)) if rps > 0 else int(now)
-        limit_hdr = str(int(s.RATE_LIMIT_PER_MINUTE))
-        remaining_hdr = str(max(0, int(tokens * 60.0)))
+        # Compute wait times for whichever dimension(s) blocked
+        wait_key = (
+            0.0
+            if allow_key
+            else self.key_bucket.estimate_wait_seconds(api_key_hash)
+        )
+        wait_ip = (
+            0.0
+            if allow_ip
+            else self.ip_bucket.estimate_wait_seconds(ip_hash)
+        )
+        retry_after = int(max(wait_key, wait_ip))
 
-        def _set_rl_headers(message):
-            hdrs = message.setdefault("headers", [])
+        payload = {
+            "action": "blocked_escalated",
+            "mode": "rate_limited",
+            "message": "Too many requests. Please retry later.",
+            "retry_after_seconds": retry_after,
+        }
+        resp = JSONResponse(payload, status_code=429)
+        resp.headers["Retry-After"] = str(retry_after)
+        resp.headers["X-RateLimit-Blocked"] = "api_key" if not allow_key else "ip"
+        return resp
 
-            def set_header(k: str, v: str) -> None:
-                hdrs.append((k.encode("latin-1"), v.encode("latin-1")))
+    @staticmethod
+    def _parse_bearer(auth_header: str) -> str:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1]
+        return ""
 
-            set_header("X-RateLimit-Limit", limit_hdr)
-            set_header("X-RateLimit-Remaining", remaining_hdr)
-            set_header("X-RateLimit-Reset", str(reset_epoch))
+    @staticmethod
+    def _client_ip(request: Request) -> str:
+        # Honor common proxy headers if present (still hashed before storage)
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            # first IP in the list is the original client
+            return xff.split(",")[0].strip()
+        return request.client.host if request.client else ""
 
-        if not allowed:
-            # Metric + warning on failure (exact phrase asserted in tests)
-            try:
-                inc_rate_limited(1.0)
-            except Exception as e:  # pragma: no cover
-                logger.warning("inc_rate_limited failed", exc_info=e)
-
-            # Ensure X-Request-ID is present in headers AND body
-            incoming = dict(scope.get("headers", []))
-            rid = incoming.get(b"x-request-id")
-            request_id = rid.decode() if rid else str(uuid.uuid4())
-
-            trace_id = _get_trace_id()
-
-            body = {
-                "code": "rate_limited",
-                "detail": "rate limit exceeded",
-                "retry_after": 60,
-                "request_id": request_id,
-            }
-            if trace_id:
-                body["trace_id"] = trace_id
-
-            async def _send_429(message):
-                if message.get("type") == "http.response.start":
-                    _set_rl_headers(message)
-                    headers_list = message.setdefault("headers", [])
-                    headers_list.append((b"Retry-After", b"60"))
-                    headers_list.append((b"X-Request-ID", request_id.encode("latin-1")))
-                    if trace_id:
-                        headers_list.append((b"X-Trace-ID", trace_id.encode("latin-1")))
-                await send(message)
-
-            response = JSONResponse(status_code=429, content=body)
-            await response(scope, receive, _send_429)
-            return
-
-        # Allowed: forward but still add RL headers
-        async def send_wrapped(message):
-            if message.get("type") == "http.response.start":
-                _set_rl_headers(message)
-            await send(message)
-
-        await self.app(scope, receive, send_wrapped)
