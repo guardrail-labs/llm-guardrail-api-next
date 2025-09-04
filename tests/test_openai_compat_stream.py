@@ -40,12 +40,12 @@ class _AfterBodyRequestBecomesDisconnect:
                 if not msg.get("more_body", False):
                     if seen_eof:
                         # Any further http.request after EOF -> disconnect
-                        return {"type": "http.disconnect"}  # type: ignore[return-value]
+                        return {"type": "http.disconnect"}
                     seen_eof = True
-                return msg  # type: ignore[return-value]
+                return msg
 
             # Pass through anything else (e.g., http.disconnect)
-            return msg  # type: ignore[return-value]
+            return msg
 
         await self.app(scope, patched_receive, send)
 
