@@ -7,15 +7,17 @@ import httpx
 import app.main as main
 
 
-def test_openai_streaming_sse(monkeypatch):
+def test_openai_streaming_sse():
     """
     Validate SSE streaming for OpenAI-compatible /v1/chat/completions.
 
     Runs an async client inside asyncio.run(), so we don't need pytest-asyncio.
+    Uses ASGITransport to support the httpx version in CI (no AsyncClient(app=...)).
     """
 
     async def _run():
-        async with httpx.AsyncClient(app=main.app, base_url="http://test") as ac:
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             headers = {
                 "X-API-Key": "k",
                 "X-Tenant-ID": "acme",
@@ -41,7 +43,7 @@ def test_openai_streaming_sse(monkeypatch):
                 async for chunk in r.aiter_text():
                     if chunk:
                         buf += chunk
-                # Capture headers before context closes, to be safe
+                # Capture headers before context closes
                 resp_headers = dict(r.headers)
 
         # Basic SSE terminator and redaction checks
