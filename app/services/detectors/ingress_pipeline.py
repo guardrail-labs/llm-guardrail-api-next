@@ -17,22 +17,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 #   (sanitized_visible_text, rule_hits, debug)
 PdfSanitizer = Callable[[bytes], Tuple[str, List[str], Dict[str, Any]]]
 
-# --- Optional import of the PDF sanitizer implementation ---------------------
-# The detector re-exports `pdf_sanitize_for_downstream` from
-# `app.services.detectors.__init__`. If it is not available, we fall back
-# gracefully without raising import errors or confusing mypy.
-try:
-    from app.services.detectors import (
-        pdf_sanitize_for_downstream as _pdf_sanitize_impl,
-    )
-except Exception:
-    _pdf_sanitize_impl = None  # falls back cleanly
-
-# Tell mypy the exact optional callable type of the imported symbol.
-_pdf_sanitize: Optional[PdfSanitizer] = cast(
-    Optional[PdfSanitizer], _pdf_sanitize_impl
-)
-
 # Feature flag (defaults ON). Lets ops disable detector without code changes.
 _PDF_DETECTOR_ENABLED = os.getenv("PDF_DETECTOR_ENABLED", "true").lower() in (
     "1",
@@ -40,6 +24,25 @@ _PDF_DETECTOR_ENABLED = os.getenv("PDF_DETECTOR_ENABLED", "true").lower() in (
     "yes",
     "on",
 )
+
+
+def _load_pdf_sanitizer() -> Optional[PdfSanitizer]:
+    """
+    Import the sanitizer function if available and cast it to the precise type.
+    Using a loader function avoids assigning None to a name that mypy inferred
+    as a callable, which caused type errors in CI.
+    """
+    try:
+        from app.services.detectors import (
+            pdf_sanitize_for_downstream as _impl,
+        )
+    except Exception:
+        return None
+    return cast(PdfSanitizer, _impl)
+
+
+# Load once at import time; remains Optional for guarded use below.
+_pdf_sanitize: Optional[PdfSanitizer] = _load_pdf_sanitizer()
 
 
 def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
