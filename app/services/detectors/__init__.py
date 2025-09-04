@@ -4,6 +4,10 @@ from typing import Any, Dict, List
 
 from app.services.policy import apply_policies
 
+from .pdf_hidden import sanitize_for_downstream as pdf_sanitize_for_downstream
+
+__all__ = ["evaluate_prompt", "pdf_sanitize_for_downstream"]
+
 
 def evaluate_prompt(text: str) -> Dict[str, Any]:
     """
