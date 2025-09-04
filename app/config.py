@@ -39,6 +39,23 @@ class Settings(BaseSettings):
         description="Default action for injection/jailbreak hits",
     )
 
+    # --- Verifier (gray-area routing) ---
+    verifier_enabled: bool = Field(
+        default=False, description="Enable verifier flow"
+    )
+    verifier_provider: Literal["mock", "openai", "anthropic", "azure"] = Field(
+        default="mock", description="Which verifier adapter to use"
+    )
+    verifier_timeout_s: int = Field(default=8, ge=1, le=30)
+    verifier_budget_cents: int = Field(default=5, ge=0)
+    verifier_default_action: Literal["block", "clarify"] = Field(
+        default="block", description="Fallback if verifier fails"
+    )
+    gray_trigger_families: list[str] = Field(
+        default_factory=lambda: ["injection", "jailbreak", "illicit"],
+        description="Families that may route to verifier when uncertain",
+    )
+
     # --- Limits ---
     MAX_PROMPT_CHARS: int = 20000
     OUTPUT_MAX_CHARS: int = 20000

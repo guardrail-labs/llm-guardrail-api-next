@@ -279,8 +279,7 @@ Quota rejects:
 
 ## 10) Debugging
 
-- Add `X-Debug: 1` to see `debug.matches`, `debug.threat_feed`.
-- Add `X-Force-Unclear: 1` (dev/test) to invoke the verifier path.
+- Add `X-Debug: 1` to see `debug.matches`, `debug.threat_feed`, and `debug.verifier` when applicable.
 
 ## 11) Client Snippets
 
