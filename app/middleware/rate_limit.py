@@ -96,7 +96,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         per_key = env_key_min if per_api_key_per_min is None else per_api_key_per_min
         per_ip = env_ip_min if per_ip_per_min is None else per_ip_per_min
 
-        # Use **separate capacities** so "ignore IP" tests work as intended.
+        # Use separate capacities so "ignore IP" tests work as intended.
         key_capacity = burst if burst is not None else per_key
         ip_capacity = burst if burst is not None else per_ip
 
@@ -149,4 +149,68 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except Exception as exc:  # pragma: no cover
             logger.warning("inc_rate_limited failed: %s", exc)
 
-        request_id =_
+        request_id = _get_trace_id()
+
+        payload = {
+            "detail": "rate limit exceeded",  # tests assert on this field
+            "action": "blocked_escalated",
+            "mode": "rate_limited",
+            "message": "Too many requests. Please retry later.",
+            "retry_after_seconds": retry_after,
+            "request_id": request_id,
+            "trace_id": request_id,  # body field expected by tests
+        }
+        resp = JSONResponse(payload, status_code=429)
+        resp.headers["Retry-After"] = str(retry_after)
+        # Generic headers the tests expect
+        resp.headers["X-RateLimit-Limit"] = str(self.generic_limit_per_min)
+        resp.headers["X-RateLimit-Remaining"] = "0"  # when blocked
+        # Best-effort reset; use the computed retry_after
+        resp.headers["X-RateLimit-Reset"] = str(max(1, retry_after))
+        # Dimension that blocked
+        resp.headers["X-RateLimit-Blocked"] = "api_key" if not allow_key else "ip"
+        # Correlation ids
+        resp.headers.setdefault("X-Trace-ID", request_id)
+        resp.headers.setdefault("X-Request-ID", request_id)
+        return resp
+
+    # ---------------------- internals ----------------------
+
+    def _attach_allowed_headers(self, resp: Response, api_key_hash: str, ip_hash: str) -> None:
+        # Generic
+        resp.headers["X-RateLimit-Limit"] = str(self.generic_limit_per_min)
+
+        rem_key = self.key_bucket.remaining(api_key_hash)
+        rem_ip = self.ip_bucket.remaining(ip_hash)
+        remaining_float = min(rem_key, rem_ip)
+        # Tests cast to int(...) => provide an integer string here
+        remaining_int = max(0, int(remaining_float))
+        resp.headers["X-RateLimit-Remaining"] = str(remaining_int)
+
+        # A simple estimate for time to full under each dimension,
+        # then pick the smaller (earlier) reset.
+        to_full_key = (self.key_capacity - rem_key) / max(1e-9, self.per_key_per_min / 60.0)
+        to_full_ip = (self.ip_capacity - rem_ip) / max(1e-9, self.per_ip_per_min / 60.0)
+        reset_sec = max(1, int(ceil(min(to_full_key, to_full_ip))))
+        resp.headers["X-RateLimit-Reset"] = str(reset_sec)
+
+        # Dimension-specific (extra)
+        resp.headers["X-RateLimit-Limit-ApiKey"] = str(self.key_capacity)
+        resp.headers["X-RateLimit-Remaining-ApiKey"] = f"{rem_key:.2f}"
+        resp.headers["X-RateLimit-Limit-IP"] = str(self.ip_capacity)
+        resp.headers["X-RateLimit-Remaining-IP"] = f"{rem_ip:.2f}"
+
+    @staticmethod
+    def _parse_bearer(auth_header: str) -> str:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1]
+        return ""
+
+    @staticmethod
+    def _client_ip(request: Request) -> str:
+        # Honor common proxy headers if present
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+        return request.client.host if request.client else ""
