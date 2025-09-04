@@ -159,6 +159,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         request_id = _get_trace_id()
 
         payload = {
+            "code": "rate_limited",            # <— added to satisfy tests
             "detail": "rate limit exceeded",
             "action": "blocked_escalated",
             "mode": "rate_limited",
