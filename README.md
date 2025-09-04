@@ -2,6 +2,8 @@
 
 A modular Guardrail API that intercepts prompts/responses to LLMs, sanitizes or blocks harmful input/output, verifies unclear intent, wires enterprise telemetry (audit, multitenancy, quotas), and supports OpenAI/Azure-compatible endpoints.
 
+For a show-ready demo with architecture diagram, curl scripts, and a mini React dashboard, see [docs/DEMO_KIT.md](docs/DEMO_KIT.md).
+
 ## Quickstart (Docker)
 
 ```bash
