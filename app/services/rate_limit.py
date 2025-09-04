@@ -2,7 +2,53 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Dict, Tuple
+
+
+@dataclass
+class _Bucket:
+    tokens: float
+    last: float
+
+
+class TokenBucket:
+    """Simple in-memory token bucket for per-key rate limiting.
+
+    Usage::
+        b = TokenBucket(capacity=60, refill_per_sec=1.0)
+        allowed = b.allow("api_key_hash")
+    """
+
+    def __init__(self, capacity: int, refill_per_sec: float):
+        self.capacity = float(capacity)
+        self.refill = float(refill_per_sec)
+        self._b: Dict[str, _Bucket] = {}
+
+    def _now(self) -> float:
+        return time.time()
+
+    def _refill(self, key: str, now: float) -> None:
+        b = self._b.get(key)
+        if not b:
+            self._b[key] = _Bucket(tokens=self.capacity, last=now)
+            return
+        elapsed = max(0.0, now - b.last)
+        b.tokens = min(self.capacity, b.tokens + elapsed * self.refill)
+        b.last = now
+
+    def allow(self, key: str, cost: float = 1.0) -> bool:
+        now = self._now()
+        self._refill(key, now)
+        b = self._b[key]
+        if b.tokens >= cost:
+            b.tokens -= cost
+            return True
+        return False
+
+    def remaining(self, key: str) -> float:
+        b = self._b.get(key)
+        return 0.0 if not b else b.tokens
 
 
 class RateLimiter:
