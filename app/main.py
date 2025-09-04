@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
+from starlette.types import ASGIApp, Receive, Scope, Send  # <-- typing for ASGI
 
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
@@ -253,12 +254,13 @@ class _PreDrainBodyThenDisconnectASGI:
     with StreamingResponse / SSE under stacked BaseHTTPMiddleware).
     """
 
-    def __init__(self, app):
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
-            return await self.app(scope, receive, send)
+            await self.app(scope, receive, send)
+            return
 
         # (1) Drain the entire body once up-front.
         drained: list[dict] = []
@@ -275,7 +277,7 @@ class _PreDrainBodyThenDisconnectASGI:
         # (2) Replay drained frames to downstream, then (3) only disconnect.
         idx = 0
 
-        async def patched_receive():
+        async def patched_receive() -> dict:
             nonlocal idx
             if idx < len(drained):
                 m = drained[idx]
@@ -285,7 +287,7 @@ class _PreDrainBodyThenDisconnectASGI:
             # present only a disconnect for any subsequent reads.
             return {"type": "http.disconnect"}
 
-        async def patched_send(message):
+        async def patched_send(message: dict) -> None:
             # Transparent pass-through
             await send(message)
 
@@ -355,8 +357,8 @@ def create_app() -> FastAPI:
 
 # Back-compat for tests/scripts
 build_app = create_app
-app = create_app()
 
-# Make the pre-drain wrapper OUTERMOST so all inner BaseHTTPMiddleware
-# (CORS, rate-limit, etc.) see only `http.disconnect` after body consumption.
-app = _PreDrainBodyThenDisconnectASGI(app)
+# Build the inner FastAPI app, then export an ASGIApp after wrapping.
+_inner_fastapi_app: FastAPI = create_app()
+# Expose the *wrapped* ASGI app for TestClient and runtime. This keeps mypy happy.
+app: ASGIApp = _PreDrainBodyThenDisconnectASGI(_inner_fastapi_app)
