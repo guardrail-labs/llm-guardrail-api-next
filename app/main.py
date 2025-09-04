@@ -5,7 +5,7 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Awaitable, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from starlette.types import ASGIApp, Receive, Scope, Send  # <-- typing for ASGI
+from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
@@ -263,9 +263,9 @@ class _PreDrainBodyThenDisconnectASGI:
             return
 
         # (1) Drain the entire body once up-front.
-        drained: list[dict] = []
+        drained: list[Message] = []
         while True:
-            msg = await receive()
+            msg: Message = await receive()
             drained.append(msg)
             typ = msg.get("type")
             if typ == "http.disconnect":
@@ -277,7 +277,7 @@ class _PreDrainBodyThenDisconnectASGI:
         # (2) Replay drained frames to downstream, then (3) only disconnect.
         idx = 0
 
-        async def patched_receive() -> dict:
+        async def patched_receive() -> Message:
             nonlocal idx
             if idx < len(drained):
                 m = drained[idx]
@@ -285,13 +285,39 @@ class _PreDrainBodyThenDisconnectASGI:
                 return m
             # After the original body has been consumed by downstream,
             # present only a disconnect for any subsequent reads.
-            return {"type": "http.disconnect"}
+            return {"type": "http.disconnect"}  # type: ignore[typeddict-item]
 
-        async def patched_send(message: dict) -> None:
-            # Transparent pass-through
-            await send(message)
+        async def patched_send(message: Message) -> Awaitable[None] | None:
+            # Transparent pass-through (httpx/starlette expect Awaitable[None])
+            return await send(message)
 
-        await self.app(scope, patched_receive, patched_send)
+        await self.app(scope, patched_receive, patched_send)  # type: ignore[arg-type]
+
+
+# Protocol so mypy accepts an app that is both ASGI-callable and exposes openapi()
+class _ASGIAndOpenAPI(Protocol):
+    def __call__(self, scope: Scope, receive: Receive, send: Send) -> Awaitable[None]: ...
+    def openapi(self) -> Any: ...
+
+
+class _ASGIWrapperWithOpenAPI:
+    """
+    Small facade that is ASGI-callable (delegates to the pre-drain wrapper)
+    and also exposes .openapi() from the inner FastAPI app so scripts can do:
+        from app.main import app
+        schema = app.openapi()
+    """
+
+    def __init__(self, inner_fastapi: FastAPI) -> None:
+        self._inner = inner_fastapi
+        self._wrapped = _PreDrainBodyThenDisconnectASGI(inner_fastapi)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await self._wrapped(scope, receive, send)
+
+    # Only the bits we know are needed by scripts; extend if you need more.
+    def openapi(self) -> Any:
+        return self._inner.openapi()
 
 
 # ---- App factory -------------------------------------------------------------
@@ -358,7 +384,6 @@ def create_app() -> FastAPI:
 # Back-compat for tests/scripts
 build_app = create_app
 
-# Build the inner FastAPI app, then export an ASGIApp after wrapping.
+# Build the inner FastAPI app, then expose a wrapper that is ASGI-callable and has .openapi()
 _inner_fastapi_app: FastAPI = create_app()
-# Expose the *wrapped* ASGI app for TestClient and runtime. This keeps mypy happy.
-app: ASGIApp = _PreDrainBodyThenDisconnectASGI(_inner_fastapi_app)
+app: _ASGIAndOpenAPI = _ASGIWrapperWithOpenAPI(_inner_fastapi_app)
