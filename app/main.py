@@ -5,7 +5,7 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional, Awaitable, Protocol
+from typing import Any, List, Optional, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -285,18 +285,18 @@ class _PreDrainBodyThenDisconnectASGI:
                 return m
             # After the original body has been consumed by downstream,
             # present only a disconnect for any subsequent reads.
-            return {"type": "http.disconnect"}  # type: ignore[typeddict-item]
+            return {"type": "http.disconnect"}
 
-        async def patched_send(message: Message) -> Awaitable[None] | None:
-            # Transparent pass-through (httpx/starlette expect Awaitable[None])
-            return await send(message)
+        async def patched_send(message: Message) -> None:
+            # Transparent pass-through
+            await send(message)
 
-        await self.app(scope, patched_receive, patched_send)  # type: ignore[arg-type]
+        await self.app(scope, patched_receive, patched_send)
 
 
 # Protocol so mypy accepts an app that is both ASGI-callable and exposes openapi()
 class _ASGIAndOpenAPI(Protocol):
-    def __call__(self, scope: Scope, receive: Receive, send: Send) -> Awaitable[None]: ...
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None: ...
     def openapi(self) -> Any: ...
 
 
