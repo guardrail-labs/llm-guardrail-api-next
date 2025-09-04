@@ -1,2 +1,19 @@
 defaults:
   injection_action: block
+
+families:
+  pii:
+    email:
+      pattern: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+      redaction: "[REDACTED:EMAIL]"
+    phone:
+      pattern: "\\b(?:\\+?1[-.\\s]?)?(?:\\(\\d{3}\\)|\\d{3})[-.\\s]?\\d{3}[-.\\s]?\\d{4}\\b"
+      redaction: "[REDACTED:PHONE]"
+  secrets:
+    openai_key:
+      pattern: "sk-[A-Za-z0-9]{16,}"
+      redaction: "[REDACTED:OPENAI_KEY]"
+  injection:
+    prompt:
+      pattern: "(?i)(ignore previous|jailbreak|bypass)"
+      on_match: null  # defer to defaults: block
