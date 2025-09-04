@@ -48,7 +48,12 @@ class AuthMiddleware:
         method = scope.get("method", "")
         path = scope.get("path", "")
 
-        if method == "OPTIONS" or _is_safe_path(path) or _is_auth_disabled() or _has_auth_header(scope):
+        if (
+            method == "OPTIONS"
+            or _is_safe_path(path)
+            or _is_auth_disabled()
+            or _has_auth_header(scope)
+        ):
             await self.app(scope, receive, send)
             return
 
