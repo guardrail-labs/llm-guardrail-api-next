@@ -6,16 +6,16 @@ from starlette.types import ASGIApp, Receive, Scope, Send, Message
 import app.main as main
 
 
-class _DisconnectAfterResponseStart:
+class _AfterEOFAndAfterStartOnlyDisconnect:
     """
-    ASGI shim for tests:
+    Test-only ASGI shim:
 
-    - Before the response starts: pass through messages unchanged.
-    - After we see `http.response.start`: every `receive()` returns `http.disconnect`.
+    - Before the request body EOF and before response start: pass through.
+    - After we observe request EOF (`http.request` with `more_body` false),
+      *or* after we see `http.response.start`, every subsequent `receive()`
+      returns `http.disconnect`.
 
-    This avoids BaseHTTPMiddleware raising:
-    "Unexpected message received: http.request" while StreamingResponse
-    listens for disconnects during SSE.
+    This keeps Starlette's BaseHTTPMiddleware happy during StreamingResponse/SSE.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -26,13 +26,22 @@ class _DisconnectAfterResponseStart:
             await self.app(scope, receive, send)
             return
 
+        eof_seen = False
         response_started = False
 
         async def patched_receive() -> Message:
-            # After the response has started, only ever surface a disconnect
-            if response_started:
+            nonlocal eof_seen
+            # After EOF or after response start, only surface a disconnect
+            if eof_seen or response_started:
                 return {"type": "http.disconnect"}
-            return await receive()
+
+            msg = await receive()
+
+            if msg.get("type") == "http.request":
+                # If more_body is falsy/missing, treat as EOF and remember it
+                if not msg.get("more_body", False):
+                    eof_seen = True
+            return msg
 
         async def patched_send(message: Message) -> None:
             nonlocal response_started
@@ -56,7 +65,7 @@ def test_openai_streaming_sse() -> None:
         "Accept": "text/event-stream",
     }
 
-    with TestClient(_DisconnectAfterResponseStart(main.app)) as client:
+    with TestClient(_AfterEOFAndAfterStartOnlyDisconnect(main.app)) as client:
         resp = client.post("/v1/chat/completions", headers=headers, json=payload)
         assert resp.status_code == 200
 
