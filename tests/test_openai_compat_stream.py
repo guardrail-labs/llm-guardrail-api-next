@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from fastapi.testclient import TestClient
 
 # Your FastAPI ASGI app should be exposed as `app` here
@@ -28,7 +26,7 @@ def test_openai_streaming_sse() -> None:
         "X-API-Key": "k",
         "X-Tenant-ID": "acme",
         "X-Bot-ID": "assistant-1",
-        "Content-Type": "application/json",
+        # We expect an SSE response:
         "Accept": "text/event-stream",
     }
 
@@ -37,7 +35,7 @@ def test_openai_streaming_sse() -> None:
         resp = client.post(
             "/v1/chat/completions",
             headers=headers,
-            data=json.dumps(payload),
+            json=payload,  # <- typed correctly for TestClient
             timeout=15,
         )
 
