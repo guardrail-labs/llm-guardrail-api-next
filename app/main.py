@@ -5,17 +5,15 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional, Protocol
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
@@ -36,20 +34,6 @@ except Exception:  # pragma: no cover
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
-
-
-class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add basic security headers expected by tests."""
-
-    async def dispatch(self, request: StarletteRequest, call_next):
-        resp: StarletteResponse = await call_next(request)
-        h = resp.headers
-        h.setdefault("X-Content-Type-Options", "nosniff")
-        h.setdefault("X-Frame-Options", "DENY")
-        h.setdefault("Referrer-Policy", "no-referrer")
-        h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        h.setdefault("Permissions-Policy", "interest-cohort=()")
-        return resp
 
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
@@ -85,28 +69,6 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         except Exception:
             return None
         return None
-
-
-class _LatencyMiddleware(BaseHTTPMiddleware):
-    """Observe request latency into guardrail_latency_seconds (if available)."""
-
-    def __init__(self, app):
-        super().__init__(app)
-        self._hist = _get_or_create_latency_histogram()
-
-    async def dispatch(self, request: StarletteRequest, call_next):
-        start = time.perf_counter()
-        try:
-            return await call_next(request)
-        finally:
-            if self._hist is not None:
-                try:
-                    dur = max(time.perf_counter() - start, 0.0)
-                    safe_route = route_label(request.url.path)
-                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
-                except Exception:
-                    # Never break requests due to metrics errors
-                    pass
 
 
 # ---- Error/401 helpers -------------------------------------------------------
@@ -152,40 +114,28 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
     return out
 
 
-class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
-    """
-    Ensure 401 bodies include {"code","detail","request_id"} and required headers,
-    even if an upstream middleware returned a minimal {"detail": "..."} response.
-    """
+def _status_code_to_code(status: int) -> str:
+    if status == 401:
+        return "unauthorized"
+    if status == 404:
+        return "not_found"
+    if status == 413:
+        return "payload_too_large"
+    if status == 429:
+        return "rate_limited"
+    return "internal_error"
 
-    async def dispatch(self, request: StarletteRequest, call_next):
-        resp: StarletteResponse = await call_next(request)
-        if resp.status_code != 401:
-            return resp
 
-        # Consume body for parsing.
-        body_chunks: list[bytes] = []
-        if hasattr(resp, "body_iterator") and resp.body_iterator is not None:
-            async for chunk in resp.body_iterator:
-                body_chunks.append(chunk)
-        raw = b"".join(body_chunks) if body_chunks else b""
-
-        detail: str = "Unauthorized"
-        try:
-            if raw:
-                parsed = json.loads(raw.decode() or "{}")
-                detail = str(parsed.get("detail", detail))
-        except Exception:
-            pass
-
-        payload = {
-            "code": "unauthorized",
-            "detail": detail,
-            "request_id": get_request_id() or "",
-        }
-
-        safe_headers = _safe_headers_copy(resp.headers)
-        return JSONResponse(payload, status_code=401, headers=safe_headers)
+def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
+    payload = {
+        "code": _status_code_to_code(status),
+        "detail": detail,
+        "request_id": get_request_id() or "",
+    }
+    headers = _safe_headers_copy(base_headers or {})
+    # Ensure X-Request-ID is *always* present, even if empty
+    headers["X-Request-ID"] = payload["request_id"]
+    return JSONResponse(payload, status_code=status, headers=headers)
 
 
 # ---- Router auto-inclusion ---------------------------------------------------
@@ -214,112 +164,6 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
-# ---- Error JSON helpers ------------------------------------------------------
-
-def _status_code_to_code(status: int) -> str:
-    if status == 401:
-        return "unauthorized"
-    if status == 404:
-        return "not_found"
-    if status == 413:
-        return "payload_too_large"
-    if status == 429:
-        return "rate_limited"
-    return "internal_error"
-
-
-def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
-    payload = {
-        "code": _status_code_to_code(status),
-        "detail": detail,
-        "request_id": get_request_id() or "",
-    }
-    headers = _safe_headers_copy(base_headers or {})
-    # Ensure X-Request-ID is *always* present, even if empty
-    headers["X-Request-ID"] = payload["request_id"]
-    return JSONResponse(payload, status_code=status, headers=headers)
-
-
-# ---- ASGI wrapper to stabilize streaming/SSE --------------------------------
-
-class _PreDrainBodyThenDisconnectASGI:
-    """
-    ASGI wrapper that:
-      1) Fully drains the incoming request body once.
-      2) Replays the drained frames to the inner app.
-      3) After replay, any further `receive()` calls yield `http.disconnect`.
-
-    This prevents Starlette's BaseHTTPMiddleware from ever seeing an extra
-    `http.request` *after* it believes the body is finished (a common race
-    with StreamingResponse / SSE under stacked BaseHTTPMiddleware).
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # (1) Drain the entire body once up-front.
-        drained: list[Message] = []
-        while True:
-            msg: Message = await receive()
-            drained.append(msg)
-            typ = msg.get("type")
-            if typ == "http.disconnect":
-                break
-            if typ == "http.request" and not msg.get("more_body", False):
-                # End of request body
-                break
-
-        # (2) Replay drained frames to downstream, then (3) only disconnect.
-        idx = 0
-
-        async def patched_receive() -> Message:
-            nonlocal idx
-            if idx < len(drained):
-                m = drained[idx]
-                idx += 1
-                return m
-            # After the original body has been consumed by downstream,
-            # present only a disconnect for any subsequent reads.
-            return {"type": "http.disconnect"}
-
-        async def patched_send(message: Message) -> None:
-            # Transparent pass-through
-            await send(message)
-
-        await self.app(scope, patched_receive, patched_send)
-
-
-# Protocol so mypy accepts an app that is both ASGI-callable and exposes openapi()
-class _ASGIAndOpenAPI(Protocol):
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None: ...
-    def openapi(self) -> Any: ...
-
-
-class _ASGIWrapperWithOpenAPI:
-    """
-    Small facade that is ASGI-callable (delegates to the pre-drain wrapper)
-    and also exposes .openapi() from the inner FastAPI app so scripts can do:
-        from app.main import app
-        schema = app.openapi()
-    """
-
-    def __init__(self, inner_fastapi: FastAPI) -> None:
-        self._inner = inner_fastapi
-        self._wrapped = _PreDrainBodyThenDisconnectASGI(inner_fastapi)
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await self._wrapped(scope, receive, send)
-
-    # Only the bits we know are needed by scripts; extend if you need more.
-    def openapi(self) -> Any:
-        return self._inner.openapi()
-
-
 # ---- App factory -------------------------------------------------------------
 
 def create_app() -> FastAPI:
@@ -337,11 +181,6 @@ def create_app() -> FastAPI:
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(AbuseGateMiddleware)
 
-    # Security headers + latency histogram + normalize 401 body
-    app.add_middleware(_SecurityHeadersMiddleware)
-    app.add_middleware(_LatencyMiddleware)
-    app.add_middleware(_NormalizeUnauthorizedMiddleware)
-
     # CORS
     raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
     origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
@@ -356,6 +195,70 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # ---- Function-based middlewares (SSE-safe; no BaseHTTPMiddleware) ----
+
+    hist = _get_or_create_latency_histogram()
+
+    @app.middleware("http")
+    async def latency_histogram_middleware(request: StarletteRequest, call_next):
+        start = time.perf_counter()
+        try:
+            response: StarletteResponse = await call_next(request)
+            return response
+        finally:
+            if hist is not None:
+                try:
+                    dur = max(time.perf_counter() - start, 0.0)
+                    safe_route = route_label(request.url.path)
+                    hist.labels(route=safe_route, method=request.method).observe(dur)
+                except Exception:
+                    # Never break requests due to metrics errors
+                    pass
+
+    @app.middleware("http")
+    async def security_headers_middleware(request: StarletteRequest, call_next):
+        resp: StarletteResponse = await call_next(request)
+        h = resp.headers
+        h.setdefault("X-Content-Type-Options", "nosniff")
+        h.setdefault("X-Frame-Options", "DENY")
+        h.setdefault("Referrer-Policy", "no-referrer")
+        h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        h.setdefault("Permissions-Policy", "interest-cohort=()")
+        return resp
+
+    @app.middleware("http")
+    async def normalize_unauthorized_middleware(request: StarletteRequest, call_next):
+        """
+        Ensure 401 bodies include {"code","detail","request_id"} and required headers,
+        even if an upstream middleware returned a minimal {"detail": "..."} response.
+        """
+        resp: StarletteResponse = await call_next(request)
+        if resp.status_code != 401:
+            return resp
+
+        # Try to extract detail from the original body if possible.
+        detail: str = "Unauthorized"
+        try:
+            body_chunks: list[bytes] = []
+            if hasattr(resp, "body_iterator") and resp.body_iterator is not None:
+                async for chunk in resp.body_iterator:  # type: ignore[attr-defined]
+                    body_chunks.append(chunk)
+            raw = b"".join(body_chunks) if body_chunks else b""
+            if raw:
+                parsed = json.loads(raw.decode() or "{}")
+                detail = str(parsed.get("detail", detail))
+        except Exception:
+            # Fall through to our normalized payload
+            pass
+
+        payload = {
+            "code": "unauthorized",
+            "detail": detail,
+            "request_id": get_request_id() or "",
+        }
+        safe_headers = _safe_headers_copy(resp.headers)
+        return JSONResponse(payload, status_code=401, headers=safe_headers)
 
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
@@ -383,7 +286,4 @@ def create_app() -> FastAPI:
 
 # Back-compat for tests/scripts
 build_app = create_app
-
-# Build the inner FastAPI app, then expose a wrapper that is ASGI-callable and has .openapi()
-_inner_fastapi_app: FastAPI = create_app()
-app: _ASGIAndOpenAPI = _ASGIWrapperWithOpenAPI(_inner_fastapi_app)
+app = create_app()
