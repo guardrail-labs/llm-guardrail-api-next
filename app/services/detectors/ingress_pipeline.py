@@ -1,13 +1,14 @@
 # app/services/detectors/ingress_pipeline.py
-from __future__ import annotations
-
 """
 Ingress helpers for PDF preprocessing.
+
 - Optionally sanitize PDFs by stripping hidden/transparent text.
 - Safe defaults when the detector is unavailable or disabled.
 
 This module is import- and type-safe for mypy and Ruff.
 """
+
+from __future__ import annotations
 
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
