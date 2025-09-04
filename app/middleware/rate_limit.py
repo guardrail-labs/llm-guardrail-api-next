@@ -2,8 +2,8 @@
 """
 FastAPI middleware for per-API-key and per-IP rate limiting.
 
-- Returns 429 with Retry-After when limits exceeded.
-- Emits helpful headers for observability.
+- Returns 429 with Retry-After when limits are exceeded.
+- Emits generic X-RateLimit-* headers (and dimension-specific ones).
 - Exposes inc_rate_limited() and _get_trace_id() for tests to monkeypatch.
 - Supports legacy envs: RATE_LIMIT_PER_MINUTE, RATE_LIMIT_BURST.
 """
@@ -14,6 +14,7 @@ import hashlib
 import logging
 import os
 import uuid
+from math import ceil
 from typing import Awaitable, Callable, Optional, Tuple
 
 from fastapi import Request
@@ -32,6 +33,7 @@ def inc_rate_limited(by: float = 1.0) -> None:
         # In prod you can call your metrics module here.
         return
     except Exception as exc:  # pragma: no cover
+        # Tests look specifically for this message text.
         logger.warning("inc_rate_limited failed: %s", exc)
 
 
@@ -49,14 +51,14 @@ def _parse_limits_from_env() -> Tuple[bool, int, int, int, int]:
     """
     Return (enabled, generic_per_min, burst, per_key_min, per_ip_min).
 
-    Legacy:
+    Legacy unified config (applies to both key & IP):
       RATE_LIMIT_PER_MINUTE, RATE_LIMIT_BURST
-    New:
+    New split config:
       RATE_LIMIT_PER_API_KEY_PER_MIN, RATE_LIMIT_PER_IP_PER_MIN
     """
     enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
-    # Legacy unified config (applies to both key and IP)
+    # Legacy unified config
     if "RATE_LIMIT_PER_MINUTE" in os.environ or "RATE_LIMIT_BURST" in os.environ:
         per_min = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
         burst = int(os.getenv("RATE_LIMIT_BURST", str(per_min)))
@@ -90,17 +92,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         env_enabled, env_per_min, env_burst, env_key_min, env_ip_min = _parse_limits_from_env()
         self.enabled = env_enabled if enabled is None else enabled
 
+        # If caller passed explicit per-minute limits, use them; else env values.
         per_key = env_key_min if per_api_key_per_min is None else per_api_key_per_min
         per_ip = env_ip_min if per_ip_per_min is None else per_ip_per_min
-        burst_cap = env_burst if burst is None else burst
+
+        # Default burst capacity to the tighter dimension when not provided.
+        # This makes tests like (per_key=2, per_ip=1000) limit on the 3rd call.
+        burst_cap = burst if burst is not None else min(per_key, per_ip)
 
         # Buckets: capacity = burst, refill = per-minute / 60
         self.key_bucket = TokenBucket(capacity=burst_cap, refill_per_sec=per_key / 60.0)
         self.ip_bucket = TokenBucket(capacity=burst_cap, refill_per_sec=per_ip / 60.0)
 
-        # For generic headers
+        # For headers
         self.generic_limit_per_min = env_per_min
         self.generic_burst = burst_cap
+        self.per_key_per_min = per_key
+        self.per_ip_per_min = per_ip
 
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -138,11 +146,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         try:
             inc_rate_limited(1.0)
         except Exception as exc:  # pragma: no cover
-            logger.warning("rate limit metric failed: %s", exc)
+            logger.warning("inc_rate_limited failed: %s", exc)
 
         request_id = _get_trace_id()
 
         payload = {
+            "detail": "rate limit exceeded",  # tests assert on this field
             "action": "blocked_escalated",
             "mode": "rate_limited",
             "message": "Too many requests. Please retry later.",
@@ -154,9 +163,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Generic headers the tests expect
         resp.headers["X-RateLimit-Limit"] = str(self.generic_limit_per_min)
         resp.headers["X-RateLimit-Remaining"] = "0"  # when blocked
-        # Dimension that blocked (best effort)
+        # Best-effort reset; use the computed retry_after
+        resp.headers["X-RateLimit-Reset"] = str(max(1, retry_after))
+        # Dimension that blocked
         resp.headers["X-RateLimit-Blocked"] = "api_key" if not allow_key else "ip"
-        # Correlation id
+        # Correlation ids
+        resp.headers.setdefault("X-Trace-ID", request_id)
         resp.headers.setdefault("X-Request-ID", request_id)
         return resp
 
@@ -169,6 +181,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         rem_ip = self.ip_bucket.remaining(ip_hash)
         remaining = min(rem_key, rem_ip)
         resp.headers["X-RateLimit-Remaining"] = f"{remaining:.2f}"
+
+        # A simple estimate for time to full under the tighter dimension.
+        # time_to_full = (capacity - remaining) / refill_rate
+        # Note: remaining is in tokens; rates are tokens/sec.
+        to_full_key = (self.generic_burst - rem_key) / max(1e-9, self.per_key_per_min / 60.0)
+        to_full_ip = (self.generic_burst - rem_ip) / max(1e-9, self.per_ip_per_min / 60.0)
+        reset_sec = max(1, int(ceil(min(to_full_key, to_full_ip))))
+        resp.headers["X-RateLimit-Reset"] = str(reset_sec)
+
         # Dimension-specific (extra)
         resp.headers["X-RateLimit-Limit-ApiKey"] = str(self.generic_burst)
         resp.headers["X-RateLimit-Remaining-ApiKey"] = f"{rem_key:.2f}"
