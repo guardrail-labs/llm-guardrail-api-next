@@ -3,12 +3,14 @@ Abuse gate middleware: integrates the AbuseEngine with a pluggable verdict hook.
 
 Behavior
 - Builds a Subject from hashed API key + IP.
-- Checks current mode (allow/execute_locked/full_quarantine).
+- Attaches a normalized payload to request.state for the default verdict path.
 - Fetches a verdict via fetch_verdict(request) -> "safe"|"unsafe"|"unclear".
 - On "unsafe": records strike and may escalate to execute_locked / full_quarantine.
 - Returns 429 on full_quarantine; otherwise lets the request proceed but emits headers:
-    X-Guardrail-Decision, X-Guardrail-Mode (when applicable), X-Guardrail-Incident-ID
+    X-Guardrail-Decision, X-Guardrail-Mode, X-Guardrail-Incident-ID
     Retry-After (when full_quarantine).
+
+Tests may monkeypatch fetch_verdict; the symbol and signature are preserved.
 """
 
 from __future__ import annotations
@@ -28,15 +30,8 @@ from app.services.abuse.engine import (
     decision_headers,
     generate_incident_id,
 )
-
-
-# ----------------------- test hook (monkeypatched in tests) -------------------
-def fetch_verdict(request: Request) -> str:
-    """
-    Pluggable verdict fetcher. Tests monkeypatch this to return "unsafe".
-    Default is "unclear" (no strike).
-    """
-    return "unclear"
+from app.services.verifier.adapters.base import resolve_adapter_from_env
+from app.services.verifier.payload import build_normalized_payload
 
 
 # ----------------------- helpers ---------------------------------------------
@@ -76,6 +71,23 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
+# ----------------------- adapter & test hook ----------------------------------
+_adapter = resolve_adapter_from_env()
+
+def fetch_verdict(request: Request) -> str:
+    """
+    Pluggable verdict fetcher. Tests can monkeypatch this symbol.
+    Default impl uses the resolved adapter and a normalized payload placed
+    on request.state by this middleware (see dispatch()).
+    """
+    payload = getattr(request.state, "normalized_payload", {})
+    try:
+        # Adapter returns "safe" | "unsafe" | "unclear"
+        return _adapter.assess(payload)
+    except Exception:
+        return "unclear"
+
+
 # ----------------------- middleware ------------------------------------------
 class AbuseGateMiddleware(BaseHTTPMiddleware):
     def __init__(
@@ -101,6 +113,24 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
         ip = _client_ip(request) or "0.0.0.0"
         sub = Subject(api_key_hash=_hash(api_key_raw) if api_key_raw else "anon", ip_hash=_hash(ip))
 
+        # Snapshot and restore body so downstream handlers still receive it
+        body_bytes: bytes = b""
+        if request.method in ("POST", "PUT", "PATCH"):
+            try:
+                body_bytes = await request.body()
+            except Exception:
+                body_bytes = b""
+            # Attach normalized payload for the adapter to read
+            request.state.normalized_payload = build_normalized_payload(
+                request, body_bytes
+            )
+
+            async def _receive() -> dict:
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+            # Restore stream for downstream
+            request._receive = _receive
+
         # If already quarantined, short-circuit to 429 with headers
         mode_now = self.engine.current_mode(sub)
         if mode_now == "full_quarantine":
@@ -115,7 +145,7 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
             if decision == "full_quarantine":
                 return self._quarantine_response(sub, decision)
 
-        # Otherwise, let the request proceed; attach decision headers
+        # Otherwise, proceed and attach decision headers
         resp = await call_next(request)
         inc = generate_incident_id()
         hdrs = decision_headers(decision, inc, None)
