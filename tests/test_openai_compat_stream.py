@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any
 
 from fastapi.testclient import TestClient
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 # Your FastAPI app
 import app.main as main
@@ -20,22 +21,17 @@ class _AfterBodyRequestBecomesDisconnect:
       listens for disconnects.
     """
 
-    def __init__(self, app: Callable[..., Awaitable[Any]]):
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(
-        self,
-        scope: Dict[str, Any],
-        receive: Callable[[], Awaitable[Dict[str, Any]]],
-        send: Callable[[Dict[str, Any]], Awaitable[None]],
-    ) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
 
         seen_eof = False
 
-        async def patched_receive() -> Dict[str, Any]:
+        async def patched_receive() -> dict[str, Any]:
             nonlocal seen_eof
             msg = await receive()
 
@@ -73,6 +69,7 @@ def test_openai_streaming_sse() -> None:
         "X-API-Key": "k",
         "X-Tenant-ID": "acme",
         "X-Bot-ID": "assistant-1",
+        # We expect an SSE response:
         "Accept": "text/event-stream",
     }
 
