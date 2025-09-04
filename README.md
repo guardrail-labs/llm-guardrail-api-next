@@ -191,5 +191,17 @@ Raw content is never included in debug; only fingerprints and spans are returned
 mypy .
 pytest -q
 
+```mermaid
+flowchart LR
+  A[Client App] --> B(Guardrail API)
+  B --> C[Ingress Eval]
+  C --> D{Policy Defaults}
+  D -->|gray families| E[Verifier]
+  E --> F[Final Decision]
+  C --> G[Audit & Metrics]
+  C --> H[Debug Provenance]
+  F --> I[Egress Eval]
+  I --> J[LLM Backend]
+```
 
 All tests must be green before merge.
