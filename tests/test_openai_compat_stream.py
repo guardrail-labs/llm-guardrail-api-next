@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from fastapi.testclient import TestClient
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 # Your FastAPI app
 import app.main as main
@@ -31,21 +31,21 @@ class _AfterBodyRequestBecomesDisconnect:
 
         seen_eof = False
 
-        async def patched_receive() -> dict[str, Any]:
+        async def patched_receive() -> Message:
             nonlocal seen_eof
-            msg = await receive()
+            msg: Message = await receive()
 
             if msg.get("type") == "http.request":
                 # Mark EOF when more_body=False (end of body)
                 if not msg.get("more_body", False):
                     if seen_eof:
                         # Any further http.request after EOF -> disconnect
-                        return {"type": "http.disconnect"}
+                        return {"type": "http.disconnect"}  # type: ignore[return-value]
                     seen_eof = True
-                return msg
+                return msg  # type: ignore[return-value]
 
             # Pass through anything else (e.g., http.disconnect)
-            return msg
+            return msg  # type: ignore[return-value]
 
         await self.app(scope, patched_receive, send)
 
