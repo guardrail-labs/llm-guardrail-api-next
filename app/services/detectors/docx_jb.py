@@ -16,27 +16,26 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Protocol, Tuple
 
-# Rule IDs
+# ---- Rule IDs ---------------------------------------------------------------
 R_ROLEPLAY = "inj:roleplay_jailbreak"
 R_OVERRIDE = "inj:override_safety"
 R_EXFIL = "exfil:credentials_request"
 R_COERCE = "soceng:coercion_emotive"
 
-
-# ---- Extractor Protocol ------------------------------------------------------
+# ---- Extractor Protocol -----------------------------------------------------
 class DocxExtractor(Protocol):
-    def extract_paragraphs(self, docx_bytes: bytes) -> Iterable[str]: ...
-
+    def extract_paragraphs(self, docx_bytes: bytes) -> Iterable[str]:
+        ...
 
 class DefaultDocxExtractor:
     def extract_paragraphs(self, docx_bytes: bytes) -> Iterable[str]:
-        return []  # Fallback: treat as empty => no hits
+        # Fallback: treat as empty => no hits (safe default for CI)
+        return []
 
-
-# ---- Patterns ----------------------------------------------------------------
+# ---- Patterns ---------------------------------------------------------------
 _PATTERNS: Dict[str, re.Pattern[str]] = {
     R_ROLEPLAY: re.compile(
-        r"(?i)\b(pretend|role[-\s]*play|act\s+as)\b.*\b(teen|child|hacker|admin)\b"
+        r"(?i)\b(pretend|role[\-\s]*play|act\s+as)\b.*\b(teen|child|hacker|admin)\b"
     ),
     R_OVERRIDE: re.compile(
         r"(?i)\b(ignore|bypass|disable)\b.*\b(safety|guardrail|filter|policy)\b"
@@ -49,41 +48,51 @@ _PATTERNS: Dict[str, re.Pattern[str]] = {
     ),
 }
 
-
 @dataclass
 class DetectionResult:
     rule_hits: List[str]
     sanitized_text: str
     debug: Dict[str, Any]
 
-
-def _scan_lines(lines: Iterable[str]) -> Tuple[List[str], List[str], Dict[str, Any]]:
+def _scan_lines(lines: List[str]) -> Tuple[List[str], List[str], Dict[str, Any]]:
     hits: List[str] = []
     keep: List[str] = []
     samples: Dict[str, List[str]] = {rid: [] for rid in _PATTERNS}
 
     for ln in lines:
+        text = (ln or "").strip()
+        if not text:
+            continue
+
         line_hit = False
         for rid, pat in _PATTERNS.items():
-            if pat.search(ln or ""):
+            if pat.search(text):
                 if rid not in hits:
                     hits.append(rid)
                 if len(samples[rid]) < 3:
-                    samples[rid].append(ln.strip()[:200])
+                    samples[rid].append(text[:200])
                 line_hit = True
+
         if not line_hit:
-            keep.append(ln)
+            keep.append(text)
 
-    debug = {"samples": samples, "kept_count": len(keep), "lines_scanned": len(list(lines))}
+    debug = {
+        "samples": samples,
+        "kept_count": len(keep),
+        "lines_scanned": len(lines),
+    }
     return hits, keep, debug
-
 
 def detect_and_sanitize_docx(
     docx_bytes: bytes, extractor: DocxExtractor | None = None
 ) -> DetectionResult:
+    """
+    Scan DOCX paragraphs for jailbreak / social-engineering cues; return
+    rule hits and sanitized text that excludes matched lines.
+    """
     extractor = extractor or DefaultDocxExtractor()
     lines = list(extractor.extract_paragraphs(docx_bytes))
     rule_hits, keep, dbg = _scan_lines(lines)
-    sanitized = "\n".join(s for s in keep if s and s.strip())
+    sanitized = "\n".join(ln for ln in keep if ln)
     dbg["rule_hits"] = rule_hits
     return DetectionResult(rule_hits=rule_hits, sanitized_text=sanitized, debug=dbg)
