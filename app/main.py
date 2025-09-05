@@ -279,7 +279,6 @@ class _SSEShield:
 
         # 1) Pre-drain the upstream body completely (small in tests, okay).
         body_parts: List[bytes] = []
-        saw_disconnect = False
         while True:
             msg = await receive()
             t = msg.get("type")
@@ -288,7 +287,6 @@ class _SSEShield:
                 if not msg.get("more_body", False):
                     break
             elif t == "http.disconnect":
-                saw_disconnect = True
                 break
             else:
                 # Ignore any other message types for safety.
