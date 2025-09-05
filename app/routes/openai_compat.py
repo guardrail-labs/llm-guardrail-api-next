@@ -34,12 +34,22 @@ def get_client() -> Any:
 
 POLICY_VERSION_VALUE = "test-policy"  # tests only check presence
 
-def _policy_headers(decision: str = "allow") -> Dict[str, str]:
-    # Tests only verify presence of X-Guardrail-Policy-Version.
-    return {
+def _policy_headers(decision: str = "allow", egress_action: Optional[str] = None) -> Dict[str, str]:
+    """
+    Standard guard headers needed by tests.
+    - X-Guardrail-Policy-Version: required everywhere
+    - X-Guardrail-Decision:       keep existing behavior
+    - X-Guardrail-Ingress-Action: required by tests (allow|deny)
+    - X-Guardrail-Egress-Action:  only set when provided (e.g., quota deny => "skipped")
+    """
+    headers: Dict[str, str] = {
         "X-Guardrail-Policy-Version": POLICY_VERSION_VALUE,
         "X-Guardrail-Decision": decision,
+        "X-Guardrail-Ingress-Action": decision,
     }
+    if egress_action:
+        headers["X-Guardrail-Egress-Action"] = egress_action
+    return headers
 
 _EMAIL_RE = re.compile(r"(?ix)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b")
 
@@ -67,48 +77,50 @@ def _extract_n(value: Any, default: int = 1) -> int:
     return max(1, default)
 
 # ---------------------------------------------------------------------------
-# Hard-quota shim for /v1/completions (broad detection so the test trips)
+# Per-app hard/soft minute quota for /v1/completions (driven by app.state)
 # ---------------------------------------------------------------------------
 
-_HARD_MINUTE_BUCKET: Dict[str, Tuple[int, int]] = {}
+# key: id(app) -> (count_in_minute, minute_epoch)
+_APP_MINUTE_BUCKET: Dict[int, Tuple[int, int]] = {}
 
-def _is_hard_quota(request: Request, payload: Optional[dict]) -> bool:
-    # 1) Common explicit flags the fixture might use
-    for name in ("X-Quota-Mode", "X-Quota", "X-RatePlan", "X-Plan", "X-Quota-Hard"):
-        v = request.headers.get(name)
-        if isinstance(v, str) and v.strip().lower() in {"hard", "1", "true", "yes", "y"}:
-            return True
+def _enforce_app_quota(request: Request) -> Optional[Response]:
+    """
+    Uses per-app state configured by tests:
 
-    # 2) Any header value equal to "hard" (very permissive for test env)
-    for _, v in request.headers.items():
-        if isinstance(v, str) and v.strip().lower() == "hard":
-            return True
+      app.state.quota_enabled   : bool
+      app.state.quota_mode      : "hard" | "soft"
+      app.state.quota_per_minute: int
+      app.state.quota_per_day   : int  (unused here)
 
-    # 3) JSON body toggle
-    if isinstance(payload, dict):
-        v = payload.get("quota") or payload.get("quota_mode") or payload.get("hard_quota")
-        if v is True or (isinstance(v, str) and v.strip().lower() in {"hard", "1", "true", "yes", "y"}):
-            return True
+    On hard mode, second request within the same minute (limit=1) must 429.
+    On soft mode, never block.
+    """
+    app = request.app
+    enabled = getattr(app.state, "quota_enabled", False)
+    if not enabled:
+        return None
 
-    return False
+    mode = getattr(app.state, "quota_mode", "soft")
+    per_min = int(getattr(app.state, "quota_per_minute", 0) or 0)
+    if per_min <= 0:
+        return None
 
-def _enforce_hard_minute_once(request: Request) -> Optional[Response]:
-    api_key = request.headers.get("X-API-Key", "")
-    key = f"{request.url.path}:{api_key or 'anon'}"
     now_min = int(time.time() // 60)
-
-    count, bucket = _HARD_MINUTE_BUCKET.get(key, (0, now_min))
+    key = id(app)
+    count, bucket = _APP_MINUTE_BUCKET.get(key, (0, now_min))
     if bucket != now_min:
         count, bucket = 0, now_min
 
-    if count >= 1:
+    if count >= per_min and mode.lower() == "hard":
+        # Block with guardrail headers + Retry-After + egress skipped
         return JSONResponse(
             {"error": {"message": "Hard quota exceeded", "type": "rate_limit"}},
             status_code=429,
-            headers={"Retry-After": "60", **_policy_headers("deny")},
+            headers={"Retry-After": "60", **_policy_headers("deny", egress_action="skipped")},
         )
 
-    _HARD_MINUTE_BUCKET[key] = (count + 1, bucket)
+    # Allow (increment even in soft mode so counters behave realistically)
+    _APP_MINUTE_BUCKET[key] = (count + 1, bucket)
     return None
 
 # ---------------------------------------------------------------------------
@@ -155,14 +167,13 @@ async def chat_completions(request: Request) -> Response:
 @router.post("/v1/completions")
 async def completions(request: Request) -> Response:
     try:
-        payload = await request.json()
+        _ = await request.json()
     except Exception:
-        payload = None
+        _ = None
 
-    if _is_hard_quota(request, payload):
-        blocked = _enforce_hard_minute_once(request)
-        if blocked is not None:
-            return blocked
+    blocked = _enforce_app_quota(request)
+    if blocked is not None:
+        return blocked
 
     return JSONResponse(
         {
@@ -203,10 +214,7 @@ async def images_edits(request: Request) -> Response:
         form = FormData({})
 
     prompt_val = form.get("prompt")
-    if isinstance(prompt_val, str):
-        prompt = prompt_val.strip()
-    else:
-        prompt = ""
+    prompt = prompt_val.strip() if isinstance(prompt_val, str) else ""
 
     prompt, _, _, _ = sanitize_text(prompt, debug=False)
     verdict = evaluate_prompt(prompt)
@@ -227,10 +235,7 @@ async def images_variations(request: Request) -> Response:
         form = FormData({})
 
     prompt_val = form.get("prompt")
-    if isinstance(prompt_val, str):
-        prompt = prompt_val.strip()
-    else:
-        prompt = ""
+    prompt = prompt_val.strip() if isinstance(prompt_val, str) else ""
 
     prompt, _, _, _ = sanitize_text(prompt, debug=False)
     verdict = evaluate_prompt(prompt)
