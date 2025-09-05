@@ -44,8 +44,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
 
-    IMPORTANT: Keep its label set aligned with the rest of the codebase/tests,
-    which expect a SINGLE label (endpoint).
+    IMPORTANT: tests expect a single 'endpoint' label.
     """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
@@ -65,7 +64,6 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
     try:
         return PromHistogram(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
-        # Another import path created it — fetch and reuse.
         try:
             names_map = getattr(PromRegistry, "_names_to_collectors", None)
             if isinstance(names_map, dict):
@@ -75,15 +73,16 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         return None
 
 
-# ---- Error/401 helpers -------------------------------------------------------
+# ---- Error helpers -----------------------------------------------------------
 
 _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
 
 
 def _safe_headers_copy(src_headers) -> dict[str, str]:
     out: dict[str, str] = {}
+    # Try raw first (Starlette headers impl)
     try:
-        for k, v in src_headers.raw:
+        for k, v in src_headers.raw:  # type: ignore[attr-defined]
             out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
     except Exception:
         try:
@@ -190,7 +189,6 @@ def create_app() -> FastAPI:
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_endpoint = route_label(request.url.path)
-                    # SINGLE label value:
                     hist.labels(endpoint=safe_endpoint).observe(dur)
                 except Exception:
                     pass
@@ -248,22 +246,23 @@ class _DrainPostEOFToDisconnectASGI:
     Wraps the FastAPI app and makes it tolerant to clients/tests that keep
     sending 'http.request' messages after EOF or after response start.
 
-    Behavior:
-      - Passes the request body through unmodified until EOF.
-      - Once response has started OR EOF has been *delivered* downstream,
-        any subsequent 'http.request' is coerced to 'http.disconnect'.
+    Key rule:
+      - As soon as the response has *started* (we observe 'http.response.start'),
+        we will no longer consult the upstream `receive`. We synthesize
+        'http.disconnect' for any further calls. This prevents Starlette's
+        `listen_for_disconnect()` from ever seeing stray 'http.request'.
 
-    The wrapper also forwards attributes like `.openapi()` so existing tooling
-    keeps working.
+      - Before the response starts, we pass through the request body normally,
+        tracking whether we've seen upstream EOF.
     """
 
     def __init__(self, app: FastAPI) -> None:
         self._app = app
 
-    def __getattr__(self, name: str) -> Any:  # pragma: no cover - trivial
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover
         return getattr(self._app, name)
 
-    def openapi(self) -> Any:  # pragma: no cover - exercised by tooling
+    def openapi(self) -> Any:  # pragma: no cover
         return self._app.openapi()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -272,7 +271,7 @@ class _DrainPostEOFToDisconnectASGI:
             return
 
         started = False
-        eof_delivered = False  # True once we pass the *final* body chunk downstream.
+        upstream_eof_seen = False  # True after we *observe* the real upstream EOF.
 
         async def patched_send(message: Message) -> None:
             nonlocal started
@@ -281,31 +280,32 @@ class _DrainPostEOFToDisconnectASGI:
             await send(message)
 
         async def patched_receive() -> Message:
-            nonlocal started, eof_delivered
+            nonlocal started, upstream_eof_seen
+
+            # Once the response has started, never read upstream again.
+            # Always pretend the client disconnected cleanly.
+            if started:
+                return {"type": "http.disconnect"}
+
             msg = await receive()
             mtype = msg.get("type")
 
             if mtype == "http.request":
-                more = bool(msg.get("more_body", False))
-
-                # If we've already started responding or already delivered EOF,
-                # any additional http.request must become a disconnect.
-                if started or eof_delivered:
-                    return {"type": "http.disconnect"}
-
-                if more:
-                    # Regular body chunk before start/EOF.
-                    return msg
-
-                # This is the one true EOF. Deliver it and mark delivered.
-                eof_delivered = True
+                if not bool(msg.get("more_body", False)):
+                    upstream_eof_seen = True
                 return msg
 
-            # After start/EOF, everything except a real disconnect becomes one.
-            if (started or eof_delivered) and mtype != "http.disconnect":
+            if mtype == "http.disconnect":
+                return msg
+
+            # Any other message types after EOF -> treat as disconnect.
+            if upstream_eof_seen:
                 return {"type": "http.disconnect"}
 
             return msg
+
+            # Note: Once started=True, all future calls bypass upstream, so
+            # late 'http.request' from a flaky client/test won't leak through.
 
         await self._app(scope, patched_receive, patched_send)
 
