@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.datastructures import FormData
 
 # add helper (make sure app/http/headers.py exists)
-from app.http.headers import attach_guardrail_headers
+from app.shared.headers import attach_guardrail_headers
 
 router = APIRouter()
 azure_router = APIRouter()
