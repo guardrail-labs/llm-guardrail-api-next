@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict, cast
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,7 @@ from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
+from starlette.types import Message, Receive, Scope, Send
 
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
@@ -77,12 +79,14 @@ _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Rese
 def _safe_headers_copy(src_headers) -> dict[str, str]:
     out: dict[str, str] = {}
 
+    # Prefer Starlette's raw header bytes if available
     raw = getattr(src_headers, "raw", None)
     if raw is not None:
         try:
             for k, v in raw:
                 out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
         except Exception:
+            # fall through to items() path
             pass
 
     if not out:
@@ -236,18 +240,18 @@ def create_app() -> FastAPI:
     return app
 
 
-# -------------------- ASGI wrapper: SSE prebuffer + hard disconnect -----------
+# -------------------- ASGI wrapper: SSE body prebuffer + hard disconnect ------
 
 class _SSEPrebufferAndHardDisconnect:
     """
-    For requests with 'Accept: text/event-stream', fully drain the *original*
-    receive() stream before calling into the app. Then present the app with:
-      - exactly one 'http.request' containing the aggregated body (EOF)
-      - and thereafter *always* 'http.disconnect' on every receive()
+    For requests with 'Accept: text/event-stream', fully drain the original
+    body before entering the app. Then hand the app a receive() that returns:
+      • exactly one 'http.request' (aggregated body, EOF)
+      • thereafter always 'http.disconnect'
 
-    This guarantees Starlette's BaseHTTPMiddleware and StreamingResponse
-    never encounter a late 'http.request', fixing the
-    "Unexpected message received: http.request" error.
+    The async lock ensures only one concurrent caller ever receives the single
+    'http.request' frame, preventing stray 'http.request' from reaching
+    Starlette's BaseHTTPMiddleware once the request is considered consumed.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -259,53 +263,59 @@ class _SSEPrebufferAndHardDisconnect:
     def openapi(self) -> Any:  # pragma: no cover
         return self._app.openapi()
 
-    async def __call__(self, scope, receive, send):
-        # Only handle HTTP
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Only handle HTTP requests
         if scope.get("type") != "http":
             await self._app(scope, receive, send)
             return
 
-        # Check SSE Accept header
-        is_sse = False
-        for k, v in (scope.get("headers") or []):
-            if k == b"accept" and b"text/event-stream" in v.lower():
-                is_sse = True
-                break
+        # Only shield SSE requests
+        headers = scope.get("headers") or []
+        is_sse = any(k == b"accept" and b"text/event-stream" in v.lower() for k, v in headers)
         if not is_sse:
             await self._app(scope, receive, send)
             return
 
-        # 1) Pre-drain original body completely.
-        parts: list[bytes] = []
+        # 1) Pre-drain the incoming request body completely.
+        chunks: list[bytes] = []
         while True:
             msg = await receive()
-            mtype = msg.get("type")
-            if mtype == "http.request":
-                parts.append(msg.get("body", b""))
+            t = msg.get("type")
+            if t == "http.request":
+                chunks.append(msg.get("body", b""))
                 if not msg.get("more_body", False):
                     break
-                continue
-            if mtype == "http.disconnect":
-                # client disappeared early; we still proceed with what we have
+            elif t == "http.disconnect":
+                # Client vanished early; proceed with what we have.
                 break
-            # ignore any other types for HTTP
+            else:
+                # Ignore anything else.
+                continue
 
-        aggregated = b"".join(parts)
+        aggregated = b"".join(chunks)
+
+        # 2) Expose a race-safe receive to the inner app.
         served_once = False
+        lock = asyncio.Lock()
 
-        # 2) patched receive: one aggregate body, then always disconnect
-        async def patched_receive():
+        async def patched_receive() -> Message:
             nonlocal served_once
-            if not served_once:
-                served_once = True
-                return {"type": "http.request", "body": aggregated, "more_body": False}
-            return {"type": "http.disconnect"}
+            async with lock:
+                if not served_once:
+                    served_once = True
+                    return {
+                        "type": "http.request",
+                        "body": aggregated,
+                        "more_body": False,
+                    }
+                # After the single body frame, always report disconnect.
+                return {"type": "http.disconnect"}
 
-        # 3) Call the inner app
+        # 3) Call the real app with the patched receive (send is unchanged).
         await self._app(scope, patched_receive, send)
 
 
 # Factory + exports ------------------------------------------------------------
 build_app = create_app
-_inner = create_app()
-app = _SSEPrebufferAndHardDisconnect(_inner)
+_inner_app: FastAPI = create_app()
+app = _SSEPrebufferAndHardDisconnect(_inner_app)
