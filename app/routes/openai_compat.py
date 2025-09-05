@@ -8,7 +8,10 @@ from typing import Any, AsyncIterator, Dict, Optional
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+# Public routers (tests import both)
 router = APIRouter()
+azure_router = APIRouter()  # exported symbol expected by tests
+
 
 # Safe policy version fallback
 try:  # pragma: no cover
@@ -16,6 +19,7 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     def current_rules_version() -> str:  # type: ignore
         return "test-rules"
+
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.I)
 
