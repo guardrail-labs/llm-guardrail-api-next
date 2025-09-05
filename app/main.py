@@ -5,7 +5,7 @@ import importlib
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +26,7 @@ from app.telemetry.tracing import TracingMiddleware
 # Optional Prometheus imports (guarded so tests don't fail if missing)
 try:  # pragma: no cover
     from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
+
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -275,7 +276,6 @@ class _SSEShield:
 
         # 1) Pre-drain request body entirely.
         chunks: list[bytes] = []
-        disconnected = False
         while True:
             msg = await receive()
             t = msg.get("type")
@@ -286,7 +286,6 @@ class _SSEShield:
                 if not msg.get("more_body", False):
                     break
             elif t == "http.disconnect":
-                disconnected = True
                 break
             else:
                 # Ignore anything else (shouldn't happen in http scope)
