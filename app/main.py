@@ -1,3 +1,4 @@
+# app/main.py
 from __future__ import annotations
 
 import asyncio
@@ -55,7 +56,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         pass
 
     try:
-        return _PromHistogramCls(name, "Request latency in seconds", ["endpoint"])
+        return PromHistogram(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
         try:
             names_map = getattr(PromRegistry, "_names_to_collectors", None)
@@ -95,7 +96,7 @@ def _safe_headers_copy(src_headers) -> Dict[str, str]:
     now = int(time.time())
     defaults = {
         "X-RateLimit-Limit": "60",
-        "X-RateLimit-Remaining": "3600",
+        "X-RateLimit-Remaining": "60",  # keep consistent with per-minute example
         "X-RateLimit-Reset": str(now + 60),
     }
     for k in _RATE_HEADERS:
@@ -113,6 +114,8 @@ def _status_code_to_code(status: int) -> str:
         return "payload_too_large"
     if status == 429:
         return "rate_limited"
+    if 400 <= status < 500:
+        return "bad_request"
     return "internal_error"
 
 
@@ -248,8 +251,8 @@ class _SSEShield:
       2) Pre-drain the original upstream body once.
       3) Replay exactly one 'http.request' (with the full drained body) to the
          *owner task* (the task running this ASGI call).
-      4) Background/non-owner tasks block until the owner has consumed the body,
-         then they receive 'http.disconnect'.
+      4) Background/non-owner tasks block until the owner has been scheduled
+         with the body, then they receive 'http.disconnect'.
 
     This preserves FastAPI/Pydantic validation (body arrives intact) and prevents
     'Unexpected message received: http.request' in Starlette's BaseHTTPMiddleware
@@ -294,29 +297,32 @@ class _SSEShield:
 
         drained_body = b"".join(body_parts)
 
-        # 2) Prepare patched receive with a handshake to avoid the 422 race.
+        # 2) Prepare patched receive with a safer wake-up ordering:
+        #    - owner gets the body first
+        #    - background listeners are unblocked on the next loop tick
         owner_task = asyncio.current_task()
         owner_sent = False
-        owner_ready = asyncio.Event()  # set when owner receives the body once
+        owner_ready = asyncio.Event()  # set right after the owner is scheduled with the body
 
         async def patched_receive() -> Message:
             nonlocal owner_sent
             if asyncio.current_task() is owner_task:
                 if not owner_sent:
                     owner_sent = True
-                    # Unblock any background listeners *after* releasing body to the owner.
+                    # Unblock background listeners on the next loop tick so the owner
+                    # is scheduled first with the drained body.
                     try:
-                        owner_ready.set()
+                        loop = asyncio.get_running_loop()
+                        loop.call_soon(owner_ready.set)
                     except Exception:
-                        pass
+                        owner_ready.set()
                     return {
                         "type": "http.request",
                         "body": drained_body,
                         "more_body": False,
                     }
                 return {"type": "http.disconnect"}
-            # Non-owner (e.g., disconnect watcher) — wait until owner consumed the body
-            # to avoid signaling an early disconnect that would cause a 422.
+            # Non-owner (e.g., disconnect watcher) — wait until owner has been scheduled.
             if not owner_sent:
                 await owner_ready.wait()
             return {"type": "http.disconnect"}
