@@ -52,11 +52,6 @@ def _policy_headers(decision: str = "allow", egress_action: str = "allow") -> Di
         "X-Guardrail-Egress-Action": egress_action,
     }
 
-def _policy_headers_as_list(decision: str = "allow", egress_action: str = "allow") -> List[Tuple[str, str]]:
-    """Return policy headers as a list of tuples to preserve header casing for SSE tests."""
-    h = _policy_headers(decision, egress_action)
-    return [(k, v) for k, v in h.items()]
-
 _EMAIL_RE = re.compile(r"(?ix)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b")
 
 def _redact_egress(text: str) -> str:
@@ -92,7 +87,6 @@ def _bump_decision_metrics(decision: str) -> None:
     except Exception:
         return
 
-    # Try the most likely function names/signatures.
     for name in (
         "inc_decisions_family",
         "inc_decision_family",
@@ -105,7 +99,6 @@ def _bump_decision_metrics(decision: str) -> None:
                 fn(decision)  # type: ignore[misc]
                 return
             except TypeError:
-                # Some variants may take (decision, route=...)
                 try:
                     fn(decision, route="/v1/images/generations")  # type: ignore[misc]
                     return
@@ -130,7 +123,6 @@ def _is_hard_quota(request: Request, payload: Optional[dict]) -> bool:
       - quota_per_minute = 1
       - quota_per_day = 0
     """
-    # app.state based detection
     try:
         st = request.app.state
         if getattr(st, "quota_enabled", False) and str(getattr(st, "quota_mode", "")).lower() == "hard":
@@ -139,7 +131,6 @@ def _is_hard_quota(request: Request, payload: Optional[dict]) -> bool:
     except Exception:
         pass
 
-    # permissive toggles via headers/body (for ad-hoc test envs)
     for name in ("X-Quota-Mode", "X-Quota", "X-RatePlan", "X-Plan", "X-Quota-Hard"):
         v = request.headers.get(name)
         if isinstance(v, str) and v.strip().lower() in {"hard", "1", "true", "yes", "y"}:
@@ -188,11 +179,12 @@ async def chat_completions(request: Request) -> Response:
         done = "data: [DONE]\n\n"
         body = "event: message\n" + chunk + "event: done\n" + done
 
-        # Use PlainTextResponse with a tuple-list of headers to preserve casing in dict(resp.headers)
+        # Use PlainTextResponse with a standard dict for headers.
+        # Starlette/httpx will expose them via dict(resp.headers) in tests.
         return PlainTextResponse(
             content=body,
             media_type="text/event-stream",
-            headers=_policy_headers_as_list("allow", egress_action="allow"),
+            headers=_policy_headers("allow", egress_action="allow"),
         )
 
     # Non-streaming JSON
