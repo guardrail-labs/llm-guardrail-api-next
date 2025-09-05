@@ -4,7 +4,7 @@ import importlib
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Dict
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -262,55 +262,66 @@ class _SSEReceiveShield:
     def openapi(self) -> Any:  # pragma: no cover
         return self._app.openapi()
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http":
-            await self._app(scope, receive, send)
-            return
+   Message = Dict[str, Any] 
 
-        # Detect SSE via Accept header
-        def _is_sse() -> bool:
-            try:
-                for k, v in scope.get("headers") or []:
-                    if k == b"accept" and b"text/event-stream" in v:
-                        return True
-            except Exception:
-                pass
-            return False
+   async def __call__(self, scope, receive, send):
+    # Pass through non-HTTP scopes unchanged
+    if scope.get("type") != "http":
+        await self._app(scope, receive, send)
+        return
 
-        if not _is_sse():
-            await self._app(scope, receive, send)
-            return
+    # 1) Pre-drain the entire request body up to EOF (do NOT wait for http.disconnect here).
+    body_parts = []
+    more_body = True
+    pending_non_request_msgs: list[Message] = []
 
-        # Pre-drain & cache the entire body from the original receive()
-        cached: list[Message] = []
+    while more_body:
+        msg: Message = await receive()
+        mtype = msg.get("type")
+        if mtype == "http.request":
+            body_parts.append(msg.get("body", b""))
+            more_body = bool(msg.get("more_body", False))
+        else:
+            # Save anything non-request (e.g. an early disconnect) to replay later
+            pending_non_request_msgs.append(msg)
+            if mtype == "http.disconnect":
+                # Client went away early; no need to keep draining.
+                break
 
+    aggregated_body = b"".join(body_parts)
+
+    # 2) patched_receive: first replay the full body (single chunk, EOF),
+    #    then replay any non-request messages we saw (rare),
+    #    then forward future messages from the real receive.
+    replay_stage = 0  # 0 = body; 1 = pending non-request; 2 = passthrough
+
+    async def patched_receive() -> Message:
+        nonlocal replay_stage
+        if replay_stage == 0:
+            replay_stage = 1 if pending_non_request_msgs else 2
+            return {"type": "http.request", "body": aggregated_body, "more_body": False}
+
+        if replay_stage == 1:
+            msg2 = pending_non_request_msgs.pop(0)
+            if not pending_non_request_msgs:
+                replay_stage = 2
+            return msg2
+
+        # After the body is fully replayed, Starlette expects ONLY disconnects, etc.
+        # Be defensive: swallow any stray http.request chunks if they appear.
         while True:
-            msg = await receive()
-            mtype = msg.get("type")
-            if mtype == "http.request":
-                cached.append(msg)
-                if not bool(msg.get("more_body", False)):
-                    break  # EOF
+            nxt = await receive()
+            if nxt.get("type") == "http.request":
+                # Ignore any late body pieces; only allow disconnect or other signals through.
+                if not nxt.get("more_body", False):
+                    # swallow terminal chunk and keep waiting for disconnect
+                    continue
+                # swallow mid chunks as well
                 continue
-                if mtype == "http.disconnect":
-                    break
-            # Any other message types are forwarded as part of the cache too.
-            cached.append(msg)
-            # If this wasn't a request-body, just continue draining until EOF or disconnect.
+            return nxt  # typically http.disconnect
 
-        # Serve cached body to the app, then switch to permanent disconnects
-        idx = 0
-
-        async def patched_receive() -> Message:
-            nonlocal idx
-            if idx < len(cached):
-                m = cached[idx]
-                idx += 1
-                return m
-            # After the app has consumed the cached body, never return another request message.
-            return {"type": "http.disconnect"}
-
-        await self._app(scope, patched_receive, send)
+    # 3) Call the real app with our patched receive (send is unmodified for SSE).
+    await self._app(scope, patched_receive, send)
 
 
 # Factory + exports ------------------------------------------------------------
