@@ -58,7 +58,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         pass
 
     try:
-        return PromHistogram(name, "Request latency in seconds", ["endpoint"])
+        return _PromHistogramCls(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
         # Another import path created it — fetch and reuse.
         try:
@@ -77,14 +77,22 @@ _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Rese
 
 def _safe_headers_copy(src_headers) -> dict[str, str]:
     out: dict[str, str] = {}
-    # Try raw first (Starlette headers impl)
-    try:
-        for k, v in src_headers.raw: 
-            out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
-    except Exception:
+
+    # Prefer Starlette's raw header bytes if available
+    raw = getattr(src_headers, "raw", None)
+    if raw is not None:
         try:
-            for k, v in src_headers.items():
-                out.setdefault(k, v)
+            for k, v in raw:
+                out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
+        except Exception:
+            # fall through to items() path
+            pass
+
+    if not out:
+        try:
+            items = src_headers.items() if hasattr(src_headers, "items") else []
+            for k, v in items:
+                out.setdefault(str(k), str(v))
         except Exception:
             pass
 
@@ -278,7 +286,7 @@ class _DrainPostEOFToDisconnectASGI:
             mtype = msg.get("type")
 
             if mtype == "http.request":
-                # NEW: if we've already seen upstream EOF, *convert* any later http.request.
+                # If we've already seen upstream EOF, convert any later http.request to disconnect.
                 if upstream_eof_seen:
                     return {"type": "http.disconnect"}
                 if not bool(msg.get("more_body", False)):
