@@ -283,7 +283,6 @@ class _SSEReceiveShield:
 
         # Pre-drain & cache the entire body from the original receive()
         cached: list[Message] = []
-        disconnected = False
 
         while True:
             msg = await receive()
@@ -293,9 +292,8 @@ class _SSEReceiveShield:
                 if not bool(msg.get("more_body", False)):
                     break  # EOF
                 continue
-            if mtype == "http.disconnect":
-                disconnected = True
-                break
+                if mtype == "http.disconnect":
+                    break
             # Any other message types are forwarded as part of the cache too.
             cached.append(msg)
             # If this wasn't a request-body, just continue draining until EOF or disconnect.
