@@ -4,7 +4,7 @@ import importlib
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, cast
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -238,9 +238,6 @@ def create_app() -> FastAPI:
 
     return app
 
-
-# -------------------- ASGI wrapper: SSE body prebuffer + safe disconnect ------
-
 # -------------------- ASGI wrapper: SSE body prebuffer + safe disconnect ------
 
 class _SSEReceiveShield:
@@ -328,7 +325,7 @@ class _SSEReceiveShield:
                         continue
                     # swallow mid chunks as well
                     continue
-                return nxt  # typically http.disconnect
+                return cast(Message, nxt)  # typically http.disconnect
 
         # 3) Call the real app with our patched receive (send is unmodified for SSE).
         await self._app(scope, patched_receive, send)
