@@ -239,17 +239,18 @@ def create_app() -> FastAPI:
     return app
 
 
-# -------------------- ASGI shim for flaky disconnects -------------------------
-class _DrainPostEOFToDisconnectASGI:
-    """
-    Wraps the FastAPI app and makes it tolerant to clients/tests that keep
-    sending 'http.request' messages after EOF or after response start.
+# -------------------- ASGI wrapper: SSE body prebuffer + safe disconnect ------
 
-    Rules:
-      • After we see 'http.response.start', we never consult upstream receive() again.
-        We *always* synthesize 'http.disconnect'.
-      • After we've seen upstream EOF once (a 'http.request' with more_body==False),
-        any subsequent 'http.request' becomes 'http.disconnect' too.
+class _SSEReceiveShield:
+    """
+    For requests with 'Accept: text/event-stream', pre-drain/cache the entire
+    request body from the *original* receive() before calling into the app.
+    After the cached body is exhausted, *always* return 'http.disconnect' for
+    any further receive() calls.
+
+    This prevents Starlette's BaseHTTPMiddleware (_CachedRequest) from ever
+    encountering a stray 'http.request' once the body has been consumed,
+    fixing flaky 'Unexpected message received: http.request' errors during SSE.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -266,46 +267,55 @@ class _DrainPostEOFToDisconnectASGI:
             await self._app(scope, receive, send)
             return
 
-        started = False
-        upstream_eof_seen = False
+        # Detect SSE via Accept header
+        def _is_sse() -> bool:
+            try:
+                for k, v in scope.get("headers") or []:
+                    if k == b"accept" and b"text/event-stream" in v:
+                        return True
+            except Exception:
+                pass
+            return False
 
-        async def patched_send(message: Message) -> None:
-            nonlocal started
-            if message.get("type") == "http.response.start":
-                started = True
-            await send(message)
+        if not _is_sse():
+            await self._app(scope, receive, send)
+            return
 
-        async def patched_receive() -> Message:
-            nonlocal started, upstream_eof_seen
+        # Pre-drain & cache the entire body from the original receive()
+        cached: list[Message] = []
+        disconnected = False
 
-            # Once response started, never read the real client again.
-            if started:
-                return {"type": "http.disconnect"}
-
+        while True:
             msg = await receive()
             mtype = msg.get("type")
-
             if mtype == "http.request":
-                # If we've already seen upstream EOF, convert any later http.request to disconnect.
-                if upstream_eof_seen:
-                    return {"type": "http.disconnect"}
+                cached.append(msg)
                 if not bool(msg.get("more_body", False)):
-                    upstream_eof_seen = True
-                return msg
-
+                    break  # EOF
+                continue
             if mtype == "http.disconnect":
-                return msg
+                disconnected = True
+                break
+            # Any other message types are forwarded as part of the cache too.
+            cached.append(msg)
+            # If this wasn't a request-body, just continue draining until EOF or disconnect.
 
-            # Any other message types after EOF -> treat as disconnect.
-            if upstream_eof_seen:
-                return {"type": "http.disconnect"}
+        # Serve cached body to the app, then switch to permanent disconnects
+        idx = 0
 
-            return msg
+        async def patched_receive() -> Message:
+            nonlocal idx
+            if idx < len(cached):
+                m = cached[idx]
+                idx += 1
+                return m
+            # After the app has consumed the cached body, never return another request message.
+            return {"type": "http.disconnect"}
 
-        await self._app(scope, patched_receive, patched_send)
+        await self._app(scope, patched_receive, send)
 
 
 # Factory + exports ------------------------------------------------------------
 build_app = create_app
-fastapi_app: FastAPI = create_app()
-app = _DrainPostEOFToDisconnectASGI(fastapi_app)
+_inner_app: FastAPI = create_app()
+app = _SSEReceiveShield(_inner_app)
