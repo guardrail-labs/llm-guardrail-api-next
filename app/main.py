@@ -24,11 +24,7 @@ from app.telemetry.tracing import TracingMiddleware
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
-    from prometheus_client import (
-        REGISTRY as _PromRegistryObj,
-        Histogram as _PromHistogramCls,
-    )
-
+    from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -64,6 +60,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
     try:
         return PromHistogram(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
+        # Another import path created it — fetch and reuse.
         try:
             names_map = getattr(PromRegistry, "_names_to_collectors", None)
             if isinstance(names_map, dict):
@@ -73,7 +70,7 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         return None
 
 
-# ---- Error helpers -----------------------------------------------------------
+# ---- Error/401 helpers -------------------------------------------------------
 
 _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
 
@@ -82,7 +79,7 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
     out: dict[str, str] = {}
     # Try raw first (Starlette headers impl)
     try:
-        for k, v in src_headers.raw: 
+        for k, v in src_headers.raw:  # type: ignore[attr-defined]
             out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
     except Exception:
         try:
@@ -205,9 +202,7 @@ def create_app() -> FastAPI:
         return resp
 
     @app.middleware("http")
-    async def normalize_unauthorized_middleware(
-        request: StarletteRequest, call_next
-    ):
+    async def normalize_unauthorized_middleware(request: StarletteRequest, call_next):
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
@@ -227,15 +222,11 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
-        return _json_error(
-            str(exc.detail), exc.status_code, base_headers=request.headers
-        )
+        return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
-        return _json_error(
-            "Internal Server Error", 500, base_headers=request.headers
-        )
+        return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
     return app
 
@@ -246,14 +237,11 @@ class _DrainPostEOFToDisconnectASGI:
     Wraps the FastAPI app and makes it tolerant to clients/tests that keep
     sending 'http.request' messages after EOF or after response start.
 
-    Key rule:
-      - As soon as the response has *started* (we observe 'http.response.start'),
-        we will no longer consult the upstream `receive`. We synthesize
-        'http.disconnect' for any further calls. This prevents Starlette's
-        `listen_for_disconnect()` from ever seeing stray 'http.request'.
-
-      - Before the response starts, we pass through the request body normally,
-        tracking whether we've seen upstream EOF.
+    Rules:
+      • After we see 'http.response.start', we never consult upstream receive() again.
+        We *always* synthesize 'http.disconnect'.
+      • After we've seen upstream EOF once (a 'http.request' with more_body==False),
+        any subsequent 'http.request' becomes 'http.disconnect' too.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -271,7 +259,7 @@ class _DrainPostEOFToDisconnectASGI:
             return
 
         started = False
-        upstream_eof_seen = False  # True after we *observe* the real upstream EOF.
+        upstream_eof_seen = False
 
         async def patched_send(message: Message) -> None:
             nonlocal started
@@ -282,8 +270,7 @@ class _DrainPostEOFToDisconnectASGI:
         async def patched_receive() -> Message:
             nonlocal started, upstream_eof_seen
 
-            # Once the response has started, never read upstream again.
-            # Always pretend the client disconnected cleanly.
+            # Once response started, never read the real client again.
             if started:
                 return {"type": "http.disconnect"}
 
@@ -291,6 +278,9 @@ class _DrainPostEOFToDisconnectASGI:
             mtype = msg.get("type")
 
             if mtype == "http.request":
+                # NEW: if we've already seen upstream EOF, *convert* any later http.request.
+                if upstream_eof_seen:
+                    return {"type": "http.disconnect"}
                 if not bool(msg.get("more_body", False)):
                     upstream_eof_seen = True
                 return msg
@@ -303,9 +293,6 @@ class _DrainPostEOFToDisconnectASGI:
                 return {"type": "http.disconnect"}
 
             return msg
-
-            # Note: Once started=True, all future calls bypass upstream, so
-            # late 'http.request' from a flaky client/test won't leak through.
 
         await self._app(scope, patched_receive, patched_send)
 
