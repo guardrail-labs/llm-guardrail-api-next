@@ -72,7 +72,7 @@ def _extract_n(value: Any, default: int = 1) -> int:
 
 def _bump_decision_metrics(decision: str) -> None:
     try:
-        import app.telemetry.metrics as metrics  # type: ignore
+        import app.telemetry.metrics as metrics 
     except Exception:
         return
 
@@ -85,11 +85,11 @@ def _bump_decision_metrics(decision: str) -> None:
         fn = getattr(metrics, name, None)
         if callable(fn):
             try:
-                fn(decision)  # type: ignore[misc]
+                fn(decision)  
                 return
             except TypeError:
                 try:
-                    fn(decision, route="/v1/images/generations")  # type: ignore[misc]
+                    fn(decision, route="/v1/images/generations") 
                     return
                 except Exception:
                     pass
