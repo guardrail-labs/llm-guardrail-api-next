@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-
 import app.main as main
 
 
@@ -18,7 +17,6 @@ def test_openai_streaming_sse() -> None:
         "Accept": "text/event-stream",
     }
 
-    # No custom shim needed — the app's SSE shield prevents stray http.request frames.
     with TestClient(main.app) as client:
         resp = client.post("/v1/chat/completions", headers=headers, json=payload)
 
