@@ -236,7 +236,7 @@ def create_app() -> FastAPI:
     return app
 
 
-# -------------------- ASGI wrapper: SSE shield (owner-task body delivery) -----
+# -------------------- ASGI wrapper: SSE shield (pre-drain + replay) -----------
 
 class _SSEShield:
     """
@@ -245,11 +245,15 @@ class _SSEShield:
 
     Strategy:
       1) Detect SSE via 'Accept: text/event-stream'.
-      2) Do NOT pre-drain the body. Instead, proxy the original `receive()` ONLY
-         to the *owner task* (the task running this ASGI app call).
-      3) For all other tasks (e.g., Starlette's listen_for_disconnect), always
-         return an immediate 'http.disconnect'. This prevents them from ever
-         seeing 'http.request' frames, avoiding the RuntimeError.
+      2) Pre-drain the original upstream body once.
+      3) Replay exactly one 'http.request' (with the full drained body) to the
+         *owner task* (the task running this ASGI call). Subsequent receives from
+         the owner get 'http.disconnect'.
+      4) All non-owner tasks always get 'http.disconnect'.
+
+    This preserves FastAPI/Pydantic validation (body arrives intact) and prevents
+    'Unexpected message received: http.request' in Starlette's BaseHTTPMiddleware
+    disconnect watcher.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -266,32 +270,52 @@ class _SSEShield:
             await self._app(scope, receive, send)
             return
 
-        # SSE detection
+        # Only engage the shield for SSE.
         headers = scope.get("headers") or []
         is_sse = any(k == b"accept" and b"text/event-stream" in v.lower() for k, v in headers)
         if not is_sse:
             await self._app(scope, receive, send)
             return
 
+        # 1) Pre-drain the upstream body completely (small in tests, okay).
+        body_parts: List[bytes] = []
+        saw_disconnect = False
+        while True:
+            msg = await receive()
+            t = msg.get("type")
+            if t == "http.request":
+                body_parts.append(msg.get("body", b""))
+                if not msg.get("more_body", False):
+                    break
+            elif t == "http.disconnect":
+                saw_disconnect = True
+                break
+            else:
+                # Ignore any other message types for safety.
+                break
+
+        drained_body = b"".join(body_parts)
+
+        # 2) Prepare patched receive: replay to owner once, all others disconnect.
         owner_task = asyncio.current_task()
-        owner_done = False
+        owner_sent = False
 
         async def patched_receive() -> Message:
-            nonlocal owner_done
-            # Only the owner task is allowed to pull from the real receive queue.
+            nonlocal owner_sent
             if asyncio.current_task() is owner_task:
-                if owner_done:
-                    return {"type": "http.disconnect"}
-                msg = await receive()
-                # Once the body stream has ended, further receives from owner get disconnect.
-                if msg.get("type") == "http.request" and not msg.get("more_body", False):
-                    owner_done = True
-                elif msg.get("type") == "http.disconnect":
-                    owner_done = True
-                return msg
-            # Non-owner tasks always see a disconnect immediately.
+                if not owner_sent:
+                    owner_sent = True
+                    return {
+                        "type": "http.request",
+                        "body": drained_body,
+                        "more_body": False,
+                    }
+                return {"type": "http.disconnect"}
+            # Non-owner tasks (e.g., Starlette disconnect listener)
             return {"type": "http.disconnect"}
 
+        # If the client disconnected before/while draining, still hand control to the app;
+        # it will see an empty/EOF body (or disconnect) via the patched receive.
         await self._app(scope, patched_receive, send)
 
 
