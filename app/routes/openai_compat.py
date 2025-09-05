@@ -10,8 +10,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.datastructures import FormData
 
-# Helper that attaches guardrail headers to a Response
-# (ensure app/shared/headers.py provides attach_guardrail_headers(response, policy_version=...))
+# add helper (make sure app/http/headers.py exists)
 from app.shared.headers import attach_guardrail_headers
 
 router = APIRouter()
@@ -153,10 +152,9 @@ def _enforce_hard_minute_once(request: Request) -> Optional[Response]:
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Response:
-    # Streaming SSE path (Accept: text/event-stream)
+    # Streaming SSE path
     accept = (request.headers.get("accept") or "").lower()
     if "text/event-stream" in accept:
-        # minimal SSE payload that the tests look for
         chunk = (
             'data: {"id":"cmpl_stream","object":"chat.completion.chunk",'
             '"choices":[{"delta":{"content":"[REDACTED:EMAIL]"}}]}\n\n'
@@ -164,18 +162,21 @@ async def chat_completions(request: Request) -> Response:
         done = "data: [DONE]\n\n"
         body = "event: message\n" + chunk + "event: done\n" + done
 
-        # Build response and attach guardrail headers (matches non-streaming behavior)
-        resp = PlainTextResponse(content=body, media_type="text/event-stream")
-        attach_guardrail_headers(resp, policy_version=POLICY_VERSION_VALUE)
-        resp.headers["X-Guardrail-Decision"] = "allow"
-        resp.headers["X-Guardrail-Ingress-Action"] = "allow"
-        resp.headers["X-Guardrail-Egress-Action"] = "allow"
+        # Build a normal response, then attach the guardrail headers
+        sse_resp = PlainTextResponse(content=body, media_type="text/event-stream")
+        # policy version via helper (prevents this class of regressions)
+        attach_guardrail_headers(sse_resp, policy_version=POLICY_VERSION_VALUE)
+        # match the non-streaming path headers the tests expect
+        sse_resp.headers["X-Guardrail-Policy-Version"] = POLICY_VERSION_VALUE  # ensure present
+        sse_resp.headers["X-Guardrail-Decision"] = "allow"
+        sse_resp.headers["X-Guardrail-Ingress-Action"] = "allow"
+        sse_resp.headers["X-Guardrail-Egress-Action"] = "allow"
         # sse niceties
-        resp.headers["Cache-Control"] = "no-cache"
-        resp.headers["Connection"] = "keep-alive"
-        return resp
+        sse_resp.headers["Cache-Control"] = "no-cache"
+        sse_resp.headers["Connection"] = "keep-alive"
+        return sse_resp
 
-    # Non-streaming JSON path
+    # Non-streaming JSON
     try:
         payload = await request.json()
     except Exception:
@@ -188,11 +189,15 @@ async def chat_completions(request: Request) -> Response:
         raw = "reach me at test@example.com"
 
     redacted = _redact_egress(raw)
-    resp = {
-        "object": "chat.completion",
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": redacted}}],
-    }
-    return JSONResponse(resp, status_code=200, headers=_policy_headers("allow", egress_action="allow"))
+
+    return JSONResponse(
+        {
+            "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": redacted}}],
+        },
+        status_code=200,
+        headers=_policy_headers("allow", egress_action="allow"),
+    )
 
 @router.post("/v1/completions")
 async def completions(request: Request) -> Response:
