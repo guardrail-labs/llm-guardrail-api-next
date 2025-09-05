@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import pkgutil
 import time
@@ -14,6 +13,7 @@ from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
+from starlette.types import Message, Receive, Scope, Send
 
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
@@ -24,7 +24,11 @@ from app.telemetry.tracing import TracingMiddleware
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
+    from prometheus_client import (
+        REGISTRY as _PromRegistryObj,
+        Histogram as _PromHistogramCls,
+    )
+
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -165,7 +169,6 @@ def create_app() -> FastAPI:
         allow_credentials = True
         if origins == ["*"]:
             allow_credentials = False
-        from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
@@ -204,7 +207,9 @@ def create_app() -> FastAPI:
         return resp
 
     @app.middleware("http")
-    async def normalize_unauthorized_middleware(request: StarletteRequest, call_next):
+    async def normalize_unauthorized_middleware(
+        request: StarletteRequest, call_next
+    ):
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
@@ -224,14 +229,92 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
-        return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
+        return _json_error(
+            str(exc.detail), exc.status_code, base_headers=request.headers
+        )
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
-        return _json_error("Internal Server Error", 500, base_headers=request.headers)
+        return _json_error(
+            "Internal Server Error", 500, base_headers=request.headers
+        )
 
     return app
 
 
+# -------------------- ASGI shim for flaky disconnects -------------------------
+class _DrainPostEOFToDisconnectASGI:
+    """
+    Wraps the FastAPI app and makes it tolerant to clients/tests that keep
+    sending 'http.request' messages after EOF or after response start.
+
+    Behavior:
+      - Passes the request body through unmodified until EOF.
+      - Once response has started OR body EOF has been seen, any subsequent
+        'http.request' (or other non-disconnect) message is coerced to
+        {'type': 'http.disconnect'} so Starlette middlewares don't crash.
+
+    The wrapper also forwards attributes like `.openapi()` so existing tooling
+    (e.g. export scripts) keeps working.
+    """
+
+    def __init__(self, app: FastAPI) -> None:
+        self._app = app
+
+    # Forward most attributes (e.g. .openapi(), .state, etc.)
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover - trivial
+        return getattr(self._app, name)
+
+    # Help static tools that look specifically for .openapi()
+    def openapi(self) -> Any:  # pragma: no cover - exercised by tooling
+        return self._app.openapi()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+
+        started = False
+        eof_seen = False
+
+        async def patched_send(message: Message) -> None:
+            nonlocal started
+            if message.get("type") == "http.response.start":
+                started = True
+            await send(message)
+
+        async def patched_receive() -> Message:
+            nonlocal started, eof_seen
+            msg = await receive()
+            mtype = msg.get("type")
+
+            if mtype == "http.request":
+                more = bool(msg.get("more_body", False))
+                if not more:
+                    # This is the "final" body chunk.
+                    eof_seen = True
+
+                # Before start and before EOF: pass body through unchanged.
+                if not started and not eof_seen:
+                    return msg
+
+                # Allow the true EOF message through, then coerce extras.
+                if not more:
+                    return msg
+
+                # After start or after EOF, extra http.request => disconnect.
+                return {"type": "http.disconnect"}
+
+            # After start/EOF, anything that's not a disconnect becomes one.
+            if (started or eof_seen) and mtype != "http.disconnect":
+                return {"type": "http.disconnect"}
+
+            return msg
+
+        await self._app(scope, patched_receive, patched_send)
+
+
+# Factory + exports ------------------------------------------------------------
 build_app = create_app
-app = create_app()
+fastapi_app: FastAPI = create_app()
+app = _DrainPostEOFToDisconnectASGI(fastapi_app)
