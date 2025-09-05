@@ -247,13 +247,13 @@ class _SSEShield:
       1) Detect SSE via 'Accept: text/event-stream'.
       2) Pre-drain the original upstream body once.
       3) Replay exactly one 'http.request' (with the full drained body) to the
-         *owner task* (the task running this ASGI call). Subsequent receives from
-         the owner get 'http.disconnect'.
-      4) All non-owner tasks always get 'http.disconnect'.
+         *owner task* (the task running this ASGI call).
+      4) Background/non-owner tasks block until the owner has consumed the body,
+         then they receive 'http.disconnect'.
 
     This preserves FastAPI/Pydantic validation (body arrives intact) and prevents
     'Unexpected message received: http.request' in Starlette's BaseHTTPMiddleware
-    disconnect watcher.
+    disconnect watcher, without racing it into a premature disconnect.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -294,26 +294,33 @@ class _SSEShield:
 
         drained_body = b"".join(body_parts)
 
-        # 2) Prepare patched receive: replay to owner once, all others disconnect.
+        # 2) Prepare patched receive with a handshake to avoid the 422 race.
         owner_task = asyncio.current_task()
         owner_sent = False
+        owner_ready = asyncio.Event()  # set when owner receives the body once
 
         async def patched_receive() -> Message:
             nonlocal owner_sent
             if asyncio.current_task() is owner_task:
                 if not owner_sent:
                     owner_sent = True
+                    # Unblock any background listeners *after* releasing body to the owner.
+                    try:
+                        owner_ready.set()
+                    except Exception:
+                        pass
                     return {
                         "type": "http.request",
                         "body": drained_body,
                         "more_body": False,
                     }
                 return {"type": "http.disconnect"}
-            # Non-owner tasks (e.g., Starlette disconnect listener)
+            # Non-owner (e.g., disconnect watcher) — wait until owner consumed the body
+            # to avoid signaling an early disconnect that would cause a 422.
+            if not owner_sent:
+                await owner_ready.wait()
             return {"type": "http.disconnect"}
 
-        # If the client disconnected before/while draining, still hand control to the app;
-        # it will see an empty/EOF body (or disconnect) via the patched receive.
         await self._app(scope, patched_receive, send)
 
 
