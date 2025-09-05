@@ -29,19 +29,19 @@ class _AfterEOFAndAfterStartOnlyDisconnect:
         eof_seen = False
         response_started = False
 
-        async def patched_receive() -> Message:
-            nonlocal eof_seen
-            # After EOF or after response start, only surface a disconnect
-            if eof_seen or response_started:
-                return {"type": "http.disconnect"}
-
-            msg = await receive()
-
-            if msg.get("type") == "http.request":
-                # If more_body is falsy/missing, treat as EOF and remember it
-                if not msg.get("more_body", False):
-                    eof_seen = True
-            return msg
+    async def patched_receive() -> Message:
+        nonlocal eof_seen
+        nonlocal response_started
+        if eof_seen or response_started:
+            return {"type": "http.disconnect"}
+        msg = await receive()
+        if msg.get("type") == "http.request":
+            if not msg.get("more_body", False):
+                eof_seen = True
+        # Gracefully ignore unexpected additional http.request messages.
+        if response_started:
+            return {"type": "http.disconnect"}
+    return msg
 
         async def patched_send(message: Message) -> None:
             nonlocal response_started
