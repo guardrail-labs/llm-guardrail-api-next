@@ -250,22 +250,19 @@ class _DrainPostEOFToDisconnectASGI:
 
     Behavior:
       - Passes the request body through unmodified until EOF.
-      - Once response has started OR body EOF has been seen, any subsequent
-        'http.request' (or other non-disconnect) message is coerced to
-        {'type': 'http.disconnect'} so Starlette middlewares don't crash.
+      - Once response has started OR EOF has been *delivered* downstream,
+        any subsequent 'http.request' is coerced to 'http.disconnect'.
 
     The wrapper also forwards attributes like `.openapi()` so existing tooling
-    (e.g. export scripts) keeps working.
+    keeps working.
     """
 
     def __init__(self, app: FastAPI) -> None:
         self._app = app
 
-    # Forward most attributes (e.g. .openapi(), .state, etc.)
     def __getattr__(self, name: str) -> Any:  # pragma: no cover - trivial
         return getattr(self._app, name)
 
-    # Help static tools that look specifically for .openapi()
     def openapi(self) -> Any:  # pragma: no cover - exercised by tooling
         return self._app.openapi()
 
@@ -275,7 +272,7 @@ class _DrainPostEOFToDisconnectASGI:
             return
 
         started = False
-        eof_seen = False
+        eof_delivered = False  # True once we pass the *final* body chunk downstream.
 
         async def patched_send(message: Message) -> None:
             nonlocal started
@@ -284,29 +281,28 @@ class _DrainPostEOFToDisconnectASGI:
             await send(message)
 
         async def patched_receive() -> Message:
-            nonlocal started, eof_seen
+            nonlocal started, eof_delivered
             msg = await receive()
             mtype = msg.get("type")
 
             if mtype == "http.request":
                 more = bool(msg.get("more_body", False))
-                if not more:
-                    # This is the "final" body chunk.
-                    eof_seen = True
 
-                # Before start and before EOF: pass body through unchanged.
-                if not started and not eof_seen:
+                # If we've already started responding or already delivered EOF,
+                # any additional http.request must become a disconnect.
+                if started or eof_delivered:
+                    return {"type": "http.disconnect"}
+
+                if more:
+                    # Regular body chunk before start/EOF.
                     return msg
 
-                # Allow the true EOF message through, then coerce extras.
-                if not more:
-                    return msg
+                # This is the one true EOF. Deliver it and mark delivered.
+                eof_delivered = True
+                return msg
 
-                # After start or after EOF, extra http.request => disconnect.
-                return {"type": "http.disconnect"}
-
-            # After start/EOF, anything that's not a disconnect becomes one.
-            if (started or eof_seen) and mtype != "http.disconnect":
+            # After start/EOF, everything except a real disconnect becomes one.
+            if (started or eof_delivered) and mtype != "http.disconnect":
                 return {"type": "http.disconnect"}
 
             return msg
