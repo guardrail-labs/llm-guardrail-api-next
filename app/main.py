@@ -82,7 +82,7 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
     out: dict[str, str] = {}
     # Try raw first (Starlette headers impl)
     try:
-        for k, v in src_headers.raw:  # type: ignore[attr-defined]
+        for k, v in src_headers.raw: 
             out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
     except Exception:
         try:
