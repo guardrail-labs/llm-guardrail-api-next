@@ -4,7 +4,7 @@ on:
   push:
   pull_request:
 
-# Auto-cancel older runs per branch/ref
+# Cancel in-flight runs on the same ref (prevents backlog/hangs)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -18,7 +18,7 @@ jobs:
       PIP_NO_CACHE_DIR: "1"
       PIP_DEFAULT_TIMEOUT: "60"
       PIP_INDEX_URL: https://pypi.org/simple
-      GUARDRAIL_DISABLE_AUTH: "1"
+      GUARDRAIL_DISABLE_AUTH: "1"   # bypass admin auth in tests
       CORS_ALLOW_ORIGINS: ""
       PYTHONPATH: .
     steps:
@@ -47,7 +47,7 @@ jobs:
 
       - name: Install dev tools
         run: |
-          python -m pip install ruff mypy pytest
+          python -m pip install ruff mypy pytest pytest-timeout
 
       - name: Lint (ruff)
         continue-on-error: true
@@ -59,7 +59,35 @@ jobs:
         run: |
           mypy --install-types --non-interactive .
 
+      # Hard guards + rich logs so hangs produce useful traces
       - name: Tests (pytest)
         timeout-minutes: 20
+        env:
+          PYTHONUNBUFFERED: "1"                # live output
+          PYTHONFAULTHANDLER: "1"              # dump thread stacks on crash/timeout
+          PYTEST_ADDOPTS: "-rA -vv --durations=25 --timeout=60 --timeout-method=thread"
         run: |
-          pytest -q
+          mkdir -p .artifacts
+          set -o pipefail
+          pytest \
+            --junitxml=.artifacts/junit.xml \
+            --log-cli-level=INFO \
+            --color=yes \
+            | tee .artifacts/pytest-output.log
+
+      - name: Upload test artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-artifacts-${{ github.run_id }}
+          path: .artifacts/**
+          if-no-files-found: warn
+
+      - name: Write failure summary to Job Summary
+        if: failure()
+        run: |
+          echo "## Pytest Failure Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 .artifacts/pytest-output.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
