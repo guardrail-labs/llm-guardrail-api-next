@@ -23,8 +23,10 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
 
+# Optional Prometheus imports (guarded so tests don't fail if missing)
 try:  # pragma: no cover
     from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
+
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -37,15 +39,21 @@ def _truthy(val: object) -> bool:
 
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
+    """
+    Create/return the singleton guardrail_latency_seconds histogram with a single 'endpoint' label.
+    """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
+
     name = "guardrail_latency_seconds"
+    # Reuse if already registered
     try:
         names_map = getattr(PromRegistry, "_names_to_collectors", None)
         if isinstance(names_map, dict) and name in names_map:
             return names_map[name]
     except Exception:
         pass
+
     try:
         return _PromHistogramCls(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
@@ -63,6 +71,7 @@ _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Rese
 
 def _safe_headers_copy(src_headers) -> Dict[str, str]:
     out: Dict[str, str] = {}
+
     raw = getattr(src_headers, "raw", None)
     if raw is not None:
         try:
@@ -70,6 +79,7 @@ def _safe_headers_copy(src_headers) -> Dict[str, str]:
                 out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
         except Exception:
             pass
+
     if not out:
         try:
             items = src_headers.items() if hasattr(src_headers, "items") else []
@@ -77,9 +87,11 @@ def _safe_headers_copy(src_headers) -> Dict[str, str]:
                 out.setdefault(str(k), str(v))
         except Exception:
             pass
+
     rid = out.get("X-Request-ID") or (get_request_id() or "")
     if rid:
         out["X-Request-ID"] = rid
+
     now = int(time.time())
     defaults = {
         "X-RateLimit-Limit": "60",
@@ -88,6 +100,7 @@ def _safe_headers_copy(src_headers) -> Dict[str, str]:
     }
     for k in _RATE_HEADERS:
         out.setdefault(k, defaults[k])
+
     return out
 
 
@@ -115,10 +128,14 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
 
 
 def _include_all_route_modules(app: FastAPI) -> int:
+    """
+    Auto-include all APIRouter instances from app.routes.*
+    """
     try:
         routes_pkg = importlib.import_module("app.routes")
     except Exception:
         return 0
+
     count = 0
     for m in pkgutil.iter_modules(routes_pkg.__path__, routes_pkg.__name__ + "."):
         try:
@@ -135,13 +152,18 @@ def _include_all_route_modules(app: FastAPI) -> int:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
+
+    # Middleware order matters; keep RequestID first so later layers can use it.
     app.add_middleware(RequestIDMiddleware)
+
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
+
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(AbuseGateMiddleware)
 
+    # CORS
     raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
     origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
     if origins:
@@ -189,7 +211,11 @@ def create_app() -> FastAPI:
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
-        payload = {"code": "unauthorized", "detail": "Unauthorized", "request_id": get_request_id() or ""}
+        payload = {
+            "code": "unauthorized",
+            "detail": "Unauthorized",
+            "request_id": get_request_id() or "",
+        }
         safe_headers = _safe_headers_copy(resp.headers)
         return JSONResponse(payload, status_code=401, headers=safe_headers)
 
@@ -210,13 +236,23 @@ def create_app() -> FastAPI:
     return app
 
 
+# -------------------- ASGI wrapper: SSE shield (pre-drain + replay) -----------
+
 class _SSEShield:
     """
-    SSE shield that guarantees:
-      * The handler task (the task running this ASGI call) is the ONLY one
-        that receives a single 'http.request' with the full drained body.
-      * All other receivers (e.g., Starlette's BaseHTTPMiddleware watcher)
-        see 'http.disconnect' only AFTER the handler has consumed the body.
+    Shield SSE endpoints from Starlette's background disconnect listener receiving
+    stray 'http.request' frames.
+
+    Strategy:
+      1) Detect SSE via 'Accept: text/event-stream'.
+      2) Pre-drain the original upstream body once.
+      3) Replay exactly one 'http.request' (with the full drained body) to the
+         *owner task* (the task running this ASGI call).
+      4) Background/non-owner tasks immediately receive 'http.disconnect'.
+
+    This preserves FastAPI/Pydantic validation (body arrives intact) and prevents
+    'Unexpected message received: http.request' in Starlette's BaseHTTPMiddleware
+    disconnect watcher.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -233,13 +269,14 @@ class _SSEShield:
             await self._app(scope, receive, send)
             return
 
+        # Only engage the shield for SSE.
         headers = scope.get("headers") or []
         is_sse = any(k == b"accept" and b"text/event-stream" in v.lower() for k, v in headers)
         if not is_sse:
             await self._app(scope, receive, send)
             return
 
-        # Pre-drain the upstream body completely.
+        # 1) Pre-drain the upstream body completely (small in tests, okay).
         body_parts: List[bytes] = []
         while True:
             msg = await receive()
@@ -251,33 +288,29 @@ class _SSEShield:
             elif t == "http.disconnect":
                 break
             else:
+                # Ignore any other message types for safety.
                 break
+
         drained_body = b"".join(body_parts)
 
-        # Owner-task handshake: only the handler task receives the body.
+        # 2) Prepare patched receive.
         owner_task = asyncio.current_task()
         owner_sent = False
-        owner_ready = asyncio.Event()  # set when owner receives the body once
 
         async def patched_receive() -> Message:
+            # Owner gets the body exactly once; everyone else immediately "disconnects".
             nonlocal owner_sent
             if asyncio.current_task() is owner_task:
                 if not owner_sent:
                     owner_sent = True
-                    try:
-                        owner_ready.set()
-                    except Exception:
-                        pass
                     return {"type": "http.request", "body": drained_body, "more_body": False}
                 return {"type": "http.disconnect"}
-            # Non-owner waits until owner has received the body, then gets disconnect.
-            if not owner_sent:
-                await owner_ready.wait()
             return {"type": "http.disconnect"}
 
         await self._app(scope, patched_receive, send)
 
 
+# Factory + exports ------------------------------------------------------------
 build_app = create_app
 _inner_app: FastAPI = create_app()
 app = _SSEShield(_inner_app)
