@@ -245,12 +245,11 @@ class _SSEShield:
 
     Strategy:
       1) Detect SSE via 'Accept: text/event-stream'.
-      2) Fully pre-drain the original request body (aggregate bytes).
-      3) Patch 'receive' so that:
-         - Only the *owner task* (the task running this ASGI app call) ever
-           receives a single aggregated 'http.request' frame.
-         - All *other tasks* (e.g., Starlette's listen_for_disconnect task)
-           always receive 'http.disconnect'.
+      2) Do NOT pre-drain the body. Instead, proxy the original `receive()` ONLY
+         to the *owner task* (the task running this ASGI app call).
+      3) For all other tasks (e.g., Starlette's listen_for_disconnect), always
+         return an immediate 'http.disconnect'. This prevents them from ever
+         seeing 'http.request' frames, avoiding the RuntimeError.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -274,38 +273,23 @@ class _SSEShield:
             await self._app(scope, receive, send)
             return
 
-        # 1) Pre-drain request body entirely.
-        chunks: list[bytes] = []
-        while True:
-            msg = await receive()
-            t = msg.get("type")
-            if t == "http.request":
-                body = msg.get("body", b"")
-                if body:
-                    chunks.append(body)
-                if not msg.get("more_body", False):
-                    break
-            elif t == "http.disconnect":
-                break
-            else:
-                # Ignore anything else (shouldn't happen in http scope)
-                continue
-
-        aggregated = b"".join(chunks)
-
-        # 2) Owner task is the task executing this __call__
         owner_task = asyncio.current_task()
-        served_once = False
+        owner_done = False
 
         async def patched_receive() -> Message:
-            nonlocal served_once
-            # Only the owner task gets the one body frame; everyone else always sees a disconnect.
+            nonlocal owner_done
+            # Only the owner task is allowed to pull from the real receive queue.
             if asyncio.current_task() is owner_task:
-                if not served_once:
-                    served_once = True
-                    return {"type": "http.request", "body": aggregated, "more_body": False}
-                return {"type": "http.disconnect"}
-            # Non-owner tasks (e.g., Starlette's disconnect watcher)
+                if owner_done:
+                    return {"type": "http.disconnect"}
+                msg = await receive()
+                # Once the body stream has ended, further receives from owner get disconnect.
+                if msg.get("type") == "http.request" and not msg.get("more_body", False):
+                    owner_done = True
+                elif msg.get("type") == "http.disconnect":
+                    owner_done = True
+                return msg
+            # Non-owner tasks always see a disconnect immediately.
             return {"type": "http.disconnect"}
 
         await self._app(scope, patched_receive, send)
