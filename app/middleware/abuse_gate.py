@@ -129,7 +129,7 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
                 return {"type": "http.request", "body": body_bytes, "more_body": False}
 
             # Restore stream for downstream
-            request._receive = _receive  # type: ignore[attr-defined]
+            request._receive = _receive
 
         # If already quarantined, short-circuit to 429 with headers
         mode_now = self.engine.current_mode(sub)
