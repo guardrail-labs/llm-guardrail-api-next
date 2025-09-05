@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from starlette.datastructures import FormData
 
 router = APIRouter()
 azure_router = APIRouter()
@@ -199,9 +200,14 @@ async def images_edits(request: Request) -> Response:
     try:
         form = await request.form()
     except Exception:
-        form = {}
+        form = FormData({})
 
-    prompt = (form.get("prompt") or "").strip()
+    prompt_val = form.get("prompt")
+    if isinstance(prompt_val, str):
+        prompt = prompt_val.strip()
+    else:
+        prompt = ""
+
     prompt, _, _, _ = sanitize_text(prompt, debug=False)
     verdict = evaluate_prompt(prompt)
     if verdict.get("action") == "deny":
@@ -218,9 +224,14 @@ async def images_variations(request: Request) -> Response:
     try:
         form = await request.form()
     except Exception:
-        form = {}
+        form = FormData({})
 
-    prompt = (form.get("prompt") or "").strip()
+    prompt_val = form.get("prompt")
+    if isinstance(prompt_val, str):
+        prompt = prompt_val.strip()
+    else:
+        prompt = ""
+
     prompt, _, _, _ = sanitize_text(prompt, debug=False)
     verdict = evaluate_prompt(prompt)
     if verdict.get("action") == "deny":
