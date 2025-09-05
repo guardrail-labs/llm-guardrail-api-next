@@ -1,7 +1,6 @@
 # app/main.py
 from __future__ import annotations
 
-import asyncio
 import importlib
 import os
 import pkgutil
@@ -15,7 +14,6 @@ from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from starlette.types import Message, Receive, Scope, Send
 
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
@@ -24,7 +22,7 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
 
-# Optional Prometheus (don't fail if missing)
+# Optional Prometheus (don’t fail if missing)
 try:  # pragma: no cover
     from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
     PromHistogram: Any | None = _PromHistogramCls
@@ -207,74 +205,6 @@ def create_app() -> FastAPI:
     return app
 
 
-# -------------------- ASGI wrapper: SSE shield (opt-in to chat completions) ---
-
-class _SSEShield:
-    """
-    Engage only for Accept: text/event-stream on /v1/chat/completions.
-    """
-
-    def __init__(self, app: FastAPI) -> None:
-        self._app = app
-
-    def __getattr__(self, name: str) -> Any:  # pragma: no cover
-        return getattr(self._app, name)
-
-    def openapi(self) -> Any:  # pragma: no cover
-        return self._app.openapi()
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http":
-            await self._app(scope, receive, send)
-            return
-
-        headers = scope.get("headers") or []
-        path = (scope.get("path") or "").lower()
-        is_chat_path = path.endswith("/v1/chat/completions")
-        wants_sse = any(k == b"accept" and b"text/event-stream" in v.lower() for k, v in headers)
-
-        if not (is_chat_path and wants_sse):
-            await self._app(scope, receive, send)
-            return
-
-        # Pre-drain request body
-        body_parts: List[bytes] = []
-        while True:
-            msg = await receive()
-            t = msg.get("type")
-            if t == "http.request":
-                body_parts.append(msg.get("body", b""))
-                if not msg.get("more_body", False):
-                    break
-            elif t == "http.disconnect":
-                break
-            else:
-                break
-        drained_body = b"".join(body_parts)
-
-        owner_task = asyncio.current_task()
-        owner_sent = False
-        owner_ready = asyncio.Event()
-
-        async def patched_receive() -> Message:
-            nonlocal owner_sent
-            if asyncio.current_task() is owner_task:
-                if not owner_sent:
-                    owner_sent = True
-                    try:
-                        loop = asyncio.get_running_loop()
-                        loop.call_soon(owner_ready.set)
-                    except Exception:
-                        owner_ready.set()
-                    return {"type": "http.request", "body": drained_body, "more_body": False}
-                return {"type": "http.disconnect"}
-            if not owner_sent:
-                await owner_ready.wait()
-            return {"type": "http.disconnect"}
-
-        await self._app(scope, patched_receive, send)
-
-
+# Factory + exports (no SSE shield)
 build_app = create_app
-_inner_app: FastAPI = create_app()
-app = _SSEShield(_inner_app)
+app = create_app()
