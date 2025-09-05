@@ -5,7 +5,7 @@ import importlib
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional, Dict, cast
+from typing import Any, List, Optional, Dict
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +23,7 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
 
-# Prometheus (optional; tests expect metrics but we guard imports)
+# Optional Prometheus imports (guarded so tests don't fail if missing)
 try:  # pragma: no cover
     from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
     PromHistogram: Any | None = _PromHistogramCls
@@ -39,29 +39,23 @@ def _truthy(val: object) -> bool:
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
     """
-    Create the guardrail_latency_seconds histogram exactly once per process.
-
-    IMPORTANT: tests expect a single 'endpoint' label.
+    Create/return the singleton guardrail_latency_seconds histogram with a single 'endpoint' label.
     """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
 
     name = "guardrail_latency_seconds"
-
-    # If already registered, reuse it.
+    # Reuse if already registered
     try:
         names_map = getattr(PromRegistry, "_names_to_collectors", None)
-        if isinstance(names_map, dict):
-            existing = names_map.get(name)
-            if existing is not None:
-                return existing
+        if isinstance(names_map, dict) and name in names_map:
+            return names_map[name]
     except Exception:
         pass
 
     try:
         return _PromHistogramCls(name, "Request latency in seconds", ["endpoint"])
     except ValueError:
-        # Another import path created it — fetch and reuse.
         try:
             names_map = getattr(PromRegistry, "_names_to_collectors", None)
             if isinstance(names_map, dict):
@@ -71,22 +65,18 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
         return None
 
 
-# ---- Error/401 helpers -------------------------------------------------------
-
 _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
 
 
-def _safe_headers_copy(src_headers) -> dict[str, str]:
-    out: dict[str, str] = {}
+def _safe_headers_copy(src_headers) -> Dict[str, str]:
+    out: Dict[str, str] = {}
 
-    # Prefer Starlette's raw header bytes if available
     raw = getattr(src_headers, "raw", None)
     if raw is not None:
         try:
             for k, v in raw:
                 out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
         except Exception:
-            # fall through to items() path
             pass
 
     if not out:
@@ -137,6 +127,9 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
 
 
 def _include_all_route_modules(app: FastAPI) -> int:
+    """
+    Auto-include all APIRouter instances from app.routes.*
+    """
     try:
         routes_pkg = importlib.import_module("app.routes")
     except Exception:
@@ -159,6 +152,7 @@ def _include_all_route_modules(app: FastAPI) -> int:
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
 
+    # Middleware order matters; keep RequestID first so later layers can use it.
     app.add_middleware(RequestIDMiddleware)
 
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
@@ -168,6 +162,7 @@ def create_app() -> FastAPI:
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(AbuseGateMiddleware)
 
+    # CORS
     raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
     origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
     if origins:
@@ -240,18 +235,21 @@ def create_app() -> FastAPI:
     return app
 
 
-# -------------------- ASGI wrapper: SSE body prebuffer + hard disconnect ------
+# -------------------- ASGI wrapper: SSE shield (owner-task body delivery) -----
 
-class _SSEPrebufferAndHardDisconnect:
+class _SSEShield:
     """
-    For requests with 'Accept: text/event-stream', fully drain the original
-    body before entering the app. Then hand the app a receive() that returns:
-      • exactly one 'http.request' (aggregated body, EOF)
-      • thereafter always 'http.disconnect'
+    Shield SSE endpoints from Starlette's background disconnect listener receiving
+    stray 'http.request' frames.
 
-    The async lock ensures only one concurrent caller ever receives the single
-    'http.request' frame, preventing stray 'http.request' from reaching
-    Starlette's BaseHTTPMiddleware once the request is considered consumed.
+    Strategy:
+      1) Detect SSE via 'Accept: text/event-stream'.
+      2) Fully pre-drain the original request body (aggregate bytes).
+      3) Patch 'receive' so that:
+         - Only the *owner task* (the task running this ASGI app call) ever
+           receives a single aggregated 'http.request' frame.
+         - All *other tasks* (e.g., Starlette's listen_for_disconnect task)
+           always receive 'http.disconnect'.
     """
 
     def __init__(self, app: FastAPI) -> None:
@@ -264,58 +262,57 @@ class _SSEPrebufferAndHardDisconnect:
         return self._app.openapi()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        # Only handle HTTP requests
         if scope.get("type") != "http":
             await self._app(scope, receive, send)
             return
 
-        # Only shield SSE requests
+        # SSE detection
         headers = scope.get("headers") or []
         is_sse = any(k == b"accept" and b"text/event-stream" in v.lower() for k, v in headers)
         if not is_sse:
             await self._app(scope, receive, send)
             return
 
-        # 1) Pre-drain the incoming request body completely.
+        # 1) Pre-drain request body entirely.
         chunks: list[bytes] = []
+        disconnected = False
         while True:
             msg = await receive()
             t = msg.get("type")
             if t == "http.request":
-                chunks.append(msg.get("body", b""))
+                body = msg.get("body", b"")
+                if body:
+                    chunks.append(body)
                 if not msg.get("more_body", False):
                     break
             elif t == "http.disconnect":
-                # Client vanished early; proceed with what we have.
+                disconnected = True
                 break
             else:
-                # Ignore anything else.
+                # Ignore anything else (shouldn't happen in http scope)
                 continue
 
         aggregated = b"".join(chunks)
 
-        # 2) Expose a race-safe receive to the inner app.
+        # 2) Owner task is the task executing this __call__
+        owner_task = asyncio.current_task()
         served_once = False
-        lock = asyncio.Lock()
 
         async def patched_receive() -> Message:
             nonlocal served_once
-            async with lock:
+            # Only the owner task gets the one body frame; everyone else always sees a disconnect.
+            if asyncio.current_task() is owner_task:
                 if not served_once:
                     served_once = True
-                    return {
-                        "type": "http.request",
-                        "body": aggregated,
-                        "more_body": False,
-                    }
-                # After the single body frame, always report disconnect.
+                    return {"type": "http.request", "body": aggregated, "more_body": False}
                 return {"type": "http.disconnect"}
+            # Non-owner tasks (e.g., Starlette's disconnect watcher)
+            return {"type": "http.disconnect"}
 
-        # 3) Call the real app with the patched receive (send is unchanged).
         await self._app(scope, patched_receive, send)
 
 
 # Factory + exports ------------------------------------------------------------
 build_app = create_app
 _inner_app: FastAPI = create_app()
-app = _SSEPrebufferAndHardDisconnect(_inner_app)
+app = _SSEShield(_inner_app)
