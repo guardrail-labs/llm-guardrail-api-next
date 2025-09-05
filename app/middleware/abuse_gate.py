@@ -1,3 +1,4 @@
+# app/middleware/abuse_gate.py
 """
 Abuse gate middleware: integrates the AbuseEngine with a pluggable verdict hook.
 
@@ -119,14 +120,20 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
                 body_bytes = await request.body()
             except Exception:
                 body_bytes = b""
+
             # Attach normalized payload for the adapter to read
-            request.state.normalized_payload = build_normalized_payload(
-                request, body_bytes
-            )
+            request.state.normalized_payload = build_normalized_payload(request, body_bytes)
+
+            sent = False
 
             async def _receive() -> dict[str, object]:
-                # exact shape used by Starlette's request stream
-                return {"type": "http.request", "body": body_bytes, "more_body": False}
+                nonlocal sent
+                if not sent:
+                    sent = True
+                    # Serve the captured body exactly once
+                    return {"type": "http.request", "body": body_bytes, "more_body": False}
+                # After the body is consumed, behave like a disconnected client
+                return {"type": "http.disconnect"}
 
             # Restore stream for downstream
             request._receive = _receive
