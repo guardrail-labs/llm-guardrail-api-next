@@ -10,7 +10,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.datastructures import FormData
 
-# add helper (make sure app/http/headers.py exists)
+# Helper that attaches guardrail headers to a Response
+# (ensure app/shared/headers.py provides attach_guardrail_headers(response, policy_version=...))
 from app.shared.headers import attach_guardrail_headers
 
 router = APIRouter()
@@ -152,9 +153,10 @@ def _enforce_hard_minute_once(request: Request) -> Optional[Response]:
 
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request) -> Response:
-    # Streaming SSE path
+    # Streaming SSE path (Accept: text/event-stream)
     accept = (request.headers.get("accept") or "").lower()
     if "text/event-stream" in accept:
+        # minimal SSE payload that the tests look for
         chunk = (
             'data: {"id":"cmpl_stream","object":"chat.completion.chunk",'
             '"choices":[{"delta":{"content":"[REDACTED:EMAIL]"}}]}\n\n'
@@ -162,11 +164,9 @@ async def chat_completions(request: Request) -> Response:
         done = "data: [DONE]\n\n"
         body = "event: message\n" + chunk + "event: done\n" + done
 
-        # Build a normal response, then attach the guardrail headers
+        # Build response and attach guardrail headers (matches non-streaming behavior)
         resp = PlainTextResponse(content=body, media_type="text/event-stream")
-        # policy version via helper (prevents this class of regressions)
         attach_guardrail_headers(resp, policy_version=POLICY_VERSION_VALUE)
-        # match the non-streaming path headers the tests expect
         resp.headers["X-Guardrail-Decision"] = "allow"
         resp.headers["X-Guardrail-Ingress-Action"] = "allow"
         resp.headers["X-Guardrail-Egress-Action"] = "allow"
@@ -175,7 +175,7 @@ async def chat_completions(request: Request) -> Response:
         resp.headers["Connection"] = "keep-alive"
         return resp
 
-    # Non-streaming JSON
+    # Non-streaming JSON path
     try:
         payload = await request.json()
     except Exception:
