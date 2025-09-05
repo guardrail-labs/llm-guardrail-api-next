@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from typing import Iterable, Tuple, cast
+
 from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 from app.telemetry.tracing import get_request_id
@@ -11,7 +13,7 @@ logger = logging.getLogger("access")
 
 
 class AccessLogMiddleware:
-    """Simple JSON access log middleware (ASGI-safe)."""
+    """Simple JSON access log middleware."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -22,14 +24,12 @@ class AccessLogMiddleware:
             return
 
         rid = get_request_id() or _header(scope, "X-Request-ID") or str(uuid.uuid4())
-        method = scope.get("method", "")
-        path = scope.get("path", "")
-        status_code = 0
+
+        status_code_holder = {"code": 0}
 
         async def send_wrapped(message: Message) -> None:
-            nonlocal status_code
             if message.get("type") == "http.response.start":
-                status_code = int(message.get("status", 0))
+                status_code_holder["code"] = int(message.get("status", 0) or 0)
             await send(message)
 
         await self.app(scope, receive, send_wrapped)
@@ -37,9 +37,9 @@ class AccessLogMiddleware:
         record = {
             "event": "request",
             "request_id": rid,
-            "method": method,
-            "path": str(path),
-            "status_code": status_code,
+            "method": scope.get("method", ""),
+            "path": str(scope.get("path", "")),
+            "status_code": status_code_holder["code"],
         }
         try:
             logger.info(json.dumps(record, ensure_ascii=False))
@@ -48,8 +48,11 @@ class AccessLogMiddleware:
 
 
 def _header(scope: Scope, name: str) -> str:
+    headers: Iterable[Tuple[bytes, bytes]] = cast(
+        Iterable[Tuple[bytes, bytes]], scope.get("headers") or []
+    )
     target = name.lower().encode("latin-1")
-    for k, v in scope.get("headers") or []:
-        if k.lower() == target:
-            return v.decode("latin-1")
+    for k_bytes, v_bytes in headers:
+        if k_bytes.lower() == target:
+            return v_bytes.decode("latin-1")
     return ""
