@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import uuid
+from typing import Iterable, Tuple, cast
 
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send, Message
 
 # Paths that bypass auth entirely (exact match)
 _SAFE_PATHS: set[str] = {"/health", "/metrics"}
@@ -24,8 +25,15 @@ def _is_safe_path(path: str) -> bool:
 
 
 def _has_auth_header(scope: Scope) -> bool:
-    headers = dict((k.decode().lower(), v.decode()) for k, v in scope.get("headers", []))
-    return bool(headers.get("x-api-key") or headers.get("authorization"))
+    headers: Iterable[Tuple[bytes, bytes]] = cast(
+        Iterable[Tuple[bytes, bytes]], scope.get("headers") or []
+    )
+    # lookup without building a full dict (keep it light)
+    for k_bytes, v_bytes in headers:
+        k = k_bytes.decode().lower()
+        if k in ("x-api-key", "authorization"):
+            return bool(v_bytes)
+    return False
 
 
 class AuthMiddleware:
@@ -68,8 +76,11 @@ class AuthMiddleware:
 
 
 def _header(scope: Scope, name: str) -> str:
+    headers: Iterable[Tuple[bytes, bytes]] = cast(
+        Iterable[Tuple[bytes, bytes]], scope.get("headers") or []
+    )
     target = name.lower().encode("latin-1")
-    for k, v in scope.get("headers") or []:
-        if k.lower() == target:
-            return v.decode("latin-1")
+    for k_bytes, v_bytes in headers:
+        if k_bytes.lower() == target:
+            return v_bytes.decode("latin-1")
     return ""
