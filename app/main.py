@@ -13,7 +13,7 @@ from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+
 from app.metrics.route_label import route_label
 from app.middleware.abuse_gate import AbuseGateMiddleware
 from app.middleware.quota import QuotaMiddleware
@@ -152,48 +152,18 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
-# -------------------- Middleware ----------------------------------------------
-
-class SSEBodyDrainMiddleware(BaseHTTPMiddleware):
-    """
-    For SSE requests, read & cache the entire request body *once* up-front.
-
-    Rationale: Starlette's StreamingResponse runs a background task that calls
-    `receive()` expecting only `http.disconnect` after the body is consumed.
-    If any `BaseHTTPMiddleware` layer hasn't marked the body as consumed yet,
-    a late `http.request` frame can surface and trigger:
-        RuntimeError("Unexpected message received: http.request")
-
-    Calling `await request.body()` here drains the body through every
-    BaseHTTPMiddleware wrapper so each layer marks itself as consumed. Downstream
-    route handlers still access the cached body normally.
-    """
-    async def dispatch(self, request: Request, call_next):
-        accept = (request.headers.get("accept") or "").lower()
-        if "text/event-stream" in accept:
-            try:
-                # Force Starlette/FastAPI to drain & cache the request body.
-                await request.body()
-            except Exception:
-                # Don't fail the request just because body read had an issue.
-                pass
-        return await call_next(request)
-
-
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
 
-    # ID & tracing
     app.add_middleware(RequestIDMiddleware)
+
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
 
-    # Quota / rate / abuse
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(AbuseGateMiddleware)
 
-    # CORS
     raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
     origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
     if origins:
@@ -207,10 +177,6 @@ def create_app() -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-
-    # >>> IMPORTANT: Add the body drain middleware *last* so it runs closest to the endpoint
-    # but still inside all BaseHTTPMiddleware wrappers.
-    app.add_middleware(SSEBodyDrainMiddleware)
 
     hist = _get_or_create_latency_histogram()
 
@@ -270,6 +236,76 @@ def create_app() -> FastAPI:
     return app
 
 
+# -------------------- ASGI wrapper: SSE prebuffer + hard disconnect -----------
+
+class _SSEPrebufferAndHardDisconnect:
+    """
+    For requests with 'Accept: text/event-stream', fully drain the *original*
+    receive() stream before calling into the app. Then present the app with:
+      - exactly one 'http.request' containing the aggregated body (EOF)
+      - and thereafter *always* 'http.disconnect' on every receive()
+
+    This guarantees Starlette's BaseHTTPMiddleware and StreamingResponse
+    never encounter a late 'http.request', fixing the
+    "Unexpected message received: http.request" error.
+    """
+
+    def __init__(self, app: FastAPI) -> None:
+        self._app = app
+
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover
+        return getattr(self._app, name)
+
+    def openapi(self) -> Any:  # pragma: no cover
+        return self._app.openapi()
+
+    async def __call__(self, scope, receive, send):
+        # Only handle HTTP
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+
+        # Check SSE Accept header
+        is_sse = False
+        for k, v in (scope.get("headers") or []):
+            if k == b"accept" and b"text/event-stream" in v.lower():
+                is_sse = True
+                break
+        if not is_sse:
+            await self._app(scope, receive, send)
+            return
+
+        # 1) Pre-drain original body completely.
+        parts: list[bytes] = []
+        while True:
+            msg = await receive()
+            mtype = msg.get("type")
+            if mtype == "http.request":
+                parts.append(msg.get("body", b""))
+                if not msg.get("more_body", False):
+                    break
+                continue
+            if mtype == "http.disconnect":
+                # client disappeared early; we still proceed with what we have
+                break
+            # ignore any other types for HTTP
+
+        aggregated = b"".join(parts)
+        served_once = False
+
+        # 2) patched receive: one aggregate body, then always disconnect
+        async def patched_receive():
+            nonlocal served_once
+            if not served_once:
+                served_once = True
+                return {"type": "http.request", "body": aggregated, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        # 3) Call the inner app
+        await self._app(scope, patched_receive, send)
+
+
 # Factory + exports ------------------------------------------------------------
 build_app = create_app
-app = create_app()
+_inner = create_app()
+app = _SSEPrebufferAndHardDisconnect(_inner)
