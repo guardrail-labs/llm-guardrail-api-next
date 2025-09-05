@@ -10,6 +10,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.datastructures import FormData
 
+# add helper (make sure app/http/headers.py exists)
+from app.http.headers import attach_guardrail_headers
+
 router = APIRouter()
 azure_router = APIRouter()
 
@@ -38,6 +41,7 @@ def get_client() -> Any:
 POLICY_VERSION_VALUE = "test-policy"  # tests only check presence
 
 def _policy_headers(decision: str = "allow", egress_action: str = "allow") -> Dict[str, str]:
+    # used for non-streaming responses
     return {
         "X-Guardrail-Policy-Version": POLICY_VERSION_VALUE,
         "X-Guardrail-Decision": decision,
@@ -158,12 +162,15 @@ async def chat_completions(request: Request) -> Response:
         done = "data: [DONE]\n\n"
         body = "event: message\n" + chunk + "event: done\n" + done
 
-        # Build a normal response and set headers via the public API
+        # Build a normal response, then attach the guardrail headers
         resp = PlainTextResponse(content=body, media_type="text/event-stream")
-        resp.headers["X-Guardrail-Policy-Version"] = POLICY_VERSION_VALUE
+        # policy version via helper (prevents this class of regressions)
+        attach_guardrail_headers(resp, policy_version=POLICY_VERSION_VALUE)
+        # match the non-streaming path headers the tests expect
         resp.headers["X-Guardrail-Decision"] = "allow"
         resp.headers["X-Guardrail-Ingress-Action"] = "allow"
         resp.headers["X-Guardrail-Egress-Action"] = "allow"
+        # sse niceties
         resp.headers["Cache-Control"] = "no-cache"
         resp.headers["Connection"] = "keep-alive"
         return resp
