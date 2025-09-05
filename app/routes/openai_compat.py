@@ -7,7 +7,13 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from app.redaction import redact_text
-from app.shared.headers import attach_guardrail_headers
+from app.shared.headers import (
+    attach_guardrail_headers,
+    DEFAULT_POLICY_VERSION,
+    TENANT_HEADER,
+    BOT_HEADER,
+)
+from app.shared import quotas as quota_mod
 
 router = APIRouter()
 azure_router = APIRouter()
@@ -23,6 +29,13 @@ def sanitize_text(text: str, debug: bool = False) -> Tuple[str, List[Dict[str, A
     """
     return (redact_text(text), [], 0, {})
 
+def evaluate_prompt(text: str) -> Dict[str, Any]:
+    """
+    Tests monkey-patch this to force allow/deny decisions for image endpoints.
+    Default: allow (tests override).
+    """
+    return {"action": "allow", "rule_hits": [], "decisions": []}
+
 def get_client() -> Any:
     """
     Tests monkey-patch this to return a fake provider client.
@@ -32,7 +45,7 @@ def get_client() -> Any:
         pass
     return _Noop()
 
-__all__ = ["router", "azure_router", "sanitize_text", "get_client"]
+__all__ = ["router", "azure_router", "sanitize_text", "evaluate_prompt", "get_client"]
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -66,8 +79,12 @@ def _sse_stream(text: str) -> str:
     return f"data: {text}\n\ndata: [DONE]\n\n"
 
 def _images_allow_or_deny(prompt: str) -> Tuple[bool, str]:
+    # First, run policy decision (tests patch evaluate_prompt to force allow/deny)
+    verdict = evaluate_prompt(prompt) or {}
+    action = str(verdict.get("action") or "allow").lower()
+    # Also run sanitization for revised_prompt visibility
     sanitized, hits, _count, _meta = sanitize_text(prompt, debug=False)
-    return (len(hits) == 0, sanitized)
+    return (action == "allow" and len(hits) == 0, sanitized)
 
 def _images_ok(text: str) -> Dict[str, Any]:
     # Minimal OpenAI-compatible shape with tiny b64 payload ("f")
@@ -75,6 +92,23 @@ def _images_ok(text: str) -> Dict[str, Any]:
 
 def _images_deny() -> Dict[str, Any]:
     return {"error": {"message": "Denied by policy"}}
+
+def _apply_guardrail_headers(resp: Response, decision: str = "allow") -> Response:
+    # Use helper then force-set to guarantee presence on SSE/plaintext responses
+    out = attach_guardrail_headers(
+        resp,
+        decision=decision,
+        ingress_action="allow" if decision == "allow" else "deny",
+        egress_action="allow",
+    )
+    # Belt-and-suspenders: ensure headers exist even if a response class behaves oddly
+    out.headers["X-Guardrail-Policy-Version"] = out.headers.get("X-Guardrail-Policy-Version", DEFAULT_POLICY_VERSION)
+    out.headers["X-Guardrail-Decision"] = out.headers.get("X-Guardrail-Decision", decision)
+    out.headers["X-Guardrail-Ingress-Action"] = out.headers.get(
+        "X-Guardrail-Ingress-Action", "allow" if decision == "allow" else "deny"
+    )
+    out.headers["X-Guardrail-Egress-Action"] = out.headers.get("X-Guardrail-Egress-Action", "allow")
+    return out
 
 # ---------------------------------------------------------------------------
 # Chat / Completions
@@ -109,20 +143,10 @@ async def chat_completions(
                 "Content-Type": "text/event-stream; charset=utf-8",
             },
         )
-        return attach_guardrail_headers(
-            resp,
-            decision="allow",
-            ingress_action="allow",
-            egress_action="allow",
-        )
+        return _apply_guardrail_headers(resp, decision="allow")
 
     resp = JSONResponse(_json_chat_body(text), status_code=200)
-    return attach_guardrail_headers(
-        resp,
-        decision="allow",
-        ingress_action="allow",
-        egress_action="allow",
-    )
+    return _apply_guardrail_headers(resp, decision="allow")
 
 @router.post("/v1/completions")
 async def completions(
@@ -131,12 +155,23 @@ async def completions(
 ) -> Response:
     """
     Legacy completions endpoint used by tests for quota/metrics behavior.
+    Enforces per-tenant:bot minute quotas using app.shared.quotas.
     """
     _ = accept
     try:
         payload = cast(Dict[str, Any], await request.json())
     except Exception:
         payload = {}
+
+    # quota keying
+    tenant_id = request.headers.get(TENANT_HEADER) or "default-tenant"
+    bot_id = request.headers.get(BOT_HEADER) or "default-bot"
+    allowed, retry_after = quota_mod.check_and_consume(request, tenant_id, bot_id)
+    if not allowed:
+        resp = JSONResponse({"error": {"message": "Too Many Requests"}}, status_code=429)
+        if retry_after:
+            resp.headers["Retry-After"] = str(retry_after)
+        return _apply_guardrail_headers(resp, decision="deny")
 
     prompt_text = str(payload.get("prompt", _assistant_text()))
     text, _hits, _count, _meta = sanitize_text(prompt_text, debug=False)
@@ -146,12 +181,7 @@ async def completions(
         "choices": [{"index": 0, "text": text, "finish_reason": "stop"}],
     }
     resp = JSONResponse(body, status_code=200)
-    return attach_guardrail_headers(
-        resp,
-        decision="allow",
-        ingress_action="allow",
-        egress_action="allow",
-    )
+    return _apply_guardrail_headers(resp, decision="allow")
 
 # Azure alias for chat
 @azure_router.post("/openai/deployments/{deployment}/chat/completions")
@@ -181,20 +211,10 @@ async def azure_chat_completions(
                 "Content-Type": "text/event-stream; charset=utf-8",
             },
         )
-        return attach_guardrail_headers(
-            resp,
-            decision="allow",
-            ingress_action="allow",
-            egress_action="allow",
-        )
+        return _apply_guardrail_headers(resp, decision="allow")
 
     resp = JSONResponse(_json_chat_body(text), status_code=200)
-    return attach_guardrail_headers(
-        resp,
-        decision="allow",
-        ingress_action="allow",
-        egress_action="allow",
-    )
+    return _apply_guardrail_headers(resp, decision="allow")
 
 # ---------------------------------------------------------------------------
 # Images: generations / edits / variations
@@ -210,9 +230,9 @@ async def images_generations(request: Request) -> Response:
     allow, sanitized = _images_allow_or_deny(prompt)
     if not allow:
         resp = JSONResponse(_images_deny(), status_code=403)
-        return attach_guardrail_headers(resp, decision="deny", ingress_action="deny", egress_action="allow")
+        return _apply_guardrail_headers(resp, decision="deny")
     resp = JSONResponse(_images_ok(sanitized), status_code=200)
-    return attach_guardrail_headers(resp, decision="allow", ingress_action="allow", egress_action="allow")
+    return _apply_guardrail_headers(resp, decision="allow")
 
 @router.post("/v1/images/edits")
 async def images_edits(request: Request) -> Response:
@@ -224,9 +244,9 @@ async def images_edits(request: Request) -> Response:
     allow, sanitized = _images_allow_or_deny(prompt)
     if not allow:
         resp = JSONResponse(_images_deny(), status_code=403)
-        return attach_guardrail_headers(resp, decision="deny", ingress_action="deny", egress_action="allow")
+        return _apply_guardrail_headers(resp, decision="deny")
     resp = JSONResponse(_images_ok(sanitized), status_code=200)
-    return attach_guardrail_headers(resp, decision="allow", ingress_action="allow", egress_action="allow")
+    return _apply_guardrail_headers(resp, decision="allow")
 
 @router.post("/v1/images/variations")
 async def images_variations(request: Request) -> Response:
@@ -238,6 +258,6 @@ async def images_variations(request: Request) -> Response:
     allow, sanitized = _images_allow_or_deny(prompt)
     if not allow:
         resp = JSONResponse(_images_deny(), status_code=403)
-        return attach_guardrail_headers(resp, decision="deny", ingress_action="deny", egress_action="allow")
+        return _apply_guardrail_headers(resp, decision="deny")
     resp = JSONResponse(_images_ok(sanitized), status_code=200)
-    return attach_guardrail_headers(resp, decision="allow", ingress_action="allow", egress_action="allow")
+    return _apply_guardrail_headers(resp, decision="allow")
