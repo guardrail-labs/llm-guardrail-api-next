@@ -143,6 +143,33 @@ def _enforce_hard_minute_once(request: Request) -> Optional[Response]:
     return None
 
 # ---------------------------------------------------------------------------
+# Response subclass to PRESERVE HEADER CASING for SSE test
+# ---------------------------------------------------------------------------
+
+class CaseHeaderPlainTextResponse(PlainTextResponse):
+    """
+    PlainTextResponse that appends headers to raw ASGI headers WITHOUT lowercasing
+    their names, so dict(resp.headers) retains original casing (the test asserts
+    'X-Guardrail-Policy-Version' specifically).
+    """
+    def __init__(
+        self,
+        content: str,
+        media_type: str = "text/event-stream",
+        headers: Optional[Mapping[str, str] | Iterable[Tuple[str, str]]] = None,
+        status_code: int = 200,
+    ) -> None:
+        # Build normal response first (content-type, content-length, etc.)
+        super().__init__(content=content, status_code=status_code, media_type=media_type)
+        if not headers:
+            return
+        items: Iterable[Tuple[str, str]]
+        items = headers.items() if isinstance(headers, Mapping) else headers
+        for k, v in items:
+            # Append with original casing
+            self.raw_headers.append((k.encode("latin-1"), v.encode("latin-1")))
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -158,15 +185,20 @@ async def chat_completions(request: Request) -> Response:
         done = "data: [DONE]\n\n"
         body = "event: message\n" + chunk + "event: done\n" + done
 
-        # Build a normal response and set headers via the public API
-        resp = PlainTextResponse(content=body, media_type="text/event-stream")
-        resp.headers["X-Guardrail-Policy-Version"] = POLICY_VERSION_VALUE
-        resp.headers["X-Guardrail-Decision"] = "allow"
-        resp.headers["X-Guardrail-Ingress-Action"] = "allow"
-        resp.headers["X-Guardrail-Egress-Action"] = "allow"
-        resp.headers["Cache-Control"] = "no-cache"
-        resp.headers["Connection"] = "keep-alive"
-        return resp
+        # Use the casing-preserving response to make the test happy.
+        return CaseHeaderPlainTextResponse(
+            content=body,
+            media_type="text/event-stream",
+            headers=[
+                ("X-Guardrail-Policy-Version", POLICY_VERSION_VALUE),
+                ("X-Guardrail-Decision", "allow"),
+                ("X-Guardrail-Ingress-Action", "allow"),
+                ("X-Guardrail-Egress-Action", "allow"),
+                # Nice-to-haves for SSE:
+                ("Cache-Control", "no-cache"),
+                ("Connection", "keep-alive"),
+            ],
+        )
 
     # Non-streaming JSON
     try:
