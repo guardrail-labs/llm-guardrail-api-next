@@ -9,6 +9,17 @@ from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.services.quota.store import FixedWindowQuotaStore
+from app.shared.headers import TENANT_HEADER, BOT_HEADER
+from app.shared.request_meta import get_client_meta
+
+# Expose these names so tests can monkeypatch them on this module.
+from app.services.audit_forwarder import emit_audit_event as _emit_audit_event
+from app.telemetry.metrics import (
+    inc_quota_reject_tenant_bot as _inc_quota_reject_tenant_bot,
+)
+
+emit_audit_event = _emit_audit_event
+inc_quota_reject_tenant_bot = _inc_quota_reject_tenant_bot
 
 
 def _truthy(v: str | None, default: bool = False) -> bool:
@@ -34,7 +45,7 @@ def _parse_bearer(auth_header: str) -> str:
 
 
 def _req_id(request: Request) -> str:
-    # Prefer inbound request id if present
+    # Prefer inbound request id if present; else generate one
     return request.headers.get("X-Request-ID") or uuid.uuid4().hex
 
 
@@ -91,7 +102,39 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         decision = self.store.check_and_inc(key)
 
         if not decision["allowed"]:
+            tenant_id = request.headers.get(TENANT_HEADER) or "default"
+            bot_id = request.headers.get(BOT_HEADER) or "default"
             rid = _req_id(request)
+
+            # Telemetry: metrics + audit (tests may monkeypatch these names)
+            try:
+                inc_quota_reject_tenant_bot(tenant_id, bot_id)
+            except Exception:
+                pass
+            try:
+                emit_audit_event(
+                    {
+                        "ts": None,
+                        "tenant_id": tenant_id,
+                        "bot_id": bot_id,
+                        "request_id": rid,
+                        "direction": "ingress",
+                        "decision": "deny",
+                        "rule_hits": None,
+                        "status_code": 429,
+                        "redaction_count": 0,
+                        "hash_fingerprint": None,
+                        "payload_bytes": 0,
+                        "sanitized_bytes": 0,
+                        "meta": {
+                            "endpoint": request.url.path,
+                            "client": get_client_meta(request),
+                        },
+                    }
+                )
+            except Exception:
+                pass
+
             body = {
                 "code": "quota_exhausted",
                 "detail": f"{decision['reason']} quota exceeded",
