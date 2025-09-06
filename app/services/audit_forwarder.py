@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import http.client
 import json
 import logging
 import socket
 import ssl
 import time
-import hmac
-import hashlib
 from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 
@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 # ----------------------------- helpers ---------------------------------------
 
+
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -25,20 +26,28 @@ def _getenv(name: str, default: str = "") -> str:
     import os
     return os.getenv(name, default)
 
+
 # ------------------------ HTTP connection creator ----------------------------
+
 
 def _http_connection_for(
     url: str,
 ) -> Union[http.client.HTTPConnection, http.client.HTTPSConnection]:
+    """
+    Return the correct HTTP(S) connection object for a given URL.
+    """
     parsed = urlparse(url)
     scheme = (parsed.scheme or "http").lower()
     host = parsed.hostname or "localhost"
     port: Optional[int] = parsed.port
+
     if scheme == "https":
         return http.client.HTTPSConnection(host, port, timeout=5)
     return http.client.HTTPConnection(host, port, timeout=5)
 
+
 # ----------------------------- Core posting ----------------------------------
+
 
 def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     """
@@ -80,7 +89,9 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         except Exception:
             pass
 
+
 # ----------------------------- Public API ------------------------------------
+
 
 def emit_audit_event(event: Dict[str, Any]) -> None:
     """
@@ -92,7 +103,8 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
       - AUDIT_FORWARD_API_KEY: bearer secret to include in header
       - AUDIT_FORWARD_RETRIES: optional, default 3
       - AUDIT_FORWARD_BACKOFF_MS: optional, default 100 (linear backoff)
-      - AUDIT_FORWARD_SIGNING_SECRET: optional, signs request and sets X-Signature / X-Signature-Ts
+      - AUDIT_FORWARD_SIGNING_SECRET: optional, signs request and sets
+        X-Signature / X-Signature-Ts
     """
     if not _truthy(_getenv("AUDIT_FORWARD_ENABLED", "false")):
         return
@@ -123,16 +135,27 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
             if 200 <= status < 300:
                 audit_forwarder_requests_total.labels("success").inc()
                 return
-        except (socket.timeout, ConnectionError, OSError, ssl.SSLError) as exc:  # pragma: no cover - network
+        # pragma: no cover - network
+        except (
+            socket.timeout,
+            ConnectionError,
+            OSError,
+            ssl.SSLError,
+        ) as exc:
             last_exc = exc
         if attempt < retries - 1:
             _sleep_ms(backoff_ms * (attempt + 1))
 
     audit_forwarder_requests_total.labels("failure").inc()
     if last_exc is not None:  # pragma: no cover - network
-        log.warning("Audit forwarder failed after %d attempts: %s", retries, last_exc)
+        log.warning(
+            "Audit forwarder failed after %d attempts: %s", retries, last_exc
+        )
     else:
-        log.warning("Audit forwarder non-2xx response after %d attempts.", retries)
+        log.warning(
+            "Audit forwarder non-2xx response after %d attempts.", retries
+        )
+
 
 def _sleep_ms(ms: int) -> None:
     import time
