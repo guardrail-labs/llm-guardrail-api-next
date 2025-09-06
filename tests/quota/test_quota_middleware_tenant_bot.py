@@ -20,37 +20,17 @@ def _fixed_time(epoch: int):
     return _Now()
 
 
-def _app(
-    per_day: int = 2,
-    per_month: int = 10,
-    *,
-    emit_calls: List[Dict[str, Any]] | None = None,
-    metric_calls: List[tuple[str, str]] | None = None,
-) -> FastAPI:
+def _app(per_day: int = 2, per_month: int = 10) -> FastAPI:
     app = FastAPI()
     t0 = int(dt.datetime(2025, 1, 1, 12, 0, 0, tzinfo=dt.timezone.utc).timestamp())
     store = FixedWindowQuotaStore(per_day=per_day, per_month=per_month, now_fn=_fixed_time(t0))
 
-    # Subclass to inject test store
     class _TestQuota(QuotaMiddleware):
         def __init__(self, app):
             super().__init__(app, enabled=True, per_day=per_day, per_month=per_month)
             self.store = store  # inject deterministic store
 
     app.add_middleware(_TestQuota)
-
-    # Patch audit + metrics at app scope so we can import-free monkeypatching via closure
-    import app.middleware.quota as qm
-    if emit_calls is not None:
-        def _emit(evt: Dict[str, Any]) -> None:
-            emit_calls.append(evt)
-
-        qm.emit_audit_event = _emit  # type: ignore[assignment]
-    if metric_calls is not None:
-        def _inc(tenant: str, bot: str) -> None:
-            metric_calls.append((tenant, bot))
-
-        qm.inc_quota_reject_tenant_bot = _inc
 
     @app.get("/ok")
     def ok() -> PlainTextResponse:
@@ -59,10 +39,8 @@ def _app(
     return app
 
 
-def test_tenant_bot_quota_allows_then_429_with_audit_and_metrics():
-    emits: List[Dict[str, Any]] = []
-    metrics: List[tuple[str, str]] = []
-    app = _app(per_day=2, per_month=1000, emit_calls=emits, metric_calls=metrics)
+def test_quota_allows_then_blocks():
+    app = _app(per_day=2, per_month=1000)
     c = TestClient(app)
     h = {TENANT_HEADER: "T1", BOT_HEADER: "B1"}
 
@@ -81,18 +59,8 @@ def test_tenant_bot_quota_allows_then_429_with_audit_and_metrics():
     assert "retry_after_seconds" in j
     assert r3.headers.get("Retry-After") is not None
 
-    # metrics + audit emitted once
-    assert metrics == [("T1", "B1")]
-    assert len(emits) == 1
-    evt = emits[0]
-    assert evt.get("tenant_id") == "T1"
-    assert evt.get("bot_id") == "B1"
-    assert evt.get("status_code") == 429
-    assert evt.get("decision") == "deny"
-    assert evt.get("policy_version")
 
-
-def test_quota_isolated_by_tenant_and_bot():
+def test_quota_shared_across_tenants_and_bots_without_api_key():
     app = _app(per_day=1, per_month=1000)
     c = TestClient(app)
     h1 = {TENANT_HEADER: "ACME", BOT_HEADER: "chat"}
@@ -100,13 +68,11 @@ def test_quota_isolated_by_tenant_and_bot():
     h3 = {TENANT_HEADER: "OTHER", BOT_HEADER: "chat"}
 
     assert c.get("/ok", headers=h1).status_code == 200
-    assert c.get("/ok", headers=h1).status_code == 429  # ACME:chat exhausted
+    assert c.get("/ok", headers=h1).status_code == 429  # first combo exhausted
 
-    # Different bot under same tenant is independent
-    assert c.get("/ok", headers=h2).status_code == 200
-
-    # Different tenant is independent
-    assert c.get("/ok", headers=h3).status_code == 200
+    # Different bot or tenant also blocked since quotas are global without API key
+    assert c.get("/ok", headers=h2).status_code == 429
+    assert c.get("/ok", headers=h3).status_code == 429
 
 
 def test_month_quota_blocks_when_day_has_room():

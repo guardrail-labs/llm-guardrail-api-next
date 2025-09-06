@@ -8,6 +8,8 @@ import ssl
 from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 
+from app.services.metrics import audit_forwarder_requests_total
+
 log = logging.getLogger(__name__)
 
 # ----------------------------- helpers ---------------------------------------
@@ -125,6 +127,7 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
             status, _text = _post(url, api_key, event)
             # Consider 2xx success; otherwise proceed to retry loop.
             if 200 <= status < 300:
+                audit_forwarder_requests_total.labels("success").inc()
                 return
         except (
             socket.timeout,
@@ -137,6 +140,8 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
         if attempt < retries - 1:
             _sleep_ms(backoff_ms * (attempt + 1))
 
+    # Failed after retries (either non-2xx or exception)
+    audit_forwarder_requests_total.labels("failure").inc()
     if last_exc is not None:  # pragma: no cover - network
         log.warning(
             "Audit forwarder failed after %d attempts: %s", retries, last_exc
@@ -152,3 +157,4 @@ def _sleep_ms(ms: int) -> None:
     import time
 
     time.sleep(ms / 1000.0)
+

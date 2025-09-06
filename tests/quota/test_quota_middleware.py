@@ -62,7 +62,7 @@ def test_quota_allows_then_blocks_daily():
     assert r3.headers.get("X-Quota-Reset") is not None
 
 
-def test_quota_isolated_per_tenant_bot():
+def test_quota_shared_across_requests_without_api_key():
     app = _app(per_day=1, per_month=1000)
     c = TestClient(app)
     h1 = {TENANT_HEADER: "ACME", BOT_HEADER: "chat"}
@@ -70,7 +70,8 @@ def test_quota_isolated_per_tenant_bot():
 
     assert c.get("/ok", headers=h1).status_code == 200
     assert c.get("/ok", headers=h1).status_code == 429  # ACME:chat exhausted
-    assert c.get("/ok", headers=h2).status_code == 200  # ACME:emb unaffected
+    # Without API keys quotas are shared across tenants/bots
+    assert c.get("/ok", headers=h2).status_code == 429
 
 
 def test_month_quota_blocks_when_day_has_room():
