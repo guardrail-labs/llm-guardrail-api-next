@@ -1,0 +1,30 @@
+groups:
+- name: audit-forwarder
+  rules:
+  - alert: AuditForwarderFailures
+    expr: rate(audit_forwarder_requests_total{result="failure"}[5m]) > 0
+    for: 10m
+    labels:
+      severity: page
+    annotations:
+      summary: "Audit forwarder failures"
+      description: "Forwarder is failing to deliver events for >10m."
+
+  - alert: NoGuardrailDecisions
+    expr: sum(rate(guardrail_decisions_family_total[10m])) == 0
+    for: 30m
+    labels:
+      severity: warn
+    annotations:
+      summary: "No guardrail decisions flowing"
+      description: "No allow/sanitize/block decisions observed in the last 30m."
+
+  - alert: HighSanitizeRate
+    expr: rate(guardrail_decisions_family_total{family="sanitize"}[5m]) > 5
+    for: 15m
+    labels:
+      severity: info
+    annotations:
+      summary: "High sanitize volume"
+      description: >
+        Sustained redactions could indicate prompt-injection attempts or leaking secrets.

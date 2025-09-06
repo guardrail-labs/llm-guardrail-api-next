@@ -1,0 +1,139 @@
+name: audit-smoke
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (for inline HMAC helper)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Build & run receiver (examples/audit_sink)
+        env:
+          PORT: "8081"
+        run: |
+          docker build -t audit-receiver examples/audit_sink
+          docker run -d --rm \
+            -p ${PORT}:${PORT} \
+            --name sink \
+            -e PORT=${PORT} \
+            -e AUDIT_RECEIVER_REQUIRE_API_KEY=1 \
+            -e AUDIT_RECEIVER_API_KEY=test-key \
+            -e AUDIT_RECEIVER_REQUIRE_SIGNATURE=1 \
+            -e AUDIT_RECEIVER_ENFORCE_TS=1 \
+            -e AUDIT_RECEIVER_TS_SKEW_SEC=300 \
+            -e AUDIT_RECEIVER_IDEMP_TTL_SEC=60 \
+            audit-receiver
+          # Give it a moment to boot
+          sleep 2
+          curl -sf "http://localhost:${PORT}/health" >/dev/null
+
+      - name: Run signed ingest checks
+        env:
+          FORWARD_URL: http://localhost:8081/ingest
+          FORWARD_KEY: test-key
+          HMAC_SECRET: test-secret
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          sign() {
+            # args: ts, body
+            python - "$1" "$2" <<'PY'
+import sys, hmac, hashlib, json
+ts = sys.argv[1]
+body = sys.argv[2]
+secret = "${HMAC_SECRET}".encode("utf-8")
+msg = (ts + "." + body).encode("utf-8")
+print(hmac.new(secret, msg, hashlib.sha256).hexdigest())
+PY
+          }
+
+          # happy path
+          BODY='{"event":"ping","request_id":"demo-1","direction":"ingress","ts":'$(date +%s)'}'
+          TS="$(date +%s)"
+          SIG_HEX="$(sign "$TS" "$BODY")"
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $FORWARD_KEY" \
+            -H "X-Signature-Ts: $TS" \
+            -H "X-Signature: sha256=$SIG_HEX" \
+            -H "X-Idempotency-Key: demo-key-1" \
+            --data "$BODY")
+          test "$code" = "200" || { echo "expected 200, got $code"; exit 1; }
+
+          # replay with same idempotency key -> expect duplicate
+          # (409 or 208 depending on sink semantics)
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $FORWARD_KEY" \
+            -H "X-Signature-Ts: $TS" \
+            -H "X-Signature: sha256=$SIG_HEX" \
+            -H "X-Idempotency-Key: demo-key-1" \
+            --data "$BODY")
+          if [ "$code" != "409" ] && [ "$code" != "208" ]; then
+            echo "expected 409 or 208 on replay, got $code"; exit 1;
+          fi
+
+          # missing signature -> expect 401
+          BODY2='{"event":"ping","request_id":"demo-2","direction":"ingress","ts":'$(date +%s)'}'
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $FORWARD_KEY" \
+            --data "$BODY2")
+          test "$code" = "401" || { echo "expected 401 without signature, got $code"; exit 1; }
+
+          # stale timestamp -> expect 401
+          STALE_TS=$(( $(date +%s) - 9999 ))
+          SIG_HEX="$(sign "$STALE_TS" "$BODY2")"
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $FORWARD_KEY" \
+            -H "X-Signature-Ts: $STALE_TS" \
+            -H "X-Signature: sha256=$SIG_HEX" \
+            --data "$BODY2")
+          test "$code" = "401" || { echo "expected 401 on stale ts, got $code"; exit 1; }
+
+          # invalid JSON should NOT consume idempotency key
+          # retry with valid body and same key -> expect 200
+          BAD='{"event": "broken"  '
+          TS3="$(date +%s)"
+          SIG3="$(sign "$TS3" "$BAD")"
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $FORWARD_KEY" \
+            -H "X-Signature-Ts: $TS3" \
+            -H "X-Signature: sha256=$SIG3" \
+            -H "X-Idempotency-Key: demo-key-2" \
+            --data "$BAD")
+          test "$code" = "400" || { echo "expected 400 on bad json, got $code"; exit 1; }
+
+          GOOD='{"event":"ok","request_id":"demo-3","direction":"ingress","ts":'$(date +%s)'}'
+          TS4="$(date +%s)"
+          SIG4="$(sign "$TS4" "$GOOD")"
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $FORWARD_KEY" \
+            -H "X-Signature-Ts: $TS4" \
+            -H "X-Signature: sha256=$SIG4" \
+            -H "X-Idempotency-Key: demo-key-2" \
+            --data "$GOOD")
+          test "$code" = "200" \
+            || { echo "expected 200 after good retry, got $code"; exit 1; }
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker rm -f sink >/dev/null 2>&1 || true
