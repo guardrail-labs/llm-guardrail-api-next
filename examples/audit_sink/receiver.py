@@ -74,12 +74,18 @@ def _compare_digest(a: str, b: str) -> bool:
         return False
 
 
-def _verify_hmac(raw_body: bytes, header_sig: Optional[str], header_ts: Optional[str]) -> None:
+def _verify_hmac(
+    raw_body: bytes,
+    header_sig: Optional[str],
+    header_ts: Optional[str],
+) -> None:
     if not REQUIRE_SIG:
         return
 
     if not SIGNING_SECRET:
-        raise HTTPException(status_code=500, detail="Signing required but secret not set")
+        raise HTTPException(
+            status_code=500, detail="Signing required but secret not set"
+        )
 
     if not header_sig:
         raise HTTPException(status_code=401, detail="Missing signature")
@@ -91,16 +97,22 @@ def _verify_hmac(raw_body: bytes, header_sig: Optional[str], header_ts: Optional
     try:
         sent = int(header_ts)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Malformed signature timestamp")
+        raise HTTPException(
+            status_code=400, detail="Malformed signature timestamp"
+        )
 
     if ENFORCE_TS:
         now = _now()
         if abs(now - sent) > TS_SKEW_SEC:
-            raise HTTPException(status_code=401, detail="Stale signature timestamp")
+            raise HTTPException(
+                status_code=401, detail="Stale signature timestamp"
+            )
 
     # Expected: HMAC(secret, ts + "." + body)
     msg = header_ts.encode("utf-8") + b"." + raw_body
-    expected = hmac.new(SIGNING_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+    expected = hmac.new(
+        SIGNING_SECRET.encode("utf-8"), msg, hashlib.sha256
+    ).hexdigest()
     presented = header_sig.split("=", 1)[-1].strip()
 
     if not _compare_digest(expected, presented):
@@ -135,18 +147,20 @@ async def receive_audit(
     # HMAC + timestamp
     _verify_hmac(raw, x_signature, x_signature_ts)
 
-    # Idempotency (optional)
+    # Idempotency header presence (if required)
     if REQUIRE_IDEMP and not x_idempotency_key:
         raise HTTPException(status_code=400, detail="Missing idempotency key")
 
-    deduped = False
-    if x_idempotency_key:
-        deduped = _mark_or_seen(x_idempotency_key, IDEMP_TTL)
-
+    # Validate payload before consuming idempotency key
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Only now record/mark idempotency; repeats are deduped within TTL
+    deduped = False
+    if x_idempotency_key:
+        deduped = _mark_or_seen(x_idempotency_key, IDEMP_TTL)
 
     return {
         "ok": True,
@@ -154,4 +168,3 @@ async def receive_audit(
         "deduped": bool(deduped),
         "idempotency": x_idempotency_key,
     }
-
