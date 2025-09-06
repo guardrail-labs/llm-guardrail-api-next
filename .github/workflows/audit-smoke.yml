@@ -24,6 +24,7 @@ jobs:
         env:
           PORT: "8081"
         run: |
+          set -eo pipefail
           docker build -t audit-receiver examples/audit_sink
           docker run -d --rm \
             -p ${PORT}:${PORT} \
@@ -32,17 +33,28 @@ jobs:
             -e AUDIT_RECEIVER_REQUIRE_API_KEY=1 \
             -e AUDIT_RECEIVER_API_KEY=test-key \
             -e AUDIT_RECEIVER_REQUIRE_SIGNATURE=1 \
+            -e AUDIT_RECEIVER_SIGNING_SECRET=test-secret \
             -e AUDIT_RECEIVER_ENFORCE_TS=1 \
             -e AUDIT_RECEIVER_TS_SKEW_SEC=300 \
             -e AUDIT_RECEIVER_IDEMP_TTL_SEC=60 \
             audit-receiver
-          # Give it a moment to boot
-          sleep 2
-          curl -sf "http://localhost:${PORT}/health" >/dev/null
+
+          # Wait for server to accept connections by probing /audit.
+          # Accept 200 (OK) or 405 (Method Not Allowed) as "up".
+          for i in {1..30}; do
+            code="$(curl -s -o /dev/null -w "%{http_code}" -X OPTIONS "http://localhost:${PORT}/audit" || true)"
+            if [ "$code" = "200" ] || [ "$code" = "405" ]; then
+              echo "Receiver is up (code=$code)"; break
+            fi
+            sleep 1
+          done
+          if [ "$code" != "200" ] && [ "$code" != "405" ]; then
+            echo "Receiver did not become ready in time"; exit 1
+          fi
 
       - name: Run signed ingest checks
         env:
-          FORWARD_URL: http://localhost:8081/ingest
+          FORWARD_URL: http://localhost:8081/audit
           FORWARD_KEY: test-key
           HMAC_SECRET: test-secret
         shell: bash
@@ -52,16 +64,16 @@ jobs:
           sign() {
             # args: ts, body
             python - "$1" "$2" <<'PY'
-import sys, hmac, hashlib, json
+import os, sys, hmac, hashlib
 ts = sys.argv[1]
 body = sys.argv[2]
-secret = "${HMAC_SECRET}".encode("utf-8")
+secret = os.environ["HMAC_SECRET"].encode("utf-8")
 msg = (ts + "." + body).encode("utf-8")
 print(hmac.new(secret, msg, hashlib.sha256).hexdigest())
 PY
           }
 
-          # happy path
+          # --- happy path ---
           BODY='{"event":"ping","request_id":"demo-1","direction":"ingress","ts":'$(date +%s)'}'
           TS="$(date +%s)"
           SIG_HEX="$(sign "$TS" "$BODY")"
@@ -74,20 +86,21 @@ PY
             --data "$BODY")
           test "$code" = "200" || { echo "expected 200, got $code"; exit 1; }
 
-          # replay with same idempotency key -> expect duplicate
-          # (409 or 208 depending on sink semantics)
-          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+          # --- idempotent replay: expect 200 with "deduped": true in body ---
+          resp=$(curl -s -w " HTTP_STATUS:%{http_code}" -X POST "$FORWARD_URL" \
             -H "Content-Type: application/json" \
             -H "X-API-Key: $FORWARD_KEY" \
             -H "X-Signature-Ts: $TS" \
             -H "X-Signature: sha256=$SIG_HEX" \
             -H "X-Idempotency-Key: demo-key-1" \
             --data "$BODY")
-          if [ "$code" != "409" ] && [ "$code" != "208" ]; then
-            echo "expected 409 or 208 on replay, got $code"; exit 1;
-          fi
+          code="${resp##*HTTP_STATUS:}"
+          body="${resp% HTTP_STATUS:*}"
+          test "$code" = "200" || { echo "expected 200 on replay, got $code"; echo "$body"; exit 1; }
+          echo "$body" | grep -q '"deduped"[[:space:]]*:[[:space:]]*true' \
+            || { echo 'expected "deduped": true on replay'; echo "$body"; exit 1; }
 
-          # missing signature -> expect 401
+          # --- missing signature -> expect 401 ---
           BODY2='{"event":"ping","request_id":"demo-2","direction":"ingress","ts":'$(date +%s)'}'
           code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
             -H "Content-Type: application/json" \
@@ -95,7 +108,7 @@ PY
             --data "$BODY2")
           test "$code" = "401" || { echo "expected 401 without signature, got $code"; exit 1; }
 
-          # stale timestamp -> expect 401
+          # --- stale timestamp -> expect 401 ---
           STALE_TS=$(( $(date +%s) - 9999 ))
           SIG_HEX="$(sign "$STALE_TS" "$BODY2")"
           code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
@@ -106,8 +119,7 @@ PY
             --data "$BODY2")
           test "$code" = "401" || { echo "expected 401 on stale ts, got $code"; exit 1; }
 
-          # invalid JSON should NOT consume idempotency key
-          # retry with valid body and same key -> expect 200
+          # --- invalid JSON should NOT consume idempotency key ---
           BAD='{"event": "broken"  '
           TS3="$(date +%s)"
           SIG3="$(sign "$TS3" "$BAD")"
@@ -120,6 +132,7 @@ PY
             --data "$BAD")
           test "$code" = "400" || { echo "expected 400 on bad json, got $code"; exit 1; }
 
+          # --- good retry with same idempotency key should succeed (200) ---
           GOOD='{"event":"ok","request_id":"demo-3","direction":"ingress","ts":'$(date +%s)'}'
           TS4="$(date +%s)"
           SIG4="$(sign "$TS4" "$GOOD")"
@@ -130,8 +143,7 @@ PY
             -H "X-Signature: sha256=$SIG4" \
             -H "X-Idempotency-Key: demo-key-2" \
             --data "$GOOD")
-          test "$code" = "200" \
-            || { echo "expected 200 after good retry, got $code"; exit 1; }
+          test "$code" = "200" || { echo "expected 200 after good retry with same idempotency key, got $code"; exit 1; }
 
       - name: Teardown
         if: always()
