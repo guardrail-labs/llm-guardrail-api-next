@@ -26,7 +26,14 @@ def _find_quota_middleware(app) -> Optional[QuotaMiddleware]:
 
 
 @router.get("/status")
-async def quota_status(request: Request, key: str = Query(..., min_length=1)) -> Dict[str, Any]:
+async def quota_status(
+    request: Request,
+    key: Optional[str] = Query(default=None, min_length=1),
+) -> Dict[str, Any]:
+    # Return 400 (not 422) when key is missing to satisfy contract/tests
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing 'key'")
+
     mw = _find_quota_middleware(request.app)
     if mw is None:
         raise HTTPException(status_code=503, detail="Quota middleware not available")
@@ -64,4 +71,3 @@ async def quota_reset(
         "limits": {"per_day": int(mw.per_day), "per_month": int(mw.per_month)},
         "status": status,
     }
-
