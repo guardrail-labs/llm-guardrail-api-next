@@ -11,6 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.services.quota.store import FixedWindowQuotaStore
 from app.shared.headers import TENANT_HEADER, BOT_HEADER
 from app.shared.request_meta import get_client_meta
+from app.services.policy import current_rules_version
 
 # Expose these names so tests can monkeypatch them on this module.
 from app.services.audit_forwarder import emit_audit_event as _emit_audit_event
@@ -51,7 +52,11 @@ def _req_id(request: Request) -> str:
 
 class QuotaMiddleware(BaseHTTPMiddleware):
     """
-    Global per-API-key quotas using fixed UTC day and month windows.
+    Global quotas.
+
+    Keying strategy:
+      - If an API key is present, quotas apply to that key.
+      - Otherwise, quotas are isolated per (tenant_id, bot_id).
 
     Always sets:
       - X-Quota-Limit-Day
@@ -80,7 +85,7 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         per_month: Optional[int] = None,
     ) -> None:
         super().__init__(app)
-        # Default OFF unless explicitly enabled
+        # Default OFF for generic runs; tests enable explicitly per-suite.
         self.enabled = _truthy(os.getenv("QUOTA_ENABLED"), False) if enabled is None else enabled
         day = int(os.getenv("QUOTA_PER_DAY") or (str(per_day) if per_day is not None else "100000"))
         mon = int(
@@ -98,12 +103,16 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         if not self.enabled:
             return await call_next(request)
 
-        key = _api_key_from_headers(request) or "anon"
+        tenant_id = request.headers.get(TENANT_HEADER) or "default"
+        bot_id = request.headers.get(BOT_HEADER) or "default"
+
+        api_key = _api_key_from_headers(request)
+        # Isolate anonymous traffic by (tenant, bot)
+        key = api_key if api_key else f"{tenant_id}:{bot_id}"
+
         decision = self.store.check_and_inc(key)
 
         if not decision["allowed"]:
-            tenant_id = request.headers.get(TENANT_HEADER) or "default"
-            bot_id = request.headers.get(BOT_HEADER) or "default"
             rid = _req_id(request)
 
             # Telemetry: metrics + audit (tests may monkeypatch these names)
@@ -121,6 +130,7 @@ class QuotaMiddleware(BaseHTTPMiddleware):
                         "direction": "ingress",
                         "decision": "deny",
                         "rule_hits": None,
+                        "policy_version": current_rules_version(),
                         "status_code": 429,
                         "redaction_count": 0,
                         "hash_fingerprint": None,
