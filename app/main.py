@@ -17,6 +17,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from app.metrics.route_label import route_label
+from app.middleware.quota import QuotaMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
@@ -251,6 +252,9 @@ def create_app() -> FastAPI:
 
     # Rate limiting (env-controlled)
     app.add_middleware(RateLimitMiddleware)
+
+    # Global daily/monthly quota
+    app.add_middleware(QuotaMiddleware)
 
     # Security headers + latency histogram + normalize 401 body
     app.add_middleware(_SecurityHeadersMiddleware)
