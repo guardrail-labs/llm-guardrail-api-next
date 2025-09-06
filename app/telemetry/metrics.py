@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Tuple, TypeVar, Protocol, cast
+from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast
 
 # ---- Protocols (surface we rely on) ------------------------------------------
 
@@ -22,9 +22,7 @@ CounterClass: Any
 HistogramClass: Any
 
 try:
-    from prometheus_client import Counter as _PCounter
-    from prometheus_client import Histogram as _PHistogram
-    from prometheus_client import REGISTRY as _PREG
+    from prometheus_client import REGISTRY as _PREG, Counter as _PCounter, Histogram as _PHistogram
 
     PROM_REGISTRY = _PREG
     CounterClass = _PCounter
@@ -130,6 +128,9 @@ guardrail_latency_seconds: HistogramLike = _mk_histogram(
 guardrail_rate_limited_total: CounterLike = _mk_counter(
     "guardrail_rate_limited_total", "Requests rejected by legacy rate limiter."
 )
+guardrail_quota_rejects_total: CounterLike = _mk_counter(
+    "guardrail_quota_rejects_total", "Requests rejected due to quotas.", ["tenant", "bot"]
+)
 
 # Family + tenant/bot breakdowns
 guardrail_decisions_family_total: CounterLike = _mk_counter(
@@ -224,6 +225,7 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     # Quota rejects count as deny
     inc_decision_family("deny")
     inc_decision_family_tenant_bot("deny", tenant, bot)
+    guardrail_quota_rejects_total.labels(tenant, bot).inc()
 
 
 def inc_redaction(mask: str) -> None:
