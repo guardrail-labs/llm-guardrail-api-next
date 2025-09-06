@@ -20,7 +20,7 @@ from app.services.threat_feed import (
 )
 from app.telemetry import metrics as m
 from typing import Any, Dict
-from app.services.audit_forwarder import emit_audit_event as _emit
+from app.services.audit import emit_audit_event as _emit
 
 router = APIRouter()
 
