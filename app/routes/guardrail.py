@@ -1,16 +1,16 @@
+# ruff: noqa: I001
 from __future__ import annotations
 
 import hashlib
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.models.debug import SourceDebug
-from app.services import audit_forwarder as af
 from app.services.debug_sources import make_source
 from app.services.policy import apply_injection_default, maybe_route_to_verifier
 from app.services.policy_loader import get_policy as _get_policy
@@ -19,6 +19,8 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.telemetry import metrics as m
+from typing import Any, Dict
+from app.services.audit_forwarder import emit_audit_event as _emit_audit_event
 
 router = APIRouter()
 
@@ -74,21 +76,7 @@ def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
 
 
 def emit_audit_event(payload: Dict[str, Any]) -> None:
-    enabled = os.getenv("AUDIT_FORWARD_ENABLED", "false").lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-    if not enabled:
-        return
-    url = os.getenv("AUDIT_FORWARD_URL", "")
-    key = os.getenv("AUDIT_FORWARD_API_KEY", "")
-    if not (url and key):
-        return
-    try:
-        af._post(url, key, payload)
-    except Exception:
-        pass
+    _emit_audit_event(payload)
 
 
 def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:

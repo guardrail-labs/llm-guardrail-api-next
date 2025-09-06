@@ -8,18 +8,16 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.services.quota.store import FixedWindowQuotaStore
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
-from app.shared.request_meta import get_client_meta
-from app.services.policy import current_rules_version
-
 # Expose these names so tests can monkeypatch them on this module.
-from app.services.audit_forwarder import emit_audit_event as _emit_audit_event
+from app.services.audit_forwarder import emit_audit_event
+from app.services.policy import current_rules_version
+from app.services.quota.store import FixedWindowQuotaStore
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
+from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_quota_reject_tenant_bot as _inc_quota_reject_tenant_bot,
 )
 
-emit_audit_event = _emit_audit_event
 inc_quota_reject_tenant_bot = _inc_quota_reject_tenant_bot
 
 
