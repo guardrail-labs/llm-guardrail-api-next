@@ -20,7 +20,7 @@ from app.services.threat_feed import (
 )
 from app.telemetry import metrics as m
 from typing import Any, Dict
-from app.services.audit_forwarder import emit_audit_event as _emit_audit_event
+from app.services.audit_forwarder import emit_audit_event as _emit
 
 router = APIRouter()
 
@@ -76,7 +76,7 @@ def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
 
 
 def emit_audit_event(payload: Dict[str, Any]) -> None:
-    _emit_audit_event(payload)
+    _emit(payload)
 
 
 def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
