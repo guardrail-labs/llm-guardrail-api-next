@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import http.client
 import json
 import logging
 import socket
 import ssl
 import time
-import hmac
-import hashlib
 from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 
@@ -71,11 +71,12 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         "X-API-Key": api_key,
     }
 
-    # Optional request signing (HMAC-SHA256 over raw JSON body)
+    # Optional request signing (HMAC-SHA256 over f"{ts}.{raw_json_body}")
     secret = _getenv("AUDIT_FORWARD_SIGNING_SECRET", "")
     if secret:
         ts = str(int(time.time()))
-        digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        to_sign = ts.encode("utf-8") + b"." + body
+        digest = hmac.new(secret.encode("utf-8"), to_sign, hashlib.sha256).hexdigest()
         headers["X-Signature-Ts"] = ts
         headers["X-Signature"] = f"sha256={digest}"
 
@@ -169,3 +170,4 @@ def _sleep_ms(ms: int) -> None:
     import time
 
     time.sleep(ms / 1000.0)
+
