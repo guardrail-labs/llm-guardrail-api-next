@@ -8,7 +8,12 @@ set -euo pipefail
 TS="$(date +%s)"
 export TS
 
-BODY=$(printf '{"event":"ping","request_id":"demo-1","direction":"ingress","ts":%s}' "$TS")
+# Allow caller to pass a fixed key; else derive from request_id.
+IDEMP_KEY="${IDEMP_KEY:-demo-1}"
+export IDEMP_KEY
+
+BODY=$(printf '{"event":"ping","request_id":"%s","direction":"ingress","ts":%s}' \
+  "${IDEMP_KEY}" "${TS}")
 export BODY
 
 # HMAC(secret, ts + "." + body) — must match receiver and forwarder
@@ -22,12 +27,25 @@ PY
 )"
 SIG="sha256=${SIG_HEX}"
 
-curl -i -X POST "${AUDIT_URL}" \
+echo "[info] sending first request (should be accepted)"
+curl -sS -i -X POST "${AUDIT_URL}" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: ${AUDIT_API_KEY}" \
   -H "X-Signature-Ts: ${TS}" \
   -H "X-Signature: ${SIG}" \
-  --data "${BODY}"
+  -H "X-Idempotency-Key: ${IDEMP_KEY}" \
+  --data "${BODY}" | sed -n '1,20p'
 
 echo
-echo "[ok] smoke request sent"
+echo "[info] sending duplicate request (should be deduped=true)"
+curl -sS -i -X POST "${AUDIT_URL}" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: ${AUDIT_API_KEY}" \
+  -H "X-Signature-Ts: ${TS}" \
+  -H "X-Signature: ${SIG}" \
+  -H "X-Idempotency-Key: ${IDEMP_KEY}" \
+  --data "${BODY}" | sed -n '1,20p'
+
+echo
+echo "[ok] smoke finished"
+

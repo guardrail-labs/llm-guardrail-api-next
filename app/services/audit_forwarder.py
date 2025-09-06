@@ -72,6 +72,15 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         "X-API-Key": api_key,
     }
 
+    # Optional idempotency header
+    if _truthy(_getenv("AUDIT_FORWARD_IDEMPOTENCY", "0")):
+        rid = str(payload.get("request_id") or "").strip()
+        if rid:
+            idem = rid
+        else:
+            idem = hashlib.sha256(body).hexdigest()
+        headers["X-Idempotency-Key"] = idem
+
     # Optional request signing: HMAC-SHA256 over "ts + '.' + body"
     secret = _getenv("AUDIT_FORWARD_SIGNING_SECRET", "")
     if secret:
@@ -109,6 +118,7 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
       - AUDIT_FORWARD_RETRIES: optional, default 3
       - AUDIT_FORWARD_BACKOFF_MS: optional, default 100 (linear backoff)
       - AUDIT_FORWARD_SIGNING_SECRET: if set, add HMAC over 'ts.body' headers
+      - AUDIT_FORWARD_IDEMPOTENCY: if set, add X-Idempotency-Key
     """
     if not _truthy(_getenv("AUDIT_FORWARD_ENABLED", "false")):
         return
@@ -171,3 +181,4 @@ def _sleep_ms(ms: int) -> None:
     import time
 
     time.sleep(ms / 1000.0)
+

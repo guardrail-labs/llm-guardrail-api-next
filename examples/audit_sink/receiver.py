@@ -21,9 +21,50 @@ def _truthy(v: Optional[str]) -> bool:
 
 API_KEY = os.getenv("AUDIT_RECEIVER_API_KEY", "")
 SIGNING_SECRET = os.getenv("AUDIT_RECEIVER_SIGNING_SECRET", "")
-REQUIRE_SIG = _truthy(os.getenv("AUDIT_RECEIVER_REQUIRE_SIG", "1" if SIGNING_SECRET else "0"))
+REQUIRE_SIG = _truthy(
+    os.getenv("AUDIT_RECEIVER_REQUIRE_SIG", "1" if SIGNING_SECRET else "0")
+)
 ENFORCE_TS = _truthy(os.getenv("AUDIT_RECEIVER_ENFORCE_TS", "1"))
 TS_SKEW_SEC = int(os.getenv("AUDIT_RECEIVER_TS_SKEW_SEC", "300"))  # ±5min default
+
+REQUIRE_IDEMP = _truthy(os.getenv("AUDIT_RECEIVER_REQUIRE_IDEMPOTENCY", "0"))
+IDEMP_TTL = int(os.getenv("AUDIT_RECEIVER_IDEMPOTENCY_TTL_SEC", "600"))  # 10 min
+
+
+# ----------------------------- idempotency store ------------------------------
+
+
+# Simple in-memory TTL cache: key -> expires_at (epoch seconds).
+_IDEMP: Dict[str, int] = {}
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+def _prune(now: int) -> None:
+    if not _IDEMP:
+        return
+    drop = [k for k, exp in _IDEMP.items() if exp <= now]
+    for k in drop:
+        _IDEMP.pop(k, None)
+
+
+def _mark_or_seen(key: str, ttl: int) -> bool:
+    """
+    Returns True if key is a *repeat* (seen and not expired).
+    Otherwise marks it with new expiry and returns False.
+    """
+    now = _now()
+    _prune(now)
+    exp = _IDEMP.get(key)
+    if exp and exp > now:
+        return True
+    _IDEMP[key] = now + max(1, ttl)
+    return False
+
+
+# ----------------------------- signing verify --------------------------------
 
 
 def _compare_digest(a: str, b: str) -> bool:
@@ -53,7 +94,7 @@ def _verify_hmac(raw_body: bytes, header_sig: Optional[str], header_ts: Optional
         raise HTTPException(status_code=400, detail="Malformed signature timestamp")
 
     if ENFORCE_TS:
-        now = int(time.time())
+        now = _now()
         if abs(now - sent) > TS_SKEW_SEC:
             raise HTTPException(status_code=401, detail="Stale signature timestamp")
 
@@ -64,6 +105,9 @@ def _verify_hmac(raw_body: bytes, header_sig: Optional[str], header_ts: Optional
 
     if not _compare_digest(expected, presented):
         raise HTTPException(status_code=401, detail="Bad signature")
+
+
+# ----------------------------- route -----------------------------------------
 
 
 @app.post("/audit")
@@ -91,11 +135,23 @@ async def receive_audit(
     # HMAC + timestamp
     _verify_hmac(raw, x_signature, x_signature_ts)
 
+    # Idempotency (optional)
+    if REQUIRE_IDEMP and not x_idempotency_key:
+        raise HTTPException(status_code=400, detail="Missing idempotency key")
+
+    deduped = False
+    if x_idempotency_key:
+        deduped = _mark_or_seen(x_idempotency_key, IDEMP_TTL)
+
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # TODO: add idempotency storage if needed (x_idempotency_key)
-    # For now, just echo.
-    return {"ok": True, "received": bool(payload), "idempotency": x_idempotency_key}
+    return {
+        "ok": True,
+        "received": bool(payload),
+        "deduped": bool(deduped),
+        "idempotency": x_idempotency_key,
+    }
+
