@@ -11,10 +11,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.services.quota.store import FixedWindowQuotaStore
 
 
-# Paths that should never be gated by quotas
-_SAFE_PATHS: set[str] = {"/health", "/metrics"}
-
-
 def _truthy(v: str | None, default: bool = False) -> bool:
     if v is None:
         return default
@@ -38,7 +34,7 @@ def _parse_bearer(auth_header: str) -> str:
 
 
 def _req_id(request: Request) -> str:
-    # Prefer inbound header (RequestIDMiddleware may also set one upstream)
+    # Prefer inbound request id if present
     return request.headers.get("X-Request-ID") or uuid.uuid4().hex
 
 
@@ -46,7 +42,7 @@ class QuotaMiddleware(BaseHTTPMiddleware):
     """
     Global per-API-key quotas using fixed UTC day and month windows.
 
-    Always sets (when enabled):
+    Always sets:
       - X-Quota-Limit-Day
       - X-Quota-Limit-Month
       - X-Quota-Remaining-Day
@@ -73,15 +69,11 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         per_month: Optional[int] = None,
     ) -> None:
         super().__init__(app)
-        # IMPORTANT: default to DISABLED unless explicitly enabled via env/arg
+        # Default OFF unless explicitly enabled
         self.enabled = _truthy(os.getenv("QUOTA_ENABLED"), False) if enabled is None else enabled
-        day = int(
-            os.getenv("QUOTA_PER_DAY")
-            or (str(per_day) if per_day is not None else "100000")
-        )
+        day = int(os.getenv("QUOTA_PER_DAY") or (str(per_day) if per_day is not None else "100000"))
         mon = int(
-            os.getenv("QUOTA_PER_MONTH")
-            or (str(per_month) if per_month is not None else "2000000")
+            os.getenv("QUOTA_PER_MONTH") or (str(per_month) if per_month is not None else "2000000")
         )
         self.per_day = day
         self.per_month = mon
@@ -92,10 +84,6 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        # Always allow preflight and safe paths
-        if request.method == "OPTIONS" or request.url.path in _SAFE_PATHS:
-            return await call_next(request)
-
         if not self.enabled:
             return await call_next(request)
 
