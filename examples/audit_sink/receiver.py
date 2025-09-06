@@ -22,8 +22,8 @@ def _truthy(v: object) -> bool:
 
 # --- Config via env -----------------------------------------------------------
 
-API_KEY = os.getenv("AUDIT_RECEIVER_API_KEY", "")  # optional
-SIGNING_SECRET = os.getenv("AUDIT_RECEIVER_SIGNING_SECRET", "")  # optional
+API_KEY = os.getenv("AUDIT_RECEIVER_API_KEY", "")
+SIGNING_SECRET = os.getenv("AUDIT_RECEIVER_SIGNING_SECRET", "")
 REQUIRE_SIGNATURE = _truthy(os.getenv("AUDIT_RECEIVER_REQUIRE_SIGNATURE", "0"))
 IDEMP_TTL_SEC = max(1, int(os.getenv("AUDIT_RECEIVER_IDEMP_TTL_SEC", "600")))
 IDEMP_MAX_KEYS = max(100, int(os.getenv("AUDIT_RECEIVER_MAX_KEYS", "10000")))
@@ -115,11 +115,16 @@ def _verify_signature(
             ts_str = header_ts
         except ValueError:
             if ENFORCE_TS:
-                raise HTTPException(status_code=400, detail="Malformed signature timestamp")
-            ts_str = ""  # ignore bad ts when not enforcing
+                raise HTTPException(
+                    status_code=400, detail="Malformed signature timestamp"
+                )
+            ts_str = ""
         else:
-            if ENFORCE_TS and TS_SKEW_SEC and abs(int(time.time()) - ts_int) > TS_SKEW_SEC:
-                raise HTTPException(status_code=401, detail="Stale signature timestamp")
+            now = int(time.time())
+            if ENFORCE_TS and TS_SKEW_SEC and abs(now - ts_int) > TS_SKEW_SEC:
+                raise HTTPException(
+                    status_code=401, detail="Stale signature timestamp"
+                )
     else:
         if ENFORCE_TS:
             raise HTTPException(status_code=401, detail="Missing signature timestamp")
@@ -127,7 +132,9 @@ def _verify_signature(
     # Compute expected signature over "ts.raw"
     to_sign = ts_str.encode("utf-8") + b"." + raw_body
     expected = "sha256=" + hmac.new(
-        SIGNING_SECRET.encode("utf-8"), to_sign, hashlib.sha256
+        SIGNING_SECRET.encode("utf-8"),
+        to_sign,
+        hashlib.sha256,
     ).hexdigest()
 
     if not hmac.compare_digest(expected, header_sig):
@@ -162,10 +169,26 @@ async def health() -> Dict[str, Any]:
 @app.post("/audit")
 async def receive_audit(
     request: Request,
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key", convert_underscores=False),
-    x_signature: Optional[str] = Header(default=None, alias="X-Signature", convert_underscores=False),
-    x_signature_ts: Optional[str] = Header(default=None, alias="X-Signature-Ts", convert_underscores=False),
-    x_idempotency_key: Optional[str] = Header(default=None, alias="X-Idempotency-Key", convert_underscores=False),
+    x_api_key: Optional[str] = Header(
+        default=None,
+        alias="X-API-Key",
+        convert_underscores=False,
+    ),
+    x_signature: Optional[str] = Header(
+        default=None,
+        alias="X-Signature",
+        convert_underscores=False,
+    ),
+    x_signature_ts: Optional[str] = Header(
+        default=None,
+        alias="X-Signature-Ts",
+        convert_underscores=False,
+    ),
+    x_idempotency_key: Optional[str] = Header(
+        default=None,
+        alias="X-Idempotency-Key",
+        convert_underscores=False,
+    ),
 ) -> Dict[str, Any]:
     raw = await request.body()
 
