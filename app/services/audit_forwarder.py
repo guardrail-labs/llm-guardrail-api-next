@@ -5,6 +5,9 @@ import json
 import logging
 import socket
 import ssl
+import time
+import hmac
+import hashlib
 from typing import Any, Dict, Optional, Tuple, Union
 from urllib.parse import urlparse
 
@@ -68,6 +71,14 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         "X-API-Key": api_key,
     }
 
+    # Optional request signing (HMAC-SHA256 over raw JSON body)
+    secret = _getenv("AUDIT_FORWARD_SIGNING_SECRET", "")
+    if secret:
+        ts = str(int(time.time()))
+        digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        headers["X-Signature-Ts"] = ts
+        headers["X-Signature"] = f"sha256={digest}"
+
     conn = _http_connection_for(url)
     try:
         conn.request("POST", path, body=body, headers=headers)
@@ -95,6 +106,7 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
       - AUDIT_FORWARD_API_KEY: bearer secret to include in header
       - AUDIT_FORWARD_RETRIES: optional, default 3
       - AUDIT_FORWARD_BACKOFF_MS: optional, default 100 (linear backoff)
+      - AUDIT_FORWARD_SIGNING_SECRET: optional, if set adds HMAC signature headers
     """
     if not _truthy(_getenv("AUDIT_FORWARD_ENABLED", "false")):
         return
@@ -157,4 +169,3 @@ def _sleep_ms(ms: int) -> None:
     import time
 
     time.sleep(ms / 1000.0)
-

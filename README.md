@@ -108,6 +108,16 @@ hist.labels(route=safe_route, method=request.method).observe(latency)
 
 Audit events include tenant_id, bot_id, request_id, policy version, bytes, hashes, and meta.client.
 
+To forward audit events to an external service:
+
+```bash
+export AUDIT_FORWARD_ENABLED=1
+export AUDIT_FORWARD_URL=https://your-audit-endpoint.example.com/ingest
+export AUDIT_FORWARD_API_KEY=...
+# optional: adds X-Signature and X-Signature-Ts headers
+export AUDIT_FORWARD_SIGNING_SECRET=...
+```
+
 Examples
 
 Use the runnable scripts in examples/curl/:

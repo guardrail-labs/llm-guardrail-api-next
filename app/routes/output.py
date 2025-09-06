@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from app.config import get_settings
 from app.routes.schema import GuardrailResponse, OutputGuardrailRequest
 from app.services.policy import current_rules_version, evaluate_and_apply
-from app.services.audit_forwarder import emit_audit_event
+from app.services.audit import emit_audit_event
 from app.services.verifier import content_fingerprint
 from app.telemetry.metrics import (
     inc_decision_family,
