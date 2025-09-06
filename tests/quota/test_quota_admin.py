@@ -1,21 +1,19 @@
-from __future__ import annotations
-
 import os
-
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from app.main import create_app
 
 
-def _mk_app(per_day: int = 2, per_month: int = 5):
-    os.environ["QUOTA_ENABLED"] = "true"
-    os.environ["QUOTA_PER_DAY"] = str(per_day)
-    os.environ["QUOTA_PER_MONTH"] = str(per_month)
+def _mk_app(monkeypatch, per_day: int = 2, per_month: int = 5):
+    # Use monkeypatch so QUOTA_* does not leak to other tests
+    monkeypatch.setenv("QUOTA_ENABLED", "true")
+    monkeypatch.setenv("QUOTA_PER_DAY", str(per_day))
+    monkeypatch.setenv("QUOTA_PER_MONTH", str(per_month))
     return create_app()
 
 
-def test_status_reflects_usage_and_limits():
-    app = _mk_app(per_day=2, per_month=5)
+def test_status_reflects_usage_and_limits(monkeypatch):
+    app = _mk_app(monkeypatch, per_day=2, per_month=5)
     c = TestClient(app)
     h = {"x-api-key": "K-ADMIN-1"}
 
@@ -35,8 +33,8 @@ def test_status_reflects_usage_and_limits():
     assert body["status"]["reset_earliest_s"] >= 1
 
 
-def test_reset_day_clears_day_window_only():
-    app = _mk_app(per_day=3, per_month=5)
+def test_reset_day_clears_day_window_only(monkeypatch):
+    app = _mk_app(monkeypatch, per_day=3, per_month=5)
     c = TestClient(app)
     h = {"x-api-key": "K-ADMIN-2"}
 
@@ -57,9 +55,8 @@ def test_reset_day_clears_day_window_only():
     assert s2["status"]["month_remaining"] == 3
 
 
-def test_missing_key_returns_400():
-    app = _mk_app()
+def test_missing_key_returns_400(monkeypatch):
+    app = _mk_app(monkeypatch)
     c = TestClient(app)
     r = c.get("/admin/quota/status")
-    assert r.status_code in {400, 422}  # FastAPI may 422 for missing required query
-
+    assert r.status_code == 400
