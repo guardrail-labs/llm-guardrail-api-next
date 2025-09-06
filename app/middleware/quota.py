@@ -88,7 +88,12 @@ class QuotaMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         tenant_id, bot_id = _tenant_bot_from_headers(request)
-        key = f"{tenant_id}:{bot_id}"
+        api_key = (
+            request.headers.get("x-api-key")
+            or request.headers.get("X-API-Key")
+            or ""
+        ).strip()
+        key = api_key or f"{tenant_id}:{bot_id}"
         decision = self.store.check_and_inc(key)
 
         if not decision["allowed"]:
