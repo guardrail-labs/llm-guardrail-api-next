@@ -53,13 +53,13 @@ def _binding_path_or_none(tenant: str, bot: str) -> str | None:
       or a (rules_path, source) tuple in older shapes.
     """
     try:
-        from app.services import config_store as _cs  # type: ignore
+        from app.services import config_store as _cs
 
         resolver = getattr(_cs, "resolve_rules_path", None)
         if not callable(resolver):
             return None
 
-        resolved = resolver(tenant, bot)  # type: ignore[misc]
+        resolved = resolver(tenant, bot)
         # Dict shape preferred
         if isinstance(resolved, dict):
             rp = resolved.get("rules_path")
@@ -67,7 +67,7 @@ def _binding_path_or_none(tenant: str, bot: str) -> str | None:
 
         # Tuple(shape) fallback
         try:
-            rp, _src = resolved  # type: ignore[assignment]
+            rp, _src = resolved  # type: ignore[unused-ignore]  # nosec - best effort
             return str(rp)
         except Exception:
             return None
