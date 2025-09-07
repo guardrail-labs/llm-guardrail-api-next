@@ -21,6 +21,7 @@ from app.services.threat_feed import (
 from app.telemetry import metrics as m
 from typing import Any, Dict
 from app.services.audit import emit_audit_event as _emit
+from app.services import ocr as _ocr
 
 router = APIRouter()
 
@@ -451,6 +452,14 @@ async def _handle_upload_to_text(
     try:
         if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
             mods["image"] = mods.get("image", 0) + 1
+            if _ocr.ocr_enabled():
+                raw = await obj.read()
+                m.add_ocr_bytes("image", len(raw))
+                text = _ocr.extract_from_image(raw)
+                if text and text.strip():
+                    m.inc_ocr_extraction("image", "ok")
+                    return text, name
+                m.inc_ocr_extraction("image", "empty")
             return f"[IMAGE:{name}]", name
         if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
             mods["audio"] = mods.get("audio", 0) + 1
@@ -459,14 +468,34 @@ async def _handle_upload_to_text(
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
         if ctype == "application/pdf" or ext == "pdf":
+            raw = await obj.read()
+            if _ocr.ocr_enabled():
+                m.add_ocr_bytes("pdf", len(raw))
+                text, outcome = _ocr.extract_pdf_with_optional_ocr(raw)
+                if text and text.strip():
+                    m.inc_ocr_extraction(
+                        "pdf",
+                        outcome if outcome in {"textlayer", "fallback"} else "ok",
+                    )
+                    mods["file"] = mods.get("file", 0) + 1
+                    return text, name
+                m.inc_ocr_extraction("pdf", outcome if outcome else "empty")
             if decode_pdf:
-                raw = await obj.read()
                 return raw.decode("utf-8", errors="ignore"), name
             mods["file"] = mods.get("file", 0) + 1
             return f"[FILE:{name}]", name
         mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]", name
     except Exception:
+        try:
+            # best-effort metric: unknown type -> error
+            if _ocr.ocr_enabled():
+                if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+                    m.inc_ocr_extraction("image", "error")
+                elif ctype == "application/pdf" or ext == "pdf":
+                    m.inc_ocr_extraction("pdf", "error")
+        except Exception:
+            pass
         mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]", name
 
