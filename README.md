@@ -1,217 +1,81 @@
 # LLM Guardrail API
 
-Intercept • Enforce • Redact • Verify — for any LLM
+**A firewall for prompts and model outputs.**  
+Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe intent**, **sanitize secrets/PII**, and **prove compliance** with **signed audits** and **directional observability** (ingress vs egress).
 
-[![CI](https://img.shields.io/badge/tests-green-success)]() [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)]()
+> **Ten-second pitch:** Drop this in front of your models to stop jailbreaks & secret leaks without retraining, see **who is risky (user) vs what is risky (model)**, and show a dashboard that executives understand.
 
-A production-ready, LLM-agnostic security layer for prompts and responses.
+---
 
-- **Policy enforcement** for PII, secrets, illicit content, and jailbreaks
-- **Multimodal redactions** (text, files, images, audio, PDFs)
-- **OpenAI-compatible** proxy routes (or import as a library)
-- **Transparent provenance** via `debug.sources` and redaction spans
-- **Verifier** path for gray-areas (block/clarify/allow)
+## Why teams use this
 
-For a show-ready demo with architecture diagram, curl scripts, and a mini React dashboard, see [docs/DEMO_KIT.md](docs/DEMO_KIT.md).
+- **Direction-labeled risk:** ingress vs egress metrics expose user-driven attacks vs model drift.
+- **Intent-first detection:** not just regex; verifier routing for gray areas.
+- **Redactions that stick:** secrets/PII/injection markers scrubbed on the way in **and** out.
+- **Per-tenant/bot policy packs:** bind different rules without redeploying.
+- **Signed audit trail:** minimal, HMAC-signed events ready for your SIEM.
+- **Multimodal v1:** OCR for images/PDFs → same pipeline as text.
 
-## Quickstart
-```bash
-docker compose up --build
-curl -s http://localhost:8000/health | jq
-```
+---
 
-## Demo
-```bash
-# PII redaction
-docker compose up -d
-curl -s -X POST http://localhost:8000/guardrail/evaluate \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"Email me at jane.doe@example.com"}' | jq
-```
+## Architecture (bird’s-eye)
 
-## Integration Modes
 
-* **Proxy:** Point your app’s OpenAI client at this service’s OpenAI-compatible routes.
-* **Library:** Import and call evaluation functions directly within your Python app.
 
-See `docs/INTEGRATION.md` for code examples and route mapping.
+[client/app] --(prompt/files)--> [Guardrail API]
+| |
+| (verify/clarify)|--> [Verifier LLMs]
+| |
+|<--(sanitized allow/deny)--------|
+|
++--> [LLM Provider(s)] --(response)--> [Guardrail Egress Check] --(sanitized/deny)--> back to client
 
-## Quick Start
+  └── Audit Receiver (signed events) ──> Prometheus ──> Grafana dashboards
 
-```bash
-# 1) Create & populate env (see .env.example)
-cp .env.example .env
 
-# 2) Install
-pip install -r requirements.txt
+**Key flows**
+- **Ingress:** detect illicit intent/jailbreak/secrets → allow/clarify/deny + redactions.
+- **Egress:** catch model leaks (e.g., keys, private-key envelopes) in real time; stream-safe.
+- **Bindings:** resolve `{tenant, bot} → rules.yaml` with wildcard precedence.
+- **Observability:** `guardrail_*` metrics incl. **family totals** and **redactions by mask**.
 
-# 3) Run (dev)
-uvicorn app.main:app --reload --port 8000
+---
 
-# 4) Verify health
-curl -s http://localhost:8000/v1/health | jq
-```
+## Quick start
 
-OpenAI-Compatible Endpoints
+- **Install**: one command → stack up with API + Audit + Prom + Grafana  
+  → See [`docs/Quickstart.md`](docs/Quickstart.md)
+- **Operate**: policies, bindings, verifier, threat feed, metrics  
+  → See [`docs/OperatorGuide.md`](docs/OperatorGuide.md)
+- **Integrate**: OpenAI-compatible endpoints (`/v1/*`)  
+  → See [`docs/IntegrationOpenAI.md`](docs/IntegrationOpenAI.md)
+- **Demo**: copy/paste POC script  
+  → See [`docs/DemoScript.md`](docs/DemoScript.md)
 
-GET /v1/health (simple health + policy version)
+---
 
-GET /v1/models
+## Feature checklist
 
-POST /v1/chat/completions (stream & non-stream)
+- ✅ Directional observability (ingress vs egress families; tenant/bot breakdowns)
+- ✅ OCR v1 (images/PDF → text → same pipeline)
+- ✅ Admin bindings (`/admin/bindings`) with wildcard resolution
+- ✅ One-command packaging (compose + health + dashboards)
+- ✅ Docs & demo (copy/paste to first win)
+- 🛠 Verifier specializations & adjudication logs (roadmap)
+- 🛠 Admin UI & auto-mitigation toggles (roadmap)
 
-POST /v1/completions (stream & non-stream)
+---
 
-POST /v1/moderations
+## Playbooks
 
-POST /v1/embeddings
+Copy-paste demos that hit deny/redaction and show metrics:
+- [`examples/playbooks/hr.md`](examples/playbooks/hr.md)
+- [`examples/playbooks/healthcare_hipaa.md`](examples/playbooks/healthcare_hipaa.md)
+- [`examples/playbooks/finserv.md`](examples/playbooks/finserv.md)
+- [`examples/playbooks/secops.md`](examples/playbooks/secops.md)
 
-POST /v1/images/generations
+---
 
-POST /v1/images/edits
+## License
 
-POST /v1/images/variations
-
-Azure-Compatible Endpoints
-
-POST /openai/deployments/{deployment_id}/chat/completions
-
-POST /openai/deployments/{deployment_id}/embeddings
-
-See docs/OPENAI_AZURE_COMPAT.md for payload details and headers.
-
-Guardrail Behavior
-
-All ingress/egress is processed by:
-
-Ingress: sanitize, dynamic redactions (threat feed), detectors (deny/allow/clarify), audit emit, metrics.
-
-Egress: streaming and non-streaming checks with redactions/deny and audit emit.
-
-Quotas: per-tenant/bot hard or soft caps (minute/day) with 429 hard enforcement and Prometheus counter.
-
-See docs/QUOTAS.md for configuration and expected behavior.
-
-Metrics & Audit
-
-Prometheus counters for decision families, per-tenant/bot breakdown, verifier outcomes, and quota rejects.
-
-To avoid high-cardinality route labels in the latency histogram, clamp raw paths
-with the helper:
-
-```python
-from app.metrics.route_label import route_label
-
-safe_route = route_label(request.url.path)
-hist.labels(route=safe_route, method=request.method).observe(latency)
-```
-
-Audit events include tenant_id, bot_id, request_id, policy version, bytes, hashes, and meta.client.
-
-To forward audit events to an external service:
-
-```bash
-export AUDIT_FORWARD_ENABLED=1
-export AUDIT_FORWARD_URL=https://your-audit-endpoint.example.com/ingest
-export AUDIT_FORWARD_API_KEY=...
-# optional: adds X-Signature and X-Signature-Ts headers
-export AUDIT_FORWARD_SIGNING_SECRET=...
-```
-
-Examples
-
-Use the runnable scripts in examples/curl/:
-
-chat.sh, completions.sh, embeddings.sh, moderations.sh
-
-images_generations.sh, images_edits.sh, images_variations.sh
-
-Set API_BASE and headers in each script (see comments) or export from environment.
-
-Environment
-
-See .env.example for all keys and defaults.
-
-### Clarify vs Block defaults
-
-By default, the Guardrail API **blocks** injection/jailbreak attempts.
-Switch baseline to **clarify** with:
-
-```bash
-export POLICY_DEFAULT_INJECTION_ACTION=clarify
-```
-
-Per-rule `on_match` still takes precedence. If no rule sets an action,
-the default above is applied.
-
-### Verifier (MVP)
-Enable a non-executing intent verifier for gray-area cases (injection/jailbreak/illicit families).
-
-```bash
-export VERIFIER_ENABLED=true
-export VERIFIER_PROVIDER=mock   # or openai|anthropic|azure (future)
-```
-
-Behavior: if a request hits gray families and the local decision isn’t decisive, the API calls the
-verifier, which returns `block | clarify | allow`. A minimal trace appears under `debug.verifier`.
-
-### Compliance (Phase 2)
-- Hashing helpers (email/phone) via salted SHA-256: `PII_SALT`, `PII_HASH_ALGO`.
-- Redact + hash utility: `app/compliance/pii.py`.
-- Admin endpoints:
-  - `GET /admin/compliance/status`
-  - `POST /admin/compliance/hash` (fields: `email`, `phone`, `text`)
-- Retention knob (policy-level): `DATA_RETENTION_DAYS`.
-
-**Quick try:**
-```bash
-curl -s localhost:8000/admin/compliance/status | jq
-curl -s -X POST localhost:8000/admin/compliance/hash \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"email a@b.co, phone 555-123-4567"}' | jq
-```
-
-Testing
-ruff check --fix .
-
-### Debugging provenance (X-Debug)
-
-Add the header `X-Debug: 1` to any request to receive a structured `debug.sources` array:
-
-```json
-{
-  "debug": {
-    "sources": [
-      {
-        "origin": "ingress",
-        "modality": "text",
-        "filename": null,
-        "mime_type": "text/plain",
-        "size_bytes": 42,
-        "sha256": "…",
-        "rule_hits": {"pii:email": ["…"]},
-        "redactions": [{"start": 11, "end": 27, "label": "[REDACTED:EMAIL]"}]
-      }
-    ]
-  }
-}
-```
-
-Raw content is never included in debug; only fingerprints and spans are returned.
-mypy .
-pytest -q
-
-```mermaid
-flowchart LR
-  A[Client App] --> B(Guardrail API)
-  B --> C[Ingress Eval]
-  C --> D{Policy Defaults}
-  D -->|gray families| E[Verifier]
-  E --> F[Final Decision]
-  C --> G[Audit & Metrics]
-  C --> H[Debug Provenance]
-  F --> I[Egress Eval]
-  I --> J[LLM Backend]
-```
-
-All tests must be green before merge.
+Apache-2.0 (see `LICENSE`).
