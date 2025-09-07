@@ -1,16 +1,16 @@
+# tests/test_verifier_metrics.py
 from __future__ import annotations
 
 import importlib
-import os
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 
 def _client_with_verifier(monkeypatch) -> TestClient:
-    # Enable verifier before importing app
-    os.environ["VERIFIER_ENABLED"] = "1"
-    os.environ["GUARDRAIL_DISABLE_AUTH"] = "1"  # legacy guard skips key in some routes
+    # Enable verifier before importing app; auto-restored after test by monkeypatch
+    monkeypatch.setenv("VERIFIER_ENABLED", "1")
+    monkeypatch.setenv("GUARDRAIL_DISABLE_AUTH", "1")  # legacy guard skips key in some routes
 
     import app.services.verifier_client as vcli
 
