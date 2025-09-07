@@ -22,13 +22,13 @@ def _truthy(v: Optional[str]) -> bool:
 API_KEY = os.getenv("AUDIT_RECEIVER_API_KEY", "")
 SIGNING_SECRET = os.getenv("AUDIT_RECEIVER_SIGNING_SECRET", "")
 REQUIRE_SIG = _truthy(
-    os.getenv("AUDIT_RECEIVER_REQUIRE_SIG", "1" if SIGNING_SECRET else "0")
+    os.getenv("AUDIT_RECEIVER_REQUIRE_SIGNATURE", "1" if SIGNING_SECRET else "0")
 )
 ENFORCE_TS = _truthy(os.getenv("AUDIT_RECEIVER_ENFORCE_TS", "1"))
 TS_SKEW_SEC = int(os.getenv("AUDIT_RECEIVER_TS_SKEW_SEC", "300"))  # ±5min default
 
-REQUIRE_IDEMP = _truthy(os.getenv("AUDIT_RECEIVER_REQUIRE_IDEMPOTENCY", "0"))
-IDEMP_TTL = int(os.getenv("AUDIT_RECEIVER_IDEMPOTENCY_TTL_SEC", "600"))  # 10 min
+# Idempotency key TTL (seconds).
+IDEMP_TTL = max(1, int(os.getenv("AUDIT_RECEIVER_IDEMP_TTL_SEC", "60")))
 
 
 # ----------------------------- idempotency store ------------------------------
@@ -146,10 +146,6 @@ async def receive_audit(
 
     # HMAC + timestamp
     _verify_hmac(raw, x_signature, x_signature_ts)
-
-    # Idempotency header presence (if required)
-    if REQUIRE_IDEMP and not x_idempotency_key:
-        raise HTTPException(status_code=400, detail="Missing idempotency key")
 
     # Validate payload before consuming idempotency key
     try:
