@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import hmac
 import http.client
+import io
 import json
 import logging
 import socket
@@ -30,6 +32,13 @@ def _getenv(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def _gzip_bytes(data: bytes) -> bytes:
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+        gz.write(data)
+    return buf.getvalue()
+
+
 # ------------------------ HTTP connection creator ----------------------------
 
 
@@ -55,14 +64,22 @@ def _http_connection_for(
 
 def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
     """
-    Low-level POST used by emit_audit_event. Tests monkeypatch this symbol.
-    Returns (status_code, response_text).
+    Low-level POST used by emit_audit_event. Returns (status_code, response_text).
+
+    Signing:
+      - Compute HMAC over:  b"{ts}.{body}"  (uncompressed JSON bytes)
+      - Header 'X-Signature-Ts' carries 'ts'
+      - Header 'X-Signature' carries 'sha256=<hex>'
+    Optional gzip:
+      - If AUDIT_FORWARD_COMPRESS=1, send gzip-compressed body and set
+        'Content-Encoding: gzip'. Signature still uses UNCOMPRESSED bytes.
     """
     parsed = urlparse(url)
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
+    # Serialize JSON once; these exact bytes are used for HMAC (+ optional gzip).
     body = json.dumps(payload).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -89,9 +106,15 @@ def _post(url: str, api_key: str, payload: Dict[str, Any]) -> Tuple[int, str]:
         headers["X-Signature-Ts"] = ts
         headers["X-Signature"] = f"sha256={digest}"
 
+    # Optional gzip compression for transport.
+    compress = _truthy(_getenv("AUDIT_FORWARD_COMPRESS", "0"))
+    wire_body = _gzip_bytes(body) if compress else body
+    if compress:
+        headers["Content-Encoding"] = "gzip"
+
     conn = _http_connection_for(url)
     try:
-        conn.request("POST", path, body=body, headers=headers)
+        conn.request("POST", path, body=wire_body, headers=headers)
         resp = conn.getresponse()
         status = resp.status
         text = (resp.read() or b"").decode("utf-8", errors="replace")
@@ -116,7 +139,8 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
       - AUDIT_FORWARD_API_KEY: bearer secret to include in header
       - AUDIT_FORWARD_RETRIES: optional, default 3
       - AUDIT_FORWARD_BACKOFF_MS: optional, default 100 (linear backoff)
-      - AUDIT_FORWARD_SIGNING_SECRET: if set, add HMAC over 'ts.body' headers
+      - AUDIT_FORWARD_SIGNING_SECRET: optional HMAC secret
+      - AUDIT_FORWARD_COMPRESS: '1' to gzip HTTP body
     """
     if not _truthy(_getenv("AUDIT_FORWARD_ENABLED", "false")):
         return

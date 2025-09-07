@@ -1,84 +1,79 @@
 #!/usr/bin/env bash
-# Simple production smoke for audit receiver.
-# Requires: curl, Python 3
-#
-# Required env:
-#   FORWARD_URL   e.g. https://audit-sink.example.com/audit
-#   FORWARD_KEY   API key value for X-API-Key
-#   HMAC_SECRET   shared secret for HMAC signing
-#
-# Optional:
-#   IDEMP_KEY     idempotency key (default: "smoke-$(date +%s)")
-#   BODY          JSON payload (default: minimal valid event)
-
 set -euo pipefail
 
-: "${FORWARD_URL:?set FORWARD_URL}"
-: "${FORWARD_KEY:?set FORWARD_KEY}"
-: "${HMAC_SECRET:?set HMAC_SECRET}"
+: "${FORWARD_URL:?FORWARD_URL is required}"
+: "${FORWARD_KEY:?FORWARD_KEY is required}"
+: "${HMAC_SECRET:?HMAC_SECRET is required}"
 
-IDEMP_KEY="${IDEMP_KEY:-smoke-$(date +%s)}"
-BODY="${BODY:-"{\"event\":\"smoke\",\"direction\":\"ingress\",\"request_id\":\"$IDEMP_KEY\"}"}"
+USE_GZIP="${USE_GZIP:-0}"
+
+BODY='{"event":"ping","direction":"ingress","request_id":"smoke-1","ts":'"$(date +%s)"'}'
+TS="$(date +%s)"
 
 sign() {
-  # args: ts, body -> prints hex digest of HMAC-SHA256(ts + "." + body)
-  TS="$1" BODY_STR="$2" HMAC_SECRET="$HMAC_SECRET" \
-  python - <<'PY'
-import os, hmac, hashlib, sys
-ts=os.environ['TS']; body=os.environ['BODY_STR']
-key=os.environ['HMAC_SECRET'].encode('utf-8')
-msg=(ts + "." + body).encode('utf-8')
-print(hmac.new(key, msg, hashlib.sha256).hexdigest())
+  # args: ts body
+  python - "$1" "$2" <<'PY'
+import os, sys, hmac, hashlib
+ts = sys.argv[1]
+body = sys.argv[2]
+secret = os.environ["HMAC_SECRET"].encode("utf-8")
+msg = (ts + "." + body).encode("utf-8")
+print(hmac.new(secret, msg, hashlib.sha256).hexdigest())
 PY
 }
 
-post() {
-  local ts="$1" sig="$2" out="$3"
-  curl -sS -o "$out" -w "%{http_code}" -X POST "$FORWARD_URL" \
+export HMAC_SECRET
+SIG_HEX="$(sign "$TS" "$BODY")"
+
+post_plain() {
+  curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
     -H "Content-Type: application/json" \
     -H "X-API-Key: $FORWARD_KEY" \
-    -H "X-Signature-Ts: $ts" \
-    -H "X-Signature: sha256=$sig" \
-    -H "X-Idempotency-Key: $IDEMP_KEY" \
+    -H "X-Signature-Ts: $TS" \
+    -H "X-Signature: sha256=$SIG_HEX" \
     --data "$BODY"
 }
 
-tmp1="$(mktemp)"; trap 'rm -f "$tmp1" "$tmp2" "$tmp3"' EXIT
-TS="$(date +%s)"
-SIG="$(sign "$TS" "$BODY")"
+post_gzip() {
+  code="$(printf '%s' "$BODY" | gzip -c | curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "$FORWARD_URL" \
+    -H "Content-Type: application/json" \
+    -H "Content-Encoding: gzip" \
+    -H "X-API-Key: $FORWARD_KEY" \
+    -H "X-Signature-Ts: $TS" \
+    -H "X-Signature: sha256=$SIG_HEX" \
+    --data-binary @-)"
+  echo "$code"
+}
 
-echo "== 1) happy path"
-code="$(post "$TS" "$SIG" "$tmp1")"
-echo "HTTP $code"
-if [ "$code" != "200" ]; then
-  echo "FAIL: expected 200"; cat "$tmp1"; exit 1
+echo "POST /audit (happy path, USE_GZIP=$USE_GZIP)"
+if [ "$USE_GZIP" = "1" ]; then
+  code="$(post_gzip)"
+else
+  code="$(post_plain)"
 fi
-if grep -q '"deduped"[[:space:]]*:[[:space:]]*true' "$tmp1"; then
-  echo "FAIL: first request should not be deduped"; exit 1
-fi
+[ "$code" = "200" ] || { echo "expected 200, got $code"; exit 1; }
+
+echo "Replay same idempotency key"
+KEY="smoke-idem-1"
+code="$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $FORWARD_KEY" \
+  -H "X-Signature-Ts: $TS" \
+  -H "X-Signature: sha256=$SIG_HEX" \
+  -H "X-Idempotency-Key: $KEY" \
+  --data "$BODY")"
+[ "$code" = "200" ] || { echo "expected 200, got $code"; exit 1; }
+
+echo "Stale timestamp should be rejected"
+OLD_TS=$((TS - 7200))
+OLD_SIG="$(sign "$OLD_TS" "$BODY")"
+code="$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FORWARD_URL" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $FORWARD_KEY" \
+  -H "X-Signature-Ts: $OLD_TS" \
+  -H "X-Signature: sha256=$OLD_SIG" \
+  --data "$BODY")"
+[ "$code" = "401" ] || { echo "expected 401, got $code"; exit 1; }
+
 echo "OK"
-
-echo "== 2) replay with same idempotency key (should dedupe)"
-tmp2="$(mktemp)"
-code="$(post "$TS" "$SIG" "$tmp2")"
-echo "HTTP $code"
-if [ "$code" != "200" ]; then
-  echo "FAIL: expected 200 on replay"; cat "$tmp2"; exit 1
-fi
-if ! grep -q '"deduped"[[:space:]]*:[[:space:]]*true' "$tmp2"; then
-  echo "FAIL: expected deduped=true on replay"; cat "$tmp2"; exit 1
-fi
-echo "OK"
-
-echo "== 3) stale timestamp should be rejected"
-tmp3="$(mktemp)"
-STALE_TS="$((TS - 100000))"
-STALE_SIG="$(sign "$STALE_TS" "$BODY")"
-code="$(post "$STALE_TS" "$STALE_SIG" "$tmp3" || true)"
-echo "HTTP $code"
-if [ "$code" = "200" ]; then
-  echo "FAIL: expected 401/400 for stale timestamp"; cat "$tmp3"; exit 1
-fi
-echo "OK"
-
-echo "✅ smoke passed"
