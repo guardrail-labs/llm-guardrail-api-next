@@ -9,11 +9,13 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # If triggered from a PR, this keeps the PR branch checked out.
           ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Set up Python
@@ -21,7 +23,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Ruff (fast)
+      - name: Install Ruff
         run: pip install ruff==0.5.0
 
       - name: Apply lint fixes
