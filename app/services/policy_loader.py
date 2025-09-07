@@ -1,3 +1,4 @@
+# File: app/services/policy_loader.py
 from __future__ import annotations
 
 import contextvars
@@ -9,25 +10,6 @@ from typing import Dict, List, Pattern, Tuple
 import yaml
 
 from app.config import Settings
-from app.services import config_store
-
-# --- Binding context (per-request via contextvars) ----------------------------
-_CTX_TENANT: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "policy_binding_tenant", default="default"
-)
-_CTX_BOT: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "policy_binding_bot", default="default"
-)
-
-
-def set_binding_context(tenant: str | None, bot: str | None) -> None:
-    """Set current {tenant, bot} for policy resolution (used by routes)."""
-    _CTX_TENANT.set((tenant or "default").strip() or "default")
-    _CTX_BOT.set((bot or "default").strip() or "default")
-
-
-def get_binding_context() -> Tuple[str, str]:
-    return _CTX_TENANT.get(), _CTX_BOT.get()
 
 
 @dataclass
@@ -40,27 +22,82 @@ class PolicyBlob:
     deny_compiled: List[Tuple[str, Pattern[str]]]
 
 
+# Cache keyed by absolute rules path
 _cache: Dict[str, PolicyBlob] = {}
+
+# Binding context (optional; defaults keep legacy behavior stable)
+_CTX_TENANT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "policy_tenant", default="default"
+)
+_CTX_BOT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "policy_bot", default="default"
+)
+
+
+def set_binding_context(tenant: str, bot: str) -> None:
+    """Set the current {tenant, bot} binding context for resolution."""
+    _CTX_TENANT.set((tenant or "default").strip() or "default")
+    _CTX_BOT.set((bot or "default").strip() or "default")
 
 
 def _default_path() -> str:
-    return str(Path(__file__).resolve().parent.parent / "policy" / "rules.yaml")
+    return str(
+        Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
+    )
+
+
+def _binding_path_or_none(tenant: str, bot: str) -> str | None:
+    """
+    Best-effort consult of the optional binding store:
+      resolve_rules_path(tenant, bot) -> dict with 'rules_path' (preferred)
+      or a (rules_path, source) tuple in older shapes.
+    """
+    try:
+        from app.services import config_store as _cs  # type: ignore
+
+        resolver = getattr(_cs, "resolve_rules_path", None)
+        if not callable(resolver):
+            return None
+
+        resolved = resolver(tenant, bot)  # type: ignore[misc]
+        # Dict shape preferred
+        if isinstance(resolved, dict):
+            rp = resolved.get("rules_path")
+            return str(rp) if rp else None
+
+        # Tuple(shape) fallback
+        try:
+            rp, _src = resolved  # type: ignore[assignment]
+            return str(rp)
+        except Exception:
+            return None
+    except Exception:
+        return None
 
 
 def _resolve_path() -> str:
     """
-    Resolution order:
-      1) binding for (tenant, bot) from config_store (if any)
-      2) Settings.POLICY_RULES_PATH (env)
-      3) default bundled rules.yaml
+    Resolution priority (to satisfy tests and keep ops intuitive):
+      1) Explicit ENV override: POLICY_RULES_PATH (if set and non-empty)
+      2) Binding store (if present) for current {tenant, bot}
+      3) Bundled default rules.yaml
     """
     s = Settings()
-    tenant, bot = get_binding_context()
-    bound = config_store.resolve_rules_path(tenant, bot)
+
+    # 1) ENV override
+    env_path = (s.POLICY_RULES_PATH or "").strip()
+    if env_path:
+        return env_path
+
+    # 2) Binding store (optional)
+    tenant = _CTX_TENANT.get()
+    bot = _CTX_BOT.get()
+    bound = _binding_path_or_none(tenant, bot)
     if bound:
         return bound
-    path = (s.POLICY_RULES_PATH or "").strip()
-    return path or _default_path()
+
+    # 3) Bundled default
+    return _default_path()
 
 
 def _flag_bits(flags: List[str] | None) -> int:
@@ -135,8 +172,45 @@ def get_policy() -> PolicyBlob:
 
 
 def reload_now() -> PolicyBlob:
-    """Force a reload for the current binding path regardless of POLICY_AUTORELOAD."""
+    """Force a reload regardless of POLICY_AUTORELOAD."""
     path = _resolve_path()
     blob = _load_from_disk(path)
     _cache[path] = blob
     return blob
+
+
+# ---- Optional binding inspection (admin ergonomics) --------------------------
+
+def describe_binding(tenant: str, bot: str) -> Dict[str, object]:
+    """
+    Best-effort view of which rules path would be used for a {tenant, bot}.
+    Always reflects ENV override if present.
+    """
+    info: Dict[str, object] = {"tenant": tenant, "bot": bot}
+
+    # ENV override takes precedence and should be visible to operators/tests.
+    env_path = (Settings().POLICY_RULES_PATH or "").strip()
+    if env_path:
+        info["rules_path"] = env_path
+        info["source"] = "env"
+    else:
+        # Otherwise, show binding resolution (if any), or default.
+        try:
+            bound = _binding_path_or_none(tenant, bot)
+        except Exception:
+            bound = None
+        if bound:
+            info["rules_path"] = bound
+            info["source"] = "binding"
+        else:
+            info["rules_path"] = _default_path()
+            info["source"] = "default"
+
+    # Include current effective version if available
+    try:
+        blob = get_policy()
+        info["version"] = blob.version
+    except Exception:
+        info.setdefault("version", "unknown")
+
+    return info
