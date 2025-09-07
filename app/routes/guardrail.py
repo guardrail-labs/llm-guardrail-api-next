@@ -5,7 +5,7 @@ import hashlib
 import os
 import re
 import uuid
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -22,13 +22,13 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.telemetry import metrics as m
-from typing import Any, Dict
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
 router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
+
 
 def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
     if x_api_key:
@@ -45,7 +45,9 @@ RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
+RE_PHONE = re.compile(
+    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
+)
 
 RE_PRIVATE_KEY_ENVELOPE = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
@@ -83,7 +85,9 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     _emit(payload)
 
 
-def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
+def _normalize_wildcards(
+    rule_hits: Dict[str, List[str]], is_deny: bool
+) -> None:
     if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
     if any(k.startswith("secrets:") for k in rule_hits.keys()):
@@ -125,7 +129,8 @@ def _apply_redactions(
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            m.inc_redaction("email", direction=direction, amount=1.0)
+            # Metrics counter per mask type
+            m.inc_redaction("email")
         redactions += len(matches)
 
     matches = list(RE_PHONE.finditer(original))
@@ -134,7 +139,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            m.inc_redaction("phone", direction=direction, amount=1.0)
+            m.inc_redaction("phone")
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
@@ -150,7 +155,7 @@ def _apply_redactions(
                     "secrets:openai_key",
                 )
             )
-            m.inc_redaction("openai_key", direction=direction, amount=1.0)
+            m.inc_redaction("openai_key")
         redactions += len(matches)
 
     matches = list(RE_AWS.finditer(original))
@@ -166,7 +171,7 @@ def _apply_redactions(
                     "secrets:aws_key",
                 )
             )
-            m.inc_redaction("aws_access_key_id", direction=direction, amount=1.0)
+            m.inc_redaction("aws_access_key_id")
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
@@ -207,8 +212,12 @@ def _apply_redactions(
     if matches:
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
         for m_ in matches:
             spans.append(
                 (
@@ -227,7 +236,9 @@ def _apply_redactions(
 def _debug_requested(x_debug: Optional[str]) -> bool:
     return bool(x_debug)
 
+
 # ------------------------------- responses -------------------------------
+
 
 def _respond_action(
     action: str,
@@ -247,7 +258,9 @@ def _respond_action(
     if modalities:
         for tag, count in modalities.items():
             if count > 0:
-                decisions.append({"type": "modality", "tag": tag, "count": count})
+                decisions.append(
+                    {"type": "modality", "tag": tag, "count": count}
+                )
 
     body: Dict[str, Any] = {
         "request_id": request_id,
@@ -303,7 +316,9 @@ def _respond_legacy_block(
     }
     return JSONResponse(body)
 
+
 # ------------------------------- audit -------------------------------
+
 
 def _audit(
     direction: str,
@@ -318,8 +333,12 @@ def _audit(
     debug_sources: Optional[List[SourceDebug]] = None,
     verifier: Optional[Dict[str, Any]] = None,
 ) -> None:
-        allowed_decisions = {"allow", "block", "deny", "clarify"}
-        decision = action_or_decision if action_or_decision in allowed_decisions else "allow"
+    allowed_decisions = {"allow", "block", "deny", "clarify"}
+    decision = (
+        action_or_decision
+        if action_or_decision in allowed_decisions
+        else "allow"
+    )
 
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
@@ -328,8 +347,12 @@ def _audit(
         "tenant_id": tenant,
         "bot_id": bot,
         "request_id": request_id,
-        "payload_bytes": len(original_text.encode("utf-8", errors="ignore")),
-        "sanitized_bytes": len(transformed_text.encode("utf-8", errors="ignore")),
+        "payload_bytes": len(
+            original_text.encode("utf-8", errors="ignore")
+        ),
+        "sanitized_bytes": len(
+            transformed_text.encode("utf-8", errors="ignore")
+        ),
         "hash_fingerprint": _fingerprint(original_text),
         "rule_hits": rule_hits,
         "redaction_count": redaction_count,
@@ -339,21 +362,24 @@ def _audit(
     if verifier:
         # compact adjudication context for post-hoc review
         payload["verifier"] = {
-            k: v for k, v in verifier.items() if k in {"provider", "decision", "latency_ms"}
+            k: v
+            for k, v in verifier.items()
+            if k in {"provider", "decision", "latency_ms"}
         }
     emit_audit_event(payload)
 
 
-def _bump_family(direction: str, endpoint: str, action: str, tenant: str, bot: str) -> None:
+def _bump_family(
+    direction: str, endpoint: str, action: str, tenant: str, bot: str
+) -> None:
     m.inc_requests_total(endpoint)
     fam = "allow" if action == "allow" else "deny"
+    # This increments both the global family tally and the per-tenant/bot one.
     m.inc_decision_family_tenant_bot(fam, tenant, bot)
-    if direction == "ingress":
-        m.inc_ingress_family(fam)
-    elif direction == "egress":
-        m.inc_egress_family(fam)
+
 
 # ------------------------------- policies -------------------------------
+
 
 def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     """
@@ -372,7 +398,9 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
         hits.append(SECRETS_API_KEY_ID)
         return "block", hits
 
-    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(prompt or ""):
+    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(
+        prompt or ""
+    ):
         hits.append(PAYLOAD_PROMPT_INJ_ID)
         return "block", hits
 
@@ -413,7 +441,9 @@ def _evaluate_ingress_policy(
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
         _normalize_wildcards(hits, is_deny=False)
         return "allow", hits, (dbg if dbg else None)
 
@@ -428,7 +458,9 @@ def _egress_policy(
     if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
         text or ""
     ):
-        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope_or_marker"]}
+        rule_hits: Dict[str, List[str]] = {
+            "deny": ["private_key_envelope_or_marker"]
+        }
         _normalize_wildcards(rule_hits, is_deny=True)
         if want_debug:
             dbg = {"explanations": ["private_key_detected"]}
@@ -438,7 +470,9 @@ def _egress_policy(
         dbg = {"note": "redactions_may_apply"}
     return "allow", text, rule_hits_allow, dbg
 
+
 # ------------------------------- form parsing -------------------------------
+
 
 async def _handle_upload_to_text(
     obj: UploadFile,
@@ -552,7 +586,9 @@ async def _read_form_and_merge(
     text = "\n".join([s for s in combined if s])
     return text, mods, sources
 
+
 # ------------------------------- endpoints -------------------------------
+
 
 @router.post("/guardrail")
 @router.post("/guardrail/")  # avoid redirect that would double-count in rate limiter
