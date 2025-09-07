@@ -377,3 +377,30 @@ def export_family_breakdown_lines() -> List[str]:
 
 def get_metric(name: str) -> Any:
     return _registry_map().get(name)
+
+# --- PDF hidden-text telemetry ------------------------------------------------
+# Placed here to avoid touching existing counters and keep diff minimal.
+
+# Global counters for PDF hidden-text detections.
+guardrail_pdf_hidden_total: CounterLike = _mk_counter(
+    "guardrail_pdf_hidden_total",
+    "Hidden text detections in PDFs.",
+    labels=["reason"],
+)
+guardrail_pdf_hidden_bytes_total: CounterLike = _mk_counter(
+    "guardrail_pdf_hidden_bytes_total",
+    "Total bytes of PDFs flagged for hidden text.",
+)
+
+def inc_pdf_hidden(reason: str) -> None:
+    """Increment hidden-text detection counter for the given reason."""
+    guardrail_pdf_hidden_total.labels(str(reason or "unknown")).inc()
+
+
+def add_pdf_hidden_bytes(n: int) -> None:
+    """Accumulate total bytes of PDFs where hidden text was detected."""
+    try:
+        v = float(n)
+    except Exception:
+        v = 0.0
+    guardrail_pdf_hidden_bytes_total.inc(v)
