@@ -1,3 +1,4 @@
+# app/routes/guardrail.py
 # ruff: noqa: I001
 from __future__ import annotations
 
@@ -48,7 +49,9 @@ RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
 RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
-RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+RE_EMAIL = re.compile(
+    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+)
 RE_PHONE = re.compile(
     r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
 )
@@ -92,8 +95,7 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
 
 
 def _normalize_wildcards(
-    rule_hits: Dict[str, List[str]],
-    is_deny: bool,
+    rule_hits: Dict[str, List[str]], is_deny: bool
 ) -> None:
     if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
@@ -138,7 +140,6 @@ def _apply_redactions(
             spans.append(
                 (m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email")
             )
-            # Metrics counter per mask type
             m.inc_redaction("email")
         redactions += len(matches)
 
@@ -228,9 +229,7 @@ def _apply_redactions(
     matches = list(RE_PROMPT_INJ.finditer(original))
     if matches:
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
-        rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
+        rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
             RE_PROMPT_INJ.pattern
         )
@@ -293,9 +292,7 @@ def _respond_action(
     if debug is not None:
         body["debug"] = debug
     body = apply_injection_default(body)
-    # Parity header so clients can read policy version consistently.
     headers = {"X-Guardrail-Policy-Version": current_rules_version()}
-
     return JSONResponse(body, headers=headers)
 
 
@@ -316,8 +313,7 @@ def _respond_legacy_allow(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
-    return JSONResponse(body, headers=headers)
+    return JSONResponse(body)
 
 
 def _respond_legacy_block(
@@ -337,8 +333,7 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
-    return JSONResponse(body, headers=headers)
+    return JSONResponse(body)
 
 
 # ------------------------------- audit -------------------------------
@@ -357,12 +352,8 @@ def _audit(
     debug_sources: Optional[List[SourceDebug]] = None,
     verifier: Optional[Dict[str, Any]] = None,
 ) -> None:
-    allowed_decisions = {"allow", "block", "deny", "clarify"}
-    decision = (
-        action_or_decision
-        if action_or_decision in allowed_decisions
-        else "allow"
-    )
+    allowed = {"allow", "block", "deny", "clarify"}
+    decision = action_or_decision if action_or_decision in allowed else "allow"
 
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
@@ -384,7 +375,6 @@ def _audit(
     if debug_sources:
         payload["debug_sources"] = [s.model_dump() for s in debug_sources]
     if verifier:
-        # Compact adjudication context for post-hoc review
         payload["verifier"] = {
             k: v
             for k, v in verifier.items()
@@ -394,15 +384,10 @@ def _audit(
 
 
 def _bump_family(
-    direction: str,
-    endpoint: str,
-    action: str,
-    tenant: str,
-    bot: str,
+    direction: str, endpoint: str, action: str, tenant: str, bot: str
 ) -> None:
     m.inc_requests_total(endpoint)
     fam = "allow" if action == "allow" else "deny"
-    # This increments both the global family tally and the per-tenant/bot one.
     m.inc_decision_family_tenant_bot(fam, tenant, bot)
 
 
@@ -487,7 +472,7 @@ def _egress_policy(
     want_debug: bool,
 ) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     dbg: Optional[Dict[str, Any]] = None
-    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(  # noqa: E501
+    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
         text or ""
     ):
         rule_hits: Dict[str, List[str]] = {
@@ -520,7 +505,6 @@ async def _handle_upload_to_text(
       - other -> generic marker
     Also falls back on filename extension when content_type is missing.
     """
-    # Local import to avoid cold-path cost.
     from app.services.detectors import pdf_hidden as _pdf_hidden
 
     name = getattr(obj, "filename", None) or "file"
@@ -529,13 +513,7 @@ async def _handle_upload_to_text(
 
     try:
         # Images
-        if ctype.startswith("image/") or ext in {
-            "png",
-            "jpg",
-            "jpeg",
-            "gif",
-            "bmp",
-        }:
+        if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
             mods["image"] = mods.get("image", 0) + 1
             if _ocr.ocr_enabled():
                 raw = await obj.read()
@@ -565,28 +543,20 @@ async def _handle_upload_to_text(
             hidden = _pdf_hidden.detect_hidden_text(raw)
             hidden_block = ""
             if hidden.get("found"):
-                # Coerce to lists of str for type-safety.
-                reasons_obj: Any = hidden.get("reasons", [])
-                reasons_list: List[str] = (
-                    [str(r) for r in reasons_obj]
-                    if isinstance(reasons_obj, (list, tuple))
-                    else []
+                reasons_raw = hidden.get("reasons", [])
+                reasons_list = (
+                    reasons_raw if isinstance(reasons_raw, list) else [reasons_raw]
                 )
-                reasons = ",".join(reasons_list) or "detected"
-
-                samples_obj: Any = hidden.get("samples", [])
-                samples: List[str] = (
-                    [str(s) for s in samples_obj]
-                    if isinstance(samples_obj, (list, tuple))
-                    else []
+                reasons = ",".join(str(x) for x in reasons_list) or "detected"
+                samples_raw = hidden.get("samples", [])
+                samples_list = (
+                    samples_raw if isinstance(samples_raw, list) else [samples_raw]
                 )
+                samples = [str(s) for s in samples_list if s is not None]
                 joined = " ".join(samples)[:500]
                 hidden_block = (
-                    "\n[HIDDEN_TEXT_DETECTED:"
-                    + reasons
-                    + "]\n"
-                    + joined
-                    + "\n[HIDDEN_TEXT_END]\n"
+                    f"\n[HIDDEN_TEXT_DETECTED:{reasons}]\n{joined}\n"
+                    "[HIDDEN_TEXT_END]\n"
                 )
 
             # OCR/textlayer extraction (preferred, if enabled)
@@ -596,22 +566,17 @@ async def _handle_upload_to_text(
                 if text and text.strip():
                     m.inc_ocr_extraction(
                         "pdf",
-                        outcome
-                        if outcome in {"textlayer", "fallback"}
-                        else "ok",
+                        outcome if outcome in {"textlayer", "fallback"} else "ok",
                     )
                     mods["file"] = mods.get("file", 0) + 1
-                    # Append hidden-text reveal (if any) so redactors see it.
+                    # Append hidden-text reveal (if any) so our redactors see it.
                     return (text + hidden_block) if hidden_block else text, name
                 m.inc_ocr_extraction("pdf", outcome if outcome else "empty")
 
             # Raw decode as a fallback when decode_pdf=True
             if decode_pdf:
                 mods["file"] = mods.get("file", 0) + 1
-                return (
-                    raw.decode("utf-8", errors="ignore") + hidden_block,
-                    name,
-                )
+                return raw.decode("utf-8", errors="ignore") + hidden_block, name
 
             mods["file"] = mods.get("file", 0) + 1
             return f"[FILE:{name}]", name
@@ -720,21 +685,17 @@ async def guardrail_legacy(
         request.headers.get("X-Tenant-ID"),
         request.headers.get("X-Bot-ID"),
     )
-    # NEW: set binding context so policy_loader resolves per tenant/bot
+    # Ensure per-tenant/bot binding is active for this request.
     _set_binding_ctx(tenant, bot)
 
-    # Load policy to ensure deny rules are available, but use the unified
-    # service-level version for headers/body so all guardrail endpoints report
-    # the same value.
-    _get_policy()
-    policy_version = current_rules_version()
+    policy_blob = _get_policy()
+    policy_version = str(policy_blob.version)
 
     action, legacy_hits_list = _legacy_policy(prompt)
 
     redacted, redaction_hits, redactions, _red_spans = _apply_redactions(
         prompt, direction="ingress"
     )
-    # legacy path counts as ingress
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
@@ -782,6 +743,7 @@ async def guardrail_legacy(
 async def guardrail_evaluate(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    _set_binding_ctx(tenant, bot)
     want_debug = _debug_requested(headers.get("X-Debug"))
 
     content_type = (headers.get("content-type") or "").lower()
@@ -889,6 +851,7 @@ async def guardrail_evaluate(request: Request):
 async def guardrail_evaluate_multipart(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    _set_binding_ctx(tenant, bot)
     want_debug = _debug_requested(headers.get("X-Debug"))
 
     # Multipart with decoding PDFs (for redaction-in-PDF test)
@@ -984,15 +947,14 @@ async def guardrail_evaluate_multipart(request: Request):
 async def guardrail_egress(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    _set_binding_ctx(tenant, bot)
     want_debug = _debug_requested(headers.get("X-Debug"))
 
     payload = await request.json()
     text = str(payload.get("text") or "")
     request_id = _req_id(str(payload.get("request_id") or ""))
 
-    action, transformed, rule_hits, debug_info = _egress_policy(
-        text, want_debug
-    )
+    action, transformed, rule_hits, debug_info = _egress_policy(text, want_debug)
     (
         redacted,
         redaction_hits,
@@ -1022,6 +984,7 @@ async def guardrail_egress(request: Request):
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
             dbg["explanations"].extend(list(debug_info["explanations"]))
+
         dbg_sources.append(
             make_source(
                 origin="egress",
