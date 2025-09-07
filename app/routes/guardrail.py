@@ -459,7 +459,7 @@ async def _handle_upload_to_text(
       - other -> generic marker
     Also falls back on filename extension when content_type is missing.
     """
-    from app.services.detectors import pdf_hidden as _pdf_hidden  # local import to avoid cold path cost
+    from app.services.detectors import pdf_hidden as _pdf_hidden
 
     name = getattr(obj, "filename", None) or "file"
     ctype = (getattr(obj, "content_type", "") or "").lower()
