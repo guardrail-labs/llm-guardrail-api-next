@@ -459,11 +459,14 @@ async def _handle_upload_to_text(
       - other -> generic marker
     Also falls back on filename extension when content_type is missing.
     """
+    from app.services.detectors import pdf_hidden as _pdf_hidden  # local import to avoid cold path cost
+
     name = getattr(obj, "filename", None) or "file"
     ctype = (getattr(obj, "content_type", "") or "").lower()
-    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
 
     try:
+        # Images
         if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
             mods["image"] = mods.get("image", 0) + 1
             if _ocr.ocr_enabled():
@@ -475,14 +478,34 @@ async def _handle_upload_to_text(
                     return text, name
                 m.inc_ocr_extraction("image", "empty")
             return f"[IMAGE:{name}]", name
+
+        # Audio
         if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
             mods["audio"] = mods.get("audio", 0) + 1
             return f"[AUDIO:{name}]", name
+
+        # Plain text
         if ctype == "text/plain" or ext == "txt":
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
+
+        # PDF
         if ctype == "application/pdf" or ext == "pdf":
             raw = await obj.read()
+
+            # Always try to surface likely-hidden text (heuristic).
+            hidden = _pdf_hidden.detect_hidden_text(raw)
+            hidden_block = ""
+            if hidden.get("found"):
+                reasons = ",".join(hidden.get("reasons", [])) or "detected"
+                samples = hidden.get("samples", []) or []
+                # Keep short + bounded; samples feed into redactors downstream.
+                joined = " ".join(samples)[:500]
+                hidden_block = (
+                    f"\n[HIDDEN_TEXT_DETECTED:{reasons}]\n{joined}\n[HIDDEN_TEXT_END]\n"
+                )
+
+            # OCR/textlayer extraction (preferred, if enabled)
             if _ocr.ocr_enabled():
                 m.add_ocr_bytes("pdf", len(raw))
                 text, outcome = _ocr.extract_pdf_with_optional_ocr(raw)
@@ -492,17 +515,25 @@ async def _handle_upload_to_text(
                         outcome if outcome in {"textlayer", "fallback"} else "ok",
                     )
                     mods["file"] = mods.get("file", 0) + 1
-                    return text, name
+                    # Append hidden-text reveal (if any) so our redactors see it.
+                    return (text + hidden_block) if hidden_block else text, name
                 m.inc_ocr_extraction("pdf", outcome if outcome else "empty")
+
+            # Raw decode as a fallback when decode_pdf=True
             if decode_pdf:
-                return raw.decode("utf-8", errors="ignore"), name
+                mods["file"] = mods.get("file", 0) + 1
+                return raw.decode("utf-8", errors="ignore") + hidden_block, name
+
             mods["file"] = mods.get("file", 0) + 1
             return f"[FILE:{name}]", name
+
+        # Unknown file type -> generic marker
         mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]", name
+
     except Exception:
+        # Best-effort error metrics for OCR paths
         try:
-            # best-effort metric: unknown type -> error
             if _ocr.ocr_enabled():
                 if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
                     m.inc_ocr_extraction("image", "error")
