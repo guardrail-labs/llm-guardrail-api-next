@@ -10,8 +10,10 @@ def _make_client():
 
     # Reload config/main so settings pick up the env var before app build
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.build_app())

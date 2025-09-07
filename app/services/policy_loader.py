@@ -140,4 +140,3 @@ def reload_now() -> PolicyBlob:
     blob = _load_from_disk(path)
     _cache[path] = blob
     return blob
-

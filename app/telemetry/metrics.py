@@ -72,6 +72,7 @@ except Exception:  # pragma: no cover
 
 # ---- Minimal helpers for registry access -------------------------------------
 
+
 def _registry_map() -> Dict[str, Any]:
     mapping = getattr(PROM_REGISTRY, "_names_to_collectors", {})
     return mapping if isinstance(mapping, dict) else {}
@@ -92,9 +93,8 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
 
 # ---- Collector factories ------------------------------------------------------
 
-def _mk_counter(
-    name: str, doc: str, labels: Iterable[str] | None = None
-) -> CounterLike:
+
+def _mk_counter(name: str, doc: str, labels: Iterable[str] | None = None) -> CounterLike:
     def _factory() -> Any:
         if labels:
             return CounterClass(name, doc, list(labels))
@@ -103,9 +103,7 @@ def _mk_counter(
     return cast(CounterLike, _get_or_create(name, _factory))
 
 
-def _mk_histogram(
-    name: str, doc: str, labels: Iterable[str] | None = None
-) -> HistogramLike:
+def _mk_histogram(name: str, doc: str, labels: Iterable[str] | None = None) -> HistogramLike:
     def _factory() -> Any:
         if labels:
             return HistogramClass(name, doc, list(labels))
@@ -193,6 +191,7 @@ _RULES_VERSION = "unknown"
 
 
 # ---- Incrementers ------------------------------------------------------------
+
 
 def inc_requests_total(endpoint: str = "unknown") -> None:
     """
@@ -282,6 +281,7 @@ def add_ocr_bytes(typ: str, nbytes: int | float) -> None:
 
 # ---- Getters -----------------------------------------------------------------
 
+
 def get_requests_total() -> float:
     return float(_REQ_TOTAL)
 
@@ -306,11 +306,14 @@ def set_rules_version(v: str) -> None:
     global _RULES_VERSION
     _RULES_VERSION = str(v)
 
+
 def get_decisions_family_total(family: str) -> float:
     """Return the total decisions for a given family label."""
     return float(_FAMILY_TOTALS.get(family, 0.0))
 
+
 # ---- Text export helpers used by /metrics ------------------------------------
+
 
 def export_verifier_lines() -> List[str]:
     # Kept simple for tests that just expect some plain lines.
@@ -370,6 +373,7 @@ def export_family_breakdown_lines() -> List[str]:
 
 
 # ---- Introspection -----------------------------------------------------------
+
 
 def get_metric(name: str) -> Any:
     return _registry_map().get(name)

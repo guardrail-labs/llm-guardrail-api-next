@@ -13,9 +13,8 @@ def test_image_ocr_triggers_redaction_when_enabled(monkeypatch):
 
     # Monkeypatch OCR to avoid external deps
     import app.services.ocr as ocr
-    monkeypatch.setattr(
-        ocr, "extract_from_image", lambda b: "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    )
+
+    monkeypatch.setattr(ocr, "extract_from_image", lambda b: "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"dummy"
     files = [("files", ("x.png", png_bytes, "image/png"))]
@@ -35,10 +34,9 @@ def test_pdf_textlayer_extraction_redacts_hidden_text(monkeypatch):
     monkeypatch.delenv("OCR_PDF_FALLBACK", raising=False)
 
     import app.services.ocr as ocr
+
     # Simulate pdfminer extraction returning hidden secret
-    monkeypatch.setattr(
-        ocr, "extract_from_pdf", lambda b: ("sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ", True)
-    )
+    monkeypatch.setattr(ocr, "extract_from_pdf", lambda b: ("sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ", True))
     monkeypatch.setattr(
         ocr,
         "extract_pdf_with_optional_ocr",
@@ -68,4 +66,3 @@ def test_ocr_disabled_keeps_legacy_behavior(monkeypatch):
     # With OCR disabled, we should NOT see redacted text; just the marker and action allow
     assert body["action"] == "allow"
     assert "[IMAGE:x.png]" in body["text"] or body["text"].startswith("[IMAGE:")
-

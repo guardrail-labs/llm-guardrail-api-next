@@ -73,13 +73,9 @@ class QuotaMiddleware(BaseHTTPMiddleware):
             env_enabled = os.getenv("QUOTAS_ENABLED")
         self.enabled = _truthy(env_enabled, True) if enabled is None else enabled
 
-        day = int(
-            os.getenv("QUOTA_PER_DAY")
-            or (str(per_day) if per_day is not None else "100000")
-        )
+        day = int(os.getenv("QUOTA_PER_DAY") or (str(per_day) if per_day is not None else "100000"))
         mon = int(
-            os.getenv("QUOTA_PER_MONTH")
-            or (str(per_month) if per_month is not None else "2000000")
+            os.getenv("QUOTA_PER_MONTH") or (str(per_month) if per_month is not None else "2000000")
         )
         self.per_day = day
         self.per_month = mon
@@ -118,4 +114,3 @@ class QuotaMiddleware(BaseHTTPMiddleware):
         resp.headers["X-Quota-Remaining-Day"] = str(max(0, int(decision["day_remaining"])))
         resp.headers["X-Quota-Remaining-Month"] = str(max(0, int(decision["month_remaining"])))
         resp.headers["X-Quota-Reset"] = str(max(1, int(decision["retry_after_s"])))
-

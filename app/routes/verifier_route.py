@@ -9,4 +9,3 @@ router = APIRouter(prefix="/verifier", tags=["verifier"])
 @router.post("/test")
 async def verifier_test(inp: VerifierInput):
     return call_verifier(inp).model_dump()
-

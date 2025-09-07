@@ -25,6 +25,7 @@ from app.telemetry.tracing import TracingMiddleware
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
     from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
+
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -188,6 +189,7 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
 
 # ---- Router auto-inclusion ---------------------------------------------------
 
+
 def _include_all_route_modules(app: FastAPI) -> int:
     """
     Import all submodules under app.routes and include any APIRouter objects
@@ -214,6 +216,7 @@ def _include_all_route_modules(app: FastAPI) -> int:
 
 # ---- Error JSON helpers ------------------------------------------------------
 
+
 def _status_code_to_code(status: int) -> str:
     if status == 401:
         return "unauthorized"
@@ -239,6 +242,7 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
 
 
 # ---- App factory -------------------------------------------------------------
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")

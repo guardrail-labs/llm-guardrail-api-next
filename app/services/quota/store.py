@@ -7,7 +7,7 @@ from typing import Callable, Dict, TypedDict
 
 class QuotaDecision(TypedDict):
     allowed: bool
-    reason: str            # "ok" | "day" | "month"
+    reason: str  # "ok" | "day" | "month"
     retry_after_s: int
     day_remaining: int
     month_remaining: int
@@ -61,6 +61,7 @@ class FixedWindowQuotaStore:
     @staticmethod
     def _utc_month_start(ts: int) -> int:
         import datetime as _dt
+
         d = _dt.datetime.utcfromtimestamp(ts)
         m0 = _dt.datetime(d.year, d.month, 1, tzinfo=_dt.timezone.utc)
         return int(m0.timestamp())
@@ -96,6 +97,7 @@ class FixedWindowQuotaStore:
 
         # compute resets
         import datetime as _dt
+
         day_reset = (d0 + 86400) - now
         d = _dt.datetime.utcfromtimestamp(now)
         next_month_year = d.year + (1 if d.month == 12 else 0)
@@ -168,4 +170,3 @@ class FixedWindowQuotaStore:
         if w in ("month", "both"):
             if key in self._mon:
                 self._mon.pop(key, None)
-

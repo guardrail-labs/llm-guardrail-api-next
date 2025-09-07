@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 # ----------------------------- No-op tracing shim -----------------------------
 # (Kept for completeness; not used by tests now that they expect _trace to be None)
 
+
 class _NoopSpan:
     def set_attribute(self, *_: Any, **__: Any) -> None:  # noqa: D401
         """No-op attribute setter."""
@@ -56,6 +57,7 @@ class _NoopTrace:
 
 
 # --------------------------------- Middleware ---------------------------------
+
 
 class TracingMiddleware(BaseHTTPMiddleware):
     """
@@ -144,6 +146,7 @@ def _truthy(val: object) -> bool:
 
 # ---- simple adapters used elsewhere -----------------------------------------
 
+
 def get_request_id() -> Optional[str]:
     """
     Thin wrapper so other modules can import from here without caring
@@ -151,6 +154,7 @@ def get_request_id() -> Optional[str]:
     """
     try:
         from app.middleware.request_id import get_request_id as _get
+
         rid = _get()
         return str(rid) if rid is not None else None
     except Exception:
@@ -164,6 +168,7 @@ def get_trace_id() -> Optional[str]:
     """
     try:  # pragma: no cover
         from opentelemetry import trace as _trace
+
         span = _trace.get_current_span()
         if span is None:
             return None

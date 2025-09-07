@@ -15,12 +15,15 @@ class FakeClient:
 def _client(monkeypatch):
     # Wire fake provider
     import app.routes.openai_compat as compat
+
     monkeypatch.setattr(compat, "get_client", lambda: FakeClient())
 
     # Fresh app so routers and metrics are clean
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 
@@ -55,5 +58,3 @@ def test_openai_chat_compat(monkeypatch):
     assert r.headers.get("X-Guardrail-Policy-Version")
     assert r.headers.get("X-Guardrail-Ingress-Action") in ("allow", "deny")
     assert r.headers.get("X-Guardrail-Egress-Action") == "allow"
-
-

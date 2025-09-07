@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.build_app())
 
@@ -29,9 +31,7 @@ def test_output_smoke_allows_200():
 def test_output_redaction_applied():
     os.environ["REDACT_SECRETS"] = "true"
     client = _make_client()
-    payload = {
-        "output": "leak: sk-1234567890abcdefghijklmnop and -----BEGIN PRIVATE KEY-----"
-    }
+    payload = {"output": "leak: sk-1234567890abcdefghijklmnop and -----BEGIN PRIVATE KEY-----"}
     r = client.post(
         "/guardrail/output",
         json=payload,

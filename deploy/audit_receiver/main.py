@@ -1,8 +1,14 @@
 from __future__ import annotations
-import os, hmac, hashlib, json, time
+
+import hashlib
+import hmac
+import json
+import os
+import time
 from typing import Any, Dict
+
 from fastapi import FastAPI, Request, Response
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 app = FastAPI(title="Guardrail Audit Receiver", version="0.1")
 
@@ -18,13 +24,16 @@ LAT = Histogram(
 
 SECRET = os.environ.get("AUDIT_SIGNING_SECRET", "").encode()
 
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     return {"ok": True, "ts": int(time.time())}
 
+
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 @app.post("/ingest")
 async def ingest(req: Request):

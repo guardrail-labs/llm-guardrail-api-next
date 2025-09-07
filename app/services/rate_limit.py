@@ -65,4 +65,3 @@ class TokenBucket:
         if deficit <= 0.0:
             return 0.0
         return deficit / self.refill
-

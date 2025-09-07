@@ -1,8 +1,11 @@
 from __future__ import annotations
+
 from fastapi import APIRouter
+
 from app.config import get_settings
 
 router = APIRouter(prefix="/ready", tags=["system"])
+
 
 @router.get("", summary="Readiness probe")
 def ready() -> dict:

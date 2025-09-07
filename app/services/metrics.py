@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Tuple, TypeVar, Protocol, cast
+from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast
 
 # ---- Protocols (surface we rely on) ------------------------------------------
 
@@ -22,9 +22,7 @@ CounterClass: Any
 HistogramClass: Any
 
 try:
-    from prometheus_client import Counter as _PCounter
-    from prometheus_client import Histogram as _PHistogram
-    from prometheus_client import REGISTRY as _PREG
+    from prometheus_client import REGISTRY as _PREG, Counter as _PCounter, Histogram as _PHistogram
 
     PROM_REGISTRY = _PREG
     CounterClass = _PCounter
@@ -74,6 +72,7 @@ except Exception:  # pragma: no cover
 
 # ---- Minimal helpers for registry access -------------------------------------
 
+
 def _registry_map() -> Dict[str, Any]:
     mapping = getattr(PROM_REGISTRY, "_names_to_collectors", {})
     return mapping if isinstance(mapping, dict) else {}
@@ -94,9 +93,8 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
 
 # ---- Collector factories ------------------------------------------------------
 
-def _mk_counter(
-    name: str, doc: str, labels: Iterable[str] | None = None
-) -> CounterLike:
+
+def _mk_counter(name: str, doc: str, labels: Iterable[str] | None = None) -> CounterLike:
     def _factory() -> Any:
         if labels:
             return CounterClass(name, doc, list(labels))
@@ -105,9 +103,7 @@ def _mk_counter(
     return cast(CounterLike, _get_or_create(name, _factory))
 
 
-def _mk_histogram(
-    name: str, doc: str, labels: Iterable[str] | None = None
-) -> HistogramLike:
+def _mk_histogram(name: str, doc: str, labels: Iterable[str] | None = None) -> HistogramLike:
     def _factory() -> Any:
         if labels:
             return HistogramClass(name, doc, list(labels))
@@ -178,6 +174,7 @@ _RULES_VERSION = "unknown"
 
 # ---- Incrementers ------------------------------------------------------------
 
+
 def inc_requests_total(endpoint: str = "unknown") -> None:
     """
     Bumps request counter and ensures histogram child exists so *_count appears.
@@ -237,6 +234,7 @@ def inc_redaction(mask: str) -> None:
 
 # ---- Getters -----------------------------------------------------------------
 
+
 def get_requests_total() -> float:
     return float(_REQ_TOTAL)
 
@@ -268,6 +266,7 @@ def get_decisions_family_total(family: str) -> float:
 
 
 # ---- Text export helpers used by /metrics ------------------------------------
+
 
 def export_verifier_lines() -> List[str]:
     # Kept simple for tests that just expect some plain lines.
@@ -328,6 +327,6 @@ def export_family_breakdown_lines() -> List[str]:
 
 # ---- Introspection -----------------------------------------------------------
 
+
 def get_metric(name: str) -> Any:
     return _registry_map().get(name)
-

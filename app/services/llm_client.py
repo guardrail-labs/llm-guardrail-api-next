@@ -12,9 +12,7 @@ except Exception:  # pragma: no cover - httpx is optional for local-echo
 
 
 class BaseLLMClient:
-    def chat(
-        self, messages: List[Dict[str, str]], model: str
-    ) -> Tuple[str, Dict[str, Any]]:
+    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
         raise NotImplementedError
 
     def chat_stream(
@@ -39,9 +37,7 @@ class LocalEchoClient(BaseLLMClient):
                 break
         return last
 
-    def chat(
-        self, messages: List[Dict[str, str]], model: str
-    ) -> Tuple[str, Dict[str, Any]]:
+    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
         text = f"Echo: {self._last_user(messages)}".strip()
         meta = {"provider": "local-echo", "model": model or "demo"}
         return text, meta
@@ -81,9 +77,7 @@ class OpenAIClient(BaseLLMClient):
             "Content-Type": "application/json",
         }
 
-    def chat(
-        self, messages: List[Dict[str, str]], model: str
-    ) -> Tuple[str, Dict[str, Any]]:
+    def chat(self, messages: List[Dict[str, str]], model: str) -> Tuple[str, Dict[str, Any]]:
         url = f"{self.base_url}/v1/chat/completions"
         payload: Dict[str, Any] = {
             "model": model,
@@ -127,9 +121,7 @@ class OpenAIClient(BaseLLMClient):
 
         def gen() -> Iterable[str]:
             with httpx.Client(timeout=self.timeout) as client:
-                with client.stream(
-                    "POST", url, headers=self._headers(), json=payload
-                ) as resp:
+                with client.stream("POST", url, headers=self._headers(), json=payload) as resp:
                     resp.raise_for_status()
                     for line in resp.iter_lines():
                         if not line:

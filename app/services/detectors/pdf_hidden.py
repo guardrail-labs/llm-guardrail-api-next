@@ -18,9 +18,9 @@ def _extract_text(pdf_bytes: bytes) -> Tuple[List[str], List[str]]:
     hidden: List[str] = []
     for line in text.splitlines():
         if line.startswith("VISIBLE:"):
-            visible.append(line[len("VISIBLE:"):])
+            visible.append(line[len("VISIBLE:") :])
         elif line.startswith("HIDDEN:"):
-            hidden.append(line[len("HIDDEN:"):])
+            hidden.append(line[len("HIDDEN:") :])
     return visible, hidden
 
 

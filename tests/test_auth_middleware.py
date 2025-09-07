@@ -9,8 +9,10 @@ def _client(monkeypatch) -> TestClient:
     monkeypatch.setenv("GUARDRAIL_DISABLE_AUTH", "0")
 
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.app)
@@ -40,4 +42,3 @@ def test_auth_allows_with_key(monkeypatch):
         headers={"X-API-Key": "k", "Content-Type": "application/json"},
     )
     assert r.status_code == 200
-

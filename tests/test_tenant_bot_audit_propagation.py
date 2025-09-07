@@ -10,6 +10,7 @@ import app.routes.output as output
 
 def _client():
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

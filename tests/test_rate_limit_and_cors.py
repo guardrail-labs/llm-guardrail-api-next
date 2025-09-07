@@ -8,8 +8,10 @@ def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
 
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.build_app())
@@ -40,4 +42,3 @@ def test_rate_limit_429_after_burst(monkeypatch):
     r3 = client.post("/guardrail/", json={"prompt": "ok3"}, headers=h)
     assert r3.status_code == 429
     assert "rate limit exceeded" in r3.json().get("detail", "").lower()
-

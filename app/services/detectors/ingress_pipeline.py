@@ -36,6 +36,7 @@ PdfSanitizer = Callable[[bytes], Tuple[str, List[str], Dict[str, Any]]]
 # `app.services.detectors.__init__`. If it is not available, we fall back
 # gracefully without raising import errors or confusing mypy.
 
+
 def _load_pdf_sanitizer() -> Optional[PdfSanitizer]:
     try:
         from app.services.detectors import (
@@ -50,6 +51,7 @@ _pdf_sanitize: Optional[PdfSanitizer] = _load_pdf_sanitizer()
 
 # Feature flags (default ON) ---------------------------------------------------
 
+
 def _enabled(env: str, default: bool = True) -> bool:
     raw = os.getenv(env)
     if raw is None:
@@ -63,6 +65,7 @@ _IMAGE_SAFE_TRANSFORM_ENABLED = _enabled("IMAGE_SAFE_TRANSFORM_ENABLED", True)
 
 
 # ---------------- PDF ---------------------------------------------------------
+
 
 def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
     """
@@ -114,6 +117,7 @@ def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
 
 # ---------------- DOCX --------------------------------------------------------
 
+
 def process_docx_ingress(
     docx_bytes: bytes, extractor: Optional[DocxExtractor] = None
 ) -> Dict[str, Any]:
@@ -149,6 +153,7 @@ def process_docx_ingress(
 
 
 # ---------------- Image -------------------------------------------------------
+
 
 def process_image_ingress(
     image_bytes: bytes, reencoder: Optional[ImageReencoder] = None

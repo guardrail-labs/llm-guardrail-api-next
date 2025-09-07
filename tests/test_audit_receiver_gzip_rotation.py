@@ -43,4 +43,3 @@ def test_receiver_accepts_gzip_and_secondary_secret(monkeypatch):
 
     assert r.status_code == 200
     assert r.json() == {"ok": True, "deduped": False}
-

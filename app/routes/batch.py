@@ -1,18 +1,20 @@
 # file: app/routes/batch.py
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
 import uuid
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel
 
+from app.services.audit import emit_audit_event
+from app.services.detectors import evaluate_prompt
+from app.services.egress import egress_check
 from app.services.policy import (
     _normalize_family,
     current_rules_version,
     sanitize_text,
 )
-from app.services.detectors import evaluate_prompt
 from app.services.threat_feed import (
     apply_dynamic_redactions,
     threat_feed_enabled,
@@ -26,14 +28,12 @@ from app.services.verifier import (
     mark_harmful,
     verifier_enabled,
 )
-from app.services.egress import egress_check
-from app.services.audit import emit_audit_event
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
     inc_verifier_outcome,
 )
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 
@@ -41,6 +41,7 @@ router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 # ---------------------------
 # Models
 # ---------------------------
+
 
 class BatchItemIn(BaseModel):
     text: str
@@ -70,6 +71,7 @@ class BatchOut(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
+
 
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
@@ -107,12 +109,7 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
         if isinstance(h, str):
             add_hit(h)
         elif isinstance(h, dict):
-            src = (
-                h.get("source")
-                or h.get("origin")
-                or h.get("provider")
-                or h.get("src")
-            )
+            src = h.get("source") or h.get("origin") or h.get("provider") or h.get("src")
             lst = h.get("list") or h.get("kind") or h.get("type")
             rid = h.get("id") or h.get("rule_id") or h.get("name")
             if src and lst and rid:
@@ -139,13 +136,12 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
 # Routes
 # ---------------------------
 
+
 @router.post("/batch_evaluate", response_model=BatchOut)
 async def batch_evaluate(
     request: Request,
     body: BatchIn,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
     x_force_unclear: Optional[str] = Header(
         default=None, alias="X-Force-Unclear", convert_underscores=False
     ),
@@ -172,13 +168,9 @@ async def batch_evaluate(
         fp_all = content_fingerprint(text_in)
 
         # sanitize
-        sanitized, families, redaction_count, _dbg = sanitize_text(
-            text_in, debug=want_debug
-        )
+        sanitized, families, redaction_count, _dbg = sanitize_text(text_in, debug=want_debug)
         if threat_feed_enabled():
-            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-                sanitized, debug=want_debug
-            )
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
             sanitized = dyn_text
             if dyn_fams:
                 base = set(families or [])
@@ -291,9 +283,7 @@ async def batch_evaluate(
 async def egress_batch(
     request: Request,
     body: BatchIn,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> BatchOut:
     """
     Evaluate multiple egress texts in one request (post-model output).

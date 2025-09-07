@@ -54,4 +54,3 @@ def test_rate_limit_by_ip_when_no_key():
     assert r.status_code == 429
     assert r.json()["mode"] == "rate_limited"
     assert "Retry-After" in r.headers
-

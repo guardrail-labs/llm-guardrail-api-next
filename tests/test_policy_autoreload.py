@@ -11,8 +11,10 @@ def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
 
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.build_app())
@@ -87,4 +89,3 @@ def test_manual_reload_endpoint_when_autoreload_off():
         r4 = client.post("/guardrail", json={"prompt": "z"}, headers={"X-API-Key": "unit-test-key"})
         assert r4.status_code == 200
         assert r4.json()["policy_version"] == "2"
-

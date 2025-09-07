@@ -33,6 +33,7 @@ router = APIRouter(prefix="/proxy", tags=["proxy"])
 # Models
 # ---------------------------
 
+
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
     content: str
@@ -78,6 +79,7 @@ class ChatResponse(BaseModel):
 # Helpers
 # ---------------------------
 
+
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
     bot = request.headers.get(BOT_HEADER) or "default"
@@ -102,12 +104,7 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
         if isinstance(h, str):
             add_hit(h)
         elif isinstance(h, dict):
-            src = (
-                h.get("source")
-                or h.get("origin")
-                or h.get("provider")
-                or h.get("src")
-            )
+            src = h.get("source") or h.get("origin") or h.get("provider") or h.get("src")
             lst = h.get("list") or h.get("kind") or h.get("type")
             rid = h.get("id") or h.get("rule_id") or h.get("name")
             if src and lst and rid:
@@ -141,6 +138,7 @@ def _family_for(action: str, redactions: int) -> str:
 # Route
 # ---------------------------
 
+
 @router.post("/chat", response_model=ChatResponse)
 async def proxy_chat(
     request: Request,
@@ -172,9 +170,7 @@ async def proxy_chat(
 
     sanitized, families, redaction_count, _dbg = sanitize_text(joined, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -248,9 +244,7 @@ async def proxy_chat(
 
     # -------- Provider call --------
     client = get_client()
-    model_text, model_meta = client.chat(
-        [m.model_dump() for m in body.messages], body.model
-    )
+    model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
 
     # -------- Egress phase --------
     payload, _dbg2 = egress_check(model_text, debug=want_debug)

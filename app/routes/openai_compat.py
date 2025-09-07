@@ -48,6 +48,7 @@ router = APIRouter(prefix="/v1", tags=["openai-compat"])
 # Health
 # ---------------------------
 
+
 @router.get("/health")
 async def health() -> Dict[str, Any]:
     return {
@@ -60,6 +61,7 @@ async def health() -> Dict[str, Any]:
 # ---------------------------
 # Models (subset for compat)
 # ---------------------------
+
 
 class ChatMessage(BaseModel):
     role: str = Field(pattern="^(system|user|assistant)$")
@@ -76,6 +78,7 @@ class ChatCompletionsRequest(BaseModel):
 # ---------------------------
 # Helpers
 # ---------------------------
+
 
 def _tenant_bot_from_headers(request: Request) -> Tuple[str, str]:
     tenant = request.headers.get(TENANT_HEADER) or "default"
@@ -95,9 +98,7 @@ def _family_for(action: str, redactions: int) -> str:
     return "allow"
 
 
-def _normalize_rule_hits(
-    raw_hits: List[Any], raw_decisions: List[Any]
-) -> List[str]:
+def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
     out: List[str] = []
 
     def add_hit(s: Optional[str]) -> None:
@@ -108,12 +109,7 @@ def _normalize_rule_hits(
         if isinstance(h, str):
             add_hit(h)
         elif isinstance(h, dict):
-            src = (
-                h.get("source")
-                or h.get("origin")
-                or h.get("provider")
-                or h.get("src")
-            )
+            src = h.get("source") or h.get("origin") or h.get("provider") or h.get("src")
             lst = h.get("list") or h.get("kind") or h.get("type")
             rid = h.get("id") or h.get("rule_id") or h.get("name")
             if src and lst and rid:
@@ -124,12 +120,7 @@ def _normalize_rule_hits(
     for d in raw_decisions or []:
         if not isinstance(d, dict):
             continue
-        src = (
-            d.get("source")
-            or d.get("origin")
-            or d.get("provider")
-            or d.get("src")
-        )
+        src = d.get("source") or d.get("origin") or d.get("provider") or d.get("src")
         lst = d.get("list") or d.get("kind") or d.get("type")
         rid = d.get("id") or d.get("rule_id") or d.get("name")
         if src and lst and rid:
@@ -140,9 +131,7 @@ def _normalize_rule_hits(
     return out
 
 
-def _oai_error(
-    message: str, type_: str = "invalid_request_error"
-) -> Dict[str, Any]:
+def _oai_error(message: str, type_: str = "invalid_request_error") -> Dict[str, Any]:
     return {
         "error": {
             "message": message,
@@ -197,6 +186,7 @@ def _chunk_text(s: str, max_len: int) -> List[str]:
 # Routes
 # ---------------------------
 
+
 @router.get("/models")
 async def list_models():
     return {"object": "list", "data": _compat_models()}
@@ -207,9 +197,7 @@ async def chat_completions(
     request: Request,
     response: Response,
     body: ChatCompletionsRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     OpenAI-compatible chat endpoint with inline guardrails and quotas.
@@ -218,22 +206,14 @@ async def chat_completions(
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
-    req_id = (
-        body.request_id
-        or request.headers.get("X-Request-ID")
-        or str(uuid.uuid4())
-    )
+    req_id = body.request_id or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
 
     # ---------- Ingress ----------
     joined = "\n".join(f"{m.role}: {m.content}" for m in body.messages or [])
-    sanitized, families, redaction_count, _ = sanitize_text(
-        joined, debug=want_debug
-    )
+    sanitized, families, redaction_count, _ = sanitize_text(joined, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -247,9 +227,7 @@ async def chat_completions(
     decisions = list(det.get("decisions", []))
     xformed = det.get("transformed_text", sanitized)
 
-    flat_hits = _normalize_rule_hits(
-        det.get("rule_hits", []) or [], decisions
-    )
+    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
     det_families = [_normalize_family(h) for h in flat_hits]
     combined_hits = sorted({*(families or []), *det_families})
 
@@ -304,9 +282,7 @@ async def chat_completions(
     # ---------- Streaming path ----------
     if body.stream:
         client = get_client()
-        stream, model_meta = client.chat_stream(
-            [m.model_dump() for m in body.messages], body.model
-        )
+        stream, model_meta = client.chat_stream([m.model_dump() for m in body.messages], body.model)
 
         sid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = now_ts
@@ -346,9 +322,7 @@ async def chat_completions(
                 if e_action == "deny":
                     e_action_final = "deny"
                     e_reds_final = int(payload.get("redactions") or 0)
-                    e_hits_final = (
-                        list(payload.get("rule_hits") or []) or None
-                    )
+                    e_hits_final = list(payload.get("rule_hits") or []) or None
                     yield _sse(
                         {
                             "id": sid,
@@ -368,7 +342,7 @@ async def chat_completions(
                     return
 
                 sanitized_full = str(payload.get("text", ""))
-                delta = sanitized_full[len(last_sanitized):]
+                delta = sanitized_full[len(last_sanitized) :]
                 if delta:
                     yield _sse(
                         {
@@ -388,9 +362,7 @@ async def chat_completions(
                     last_sanitized = sanitized_full
                     e_action_final = "allow"
                     e_reds_final = int(payload.get("redactions") or 0)
-                    e_hits_final = (
-                        list(payload.get("rule_hits") or []) or None
-                    )
+                    e_hits_final = list(payload.get("rule_hits") or []) or None
 
             yield _sse(
                 {
@@ -398,9 +370,7 @@ async def chat_completions(
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": model_id,
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": "stop"}
-                    ],
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                 }
             )
             yield "data: [DONE]\n\n"
@@ -447,9 +417,7 @@ async def chat_completions(
 
     # ---------- Non-streaming path ----------
     client = get_client()
-    model_text, model_meta = client.chat(
-        [m.model_dump() for m in body.messages], body.model
-    )
+    model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
 
     payload, _ = egress_check(model_text, debug=want_debug)
     e_action = str(payload.get("action", "allow"))
@@ -537,9 +505,7 @@ async def images_generations(
     request: Request,
     response: Response,
     body: ImagesGenerateRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
     """
     /v1/images/generations with quotas + guard.
@@ -552,13 +518,9 @@ async def images_generations(
     n = max(1, int(body.n or 1))
 
     # Ingress guard
-    sanitized, families, redaction_count, _ = sanitize_text(
-        body.prompt, debug=want_debug
-    )
+    sanitized, families, redaction_count, _ = sanitize_text(body.prompt, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -569,9 +531,7 @@ async def images_generations(
 
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
-    flat_hits = _normalize_rule_hits(
-        det.get("rule_hits", []) or [], det.get("decisions", []) or []
-    )
+    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
 
     if det_action == "deny":
         fam = _family_for("deny", 0)
@@ -587,9 +547,7 @@ async def images_generations(
                     "request_id": req_id,
                     "direction": "ingress",
                     "decision": "deny",
-                    "rule_hits": (
-                        sorted({_normalize_family(h) for h in flat_hits}) or None
-                    ),
+                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                     "policy_version": policy_version,
                     "redaction_count": 0,
                     "hash_fingerprint": content_fingerprint(body.prompt),
@@ -630,9 +588,7 @@ async def images_generations(
                 "request_id": req_id,
                 "direction": "ingress",
                 "decision": "allow",
-                "rule_hits": (
-                    sorted({_normalize_family(h) for h in flat_hits}) or None
-                ),
+                "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                 "policy_version": policy_version,
                 "redaction_count": int(redaction_count or 0),
                 "hash_fingerprint": content_fingerprint(body.prompt),
@@ -691,9 +647,7 @@ async def images_edits(
     n: Optional[int] = Form(default=1),
     size: Optional[str] = Form(default="256x256"),
     response_format: Optional[str] = Form(default="b64_json"),
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
     """
     /v1/images/edits with quotas + guard.
@@ -706,13 +660,9 @@ async def images_edits(
     n_final = max(1, int(n or 1))
     text = prompt or ""
 
-    sanitized, families, redaction_count, _ = sanitize_text(
-        text, debug=want_debug
-    )
+    sanitized, families, redaction_count, _ = sanitize_text(text, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -723,9 +673,7 @@ async def images_edits(
 
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
-    flat_hits = _normalize_rule_hits(
-        det.get("rule_hits", []) or [], det.get("decisions", []) or []
-    )
+    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
 
     if det_action == "deny":
         fam = _family_for("deny", 0)
@@ -741,9 +689,7 @@ async def images_edits(
                     "request_id": req_id,
                     "direction": "ingress",
                     "decision": "deny",
-                    "rule_hits": (
-                        sorted({_normalize_family(h) for h in flat_hits}) or None
-                    ),
+                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                     "policy_version": policy_version,
                     "redaction_count": 0,
                     "hash_fingerprint": content_fingerprint(text),
@@ -784,9 +730,7 @@ async def images_edits(
                 "request_id": req_id,
                 "direction": "ingress",
                 "decision": "allow",
-                "rule_hits": (
-                    sorted({_normalize_family(h) for h in flat_hits}) or None
-                ),
+                "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                 "policy_version": policy_version,
                 "redaction_count": int(redaction_count or 0),
                 "hash_fingerprint": content_fingerprint(text),
@@ -845,9 +789,7 @@ async def images_variations(
     size: Optional[str] = Form(default="256x256"),
     response_format: Optional[str] = Form(default="b64_json"),
     prompt: Optional[str] = Form(default=""),
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> Dict[str, Any]:
     """
     /v1/images/variations with quotas + guard.
@@ -860,13 +802,9 @@ async def images_variations(
     n_final = max(1, int(n or 1))
     text = prompt or ""
 
-    sanitized, families, redaction_count, _ = sanitize_text(
-        text, debug=want_debug
-    )
+    sanitized, families, redaction_count, _ = sanitize_text(text, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -877,9 +815,7 @@ async def images_variations(
 
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
-    flat_hits = _normalize_rule_hits(
-        det.get("rule_hits", []) or [], det.get("decisions", []) or []
-    )
+    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
 
     if det_action == "deny":
         fam = _family_for("deny", 0)
@@ -895,9 +831,7 @@ async def images_variations(
                     "request_id": req_id,
                     "direction": "ingress",
                     "decision": "deny",
-                    "rule_hits": (
-                        sorted({_normalize_family(h) for h in flat_hits}) or None
-                    ),
+                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                     "policy_version": policy_version,
                     "redaction_count": 0,
                     "hash_fingerprint": content_fingerprint(text),
@@ -938,9 +872,7 @@ async def images_variations(
                 "request_id": req_id,
                 "direction": "ingress",
                 "decision": "allow",
-                "rule_hits": (
-                    sorted({_normalize_family(h) for h in flat_hits}) or None
-                ),
+                "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                 "policy_version": policy_version,
                 "redaction_count": int(redaction_count or 0),
                 "hash_fingerprint": content_fingerprint(text),
@@ -994,9 +926,7 @@ async def images_variations(
 
 from fastapi import APIRouter as _APIRouter  # noqa: E402
 
-azure_router = _APIRouter(
-    prefix="/openai/deployments", tags=["azure-openai-compat"]
-)
+azure_router = _APIRouter(prefix="/openai/deployments", tags=["azure-openai-compat"])
 
 
 class _AzureChatBody(BaseModel):
@@ -1015,9 +945,7 @@ async def azure_chat_completions(
     response: Response,
     deployment_id: str,
     body: _AzureChatBody,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     Azure-style chat endpoint. Delegates to /v1/chat/completions.
@@ -1041,9 +969,7 @@ async def azure_embeddings(
     response: Response,
     deployment_id: str,
     body: _AzureEmbeddingsBody,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     Azure-style embeddings endpoint.
@@ -1057,6 +983,7 @@ async def azure_embeddings(
 
 
 # --- Moderations (OpenAI-compatible) -----------------------------------------
+
 
 class ModerationsRequest(BaseModel):
     model: str
@@ -1079,9 +1006,7 @@ async def create_moderation(
     request: Request,
     response: Response,
     body: ModerationsRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     /v1/moderations with quotas + guard.
@@ -1095,13 +1020,9 @@ async def create_moderation(
     results: List[Dict[str, Any]] = []
 
     for item in body.input:
-        sanitized, fams, redaction_count, _ = sanitize_text(
-            item, debug=want_debug
-        )
+        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
         if threat_feed_enabled():
-            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-                sanitized, debug=want_debug
-            )
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
             sanitized = dyn_text
             if dyn_fams:
                 base = set(fams or [])
@@ -1113,9 +1034,7 @@ async def create_moderation(
         det = evaluate_prompt(sanitized)
         det_action = str(det.get("action", "allow"))
         decisions = list(det.get("decisions", []))
-        flat_hits = _normalize_rule_hits(
-            det.get("rule_hits", []) or [], decisions
-        )
+        flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
 
         if det_action == "deny":
             ingress_action = "deny"
@@ -1140,9 +1059,7 @@ async def create_moderation(
                     "request_id": req_id,
                     "direction": "ingress",
                     "decision": ingress_action,
-                    "rule_hits": (
-                        sorted({_normalize_family(h) for h in flat_hits}) or None
-                    ),
+                    "rule_hits": (sorted({_normalize_family(h) for h in flat_hits}) or None),
                     "policy_version": policy_version,
                     "redaction_count": int(redaction_count or 0),
                     "hash_fingerprint": content_fingerprint(item),
@@ -1167,10 +1084,7 @@ async def create_moderation(
             "violence": bool(violence),
         }
         scores = {
-            k: (
-                0.98 if (k == "violence" and violence)
-                else (0.0 if not flagged else 0.6)
-            )
+            k: (0.98 if (k == "violence" and violence) else (0.0 if not flagged else 0.6))
             for k in categories.keys()
         }
 
@@ -1184,9 +1098,7 @@ async def create_moderation(
 
     response.headers["X-Guardrail-Policy-Version"] = policy_version
     final_flag = any(r["flagged"] for r in results)
-    response.headers["X-Guardrail-Ingress-Action"] = (
-        "deny" if final_flag else "allow"
-    )
+    response.headers["X-Guardrail-Ingress-Action"] = "deny" if final_flag else "allow"
     response.headers["X-Guardrail-Egress-Action"] = "skipped"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
 
@@ -1226,9 +1138,7 @@ async def create_embeddings(
     request: Request,
     response: Response,
     body: EmbeddingsRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     /v1/embeddings with quotas + guard.
@@ -1243,13 +1153,9 @@ async def create_embeddings(
     data: List[Dict[str, Any]] = []
 
     for idx, item in enumerate(body.input):
-        sanitized, fams, redaction_count, _ = sanitize_text(
-            item, debug=want_debug
-        )
+        sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
         if threat_feed_enabled():
-            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-                sanitized, debug=want_debug
-            )
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
             sanitized = dyn_text
             if dyn_fams:
                 base = set(fams or [])
@@ -1278,9 +1184,7 @@ async def create_embeddings(
                     "bot_id": bot_id,
                     "request_id": req_id,
                     "direction": "ingress",
-                    "decision": (
-                        "deny" if det_action == "deny" else "allow"
-                    ),
+                    "decision": ("deny" if det_action == "deny" else "allow"),
                     "rule_hits": None,
                     "policy_version": policy_version,
                     "redaction_count": int(redaction_count or 0),
@@ -1332,6 +1236,7 @@ async def create_embeddings(
 
 # --- Completions (OpenAI-compatible) -----------------------------------------
 
+
 class CompletionsRequest(BaseModel):
     model: str
     prompt: str
@@ -1344,9 +1249,7 @@ async def completions(
     request: Request,
     response: Response,
     body: CompletionsRequest,
-    x_debug: Optional[str] = Header(
-        default=None, alias="X-Debug", convert_underscores=False
-    ),
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ):
     """
     /v1/completions with quotas + guard.
@@ -1354,23 +1257,15 @@ async def completions(
     want_debug = x_debug == "1"
     tenant_id, bot_id = _tenant_bot_from_headers(request)
     policy_version = current_rules_version()
-    req_id = (
-        body.request_id
-        or request.headers.get("X-Request-ID")
-        or str(uuid.uuid4())
-    )
+    req_id = body.request_id or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     now_ts = int(time.time())
 
     # ---------- Ingress ----------
     joined = f"user: {body.prompt}"
 
-    sanitized, families, redaction_count, _ = sanitize_text(
-        joined, debug=want_debug
-    )
+    sanitized, families, redaction_count, _ = sanitize_text(joined, debug=want_debug)
     if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(
-            sanitized, debug=want_debug
-        )
+        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
         sanitized = dyn_text
         if dyn_fams:
             base = set(families or [])
@@ -1382,9 +1277,7 @@ async def completions(
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
     xformed = det.get("transformed_text", sanitized)
-    flat_hits = _normalize_rule_hits(
-        det.get("rule_hits", []) or [], det.get("decisions", []) or []
-    )
+    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
     det_families = [_normalize_family(h) for h in flat_hits]
     combined_hits = sorted({*(families or []), *det_families})
 
@@ -1494,9 +1387,7 @@ async def completions(
                         "object": "text_completion",
                         "created": created,
                         "model": model_id,
-                        "choices": [
-                            {"index": 0, "text": piece, "finish_reason": None}
-                        ],
+                        "choices": [{"index": 0, "text": piece, "finish_reason": None}],
                     }
                 )
             yield _sse(
@@ -1505,9 +1396,7 @@ async def completions(
                     "object": "text_completion",
                     "created": created,
                     "model": model_id,
-                    "choices": [
-                        {"index": 0, "text": "", "finish_reason": "stop"}
-                    ],
+                    "choices": [{"index": 0, "text": "", "finish_reason": "stop"}],
                 }
             )
             yield "data: [DONE]\n\n"

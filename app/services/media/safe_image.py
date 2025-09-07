@@ -18,8 +18,7 @@ FLAG_OPAQUE_MEDIA = "opaque_media_noninterpretable"
 class ImageReencoder(Protocol):
     """Pluggable re-encoder that can strip metadata or re-pack the image."""
 
-    def strip_and_reencode(self, image_bytes: bytes) -> bytes:
-        ...
+    def strip_and_reencode(self, image_bytes: bytes) -> bytes: ...
 
 
 class NoopReencoder:
@@ -54,4 +53,3 @@ def safe_transform(image_bytes: bytes, reencoder: ImageReencoder | None = None) 
             "output_size": len(out),
         },
     )
-

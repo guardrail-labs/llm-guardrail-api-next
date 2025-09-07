@@ -1,4 +1,5 @@
 """Global JSON error handling with stable error codes and request correlation."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -10,7 +11,6 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.telemetry.tracing import get_request_id
-
 
 # Map common HTTP statuses to stable machine-readable codes
 _STATUS_TO_CODE = {
@@ -31,11 +31,7 @@ def _rid_from_request(request: Request) -> str:
     2) inbound header from client
     3) new UUID4
     """
-    return (
-        get_request_id()
-        or request.headers.get("X-Request-ID")
-        or str(uuid4())
-    )
+    return get_request_id() or request.headers.get("X-Request-ID") or str(uuid4())
 
 
 def _json_error(

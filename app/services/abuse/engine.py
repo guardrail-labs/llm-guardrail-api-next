@@ -31,7 +31,7 @@ class AbuseConfig:
     strike_window_sec: int = 600
     tiers: List[Tuple[int, Decision, int]] = field(
         default_factory=lambda: [
-            (3, "execute_locked", 3600),    # 3 strikes in window -> 1h execute lock
+            (3, "execute_locked", 3600),  # 3 strikes in window -> 1h execute lock
             (5, "full_quarantine", 21600),  # 5 strikes in window -> 6h quarantine
         ]
     )
@@ -184,4 +184,3 @@ def decision_headers(
     if decision == "full_quarantine" and retry_after_s and retry_after_s > 0:
         headers["Retry-After"] = str(retry_after_s)
     return headers
-

@@ -7,9 +7,7 @@ from typing import Dict, Tuple
 _PRINTABLE_RE = re.compile(rb"[ -~]{4,}")  # ASCII printable, min length 4
 
 
-def _extract_printable_strings(
-    data: bytes, max_total: int = 20000
-) -> str:
+def _extract_printable_strings(data: bytes, max_total: int = 20000) -> str:
     """
     Safe binary->text heuristic:
     - Pull ASCII-printable runs (>=4 chars)

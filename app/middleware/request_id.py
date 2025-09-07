@@ -6,8 +6,8 @@ from typing import Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.types import ASGIApp
 from starlette.responses import Response
+from starlette.types import ASGIApp
 
 # Context variable for request id
 _REQUEST_ID: ContextVar[Optional[str]] = ContextVar("request_id", default=None)

@@ -189,13 +189,9 @@ def emit_audit_event(event: Dict[str, Any]) -> None:
     # Failed after retries (either non-2xx or exception)
     audit_forwarder_requests_total.labels("failure").inc()
     if last_exc is not None:  # pragma: no cover - network
-        log.warning(
-            "Audit forwarder failed after %d attempts: %s", retries, last_exc
-        )
+        log.warning("Audit forwarder failed after %d attempts: %s", retries, last_exc)
     else:
-        log.warning(
-            "Audit forwarder non-2xx response after %d attempts.", retries
-        )
+        log.warning("Audit forwarder non-2xx response after %d attempts.", retries)
 
 
 def _sleep_ms(ms: int) -> None:
@@ -203,4 +199,3 @@ def _sleep_ms(ms: int) -> None:
     import time
 
     time.sleep(ms / 1000.0)
-

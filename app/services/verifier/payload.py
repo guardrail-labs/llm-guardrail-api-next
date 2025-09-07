@@ -8,15 +8,14 @@ from fastapi import Request
 # Minimal, dependency-free normalizer used by AbuseGateMiddleware.
 # Produces a compact payload per docs/VERIFIER_ADAPTERS.md (§3).
 
+
 def build_normalized_payload(request: Request, body_bytes: bytes) -> Dict[str, Any]:
     prompt_text = ""
     try:
         if body_bytes:
             obj = json.loads(body_bytes.decode("utf-8"))
             # Common fields used in our handlers/tests
-            prompt_text = str(
-                obj.get("prompt") or obj.get("input") or obj.get("message") or ""
-            )
+            prompt_text = str(obj.get("prompt") or obj.get("input") or obj.get("message") or "")
     except Exception:
         # Fall back to empty prompt
         prompt_text = ""

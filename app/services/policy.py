@@ -163,6 +163,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     # Try PyYAML first
     try:
         import yaml  # noqa: F401
+
         with path.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         if isinstance(raw, dict):
@@ -195,11 +196,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
         if pat_m:
             item["pattern"] = pat_m.group(1)
         if fl_m:
-            flags = [
-                p.strip().strip("'\"")
-                for p in fl_m.group(1).split(",")
-                if p.strip()
-            ]
+            flags = [p.strip().strip("'\"") for p in fl_m.group(1).split(",") if p.strip()]
             item["flags"] = flags
         if item:
             deny.append(item)
@@ -217,7 +214,7 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
         # --- Secrets (sample subset) ---
         secrets: List[Pattern[str]] = [
             re.compile(r"sk-[A-Za-z0-9]{16,}"),  # OpenAI-style key
-            re.compile(r"AKIA[0-9A-Z]{16}"),     # AWS access key id
+            re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS access key id
         ]
         pk_marker = r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
         secrets.append(re.compile(pk_marker))
@@ -239,7 +236,7 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
                 if not isinstance(pat, str) or not pat:
                     continue
                 flags = 0
-                for fl in (item.get("flags") or []):
+                for fl in item.get("flags") or []:
                     if isinstance(fl, str) and fl.lower() == "i":
                         flags |= re.IGNORECASE
                 unsafe.append(re.compile(pat, flags))
@@ -473,9 +470,7 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
 # Secrets (common)
 _OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
 _AWS_ACCESS_KEY = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
-_PRIV_KEY_BOUNDS = re.compile(
-    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-)
+_PRIV_KEY_BOUNDS = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
 
 # PII (lightweight patterns; we do not claim legal-grade recall)
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")

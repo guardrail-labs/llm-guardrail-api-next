@@ -22,6 +22,7 @@ def _truthy(val: object) -> bool:
 
 def _getenv(name: str, default: str = "") -> str:
     import os
+
     return os.getenv(name, default)
 
 
@@ -88,9 +89,7 @@ def _verify_signature(
             raise HTTPException(status_code=401, detail="Stale signature timestamp")
 
     msg = (header_ts or "").encode("utf-8") + b"." + body_json_bytes
-    expect_hex_primary = hmac.new(
-        SECRET_PRIMARY.encode("utf-8"), msg, hashlib.sha256
-    ).hexdigest()
+    expect_hex_primary = hmac.new(SECRET_PRIMARY.encode("utf-8"), msg, hashlib.sha256).hexdigest()
 
     provided = header_sig.split("=", 1)[1].strip().lower()
     if hmac.compare_digest(provided, expect_hex_primary):
@@ -119,9 +118,7 @@ async def root() -> Dict[str, Any]:
 @app.post("/audit", response_model=Ack)
 async def receive_audit(
     request: Request,
-    x_api_key: Optional[str] = Header(
-        default=None, alias="X-API-Key", convert_underscores=False
-    ),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key", convert_underscores=False),
     x_signature: Optional[str] = Header(
         default=None, alias="X-Signature", convert_underscores=False
     ),

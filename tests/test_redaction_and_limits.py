@@ -8,9 +8,11 @@ def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
 
     import app.config as cfg
+
     importlib.reload(cfg)
 
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.build_app())
@@ -54,4 +56,3 @@ def test_prompt_size_limit_returns_413():
     r = client.post("/guardrail", json={"prompt": big}, headers={"X-API-Key": "unit-test-key"})
     assert r.status_code == 413
     assert "Prompt too large" in r.json()["detail"]
-

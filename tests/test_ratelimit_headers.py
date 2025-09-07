@@ -8,8 +8,10 @@ from fastapi.testclient import TestClient
 def _reload_app():
     # Ensure a fresh app with env-applied state
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.main as main
+
     importlib.reload(main)
     return main.app
 

@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.routes.openai_compat import router as oai_router
 from app.routes.metrics_route import router as metrics_router
+from app.routes.openai_compat import router as oai_router
 
 
 def _build_app() -> FastAPI:
@@ -36,4 +36,3 @@ def test_metrics_contains_family_and_breakdowns() -> None:
         'guardrail_decisions_family_bot_total{tenant="default",bot="default",'
         'family="allow"}' in text
     )
-

@@ -7,10 +7,13 @@ from fastapi.testclient import TestClient
 
 def _reload_app():
     import app.telemetry.tracing as tracing
+
     importlib.reload(tracing)
     import app.middleware.rate_limit as rl
+
     importlib.reload(rl)
     import app.main as main
+
     importlib.reload(main)
     return main.app
 
@@ -22,6 +25,7 @@ def test_ratelimit_includes_trace_id(monkeypatch):
 
     app = _reload_app()
     import app.middleware.rate_limit as rl
+
     monkeypatch.setattr(rl, "_get_trace_id", lambda: "trace-abc")
 
     client = TestClient(app)
