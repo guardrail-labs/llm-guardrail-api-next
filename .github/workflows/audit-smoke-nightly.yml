@@ -1,0 +1,23 @@
+name: Nightly Audit Smoke
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # daily at 07:00 UTC
+  workflow_dispatch:
+
+jobs:
+  prod-smoke:
+    if: ${{ secrets.AUDIT_SMOKE_ENABLED == '1' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run signed smoke against audit receiver
+        env:
+          FORWARD_URL: ${{ secrets.AUDIT_FORWARD_URL }}
+          FORWARD_KEY: ${{ secrets.AUDIT_FORWARD_KEY }}
+          HMAC_SECRET: ${{ secrets.AUDIT_HMAC_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/audit/prod_smoke.sh
