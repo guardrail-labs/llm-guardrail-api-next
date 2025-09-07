@@ -548,6 +548,9 @@ async def _handle_upload_to_text(
                 reasons_list = (
                     reasons_raw if isinstance(reasons_raw, list) else [reasons_raw]
                 )
+                for r in reasons_list:
+                    m.inc_pdf_hidden(str(r))
+                m.add_pdf_hidden_bytes(len(raw))
                 reasons = ",".join(str(x) for x in reasons_list) or "detected"
                 samples_raw = hidden.get("samples", [])
                 samples_list = (
