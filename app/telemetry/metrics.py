@@ -165,6 +165,18 @@ guardrail_verifier_outcome_total: CounterLike = _mk_counter(
     "guardrail_verifier_outcome_total", "Verifier outcome totals.", ["verifier", "outcome"]
 )
 
+# OCR observability (optional, lightweight)
+guardrail_ocr_extractions_total: CounterLike = _mk_counter(
+    "guardrail_ocr_extractions_total",
+    "OCR extractions by type and outcome.",
+    ["type", "outcome"],
+)
+guardrail_ocr_bytes_total: CounterLike = _mk_counter(
+    "guardrail_ocr_bytes_total",
+    "Total bytes processed by OCR input type.",
+    ["type"],
+)
+
 # ---- In-memory tallies used for the plaintext export lines -------------------
 
 _REQ_TOTAL = 0.0
@@ -254,6 +266,18 @@ def inc_redaction(mask: str, direction: str = "unknown", amount: float = 1.0) ->
     `amount` lets callers record multiple substitutions in one go.
     """
     guardrail_redactions_total.labels(direction, mask).inc(amount)
+
+
+def inc_ocr_extraction(typ: str, outcome: str) -> None:
+    guardrail_ocr_extractions_total.labels(typ, outcome).inc()
+
+
+def add_ocr_bytes(typ: str, nbytes: int | float) -> None:
+    try:
+        v = float(nbytes)
+    except Exception:
+        v = 0.0
+    guardrail_ocr_bytes_total.labels(typ).inc(v)
 
 
 # ---- Getters -----------------------------------------------------------------
