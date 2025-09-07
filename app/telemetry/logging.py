@@ -91,9 +91,7 @@ class JsonFormatter(logging.Formatter):
         tid = extra.get("trace_id") or get_trace_id()
 
         payload: Dict[str, Any] = {
-            "ts": _iso8601(
-                datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)
-            ),
+            "ts": _iso8601(datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)),
             "level": record.levelname,
             "logger": record.name,
             "message": message,

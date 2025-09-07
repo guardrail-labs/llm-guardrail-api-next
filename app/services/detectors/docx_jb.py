@@ -22,15 +22,17 @@ R_OVERRIDE = "inj:override_safety"
 R_EXFIL = "exfil:credentials_request"
 R_COERCE = "soceng:coercion_emotive"
 
+
 # ---- Extractor Protocol -----------------------------------------------------
 class DocxExtractor(Protocol):
-    def extract_paragraphs(self, docx_bytes: bytes) -> Iterable[str]:
-        ...
+    def extract_paragraphs(self, docx_bytes: bytes) -> Iterable[str]: ...
+
 
 class DefaultDocxExtractor:
     def extract_paragraphs(self, docx_bytes: bytes) -> Iterable[str]:
         # Fallback: treat as empty => no hits (safe default for CI)
         return []
+
 
 # ---- Patterns ---------------------------------------------------------------
 _PATTERNS: Dict[str, re.Pattern[str]] = {
@@ -40,19 +42,19 @@ _PATTERNS: Dict[str, re.Pattern[str]] = {
     R_OVERRIDE: re.compile(
         r"(?i)\b(ignore|bypass|disable)\b.*\b(safety|guardrail|filter|policy)\b"
     ),
-    R_EXFIL: re.compile(
-        r"(?i)\b(source\s*code|server\s*credentials|api\s*key|password|token)\b"
-    ),
+    R_EXFIL: re.compile(r"(?i)\b(source\s*code|server\s*credentials|api\s*key|password|token)\b"),
     R_COERCE: re.compile(
         r"(?i)\b(save my (mom|mother|grand(mother|ma))|someone is in danger|life or death)\b"
     ),
 }
+
 
 @dataclass
 class DetectionResult:
     rule_hits: List[str]
     sanitized_text: str
     debug: Dict[str, Any]
+
 
 def _scan_lines(lines: List[str]) -> Tuple[List[str], List[str], Dict[str, Any]]:
     hits: List[str] = []
@@ -82,6 +84,7 @@ def _scan_lines(lines: List[str]) -> Tuple[List[str], List[str], Dict[str, Any]]
         "lines_scanned": len(lines),
     }
     return hits, keep, debug
+
 
 def detect_and_sanitize_docx(
     docx_bytes: bytes, extractor: DocxExtractor | None = None

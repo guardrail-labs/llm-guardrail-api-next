@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     AUTH_MODE: str = Field(default="api_key")
 
     # JWT (pick one verification method)
-    JWT_JWKS_URL: Optional[str] = None          # For RS256 OIDC/JWKS
+    JWT_JWKS_URL: Optional[str] = None  # For RS256 OIDC/JWKS
     JWT_ISSUER: Optional[str] = None
     JWT_AUDIENCE: Optional[str] = None
     JWT_ALGORITHMS: List[str] = Field(default_factory=lambda: ["RS256", "HS256"])
@@ -40,9 +40,7 @@ class Settings(BaseSettings):
     )
 
     # --- Verifier (gray-area routing) ---
-    verifier_enabled: bool = Field(
-        default=False, description="Enable verifier flow"
-    )
+    verifier_enabled: bool = Field(default=False, description="Enable verifier flow")
     verifier_provider: Literal["mock", "openai", "anthropic", "azure"] = Field(
         default="mock", description="Which verifier adapter to use"
     )
@@ -71,7 +69,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
     RATE_LIMIT_BURST: int = 60
     RATE_LIMIT_BACKEND: str = "memory"  # "memory" | "redis"
-    REDIS_URL: Optional[str] = None     # e.g. redis://localhost:6379/0
+    REDIS_URL: Optional[str] = None  # e.g. redis://localhost:6379/0
 
     # --- Metrics / tracing ---
     METRICS_ENABLED: bool = True
@@ -83,16 +81,16 @@ class Settings(BaseSettings):
 
     # --- Security headers (new) ---
     SECURITY_HEADERS_ENABLED: bool = Field(default=True)
-    ADD_COOP: bool = Field(default=True)                # Cross-Origin-Opener-Policy
+    ADD_COOP: bool = Field(default=True)  # Cross-Origin-Opener-Policy
     ADD_PERMISSIONS_POLICY: bool = Field(default=True)  # Permissions-Policy
-    ADD_HSTS: bool = Field(default=True)                 # Strict-Transport-Security
-    HSTS_MAX_AGE: int = Field(default=15552000)          # 180 days
+    ADD_HSTS: bool = Field(default=True)  # Strict-Transport-Security
+    HSTS_MAX_AGE: int = Field(default=15552000)  # 180 days
 
     # --- Compliance / Privacy (new) ---
     COMPLIANCE_ENABLED: bool = Field(default=True)
-    DATA_RETENTION_DAYS: int = Field(default=30)         # for docs/policy, not enforced
-    PII_SALT: str = Field(default="change-me")           # for salted hashing
-    PII_HASH_ALGO: str = Field(default="sha256")         # sha256 only for now
+    DATA_RETENTION_DAYS: int = Field(default=30)  # for docs/policy, not enforced
+    PII_SALT: str = Field(default="change-me")  # for salted hashing
+    PII_HASH_ALGO: str = Field(default="sha256")  # sha256 only for now
     PII_EMAIL_HASH_ENABLED: bool = Field(default=True)
     PII_PHONE_HASH_ENABLED: bool = Field(default=True)
 
@@ -110,6 +108,7 @@ class Settings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
     }
+
 
 def get_settings() -> Settings:
     return Settings()

@@ -18,4 +18,3 @@ class VerifierResult(BaseModel):
     rationale: Optional[str] = None
     latency_ms: Optional[int] = None
     provider: Optional[str] = None
-

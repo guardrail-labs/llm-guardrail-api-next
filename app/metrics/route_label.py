@@ -30,4 +30,3 @@ def route_label(path: str) -> str:
         return "other"
     p = path.split("?", 1)[0]
     return p if p in _ALLOWED else "other"
-

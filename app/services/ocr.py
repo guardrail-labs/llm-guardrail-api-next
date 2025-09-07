@@ -100,4 +100,3 @@ def extract_pdf_with_optional_ocr(raw_bytes: bytes) -> Tuple[str, str]:
         return (text or "", "empty")
     except Exception:
         return (text or "", "empty")
-

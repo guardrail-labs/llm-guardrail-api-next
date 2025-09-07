@@ -31,4 +31,3 @@ def test_safe_image_noop_is_ok():
     assert res.debug["reencoded"] is False
     assert res.debug["input_size"] == len(src)
     assert res.debug["output_size"] == len(src)
-

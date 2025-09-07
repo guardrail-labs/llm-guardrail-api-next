@@ -45,17 +45,13 @@ RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(
-    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
-)
+RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
 
 RE_PRIVATE_KEY_ENVELOPE = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
     re.S,
 )
-RE_PRIVATE_KEY_MARKER = re.compile(
-    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-)
+RE_PRIVATE_KEY_MARKER = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
 
 RE_HACK_WIFI = re.compile(r"(?i)(hack\s+a\s+wifi|bypass\s+wpa2)")
 
@@ -85,9 +81,7 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     _emit(payload)
 
 
-def _normalize_wildcards(
-    rule_hits: Dict[str, List[str]], is_deny: bool
-) -> None:
+def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None:
     if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
     if any(k.startswith("secrets:") for k in rule_hits.keys()):
@@ -177,9 +171,7 @@ def _apply_redactions(
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
     if matches:
         redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
-        rule_hits.setdefault("secrets:private_key", []).append(
-            RE_PRIVATE_KEY_ENVELOPE.pattern
-        )
+        rule_hits.setdefault("secrets:private_key", []).append(RE_PRIVATE_KEY_ENVELOPE.pattern)
         for m_ in matches:
             spans.append(
                 (
@@ -194,9 +186,7 @@ def _apply_redactions(
     matches = list(RE_PRIVATE_KEY_MARKER.finditer(original))
     if matches:
         redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
-        rule_hits.setdefault("secrets:private_key", []).append(
-            RE_PRIVATE_KEY_MARKER.pattern
-        )
+        rule_hits.setdefault("secrets:private_key", []).append(RE_PRIVATE_KEY_MARKER.pattern)
         for m_ in matches:
             spans.append(
                 (
@@ -212,12 +202,8 @@ def _apply_redactions(
     if matches:
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
-        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         for m_ in matches:
             spans.append(
                 (
@@ -258,9 +244,7 @@ def _respond_action(
     if modalities:
         for tag, count in modalities.items():
             if count > 0:
-                decisions.append(
-                    {"type": "modality", "tag": tag, "count": count}
-                )
+                decisions.append({"type": "modality", "tag": tag, "count": count})
 
     body: Dict[str, Any] = {
         "request_id": request_id,
@@ -334,11 +318,7 @@ def _audit(
     verifier: Optional[Dict[str, Any]] = None,
 ) -> None:
     allowed_decisions = {"allow", "block", "deny", "clarify"}
-    decision = (
-        action_or_decision
-        if action_or_decision in allowed_decisions
-        else "allow"
-    )
+    decision = action_or_decision if action_or_decision in allowed_decisions else "allow"
 
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
@@ -347,12 +327,8 @@ def _audit(
         "tenant_id": tenant,
         "bot_id": bot,
         "request_id": request_id,
-        "payload_bytes": len(
-            original_text.encode("utf-8", errors="ignore")
-        ),
-        "sanitized_bytes": len(
-            transformed_text.encode("utf-8", errors="ignore")
-        ),
+        "payload_bytes": len(original_text.encode("utf-8", errors="ignore")),
+        "sanitized_bytes": len(transformed_text.encode("utf-8", errors="ignore")),
         "hash_fingerprint": _fingerprint(original_text),
         "rule_hits": rule_hits,
         "redaction_count": redaction_count,
@@ -362,16 +338,12 @@ def _audit(
     if verifier:
         # compact adjudication context for post-hoc review
         payload["verifier"] = {
-            k: v
-            for k, v in verifier.items()
-            if k in {"provider", "decision", "latency_ms"}
+            k: v for k, v in verifier.items() if k in {"provider", "decision", "latency_ms"}
         }
     emit_audit_event(payload)
 
 
-def _bump_family(
-    direction: str, endpoint: str, action: str, tenant: str, bot: str
-) -> None:
+def _bump_family(direction: str, endpoint: str, action: str, tenant: str, bot: str) -> None:
     m.inc_requests_total(endpoint)
     fam = "allow" if action == "allow" else "deny"
     # This increments both the global family tally and the per-tenant/bot one.
@@ -398,9 +370,7 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
         hits.append(SECRETS_API_KEY_ID)
         return "block", hits
 
-    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(
-        prompt or ""
-    ):
+    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(prompt or ""):
         hits.append(PAYLOAD_PROMPT_INJ_ID)
         return "block", hits
 
@@ -441,9 +411,7 @@ def _evaluate_ingress_policy(
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         _normalize_wildcards(hits, is_deny=False)
         return "allow", hits, (dbg if dbg else None)
 
@@ -455,12 +423,8 @@ def _egress_policy(
     want_debug: bool,
 ) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     dbg: Optional[Dict[str, Any]] = None
-    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
-        text or ""
-    ):
-        rule_hits: Dict[str, List[str]] = {
-            "deny": ["private_key_envelope_or_marker"]
-        }
+    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(text or ""):
+        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope_or_marker"]}
         _normalize_wildcards(rule_hits, is_deny=True)
         if want_debug:
             dbg = {"explanations": ["private_key_detected"]}
@@ -490,7 +454,7 @@ async def _handle_upload_to_text(
     """
     name = getattr(obj, "filename", None) or "file"
     ctype = (getattr(obj, "content_type", "") or "").lower()
-    ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
     try:
         if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
@@ -564,9 +528,7 @@ async def _read_form_and_merge(
     seen: set[int] = set()
 
     async def _maybe_add(val: Any) -> None:
-        if isinstance(val, UploadFile) or (
-            hasattr(val, "filename") and hasattr(val, "read")
-        ):
+        if isinstance(val, UploadFile) or (hasattr(val, "filename") and hasattr(val, "read")):
             vid = id(val)
             if vid in seen:
                 return
@@ -668,12 +630,8 @@ async def guardrail_legacy(
     )
 
     if action == "block":
-        return _respond_legacy_block(
-            request_id, rule_hits, redacted, policy_version, redactions
-        )
-    return _respond_legacy_allow(
-        redacted, request_id, rule_hits, policy_version, redactions
-    )
+        return _respond_legacy_block(request_id, rule_hits, redacted, policy_version, redactions)
+    return _respond_legacy_allow(redacted, request_id, rule_hits, policy_version, redactions)
 
 
 @router.post("/guardrail/evaluate")
@@ -694,9 +652,7 @@ async def guardrail_evaluate(request: Request):
         explicit_request_id = str(payload.get("request_id") or "") or None
     else:
         # Generic multipart: do NOT decode PDFs (emit [FILE:...])
-        combined_text, mods, sources = await _read_form_and_merge(
-            request, decode_pdf=False
-        )
+        combined_text, mods, sources = await _read_form_and_merge(request, decode_pdf=False)
 
     request_id = _req_id(explicit_request_id)
 
@@ -790,9 +746,7 @@ async def guardrail_evaluate_multipart(request: Request):
     want_debug = _debug_requested(headers.get("X-Debug"))
 
     # Multipart with decoding PDFs (for redaction-in-PDF test)
-    combined_text, mods, sources = await _read_form_and_merge(
-        request, decode_pdf=True
-    )
+    combined_text, mods, sources = await _read_form_and_merge(request, decode_pdf=True)
     request_id = _req_id(None)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)

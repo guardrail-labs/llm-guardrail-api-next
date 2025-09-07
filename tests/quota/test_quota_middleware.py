@@ -15,6 +15,7 @@ def _fixed_time(epoch: int):
     class _Now:
         def __call__(self) -> float:
             return float(epoch)
+
     return _Now()
 
 

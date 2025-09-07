@@ -17,11 +17,14 @@ class FakeClient:
 
 def _client(monkeypatch):
     import app.routes.openai_compat as compat
+
     monkeypatch.setattr(compat, "get_client", lambda: FakeClient())
 
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

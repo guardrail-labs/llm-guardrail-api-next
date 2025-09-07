@@ -56,9 +56,7 @@ def reset_quota_state() -> None:
         _DAILY.clear()
 
 
-def quota_check_and_consume(
-    request: Any, tenant_id: str, bot_id: str
-) -> Tuple[bool, int, str]:
+def quota_check_and_consume(request: Any, tenant_id: str, bot_id: str) -> Tuple[bool, int, str]:
     """
     Check quotas and, if allowed (or soft mode), consume one unit.
 

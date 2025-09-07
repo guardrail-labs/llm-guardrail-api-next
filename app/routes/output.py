@@ -9,14 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.config import get_settings
 from app.routes.schema import GuardrailResponse, OutputGuardrailRequest
-from app.services.policy import current_rules_version, evaluate_and_apply
 from app.services.audit import emit_audit_event
+from app.services.policy import current_rules_version, evaluate_and_apply
 from app.services.verifier import content_fingerprint
+from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
 )
-from app.shared.headers import TENANT_HEADER, BOT_HEADER
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
 

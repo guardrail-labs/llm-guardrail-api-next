@@ -15,12 +15,15 @@ class FakeClient:
 def _client(monkeypatch):
     # Wire fake provider
     import app.routes.proxy as proxy
+
     monkeypatch.setattr(proxy, "get_client", lambda: FakeClient())
 
     # Fresh app for clean metrics
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

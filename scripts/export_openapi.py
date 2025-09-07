@@ -2,6 +2,7 @@
 
 Run with:  python -m scripts.export_openapi
 """
+
 from __future__ import annotations
 
 import json

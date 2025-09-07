@@ -11,8 +11,10 @@ def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
 
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.build_app())
@@ -83,4 +85,3 @@ deny:
         # But deny rule shouldn't be the cause:
         assert not any(h.startswith("policy:deny:forbid_demo") for h in body["rule_hits"])
         assert body["policy_version"] == "7"
-

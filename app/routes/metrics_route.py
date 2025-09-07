@@ -31,14 +31,10 @@ def _export_global_family_lines() -> List[str]:
     lines: List[str] = []
     fam_totals = tmetrics.get_all_family_totals()
     if fam_totals:
-        lines.append(
-            "# HELP guardrail_decisions_family_total Decisions by family (global)."
-        )
+        lines.append("# HELP guardrail_decisions_family_total Decisions by family (global).")
         lines.append("# TYPE guardrail_decisions_family_total counter")
         for fam, v in sorted(fam_totals.items()):
-            lines.append(
-                f'guardrail_decisions_family_total{{family="{fam}"}} {float(v)}'
-            )
+            lines.append(f'guardrail_decisions_family_total{{family="{fam}"}} {float(v)}')
     return lines
 
 

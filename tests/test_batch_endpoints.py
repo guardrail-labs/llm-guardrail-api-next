@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import importlib
+
 from fastapi.testclient import TestClient
 
 
 def _client():
     # reset in-memory metrics between tests
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

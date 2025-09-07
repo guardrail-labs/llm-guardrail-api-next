@@ -74,6 +74,7 @@ def _client_ip(request: Request) -> str:
 # ----------------------- adapter & test hook ----------------------------------
 _adapter = resolve_adapter_from_env()
 
+
 def fetch_verdict(request: Request) -> str:
     """
     Pluggable verdict fetcher. Tests can monkeypatch this symbol.
@@ -121,9 +122,7 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
             except Exception:
                 body_bytes = b""
             # Attach normalized payload for the adapter to read
-            request.state.normalized_payload = build_normalized_payload(
-                request, body_bytes
-            )
+            request.state.normalized_payload = build_normalized_payload(request, body_bytes)
 
             async def _receive() -> dict:
                 return {"type": "http.request", "body": body_bytes, "more_body": False}

@@ -9,7 +9,7 @@ from app.services import config_store
 from app.services.policy_loader import (
     get_policy as _get_policy,
     reload_now as _reload_now,
-)  # Use the same loader used by the legacy /guardrail route
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 

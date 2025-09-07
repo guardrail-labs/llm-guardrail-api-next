@@ -29,8 +29,10 @@ def _build_app() -> FastAPI:
     # Always ensure API key is present
     os.environ["API_KEY"] = "unit-test-key"
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
     return main.build_app()
 

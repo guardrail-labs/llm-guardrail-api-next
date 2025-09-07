@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from fastapi import Request, HTTPException, status
+
+from fastapi import HTTPException, Request, status
 
 # In CI/tests we set GUARDRAIL_DISABLE_AUTH=1 (see conftest.py)
 DISABLE_AUTH = os.getenv("GUARDRAIL_DISABLE_AUTH") == "1"

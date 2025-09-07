@@ -9,8 +9,10 @@ def _make_client(monkeypatch):
     monkeypatch.setenv("GUARDRAIL_DISABLE_AUTH", "0")
 
     import app.config as cfg
+
     importlib.reload(cfg)
     import app.main as main
+
     importlib.reload(main)
 
     return TestClient(main.build_app())

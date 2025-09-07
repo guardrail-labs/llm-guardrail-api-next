@@ -16,4 +16,3 @@ def test_route_label_strips_query_string():
 
 def test_route_label_empty_path():
     assert route_label("") == "other"
-

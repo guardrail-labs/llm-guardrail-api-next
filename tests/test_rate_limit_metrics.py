@@ -14,11 +14,14 @@ def _client_with(monkeypatch, inc_fn: Callable[[float], None]) -> TestClient:
     monkeypatch.setenv("API_KEY", "test")
 
     import app.telemetry.metrics as metrics
+
     importlib.reload(metrics)
     import app.middleware.rate_limit as rl
+
     importlib.reload(rl)
     monkeypatch.setattr(rl, "inc_rate_limited", inc_fn)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

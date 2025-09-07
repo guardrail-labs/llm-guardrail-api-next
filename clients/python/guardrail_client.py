@@ -1,4 +1,5 @@
 """Minimal typed Python client for the Guardrail API."""
+
 from __future__ import annotations
 
 from types import TracebackType
@@ -21,14 +22,8 @@ class GuardrailClient:
         self.use_bearer = use_bearer
         self.timeout = timeout
 
-        headers = (
-            {"Authorization": f"Bearer {api_key}"}
-            if use_bearer
-            else {"X-API-Key": api_key}
-        )
-        self._client = httpx.Client(
-            base_url=self.base_url, headers=headers, timeout=timeout
-        )
+        headers = {"Authorization": f"Bearer {api_key}"} if use_bearer else {"X-API-Key": api_key}
+        self._client = httpx.Client(base_url=self.base_url, headers=headers, timeout=timeout)
 
     # Backwards-compat wrapper for older usage (maps to /guardrail/evaluate)
     def guardrail(self, prompt: str) -> Dict[str, Any]:

@@ -27,10 +27,7 @@ def _is_safe_path(path: str) -> bool:
 
 
 def _has_auth_header(request: Request) -> bool:
-    return bool(
-        request.headers.get("X-API-Key")
-        or request.headers.get("Authorization")
-    )
+    return bool(request.headers.get("X-API-Key") or request.headers.get("Authorization"))
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -63,4 +60,3 @@ class AuthMiddleware(BaseHTTPMiddleware):
         resp.headers["WWW-Authenticate"] = "Bearer"
         resp.headers["X-Request-ID"] = rid
         return resp
-

@@ -35,4 +35,3 @@ def test_verifier_fallback_on_error(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["action"] in ("block", "clarify")
-

@@ -18,4 +18,3 @@ def test_guardrail_emit_delegates(monkeypatch):
     gr.emit_audit_event(sample)
 
     assert calls.get("payload") == sample
-

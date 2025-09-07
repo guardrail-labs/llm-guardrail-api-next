@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 _REQUIRED_TOP_LEVEL = ("text", "action", "debug")
 _OPTIONAL_TOP_LEVEL = ("rule_hits", "redactions", "trace", "incident_id")
 
+
 def validate_trace_payload(doc: Dict[str, Any]) -> Tuple[bool, List[str]]:
     errs: List[str] = []
     for k in _REQUIRED_TOP_LEVEL:

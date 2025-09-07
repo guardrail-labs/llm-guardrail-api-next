@@ -42,4 +42,3 @@ def call_verifier(inp: VerifierInput) -> VerifierResult:
         latency_ms=latency_ms,
         provider=provider,
     )
-

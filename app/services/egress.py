@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
 import re
+from typing import Any, Dict, List, Tuple
 
 # Reuse ingress sanitization helpers for egress redactions
 from app.services.policy import sanitize_text
@@ -45,9 +45,7 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
         return payload, debug_msgs
 
     # 2) Otherwise, sanitize & allow (contract: allow when only redactions happen)
-    sanitized, families, redaction_count, debug_matches = sanitize_text(
-        text, debug=debug
-    )
+    sanitized, families, redaction_count, debug_matches = sanitize_text(text, debug=debug)
 
     payload = {
         "action": "allow",

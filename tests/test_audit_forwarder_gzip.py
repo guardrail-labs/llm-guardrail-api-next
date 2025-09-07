@@ -49,4 +49,3 @@ def test_post_with_gzip_and_hmac(monkeypatch):
     msg = ts.encode("utf-8") + b"." + decompressed
     expected = hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
     assert provided == expected
-

@@ -1,4 +1,5 @@
 """Secret redaction helpers (no external deps)."""
+
 from __future__ import annotations
 
 import re
@@ -14,7 +15,8 @@ _PEM_HDR = r"-----BEGIN (?:[^-]+ )?PRIVATE KEY-----"
 _PEM_FTR = r"-----END (?:[^-]+ )?PRIVATE KEY-----"
 _RE_PEM_HEADER = re.compile(_PEM_HDR)
 _RE_PEM_FOOTER = re.compile(_PEM_FTR)
-_RE_PEM_BLOCK = re.compile(fr"{_PEM_HDR}[\s\S]*?{_PEM_FTR}")
+_RE_PEM_BLOCK = re.compile(rf"{_PEM_HDR}[\s\S]*?{_PEM_FTR}")
+
 
 @dataclass
 class RedactionResult:

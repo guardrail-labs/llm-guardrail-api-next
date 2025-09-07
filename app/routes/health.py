@@ -9,6 +9,7 @@ from app.telemetry.metrics import (
 
 router = APIRouter(prefix="/health", tags=["system"])
 
+
 @router.get("")
 def health() -> dict:
     return {

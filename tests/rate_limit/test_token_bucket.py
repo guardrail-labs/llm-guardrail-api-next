@@ -32,4 +32,3 @@ def test_estimate_wait_seconds(monkeypatch):
 
     fake_now[0] += 0.5
     assert tb.allow("k") is True
-

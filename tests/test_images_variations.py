@@ -63,4 +63,3 @@ def test_images_variations_deny(client: TestClient, monkeypatch: pytest.MonkeyPa
     assert resp.headers["X-Guardrail-Policy-Version"]
     assert resp.headers["X-Guardrail-Ingress-Action"] == "deny"
     assert resp.headers["X-Guardrail-Egress-Action"] == "skipped"
-

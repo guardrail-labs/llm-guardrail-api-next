@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Dict, List
 
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
@@ -84,4 +83,3 @@ def test_month_quota_blocks_when_day_has_room():
     r2 = c.get("/ok", headers=h)
     assert r2.status_code == 429
     assert "month" in r2.json()["detail"].lower()
-

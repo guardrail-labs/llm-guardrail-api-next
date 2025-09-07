@@ -21,6 +21,7 @@ def _client_with_verifier(monkeypatch) -> TestClient:
     monkeypatch.setattr(vcli, "call_verifier", _fake_call, raising=True)
 
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

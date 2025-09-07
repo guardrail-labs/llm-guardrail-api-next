@@ -79,4 +79,3 @@ def test_headers_and_incident_id_format() -> None:
     h3 = decision_headers("full_quarantine", inc, retry_after_s=42)
     assert h3["X-Guardrail-Mode"] == "full_quarantine"
     assert h3["Retry-After"] == "42"
-
