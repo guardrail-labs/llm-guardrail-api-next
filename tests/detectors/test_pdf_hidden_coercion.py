@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Dict
-
+from typing import Any, Dict, cast
 from fastapi.testclient import TestClient
 
 from app.main import app
+
 
 client = TestClient(app)
 
 
 def _fake_pdf_bytes() -> bytes:
-    # Minimal, ASCII-friendly bytes so raw.decode() works in the fallback path.
+    # Minimal ASCII-friendly bytes so raw.decode() works in the fallback path.
     return b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n"
 
 
@@ -27,13 +27,13 @@ def _post_eval_multipart() -> Dict[str, Any]:
     files = [("files", ("note.pdf", _fake_pdf_bytes(), "application/pdf"))]
     r = client.post("/guardrail/evaluate_multipart", files=files)
     assert r.status_code == 200
-    return r.json()
+    # r.json() is Any; cast for mypy
+    return cast(Dict[str, Any], r.json())
 
 
 def test_pdf_hidden_string_values_are_coerced(monkeypatch) -> None:
     """
-    When pdf_hidden.detect_hidden_text returns non-list types for reasons/samples,
-    we still produce a valid response without crashing and surface the HIDDEN block.
+    Non-list types for reasons/samples still produce a valid response.
     """
     _patch_hidden(
         monkeypatch,
@@ -45,7 +45,7 @@ def test_pdf_hidden_string_values_are_coerced(monkeypatch) -> None:
 
 def test_pdf_hidden_none_values_are_ignored(monkeypatch) -> None:
     """
-    None/empty values are handled and still produce the HIDDEN block (using fallback label).
+    None/empty values handled; HIDDEN block still present.
     """
     _patch_hidden(monkeypatch, {"found": True, "reasons": None, "samples": None})
     body = _post_eval_multipart()
@@ -58,8 +58,11 @@ def test_pdf_hidden_list_values_also_work(monkeypatch) -> None:
     """
     _patch_hidden(
         monkeypatch,
-        {"found": True, "reasons": ["rgb_near_white", "tiny_font"], "samples": ["a", "b", "c"]},
+        {
+            "found": True,
+            "reasons": ["rgb_near_white", "tiny_font"],
+            "samples": ["a", "b", "c"],
+        },
     )
     body = _post_eval_multipart()
     assert "[HIDDEN_TEXT_DETECTED:" in body["text"]
-
