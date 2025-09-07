@@ -85,36 +85,59 @@ def apply_injection_default(decision: dict) -> dict:
 
 
 def maybe_route_to_verifier(decision: dict, *, text: str) -> dict:
-    """Route to verifier if gray-area conditions are met."""
+    """Route to verifier if gray-area conditions are met and track outcome."""
     s = get_settings()
     if not getattr(s, "verifier_enabled", False):
         return decision
 
     action = (decision.get("action") or "allow").lower()
     if action == "clarify":
+        # Already clarified upstream; don't re-run
         return decision
 
     hits = decision.get("rule_hits") or {}
     inp = VerifierInput(text=text, rule_hits=hits, context=None)
     try:
         res = vcli.call_verifier(inp)
-        v_dec = res.decision
+        v_dec = str(res.decision).lower()
+        # Attach minimal adjudication snippet to debug
+        if decision.get("debug") is not None:
+            dbg = decision["debug"]
+            dbg.setdefault("verifier", {})
+            dbg["verifier"].update(
+                {
+                    "provider": getattr(res, "provider", "unknown"),
+                    "decision": v_dec,
+                    "latency_ms": getattr(res, "latency_ms", None),
+                }
+            )
+        # Apply decision if recognized, else fallback
         if v_dec in {"block", "clarify", "allow"}:
             decision["action"] = v_dec
-            if decision.get("debug") is not None:
-                dbg = decision["debug"]
-                dbg.setdefault("verifier", {})
-                dbg["verifier"].update(
-                    {
-                        "provider": res.provider,
-                        "decision": v_dec,
-                        "latency_ms": res.latency_ms,
-                    }
-                )
+            try:
+                # Increment metrics (labels: verifier, outcome)
+                from app.telemetry import metrics as tmetrics  # local import to avoid cycles
+
+                tmetrics.inc_verifier_outcome(getattr(res, "provider", "unknown"), v_dec)
+            except Exception:
+                pass
         else:
             decision["action"] = s.verifier_default_action
+            try:
+                from app.telemetry import metrics as tmetrics
+
+                tmetrics.inc_verifier_outcome(getattr(res, "provider", "unknown"), "fallback")
+            except Exception:
+                pass
     except Exception:
+        # Transport or provider error → fallback action
         decision["action"] = s.verifier_default_action
+        try:
+            from app.telemetry import metrics as tmetrics
+
+            tmetrics.inc_verifier_outcome(getattr(s, "verifier_provider", "unknown"), "error")
+        except Exception:
+            pass
     return decision
 
 

@@ -316,9 +316,10 @@ def _audit(
     rule_hits: Dict[str, List[str]] | List[str],
     redaction_count: int,
     debug_sources: Optional[List[SourceDebug]] = None,
+    verifier: Optional[Dict[str, Any]] = None,
 ) -> None:
     decision = (
-        action_or_decision if action_or_decision in {"allow", "block"} else "allow"
+        action_or_decision if action_or_decision in {"allow", "block", "deny", "clarify"} else "allow"
     )
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
@@ -335,6 +336,11 @@ def _audit(
     }
     if debug_sources:
         payload["debug_sources"] = [s.model_dump() for s in debug_sources]
+    if verifier:
+        # compact adjudication context for post-hoc review
+        payload["verifier"] = {
+            k: v for k, v in verifier.items() if k in {"provider", "decision", "latency_ms"}
+        }
     emit_audit_event(payload)
 
 
@@ -726,6 +732,7 @@ async def guardrail_evaluate(request: Request):
         policy_hits,
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
+        verifier=(dbg or {}).get("verifier") if want_debug else None,
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
@@ -820,6 +827,7 @@ async def guardrail_evaluate_multipart(request: Request):
         policy_hits,
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
+        verifier=(dbg or {}).get("verifier") if want_debug else None,
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
