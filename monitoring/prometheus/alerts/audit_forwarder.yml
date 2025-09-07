@@ -1,0 +1,32 @@
+groups:
+  - name: audit-forwarder
+    interval: 30s
+    rules:
+      - alert: AuditForwarderAnyFailure
+        expr: increase(audit_forwarder_requests_total{result="failure"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Audit forwarder failures observed"
+          description: |
+            At least one audit forwarder request failed in the last 5 minutes.
+            Check receiver health and network path.
+
+      - alert: AuditForwarderFailureRateHigh
+        expr: |
+          (
+            sum(rate(audit_forwarder_requests_total{result="failure"}[5m]))
+            /
+            clamp_min(sum(rate(audit_forwarder_requests_total[5m])), 1)
+          ) > 0.02
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Audit forwarder failure rate > 2% (10m)"
+          description: |
+            Sustained failure rate indicates receiver outage or auth/signature issues.
+            Investigate immediately.

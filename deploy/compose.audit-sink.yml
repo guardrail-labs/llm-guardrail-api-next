@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  audit-receiver:
+    image: ghcr.io/your-org/audit-receiver:latest
+    ports:
+      - "8081:8081"
+    environment:
+      AUDIT_RECEIVER_REQUIRE_API_KEY: "1"
+      AUDIT_RECEIVER_API_KEY: "test-key"
+      AUDIT_RECEIVER_REQUIRE_SIGNATURE: "1"
+      AUDIT_RECEIVER_SIGNING_SECRET: "test-secret"
+      AUDIT_RECEIVER_ENFORCE_TS: "1"
+      AUDIT_RECEIVER_TS_SKEW_SEC: "300"
+      AUDIT_RECEIVER_IDEMP_TTL_SEC: "60"
