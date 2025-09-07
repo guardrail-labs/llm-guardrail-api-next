@@ -316,7 +316,8 @@ def _respond_legacy_allow(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    return JSONResponse(body)
+    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+    return JSONResponse(body, headers=headers)
 
 
 def _respond_legacy_block(
@@ -336,7 +337,8 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    return JSONResponse(body)
+    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+    return JSONResponse(body, headers=headers)
 
 
 # ------------------------------- audit -------------------------------
