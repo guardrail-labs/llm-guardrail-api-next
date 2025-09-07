@@ -147,9 +147,17 @@ guardrail_decisions_family_bot_total: CounterLike = _mk_counter(
     ["tenant", "bot", "family"],
 )
 
-# Redactions
+# Directional redactions (direction, mask)
 guardrail_redactions_total: CounterLike = _mk_counter(
-    "guardrail_redactions_total", "Redactions by mask type.", ["mask"]
+    "guardrail_redactions_total", "Redactions by direction and mask.", ["direction", "mask"]
+)
+
+# Direction-scoped decision families
+guardrail_ingress_decisions_family_total: CounterLike = _mk_counter(
+    "guardrail_ingress_decisions_family_total", "Ingress decisions by family.", ["family"]
+)
+guardrail_egress_decisions_family_total: CounterLike = _mk_counter(
+    "guardrail_egress_decisions_family_total", "Egress decisions by family.", ["family"]
 )
 
 # Verifier outcomes
@@ -207,6 +215,18 @@ def inc_decision_family(family: str) -> None:
     _FAMILY_TOTALS[family] = _FAMILY_TOTALS.get(family, 0.0) + 1.0
 
 
+def inc_ingress_family(family: str) -> None:
+    """Increment ingress-scoped decision family counter and global family."""
+    guardrail_ingress_decisions_family_total.labels(family).inc()
+    inc_decision_family(family)
+
+
+def inc_egress_family(family: str) -> None:
+    """Increment egress-scoped decision family counter and global family."""
+    guardrail_egress_decisions_family_total.labels(family).inc()
+    inc_decision_family(family)
+
+
 def inc_decision_family_tenant_bot(family: str, tenant: str, bot: str) -> None:
     guardrail_decisions_family_total.labels(family).inc()
     guardrail_decisions_family_tenant_total.labels(tenant, family).inc()
@@ -228,8 +248,12 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     guardrail_quota_rejects_total.labels(tenant, bot).inc()
 
 
-def inc_redaction(mask: str) -> None:
-    guardrail_redactions_total.labels(mask).inc()
+def inc_redaction(mask: str, direction: str = "unknown", amount: float = 1.0) -> None:
+    """
+    Increment redaction counters with direction + mask.
+    `amount` lets callers record multiple substitutions in one go.
+    """
+    guardrail_redactions_total.labels(direction, mask).inc(amount)
 
 
 # ---- Getters -----------------------------------------------------------------
