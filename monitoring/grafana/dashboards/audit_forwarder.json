@@ -1,0 +1,101 @@
+{
+  "uid": "audit-forwarder",
+  "title": "Audit Forwarder / Receiver",
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 1,
+  "editable": true,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Forwarder Failure Rate (5m)",
+      "id": 1,
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(rate(audit_forwarder_requests_total{result=\"failure\"}[5m])) / clamp_min(sum(rate(audit_forwarder_requests_total[5m])), 1e-9)",
+          "legendFormat": "failure_rate_pct",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Forwarder Requests by Result (rate, 5m)",
+      "id": 2,
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 },
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [
+        {
+          "expr": "sum(rate(audit_forwarder_requests_total[5m])) by (result)",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Guardrail Decisions by Family (last 1h)",
+      "id": 3,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "minVizWidth": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(guardrail_decisions_family_total[1h])) by (family)",
+          "legendFormat": "{{family}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top Tenants by Guardrail Decisions (last 1h)",
+      "id": 4,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "expr": "topk(10, sum(increase(guardrail_decisions_family_tenant_total[1h])) by (tenant, family))",
+          "legendFormat": "{{tenant}}/{{family}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "selected": true },
+        "hide": 0
+      }
+    ]
+  }
+}
