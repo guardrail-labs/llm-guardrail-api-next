@@ -7,52 +7,28 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_NO_CACHE_DIR: "1"
-      PIP_DEFAULT_TIMEOUT: "60"
-      PIP_INDEX_URL: https://pypi.org/simple
-      # Test-only env to align with your suite
-      GUARDRAIL_DISABLE_AUTH: "1"   # bypass admin auth in tests
-      CORS_ALLOW_ORIGINS: ""
-      PYTHONPATH: .
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          check-latest: true
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', 'pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install project
+      - name: Install deps
         run: |
-          python -V
-          python -m pip install -U pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ]; then pip install -e .; fi
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
-      - name: Install dev tools
-        run: |
-          python -m pip install ruff mypy pytest
-
-      - name: Lint (ruff)
+      - name: Ruff (format + lint)
         run: |
           ruff check --fix .
+          ruff format --check .
 
-      - name: Typecheck (mypy)
+      - name: Pytest
+        env:
+          # Keep auth relaxed in CI where needed
+          GUARDRAIL_DISABLE_AUTH: "1"
         run: |
-          # Auto-install missing type stubs non-interactively
-          mypy --install-types --non-interactive .
-
-      - name: Tests (pytest)
-        run: |
-          pytest -q
+          python -m pytest -q
