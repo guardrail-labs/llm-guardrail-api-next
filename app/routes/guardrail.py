@@ -12,7 +12,11 @@ from fastapi.responses import JSONResponse
 
 from app.models.debug import SourceDebug
 from app.services.debug_sources import make_source
-from app.services.policy import apply_injection_default, maybe_route_to_verifier
+from app.services.policy import (
+    apply_injection_default,
+    maybe_route_to_verifier,
+    current_rules_version,
+)
 from app.services.policy_loader import (
     get_policy as _get_policy,
     set_binding_context as _set_binding_ctx,
@@ -258,7 +262,10 @@ def _respond_action(
     if debug is not None:
         body["debug"] = debug
     body = apply_injection_default(body)
-    return JSONResponse(body)
+    # parity header so clients can read policy version consistently
+    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+
+    return JSONResponse(body, headers=headers)
 
 
 def _respond_legacy_allow(
