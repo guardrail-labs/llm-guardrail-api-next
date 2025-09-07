@@ -318,9 +318,9 @@ def _audit(
     debug_sources: Optional[List[SourceDebug]] = None,
     verifier: Optional[Dict[str, Any]] = None,
 ) -> None:
-    decision = (
-        action_or_decision if action_or_decision in {"allow", "block", "deny", "clarify"} else "allow"
-    )
+        allowed_decisions = {"allow", "block", "deny", "clarify"}
+        decision = action_or_decision if action_or_decision in allowed_decisions else "allow"
+
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
         "direction": direction,
