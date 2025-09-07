@@ -1,0 +1,44 @@
+name: Auto-format with Ruff
+
+on:
+  workflow_dispatch: {}  # Run manually from the Actions tab
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write         # allow pushing a commit
+      pull-requests: write    # optional: if you run this on PR branches
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # If you trigger this on a PR workflow_dispatch, this keeps the PR branch checked out:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ruff (fastest path)
+        run: pip install ruff==0.5.0
+
+      - name: Apply lint fixes
+        run: ruff check --fix .
+
+      - name: Apply formatting
+        run: ruff format .
+
+      - name: Commit and push if changed
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style(ruff): auto-apply lint fixes & formatting"
+            git push
+          else
+            echo "No changes to commit."
+          fi
