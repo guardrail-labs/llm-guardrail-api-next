@@ -1,0 +1,33 @@
+{
+  "title": "Guardrail Overview",
+  "uid": "guardrail-overview",
+  "schemaVersion": 38,
+  "version": 1,
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Egress risk (last 24h)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (family) (rate(guardrail_egress_decisions_family_total[5m]))"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Egress redactions by mask",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (mask) (rate(guardrail_redactions_total{direction=\"egress\"}[5m]))"
+        }
+      ]
+    }
+  ]
+}
