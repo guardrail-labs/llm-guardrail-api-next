@@ -13,7 +13,10 @@ from fastapi.responses import JSONResponse
 from app.models.debug import SourceDebug
 from app.services.debug_sources import make_source
 from app.services.policy import apply_injection_default, maybe_route_to_verifier
-from app.services.policy_loader import get_policy as _get_policy
+from app.services.policy_loader import (
+    get_policy as _get_policy,
+    set_binding_context as _set_binding_ctx,
+)
 from app.services.threat_feed import (
     apply_dynamic_redactions as tf_apply,
     threat_feed_enabled as tf_enabled,
@@ -572,14 +575,17 @@ async def guardrail_legacy(
         }
         return JSONResponse(body, status_code=413)
 
-    policy_blob = _get_policy()
-    policy_version = str(policy_blob.version)
-
-    action, legacy_hits_list = _legacy_policy(prompt)
     tenant, bot = _tenant_bot(
         request.headers.get("X-Tenant-ID"),
         request.headers.get("X-Bot-ID"),
     )
+    # NEW: set binding context so policy_loader resolves per tenant/bot
+    _set_binding_ctx(tenant, bot)
+
+    policy_blob = _get_policy()
+    policy_version = str(policy_blob.version)
+
+    action, legacy_hits_list = _legacy_policy(prompt)
 
     redacted, redaction_hits, redactions, _red_spans = _apply_redactions(
         prompt, direction="ingress"
