@@ -36,6 +36,9 @@ from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
+    inc_egress_family,
+    inc_ingress_family,
+    inc_redaction,
 )
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
@@ -259,7 +262,10 @@ async def chat_completions(
 
     ingress_family = _family_for(ingress_action, int(redaction_count or 0))
     inc_decision_family(ingress_family)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, ingress_family)
+    inc_ingress_family(ingress_family)
+    inc_decision_family_tenant_bot(ingress_family, tenant_id, bot_id)
+    if redaction_count:
+        inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
         emit_audit_event(
@@ -401,7 +407,10 @@ async def chat_completions(
 
             fam = _family_for(e_action_final, int(e_reds_final or 0))
             inc_decision_family(fam)
-            inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+            inc_egress_family(fam)
+            inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+            if e_reds_final:
+                inc_redaction("sanitize", direction="egress", amount=float(e_reds_final))
             try:
                 emit_audit_event(
                     {
@@ -450,7 +459,10 @@ async def chat_completions(
 
     e_family = _family_for(e_action, e_reds)
     inc_decision_family(e_family)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, e_family)
+    inc_egress_family(e_family)
+    inc_decision_family_tenant_bot(e_family, tenant_id, bot_id)
+    if e_reds:
+        inc_redaction("sanitize", direction="egress", amount=float(e_reds))
 
     try:
         emit_audit_event(
@@ -564,7 +576,8 @@ async def images_generations(
     if det_action == "deny":
         fam = _family_for("deny", 0)
         inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        inc_ingress_family(fam)
+        inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
         try:
             emit_audit_event(
                 {
@@ -603,7 +616,10 @@ async def images_generations(
 
     fam = _family_for("allow", int(redaction_count or 0))
     inc_decision_family(fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+    inc_ingress_family(fam)
+    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+    if redaction_count:
+        inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
         emit_audit_event(
@@ -714,7 +730,8 @@ async def images_edits(
     if det_action == "deny":
         fam = _family_for("deny", 0)
         inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        inc_ingress_family(fam)
+        inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
         try:
             emit_audit_event(
                 {
@@ -753,7 +770,10 @@ async def images_edits(
 
     fam = _family_for("allow", int(redaction_count or 0))
     inc_decision_family(fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+    inc_ingress_family(fam)
+    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+    if redaction_count:
+        inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
         emit_audit_event(
@@ -864,7 +884,8 @@ async def images_variations(
     if det_action == "deny":
         fam = _family_for("deny", 0)
         inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        inc_ingress_family(fam)
+        inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
         try:
             emit_audit_event(
                 {
@@ -903,7 +924,10 @@ async def images_variations(
 
     fam = _family_for("allow", int(redaction_count or 0))
     inc_decision_family(fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+    inc_ingress_family(fam)
+    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+    if redaction_count:
+        inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
         emit_audit_event(
@@ -1102,7 +1126,10 @@ async def create_moderation(
 
         fam = _family_for(ingress_action, int(redaction_count or 0))
         inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        inc_ingress_family(fam)
+        inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+        if redaction_count:
+            inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
         try:
             emit_audit_event(
@@ -1238,7 +1265,10 @@ async def create_embeddings(
             int(redaction_count or 0),
         )
         inc_decision_family(fam)
-        inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+        inc_ingress_family(fam)
+        inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+        if redaction_count:
+            inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
         try:
             emit_audit_event(
@@ -1367,7 +1397,10 @@ async def completions(
 
     fam = _family_for(ingress_action, int(redaction_count or 0))
     inc_decision_family(fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, fam)
+    inc_ingress_family(fam)
+    inc_decision_family_tenant_bot(fam, tenant_id, bot_id)
+    if redaction_count:
+        inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
         emit_audit_event(
@@ -1418,7 +1451,10 @@ async def completions(
 
     e_fam = _family_for(e_action, e_reds)
     inc_decision_family(e_fam)
-    inc_decision_family_tenant_bot(tenant_id, bot_id, e_fam)
+    inc_egress_family(e_fam)
+    inc_decision_family_tenant_bot(e_fam, tenant_id, bot_id)
+    if e_reds:
+        inc_redaction("sanitize", direction="egress", amount=float(e_reds))
 
     try:
         emit_audit_event(

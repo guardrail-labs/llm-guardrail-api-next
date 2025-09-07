@@ -96,6 +96,8 @@ def _normalize_wildcards(rule_hits: Dict[str, List[str]], is_deny: bool) -> None
 
 def _apply_redactions(
     text: str,
+    *,
+    direction: str,
 ) -> Tuple[
     str,
     Dict[str, List[str]],
@@ -119,7 +121,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            m.inc_redaction("email")
+            m.inc_redaction("email", direction=direction, amount=1.0)
         redactions += len(matches)
 
     matches = list(RE_PHONE.finditer(original))
@@ -128,7 +130,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            m.inc_redaction("phone")
+            m.inc_redaction("phone", direction=direction, amount=1.0)
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
@@ -144,7 +146,7 @@ def _apply_redactions(
                     "secrets:openai_key",
                 )
             )
-            m.inc_redaction("openai_key")
+            m.inc_redaction("openai_key", direction=direction, amount=1.0)
         redactions += len(matches)
 
     matches = list(RE_AWS.finditer(original))
@@ -160,7 +162,7 @@ def _apply_redactions(
                     "secrets:aws_key",
                 )
             )
-            m.inc_redaction("aws_access_key_id")
+            m.inc_redaction("aws_access_key_id", direction=direction, amount=1.0)
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
@@ -332,10 +334,14 @@ def _audit(
     emit_audit_event(payload)
 
 
-def _bump_family(endpoint: str, action: str, tenant: str, bot: str) -> None:
+def _bump_family(direction: str, endpoint: str, action: str, tenant: str, bot: str) -> None:
     m.inc_requests_total(endpoint)
     fam = "allow" if action == "allow" else "deny"
     m.inc_decision_family_tenant_bot(fam, tenant, bot)
+    if direction == "ingress":
+        m.inc_ingress_family(fam)
+    elif direction == "egress":
+        m.inc_egress_family(fam)
 
 # ------------------------------- policies -------------------------------
 
@@ -546,7 +552,10 @@ async def guardrail_legacy(
         request.headers.get("X-Bot-ID"),
     )
 
-    redacted, redaction_hits, redactions, _red_spans = _apply_redactions(prompt)
+    redacted, redaction_hits, redactions, _red_spans = _apply_redactions(
+        prompt, direction="ingress"
+    )
+    # legacy path counts as ingress
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
@@ -574,6 +583,7 @@ async def guardrail_legacy(
         debug_sources=None,
     )
     _bump_family(
+        "ingress",
         "guardrail_legacy",
         "allow" if action == "allow" else "deny",
         tenant,
@@ -619,7 +629,7 @@ async def guardrail_evaluate(request: Request):
         redaction_hits,
         redaction_count,
         redaction_spans,
-    ) = _apply_redactions(combined_text)
+    ) = _apply_redactions(combined_text, direction="ingress")
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
@@ -682,7 +692,7 @@ async def guardrail_evaluate(request: Request):
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
     )
-    _bump_family("ingress_evaluate", action, tenant, bot)
+    _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
     return _respond_action(
         action,
@@ -713,7 +723,7 @@ async def guardrail_evaluate_multipart(request: Request):
         redaction_hits,
         redaction_count,
         redaction_spans,
-    ) = _apply_redactions(combined_text)
+    ) = _apply_redactions(combined_text, direction="ingress")
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
@@ -776,7 +786,7 @@ async def guardrail_evaluate_multipart(request: Request):
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
     )
-    _bump_family("ingress_evaluate", action, tenant, bot)
+    _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
     return _respond_action(
         action,
@@ -805,7 +815,7 @@ async def guardrail_egress(request: Request):
         redaction_hits,
         redaction_count,
         redaction_spans,
-    ) = _apply_redactions(transformed)
+    ) = _apply_redactions(transformed, direction="egress")
 
     if tf_enabled():
         redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
@@ -854,7 +864,7 @@ async def guardrail_egress(request: Request):
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
     )
-    _bump_family("egress_evaluate", action, tenant, bot)
+    _bump_family("egress", "egress_evaluate", action, tenant, bot)
 
     return _respond_action(
         action,
