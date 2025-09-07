@@ -78,7 +78,7 @@ digest = HMAC_SHA256( secret, f"{ts}.{raw_body}" )
 
 Important: sign the exact raw JSON bytes you send.
 
-X-Idempotency-Key: optional, recommended for clients; the receiver dedupes
+X-Idempotency-Key: forwarder sends a per-event key so the receiver can dedupe
 within the TTL window and returns a 200 with "deduped": true on replay.
 
 What the forwarder adds automatically
