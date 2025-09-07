@@ -723,8 +723,11 @@ async def guardrail_legacy(
     # NEW: set binding context so policy_loader resolves per tenant/bot
     _set_binding_ctx(tenant, bot)
 
-    policy_blob = _get_policy()
-    policy_version = str(policy_blob.version)
+    # Load policy to ensure deny rules are available, but use the unified
+    # service-level version for headers/body so all guardrail endpoints report
+    # the same value.
+    _get_policy()
+    policy_version = current_rules_version()
 
     action, legacy_hits_list = _legacy_policy(prompt)
 
