@@ -1,7 +1,8 @@
-# File: app/services/policy_loader.py
+# app/services/policy_loader.py
 from __future__ import annotations
 
 import contextvars
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,26 +50,31 @@ def _default_path() -> str:
 def _binding_path_or_none(tenant: str, bot: str) -> str | None:
     """
     Best-effort consult of the optional binding store:
-      resolve_rules_path(tenant, bot) -> dict with 'rules_path' (preferred)
+      resolve_rules_path(tenant, bot) -> string or dict with 'rules_path',
       or a (rules_path, source) tuple in older shapes.
     """
     try:
-        from app.services import config_store as _cs
+        from app.services import config_store as _cs  # optional module
 
         resolver = getattr(_cs, "resolve_rules_path", None)
         if not callable(resolver):
             return None
 
         resolved = resolver(tenant, bot)
-        # Dict shape preferred
+
+        # String path
+        if isinstance(resolved, str):
+            return resolved.strip() or None
+
+        # Dict with rules_path
         if isinstance(resolved, dict):
             rp = resolved.get("rules_path")
-            return str(rp) if rp else None
+            return str(rp).strip() if rp else None
 
-        # Tuple(shape) fallback
+        # Tuple fallback
         try:
-            rp, _src = resolved  # type: ignore[unused-ignore]  # nosec - best effort
-            return str(rp)
+            rp, _src = resolved  # noqa: F841
+            return str(rp).strip()
         except Exception:
             return None
     except Exception:
@@ -78,16 +84,14 @@ def _binding_path_or_none(tenant: str, bot: str) -> str | None:
 def _resolve_path() -> str:
     """
     Resolution priority (to satisfy tests and keep ops intuitive):
-      1) Explicit ENV override: POLICY_RULES_PATH (if set and non-empty)
+      1) Explicit ENV override: POLICY_RULES_PATH (live from os.environ)
       2) Binding store (if present) for current {tenant, bot}
       3) Bundled default rules.yaml
     """
-    s = Settings()
-
-    # 1) ENV override
-    env_path = (s.POLICY_RULES_PATH or "").strip()
-    if env_path:
-        return env_path
+    # 1) ENV override (read directly so test-time changes are honored)
+    env_raw = os.environ.get("POLICY_RULES_PATH", "")
+    if env_raw and env_raw.strip():
+        return env_raw.strip()
 
     # 2) Binding store (optional)
     tenant = _CTX_TENANT.get()
@@ -137,7 +141,8 @@ def _load_from_disk(path: str) -> PolicyBlob:
     text = p.read_text(encoding="utf-8")
     rules = yaml.safe_load(text) or {}
     mtime = p.stat().st_mtime
-    version = str(rules.get("version", int(mtime)))
+    version_val = rules.get("version", int(mtime))
+    version = str(version_val)
     deny_compiled = _compile_deny(rules)
     return PolicyBlob(
         rules=rules,
@@ -188,13 +193,11 @@ def describe_binding(tenant: str, bot: str) -> Dict[str, object]:
     """
     info: Dict[str, object] = {"tenant": tenant, "bot": bot}
 
-    # ENV override takes precedence and should be visible to operators/tests.
-    env_path = (Settings().POLICY_RULES_PATH or "").strip()
-    if env_path:
-        info["rules_path"] = env_path
+    env_raw = os.environ.get("POLICY_RULES_PATH", "")
+    if env_raw and env_raw.strip():
+        info["rules_path"] = env_raw.strip()
         info["source"] = "env"
     else:
-        # Otherwise, show binding resolution (if any), or default.
         try:
             bound = _binding_path_or_none(tenant, bot)
         except Exception:
@@ -206,7 +209,6 @@ def describe_binding(tenant: str, bot: str) -> Dict[str, object]:
             info["rules_path"] = _default_path()
             info["source"] = "default"
 
-    # Include current effective version if available
     try:
         blob = get_policy()
         info["version"] = blob.version
