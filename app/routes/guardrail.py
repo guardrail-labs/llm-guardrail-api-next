@@ -1,4 +1,3 @@
-# app/routes/guardrail.py
 # ruff: noqa: I001
 from __future__ import annotations
 
@@ -313,7 +312,8 @@ def _respond_legacy_allow(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    return JSONResponse(body)
+    headers = {"X-Guardrail-Policy-Version": policy_version}
+    return JSONResponse(body, headers=headers)
 
 
 def _respond_legacy_block(
@@ -333,7 +333,8 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    return JSONResponse(body)
+    headers = {"X-Guardrail-Policy-Version": policy_version}
+    return JSONResponse(body, headers=headers)
 
 
 # ------------------------------- audit -------------------------------
