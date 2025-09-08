@@ -260,8 +260,7 @@ def _verifier_sampling_pct() -> float:
 
 def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
     """
-    Heuristic: if any injection/jailbreak/illicit family is present, the
-    verifier is eligible (matches policy.gray_trigger_families intent).
+    Eligible if injection/jailbreak/illicit appears.
     """
     keys = list(hits.keys())
     return any(
@@ -282,6 +281,7 @@ def _respond_action(
     modalities: Optional[Dict[str, int]] = None,
     *,
     verifier_sampled: bool = False,
+    direction: str = "ingress",
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     m.inc_decisions_total(fam)
@@ -311,6 +311,10 @@ def _respond_action(
         "X-Guardrail-Policy-Version": current_rules_version(),
         "X-Guardrail-Verifier-Sampled": "1" if verifier_sampled else "0",
     }
+    if direction == "ingress":
+        headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
+    else:
+        headers["X-Guardrail-Egress-Redactions"] = str(int(redaction_count or 0))
 
     return JSONResponse(body, headers=headers)
 
@@ -332,7 +336,10 @@ def _respond_legacy_allow(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
+    }
     return JSONResponse(body, headers=headers)
 
 
@@ -353,7 +360,10 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
+    }
     return JSONResponse(body, headers=headers)
 
 
@@ -421,7 +431,7 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     """
     Legacy route behavior:
       - Block secrets and payload blobs
-      - Block prompt-injection phrases (incl. 'reveal system prompt')
+      - Block prompt-injection phrases
       - Apply external deny regex (yaml) -> block
     """
     hits: List[str] = []
@@ -452,9 +462,9 @@ def _evaluate_ingress_policy(
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     """
     Return (action, rule_hits_dict, debug).
-    - 'pretend to be DAN' => clarify
-    - Explicit illicit intent => deny
-    - Plain 'ignore previous instructions' => allow (masked)
+      - 'pretend to be DAN' => clarify
+      - Explicit illicit intent => deny
+      - Plain 'ignore previous instructions' => allow (masked)
     """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
@@ -557,6 +567,12 @@ async def _handle_upload_to_text(
             if hidden.get("found"):
                 reasons_list = cast(List[str], hidden.get("reasons") or [])
                 samples_list = cast(List[str], hidden.get("samples") or [])
+                # metrics: increment reason counters
+                for r in reasons_list:
+                    try:
+                        m.inc_pdf_hidden(str(r))
+                    except Exception:
+                        pass
                 reasons = ",".join(reasons_list) or "detected"
                 joined = " ".join(samples_list)[:500]
                 hidden_block = (
@@ -844,6 +860,7 @@ async def guardrail_evaluate(request: Request):
         redaction_count=redaction_count,
         modalities=mods,
         verifier_sampled=verifier_sampled,
+        direction="ingress",
     )
 
 
@@ -950,6 +967,7 @@ async def guardrail_evaluate_multipart(request: Request):
         redaction_count=redaction_count,
         modalities=mods,
         verifier_sampled=verifier_sampled,
+        direction="ingress",
     )
 
 
@@ -1029,4 +1047,5 @@ async def guardrail_egress(request: Request):
         redaction_count=redaction_count,
         modalities=None,
         verifier_sampled=False,
+        direction="egress",
     )
