@@ -573,3 +573,16 @@ def sanitize_text(
 # Note:
 # - Keep existing public functions like get_redactions_total(), reload_rules(), etc.
 # - Call sanitize_text() from the evaluate route to apply ingress redactions.
+
+
+def map_verifier_outcome_to_action(outcome: Dict[str, Any]) -> tuple[str, str]:
+    """Map a verifier outcome dict to (decision, mode) headers."""
+
+    status = str(outcome.get("status", "")).lower()
+    if status == "unsafe":
+        return "deny", "live"
+    if status == "safe":
+        return "allow", "live"
+    if status == "error":
+        return "allow", "fallback"
+    return "clarify", "live"
