@@ -27,27 +27,29 @@ from app.settings import (
 
 __all__ = [
     "verify_intent_hardened",
-    "verify_intent",  # real implementation should replace the stub below
+    "verify_intent",
 ]
 
 # ------------------------------------------------------------------------------
 # Optional/placeholder base verifier (tests will monkeypatch this function).
 # In production, replace this stub with your actual implementation or import it.
 # ------------------------------------------------------------------------------
+
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     Placeholder verifier. Replace with your real implementation or ensure tests
-    monkeypatch this symbol. Return shape:
-      {
-        "status": "safe" | "unsafe" | "ambiguous",
-        "reason": str,
-        "tokens_used": int
-      }
+    monkeypatch this symbol.
+
+    Expected return shape:
+    {
+      "status": "safe" | "unsafe" | "ambiguous",
+      "reason": str,
+      "tokens_used": int
+    }
     """
     raise NotImplementedError(
         "verify_intent is a stub here. Provide a real implementation or monkeypatch in tests."
     )
-
 
 # ------------------------------------------------------------------------------
 # Hardened wrapper utilities
@@ -64,17 +66,17 @@ def _estimate_tokens(s: str) -> int:
     return max(1, math.ceil(len(s) / 4))
 
 
-async def _call_under_timeout(coro, timeout_ms: int):
+async def _call_under_timeout(coro: Any, timeout_ms: int) -> Any:
     return await asyncio.wait_for(coro, timeout=timeout_ms / 1000.0)
 
 
 def _should_retry_transient(err: Exception) -> bool:
     # Extend with specific transient error classes from your LLM client as needed
-    return isinstance(err, (asyncio.TimeoutError,))
+    return isinstance(err, asyncio.TimeoutError)
 
 
 def _map_error_to_outcome(err: Optional[Exception]) -> Dict[str, Any]:
-    if isinstance(err, VerifierTimeoutError) or isinstance(err, asyncio.TimeoutError):
+    if isinstance(err, (VerifierTimeoutError, asyncio.TimeoutError)):
         return {"status": "error", "reason": "timeout", "tokens_used": 0}
     if isinstance(err, VerifierBudgetExceeded):
         return {"status": "error", "reason": "budget_exceeded", "tokens_used": 0}
@@ -85,20 +87,22 @@ def _map_error_to_outcome(err: Optional[Exception]) -> Dict[str, Any]:
     return {"status": "error", "reason": "unknown_error", "tokens_used": 0}
 
 
-def _map_headers_for_outcome(outcome: Dict[str, Any], incident_id: Optional[str]) -> Dict[str, str]:
+def _map_headers_for_outcome(
+    outcome: Dict[str, Any],
+    incident_id: Optional[str],
+) -> Dict[str, str]:
     """
     Convert verifier outcome into decision+mode headers using the policy helper.
     Returns dict of header overrides (to feed into attach_guardrail_headers).
     """
     decision, mode = map_verifier_outcome_to_action(outcome)
-    headers = {
+    headers: Dict[str, str] = {
         "X-Guardrail-Decision": decision,
         "X-Guardrail-Mode": mode,
     }
     if incident_id:
         headers["X-Guardrail-Incident-ID"] = incident_id
     return headers
-
 
 # ------------------------------------------------------------------------------
 # Process-wide enforcer instance
@@ -112,12 +116,14 @@ _ENFORCER = VerifierEnforcer(
     breaker_cooldown_s=VERIFIER_CIRCUIT_COOLDOWN_S,
 )
 
-
 # ------------------------------------------------------------------------------
 # Public hardened wrapper — NEVER raises; always returns (outcome, headers)
 # ------------------------------------------------------------------------------
 
-async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+async def verify_intent_hardened(
+    text: str,
+    ctx_meta: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """
     Safe wrapper that enforces:
       - per-request token cap
@@ -125,7 +131,9 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
       - circuit breaker
       - total timeout (with at most one jittered retry)
       - consistent outcome mapping + audit + headers
+
     Returns: (outcome, header_overrides)
+
     This function NEVER raises; it always converts failures into deterministic fallbacks.
     """
     ctx = _ctx_from_meta(ctx_meta)
@@ -137,7 +145,7 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
     # Precheck must not leak exceptions: convert to fallback deterministically
     try:
         _ENFORCER.precheck(ctx, est_tokens)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - we want a single fallback path
         last_err = e
         incident_id = incident_id or new_incident_id()
         emit_audit_event(
@@ -155,8 +163,10 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
         return outcome, headers
 
     async def _delegate() -> Dict[str, Any]:
-        # Import here (runtime) so tests can monkeypatch app.services.verifier.verify_intent
-        from app.services.verifier import verify_intent as _verify_intent  # self-module reference
+        # Import at runtime so tests can monkeypatch app.services.verifier.verify_intent
+        from app.services.verifier import (  # type: ignore
+            verify_intent as _verify_intent,
+        )
         return await _verify_intent(text, ctx_meta)
 
     # Try once (timeboxed), maybe retry if transient and time remains
@@ -166,7 +176,7 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
             used = int(result.get("tokens_used") or est_tokens)
             try:
                 _ENFORCER.post_consume(ctx, used)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 # Post-consume overflow (race) – fallback deterministically
                 last_err = e
                 incident_id = incident_id or new_incident_id()
@@ -197,7 +207,11 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
             incident_id = incident_id or new_incident_id()
             emit_audit_event(
                 "verifier_timeout",
-                {"tenant_id": ctx.tenant_id, "bot_id": ctx.bot_id, "incident_id": incident_id},
+                {
+                    "tenant_id": ctx.tenant_id,
+                    "bot_id": ctx.bot_id,
+                    "incident_id": incident_id,
+                },
             )
             # Single quick retry if first attempt and window is not tiny
             if attempt == 1 and timeout_ms > 600:
@@ -211,7 +225,7 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
             last_err = e
             break
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             last_err = e
             # Retry once on transient errors
             if attempt == 1 and _should_retry_transient(e):
@@ -230,7 +244,7 @@ async def verify_intent_hardened(text: str, ctx_meta: Dict[str, Any]) -> Tuple[D
             )
             break
 
-    # If we reach here, we had an error/limit/timeout → deterministic fallback
+    # Error/limit/timeout → deterministic fallback
     outcome = _map_error_to_outcome(last_err)
     incident_id = incident_id or new_incident_id()
     emit_audit_event(
