@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import random
 import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -277,6 +278,31 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
     return bool(x_debug)
 
 
+# --------------------- verifier sampling helpers ---------------------
+
+
+def _verifier_sampling_pct() -> float:
+    raw = (os.getenv("VERIFIER_SAMPLING_PCT") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        v = float(raw)
+    except Exception:
+        return 0.0
+    return max(0.0, min(1.0, v))
+
+
+def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
+    """
+    Heuristic: if any injection/jailbreak/illicit family is present, the
+    verifier is eligible (matches policy.gray_trigger_families intent).
+    """
+    keys = list(hits.keys())
+    return any(
+        k.startswith(("injection:", "jailbreak:", "unsafe:illicit")) for k in keys
+    )
+
+
 # ------------------------------- responses -------------------------------
 
 
@@ -289,6 +315,8 @@ def _respond_action(
     redaction_count: int = 0,
     modalities: Optional[Dict[str, int]] = None,
     extra_headers: Optional[Dict[str, str]] = None,
+    *,
+    verifier_sampled: bool = False,
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     m.inc_decisions_total(fam)
@@ -315,7 +343,10 @@ def _respond_action(
     if debug is not None:
         body["debug"] = debug
     body = apply_injection_default(body)
-    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Verifier-Sampled": "1" if verifier_sampled else "0",
+    }
     if extra_headers:
         headers.update(extra_headers)
 
@@ -869,13 +900,19 @@ async def guardrail_evaluate(request: Request):
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
-    decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
-    if dbg is not None:
-        decision["debug"] = dbg
-    decision = apply_injection_default(decision)
-    decision = maybe_route_to_verifier(decision, text=combined_text)
-    action = decision.get("action", action)
-    dbg = decision.get("debug")
+    # --- Verifier sampling gate (stateless) ---
+    verifier_sampled = False
+    pct = _verifier_sampling_pct()
+    if pct > 0.0 and _hits_trigger_verifier(policy_hits):
+        if random.random() < pct:
+            decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+            if dbg is not None:
+                decision["debug"] = dbg
+            decision = apply_injection_default(decision)
+            decision = maybe_route_to_verifier(decision, text=combined_text)
+            action = decision.get("action", action)
+            dbg = decision.get("debug", dbg)
+            verifier_sampled = True
 
     _audit(
         "ingress",
@@ -904,6 +941,7 @@ async def guardrail_evaluate(request: Request):
             "X-Guardrail-Ingress-Action": action,
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
         },
+        verifier_sampled=verifier_sampled,
     )
     _resp.headers["X-Guardrail-Tenant"] = tenant
     _resp.headers["X-Guardrail-Bot"] = bot
@@ -972,13 +1010,19 @@ async def guardrail_evaluate_multipart(request: Request):
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
-    decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
-    if dbg is not None:
-        decision["debug"] = dbg
-    decision = apply_injection_default(decision)
-    decision = maybe_route_to_verifier(decision, text=combined_text)
-    action = decision.get("action", action)
-    dbg = decision.get("debug")
+    # --- Verifier sampling gate ---
+    verifier_sampled = False
+    pct = _verifier_sampling_pct()
+    if pct > 0.0 and _hits_trigger_verifier(policy_hits):
+        if random.random() < pct:
+            decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+            if dbg is not None:
+                decision["debug"] = dbg
+            decision = apply_injection_default(decision)
+            decision = maybe_route_to_verifier(decision, text=combined_text)
+            action = decision.get("action", action)
+            dbg = decision.get("debug", dbg)
+            verifier_sampled = True
 
     _audit(
         "ingress",
@@ -1007,6 +1051,7 @@ async def guardrail_evaluate_multipart(request: Request):
             "X-Guardrail-Ingress-Action": action,
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
         },
+        verifier_sampled=verifier_sampled,
     )
     _resp.headers["X-Guardrail-Tenant"] = tenant
     _resp.headers["X-Guardrail-Bot"] = bot
