@@ -16,6 +16,12 @@ jobs:
       GUARDRAIL_DISABLE_AUTH: "1"   # bypass admin auth in tests
       CORS_ALLOW_ORIGINS: ""
       PYTHONPATH: .
+      VERIFIER_TIMEOUT_MS: "2500"
+      VERIFIER_MAX_TOKENS_PER_REQUEST: "800"
+      VERIFIER_DAILY_TOKEN_BUDGET: "100000"
+      VERIFIER_CIRCUIT_FAILS: "5"
+      VERIFIER_CIRCUIT_WINDOW_S: "300"
+      VERIFIER_CIRCUIT_COOLDOWN_S: "600"
     steps:
       - uses: actions/checkout@v4
 

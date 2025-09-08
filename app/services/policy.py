@@ -11,6 +11,35 @@ from app.config import get_settings
 from app.models.verifier import VerifierInput
 from app.services import verifier_client as vcli
 
+
+# New small helper to map verifier outcomes → (decision, mode)
+# decision: "allow" | "block_input_only" | "clarify_required"
+# mode: "normal" | "execute_locked" | "full_quarantine"
+def map_verifier_outcome_to_action(outcome: dict[str, object]) -> tuple[str, str]:
+    status = str(outcome.get("status") or "ambiguous")
+    reason = str(outcome.get("reason") or "")
+
+    # Our defaults (from product policy defaults in alignment doc):
+    # - unsafe → block_input_only
+    # - ambiguous → clarify_required (no execution)
+    # - error/budget/timeout/breaker → block_input_only for ingress;
+    #   callers decide egress sanitize/allow
+    # - allow path is decided by caller when status == "safe"
+    if status == "safe":
+        return "allow", "normal"
+    if status == "unsafe":
+        return "block_input_only", "execute_locked"
+    if status == "ambiguous":
+        return "clarify_required", "execute_locked"
+
+    # error paths
+    if reason in {"budget_exceeded", "breaker_open"}:
+        return "block_input_only", "execute_locked"
+    if reason in {"timeout", "limit_exceeded", "unknown_error"}:
+        return "block_input_only", "execute_locked"
+
+    return "clarify_required", "execute_locked"
+
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
 _REDACTIONS_TOTAL = 0.0
