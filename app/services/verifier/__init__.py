@@ -69,6 +69,7 @@ class Verifier:
     @staticmethod
     def _build_providers(names: List[str]) -> List[Provider]:
         from app.services.verifier.providers import build_provider
+
         out: List[Provider] = []
         for n in names:
             p = build_provider(n)
@@ -77,7 +78,10 @@ class Verifier:
         return out
 
     async def _call_with_timebox(
-        self, prov: Provider, text: str, meta: Optional[Dict[str, Any]]
+        self,
+        prov: Provider,
+        text: str,
+        meta: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         async def _run() -> Dict[str, Any]:
             return await prov.assess(text, meta=meta)
@@ -107,8 +111,11 @@ class Verifier:
             last_provider = getattr(prov, "name", None) or "unknown"
             try:
                 result = await self._call_with_timebox(prov, text, meta)
+            except asyncio.CancelledError:
+                # Propagate cancellation promptly (do not swallow).
+                raise
             except Exception:
-                # fail over to the next provider
+                # Fail over to the next provider on any other error.
                 continue
 
             status = str(result.get("status") or "ambiguous")
@@ -118,6 +125,7 @@ class Verifier:
 
         # All providers either failed or were ambiguous
         return Verdict.UNCLEAR, last_provider
+
 
 # ------------------------------------------------------------------------------
 # Fingerprint + harmful cache (Redis hybrid from Task 1)
@@ -227,6 +235,7 @@ def load_providers_order() -> List[str]:
 def verifier_enabled() -> bool:
     return True
 
+
 # ------------------------------------------------------------------------------
 # Optional base verifier (tests may monkeypatch)
 # ------------------------------------------------------------------------------
@@ -235,6 +244,7 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     raise NotImplementedError(
         "verify_intent is a stub; either use Verifier pipeline or monkeypatch in tests."
     )
+
 
 # ------------------------------------------------------------------------------
 # Hardened wrapper (unchanged behavior)
@@ -324,6 +334,7 @@ async def verify_intent_hardened(
 
     async def _delegate() -> Dict[str, Any]:
         from app.services.verifier import verify_intent as _verify_intent
+
         return await _verify_intent(text, ctx_meta)
 
     for attempt in (1, 2):
