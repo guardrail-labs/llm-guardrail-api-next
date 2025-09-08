@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import random
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -48,9 +49,7 @@ RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
 RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
-RE_EMAIL = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
-)
+RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 RE_PHONE = re.compile(
     r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
 )
@@ -93,31 +92,9 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     _emit(payload)
 
 
-def _reason_hints_from_hits(
-    rule_hits: Dict[str, List[str]] | List[str],
-    limit: int = 5,
-    max_chars: int = 120,
-) -> str:
-    """Return a compact comma-separated string of hit families.
-
-    Accepts either a mapping of family->patterns or a list of family strings.
-    Only the first ``limit`` families are included and the string is trimmed to
-    ``max_chars`` characters to keep the header bounded.
-    """
-
-    keys: List[str]
-    if isinstance(rule_hits, dict):
-        keys = sorted([k for k in rule_hits.keys() if k])
-    else:
-        keys = sorted([str(k) for k in rule_hits if k])
-
-    top = [k[:40] for k in keys[:limit]]
-    out = ",".join(top)
-    return out[:max_chars]
-
-
 def _normalize_wildcards(
-    rule_hits: Dict[str, List[str]], is_deny: bool
+    rule_hits: Dict[str, List[str]],
+    is_deny: bool,
 ) -> None:
     if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
         rule_hits.setdefault("pi:*", [])
@@ -159,9 +136,7 @@ def _apply_redactions(
         redacted = RE_EMAIL.sub("[REDACTED:EMAIL]", redacted)
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
-            spans.append(
-                (m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email")
-            )
+            spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
             m.inc_redaction("email")
         redactions += len(matches)
 
@@ -170,18 +145,14 @@ def _apply_redactions(
         redacted = RE_PHONE.sub("[REDACTED:PHONE]", redacted)
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
-            spans.append(
-                (m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone")
-            )
+            spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
             m.inc_redaction("phone")
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
     if matches:
         redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
-        rule_hits.setdefault("secrets:openai_key", []).append(
-            RE_SECRET.pattern
-        )
+        rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
         for m_ in matches:
             spans.append(
                 (
@@ -212,9 +183,7 @@ def _apply_redactions(
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
     if matches:
-        redacted = RE_PRIVATE_KEY_ENVELOPE.sub(
-            "[REDACTED:PRIVATE_KEY]", redacted
-        )
+        redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_ENVELOPE.pattern
         )
@@ -231,9 +200,7 @@ def _apply_redactions(
 
     matches = list(RE_PRIVATE_KEY_MARKER.finditer(original))
     if matches:
-        redacted = RE_PRIVATE_KEY_MARKER.sub(
-            "[REDACTED:PRIVATE_KEY]", redacted
-        )
+        redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
         rule_hits.setdefault("secrets:private_key", []).append(
             RE_PRIVATE_KEY_MARKER.pattern
         )
@@ -277,6 +244,30 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
     return bool(x_debug)
 
 
+# --------------------- verifier sampling helpers ---------------------
+
+
+def _verifier_sampling_pct() -> float:
+    raw = (os.getenv("VERIFIER_SAMPLING_PCT") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        v = float(raw)
+    except Exception:
+        return 0.0
+    return max(0.0, min(1.0, v))
+
+
+def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
+    """
+    Eligible if injection/jailbreak/illicit appears.
+    """
+    keys = list(hits.keys())
+    return any(
+        k.startswith(("injection:", "jailbreak:", "unsafe:illicit")) for k in keys
+    )
+
+
 # ------------------------------- responses -------------------------------
 
 
@@ -288,7 +279,9 @@ def _respond_action(
     debug: Optional[Dict[str, Any]] = None,
     redaction_count: int = 0,
     modalities: Optional[Dict[str, int]] = None,
-    extra_headers: Optional[Dict[str, str]] = None,
+    *,
+    verifier_sampled: bool = False,
+    direction: str = "ingress",
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     m.inc_decisions_total(fam)
@@ -299,9 +292,7 @@ def _respond_action(
     if modalities:
         for tag, count in modalities.items():
             if count > 0:
-                decisions.append(
-                    {"type": "modality", "tag": tag, "count": count}
-                )
+                decisions.append({"type": "modality", "tag": tag, "count": count})
 
     body: Dict[str, Any] = {
         "request_id": request_id,
@@ -315,14 +306,17 @@ def _respond_action(
     if debug is not None:
         body["debug"] = debug
     body = apply_injection_default(body)
-    headers = {"X-Guardrail-Policy-Version": current_rules_version()}
-    if extra_headers:
-        headers.update(extra_headers)
 
-    resp = JSONResponse(body, headers=headers)
-    resp.headers["X-Guardrail-Reason-Hints"] = _reason_hints_from_hits(rule_hits)
-    resp.headers["X-Guardrail-Redactions"] = str(int(redaction_count))
-    return resp
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Verifier-Sampled": "1" if verifier_sampled else "0",
+    }
+    if direction == "ingress":
+        headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
+    else:
+        headers["X-Guardrail-Egress-Redactions"] = str(int(redaction_count or 0))
+
+    return JSONResponse(body, headers=headers)
 
 
 def _respond_legacy_allow(
@@ -342,16 +336,11 @@ def _respond_legacy_allow(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    # Parity with newer endpoints: always expose active policy version in a header.
     headers = {
-        "X-Guardrail-Policy-Version": policy_version,
-        "X-Guardrail-Ingress-Action": "allow",
-        "X-Guardrail-Ingress-Redactions": str(int(redactions)),
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
     }
-    resp = JSONResponse(body, headers=headers)
-    resp.headers["X-Guardrail-Reason-Hints"] = _reason_hints_from_hits(rule_hits)
-    resp.headers["X-Guardrail-Redactions"] = str(int(redactions))
-    return resp
+    return JSONResponse(body, headers=headers)
 
 
 def _respond_legacy_block(
@@ -371,17 +360,11 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
-    # Parity with newer endpoints: always expose active policy version in a header.
     headers = {
-        "X-Guardrail-Policy-Version": policy_version,
-        # Legacy "block" maps to a deny decision in headers.
-        "X-Guardrail-Ingress-Action": "deny",
-        "X-Guardrail-Ingress-Redactions": str(int(redactions)),
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
     }
-    resp = JSONResponse(body, headers=headers)
-    resp.headers["X-Guardrail-Reason-Hints"] = _reason_hints_from_hits(rule_hits)
-    resp.headers["X-Guardrail-Redactions"] = str(int(redactions))
-    return resp
+    return JSONResponse(body, headers=headers)
 
 
 # ------------------------------- audit -------------------------------
@@ -400,8 +383,10 @@ def _audit(
     debug_sources: Optional[List[SourceDebug]] = None,
     verifier: Optional[Dict[str, Any]] = None,
 ) -> None:
-    allowed = {"allow", "block", "deny", "clarify"}
-    decision = action_or_decision if action_or_decision in allowed else "allow"
+    allowed_decisions = {"allow", "block", "deny", "clarify"}
+    decision = (
+        action_or_decision if action_or_decision in allowed_decisions else "allow"
+    )
 
     payload: Dict[str, Any] = {
         "event": "prompt_decision",
@@ -410,12 +395,8 @@ def _audit(
         "tenant_id": tenant,
         "bot_id": bot,
         "request_id": request_id,
-        "payload_bytes": len(
-            original_text.encode("utf-8", errors="ignore")
-        ),
-        "sanitized_bytes": len(
-            transformed_text.encode("utf-8", errors="ignore")
-        ),
+        "payload_bytes": len(original_text.encode("utf-8", errors="ignore")),
+        "sanitized_bytes": len(transformed_text.encode("utf-8", errors="ignore")),
         "hash_fingerprint": _fingerprint(original_text),
         "rule_hits": rule_hits,
         "redaction_count": redaction_count,
@@ -432,7 +413,11 @@ def _audit(
 
 
 def _bump_family(
-    direction: str, endpoint: str, action: str, tenant: str, bot: str
+    direction: str,
+    endpoint: str,
+    action: str,
+    tenant: str,
+    bot: str,
 ) -> None:
     m.inc_requests_total(endpoint)
     fam = "allow" if action == "allow" else "deny"
@@ -446,7 +431,7 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     """
     Legacy route behavior:
       - Block secrets and payload blobs
-      - Block prompt-injection phrases (incl. 'reveal system prompt')
+      - Block prompt-injection phrases
       - Apply external deny regex (yaml) -> block
     """
     hits: List[str] = []
@@ -459,9 +444,7 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
         hits.append(SECRETS_API_KEY_ID)
         return "block", hits
 
-    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(
-        prompt or ""
-    ):
+    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(prompt or ""):
         hits.append(PAYLOAD_PROMPT_INJ_ID)
         return "block", hits
 
@@ -479,17 +462,15 @@ def _evaluate_ingress_policy(
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
     """
     Return (action, rule_hits_dict, debug).
-    - 'pretend to be DAN' => clarify
-    - Explicit illicit intent => deny
-    - Plain 'ignore previous instructions' => allow (masked)
+      - 'pretend to be DAN' => clarify
+      - Explicit illicit intent => deny
+      - Plain 'ignore previous instructions' => allow (masked)
     """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
 
     if RE_HACK_WIFI.search(text or ""):
-        hits.setdefault("unsafe:illicit", []).append(
-            "hack_wifi_or_bypass_wpa2"
-        )
+        hits.setdefault("unsafe:illicit", []).append("hack_wifi_or_bypass_wpa2")
         dbg["explanations"] = ["illicit_request"]
         return "deny", hits, dbg
 
@@ -503,12 +484,8 @@ def _evaluate_ingress_policy(
 
     if RE_PROMPT_INJ.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
-        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
+        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         _normalize_wildcards(hits, is_deny=False)
         return "allow", hits, (dbg if dbg else None)
 
@@ -523,9 +500,7 @@ def _egress_policy(
     if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
         text or ""
     ):
-        rule_hits: Dict[str, List[str]] = {
-            "deny": ["private_key_envelope_or_marker"]
-        }
+        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope_or_marker"]}
         _normalize_wildcards(rule_hits, is_deny=True)
         if want_debug:
             dbg = {"explanations": ["private_key_detected"]}
@@ -587,30 +562,24 @@ async def _handle_upload_to_text(
         if ctype == "application/pdf" or ext == "pdf":
             raw = await obj.read()
 
-            # Always try to surface likely-hidden text (heuristic).
             hidden = _pdf_hidden.detect_hidden_text(raw)
             hidden_block = ""
             if hidden.get("found"):
-                reasons_raw = hidden.get("reasons", [])
-                reasons_list = (
-                    reasons_raw if isinstance(reasons_raw, list) else [reasons_raw]
-                )
+                reasons_list = cast(List[str], hidden.get("reasons") or [])
+                samples_list = cast(List[str], hidden.get("samples") or [])
+                # metrics: increment reason counters
                 for r in reasons_list:
-                    m.inc_pdf_hidden(str(r))
-                m.add_pdf_hidden_bytes(len(raw))
-                reasons = ",".join(str(x) for x in reasons_list) or "detected"
-                samples_raw = hidden.get("samples", [])
-                samples_list = (
-                    samples_raw if isinstance(samples_raw, list) else [samples_raw]
-                )
-                samples = [str(s) for s in samples_list if s is not None]
-                joined = " ".join(samples)[:500]
+                    try:
+                        m.inc_pdf_hidden(str(r))
+                    except Exception:
+                        pass
+                reasons = ",".join(reasons_list) or "detected"
+                joined = " ".join(samples_list)[:500]
                 hidden_block = (
                     f"\n[HIDDEN_TEXT_DETECTED:{reasons}]\n{joined}\n"
                     "[HIDDEN_TEXT_END]\n"
                 )
 
-            # OCR/textlayer extraction (preferred, if enabled)
             if _ocr.ocr_enabled():
                 m.add_ocr_bytes("pdf", len(raw))
                 text, outcome = _ocr.extract_pdf_with_optional_ocr(raw)
@@ -620,11 +589,9 @@ async def _handle_upload_to_text(
                         outcome if outcome in {"textlayer", "fallback"} else "ok",
                     )
                     mods["file"] = mods.get("file", 0) + 1
-                    # Append hidden-text reveal (if any) so our redactors see it.
                     return (text + hidden_block) if hidden_block else text, name
                 m.inc_ocr_extraction("pdf", outcome if outcome else "empty")
 
-            # Raw decode as a fallback when decode_pdf=True
             if decode_pdf:
                 mods["file"] = mods.get("file", 0) + 1
                 return raw.decode("utf-8", errors="ignore") + hidden_block, name
@@ -637,16 +604,9 @@ async def _handle_upload_to_text(
         return f"[FILE:{name}]", name
 
     except Exception:
-        # Best-effort error metrics for OCR paths
         try:
             if _ocr.ocr_enabled():
-                if ctype.startswith("image/") or ext in {
-                    "png",
-                    "jpg",
-                    "jpeg",
-                    "gif",
-                    "bmp",
-                }:
+                if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
                     m.inc_ocr_extraction("image", "error")
                 elif ctype == "application/pdf" or ext == "pdf":
                     m.inc_ocr_extraction("pdf", "error")
@@ -684,11 +644,8 @@ async def _read_form_and_merge(
             if vid in seen:
                 return
             seen.add(vid)
-            frag, fname = await _handle_upload_to_text(
-                val, decode_pdf, mods
-            )
+            frag, fname = await _handle_upload_to_text(val, decode_pdf, mods)
             combined.append(frag)
-            # Always record filename for debug["sources"]
             sources.append({"filename": fname})
 
     try:
@@ -719,7 +676,6 @@ async def guardrail_legacy(
     prompt = str(payload.get("prompt") or "")
     request_id = _req_id(str(payload.get("request_id") or ""))
 
-    # 413 guard
     try:
         max_chars = int(os.getenv("MAX_PROMPT_CHARS", "0"))
     except Exception:
@@ -736,7 +692,6 @@ async def guardrail_legacy(
         request.headers.get("X-Tenant-ID"),
         request.headers.get("X-Bot-ID"),
     )
-    # Ensure per-tenant/bot binding is active for this request.
     _set_binding_ctx(tenant, bot)
 
     policy_blob = _get_policy()
@@ -782,24 +737,18 @@ async def guardrail_legacy(
     )
 
     if action == "block":
-        _resp = _respond_legacy_block(
+        return _respond_legacy_block(
             request_id, rule_hits, redacted, policy_version, redactions
         )
-    else:
-        _resp = _respond_legacy_allow(
-            redacted, request_id, rule_hits, policy_version, redactions
-        )
-    # Echo resolved context for logs/trace correlation
-    _resp.headers["X-Guardrail-Tenant"] = tenant
-    _resp.headers["X-Guardrail-Bot"] = bot
-    return _resp
+    return _respond_legacy_allow(
+        redacted, request_id, rule_hits, policy_version, redactions
+    )
 
 
 @router.post("/guardrail/evaluate")
 async def guardrail_evaluate(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
-    _set_binding_ctx(tenant, bot)
     want_debug = _debug_requested(headers.get("X-Debug"))
 
     content_type = (headers.get("content-type") or "").lower()
@@ -813,7 +762,6 @@ async def guardrail_evaluate(request: Request):
         combined_text = str(payload.get("text") or "")
         explicit_request_id = str(payload.get("request_id") or "") or None
     else:
-        # Generic multipart: do NOT decode PDFs (emit [FILE:...])
         combined_text, mods, sources = await _read_form_and_merge(
             request, decode_pdf=False
         )
@@ -844,8 +792,7 @@ async def guardrail_evaluate(request: Request):
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            src_keys = list(redaction_hits.keys())
-            dbg["redaction_sources"] = src_keys
+            dbg["redaction_sources"] = list(redaction_hits.keys())
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
         dbg_sources.append(
@@ -869,13 +816,25 @@ async def guardrail_evaluate(request: Request):
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
-    decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+    # Always apply injection default first (before sampling gate).
+    base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
     if dbg is not None:
-        decision["debug"] = dbg
-    decision = apply_injection_default(decision)
-    decision = maybe_route_to_verifier(decision, text=combined_text)
-    action = decision.get("action", action)
-    dbg = decision.get("debug")
+        base_decision["debug"] = dbg
+    base_decision = apply_injection_default(base_decision)
+    action = base_decision.get("action", action)
+    dbg = base_decision.get("debug", dbg)
+
+    # Verifier sampling gate (stateless)
+    verifier_sampled = False
+    pct = _verifier_sampling_pct()
+    if pct > 0.0 and _hits_trigger_verifier(policy_hits):
+        if random.random() < pct:
+            base_decision = maybe_route_to_verifier(
+                base_decision, text=combined_text
+            )
+            action = base_decision.get("action", action)
+            dbg = base_decision.get("debug", dbg)
+            verifier_sampled = True
 
     _audit(
         "ingress",
@@ -892,7 +851,7 @@ async def guardrail_evaluate(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
-    _resp = _respond_action(
+    return _respond_action(
         action,
         redacted,
         request_id,
@@ -900,24 +859,17 @@ async def guardrail_evaluate(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=mods,
-        extra_headers={
-            "X-Guardrail-Ingress-Action": action,
-            "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
-        },
+        verifier_sampled=verifier_sampled,
+        direction="ingress",
     )
-    _resp.headers["X-Guardrail-Tenant"] = tenant
-    _resp.headers["X-Guardrail-Bot"] = bot
-    return _resp
 
 
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
-    _set_binding_ctx(tenant, bot)
     want_debug = _debug_requested(headers.get("X-Debug"))
 
-    # Multipart with decoding PDFs (for redaction-in-PDF test)
     combined_text, mods, sources = await _read_form_and_merge(
         request, decode_pdf=True
     )
@@ -947,8 +899,7 @@ async def guardrail_evaluate_multipart(request: Request):
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
         dbg = {"matches": matches}
         if redaction_hits:
-            src_keys = list(redaction_hits.keys())
-            dbg["redaction_sources"] = src_keys
+            dbg["redaction_sources"] = list(redaction_hits.keys())
         if policy_dbg and "explanations" in policy_dbg:
             dbg["explanations"] = list(policy_dbg["explanations"])
         dbg_sources.append(
@@ -972,13 +923,25 @@ async def guardrail_evaluate_multipart(request: Request):
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
-    decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+    # Always apply injection default first (before sampling gate).
+    base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
     if dbg is not None:
-        decision["debug"] = dbg
-    decision = apply_injection_default(decision)
-    decision = maybe_route_to_verifier(decision, text=combined_text)
-    action = decision.get("action", action)
-    dbg = decision.get("debug")
+        base_decision["debug"] = dbg
+    base_decision = apply_injection_default(base_decision)
+    action = base_decision.get("action", action)
+    dbg = base_decision.get("debug", dbg)
+
+    # Verifier sampling gate
+    verifier_sampled = False
+    pct = _verifier_sampling_pct()
+    if pct > 0.0 and _hits_trigger_verifier(policy_hits):
+        if random.random() < pct:
+            base_decision = maybe_route_to_verifier(
+                base_decision, text=combined_text
+            )
+            action = base_decision.get("action", action)
+            dbg = base_decision.get("debug", dbg)
+            verifier_sampled = True
 
     _audit(
         "ingress",
@@ -995,7 +958,7 @@ async def guardrail_evaluate_multipart(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
-    _resp = _respond_action(
+    return _respond_action(
         action,
         redacted,
         request_id,
@@ -1003,21 +966,15 @@ async def guardrail_evaluate_multipart(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=mods,
-        extra_headers={
-            "X-Guardrail-Ingress-Action": action,
-            "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
-        },
+        verifier_sampled=verifier_sampled,
+        direction="ingress",
     )
-    _resp.headers["X-Guardrail-Tenant"] = tenant
-    _resp.headers["X-Guardrail-Bot"] = bot
-    return _resp
 
 
 @router.post("/guardrail/egress_evaluate")
 async def guardrail_egress(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
-    _set_binding_ctx(tenant, bot)
     want_debug = _debug_requested(headers.get("X-Debug"))
 
     payload = await request.json()
@@ -1054,7 +1011,6 @@ async def guardrail_egress(request: Request):
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
             dbg["explanations"].extend(list(debug_info["explanations"]))
-
         dbg_sources.append(
             make_source(
                 origin="egress",
@@ -1082,7 +1038,7 @@ async def guardrail_egress(request: Request):
     )
     _bump_family("egress", "egress_evaluate", action, tenant, bot)
 
-    _resp = _respond_action(
+    return _respond_action(
         action,
         redacted,
         request_id,
@@ -1090,11 +1046,6 @@ async def guardrail_egress(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=None,
-        extra_headers={
-            "X-Guardrail-Egress-Action": action,
-            "X-Guardrail-Egress-Redactions": str(int(redaction_count)),
-        },
+        verifier_sampled=False,
+        direction="egress",
     )
-    _resp.headers["X-Guardrail-Tenant"] = tenant
-    _resp.headers["X-Guardrail-Bot"] = bot
-    return _resp
