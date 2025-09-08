@@ -259,6 +259,23 @@ def inc_ocr_extraction(modality: str, outcome: str) -> None:
     guardrail_ocr_extraction_total.labels(modality, outcome).inc()
 
 
+# ---- Compatibility wrappers (keep older callers working) ---------------------
+
+def inc_pdf_hidden(reason: str) -> None:
+    """Compatibility alias for add_pdf_hidden()."""
+    add_pdf_hidden(reason)
+
+
+def inc_ingress_family(family: str) -> None:
+    """Compatibility alias; we only track global family totals."""
+    inc_decision_family(family)
+
+
+def inc_egress_family(family: str) -> None:
+    """Compatibility alias; we only track global family totals."""
+    inc_decision_family(family)
+
+
 # ---- Getters -----------------------------------------------------------------
 
 def get_requests_total() -> float:
