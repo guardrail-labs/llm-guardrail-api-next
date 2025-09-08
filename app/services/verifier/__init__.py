@@ -4,12 +4,15 @@ import asyncio
 import math
 import os
 import random
+import time
 from enum import Enum
 from threading import RLock
 from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
+from app.services.verifier.provider_breaker import ProviderBreakerRegistry
+from app.services.verifier.providers.base import Provider
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -24,14 +27,29 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_PROVIDERS,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+    VERIFIER_PROVIDER_BREAKER_FAILS,
+    VERIFIER_PROVIDER_BREAKER_WINDOW_S,
     VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_PROVIDERS,
+    VERIFIER_TIMEOUT_MS,
 )
-from app.services.verifier.providers.base import Provider
+from app.telemetry.metrics import (
+    inc_verifier_breaker_open,
+    inc_verifier_outcome,
+    inc_verifier_provider_error,
+    observe_verifier_latency,
+)
+
+# single process registry
+_BREAKERS = ProviderBreakerRegistry(
+    VERIFIER_PROVIDER_BREAKER_FAILS,
+    VERIFIER_PROVIDER_BREAKER_WINDOW_S,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+)
 
 __all__ = [
     "verify_intent_hardened",
@@ -110,13 +128,26 @@ class Verifier:
 
         for prov in self._providers:
             last_provider = getattr(prov, "name", None) or "unknown"
+            # skip if breaker open
+            if _BREAKERS.is_open(last_provider):
+                continue
             try:
                 result = await self._call_with_timebox(prov, text, meta)
+                # success -> close/reset
+                _BREAKERS.on_success(last_provider)
             except asyncio.CancelledError:
                 # Propagate cancellation promptly (do not swallow).
                 raise
+            except asyncio.TimeoutError:
+                # record timeout, update breaker, maybe open
+                inc_verifier_provider_error(last_provider, "timeout")
+                if _BREAKERS.on_failure(last_provider):
+                    inc_verifier_breaker_open(last_provider)
+                continue
             except Exception:
-                # Fail over to the next provider on any other error.
+                inc_verifier_provider_error(last_provider, "error")
+                if _BREAKERS.on_failure(last_provider):
+                    inc_verifier_breaker_open(last_provider)
                 continue
 
             status = str(result.get("status") or "ambiguous")
@@ -251,8 +282,6 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
       {"status": "...", "reason": "...", "tokens_used": N, "provider": "name"}
     """
     from app.services.verifier.providers import build_provider  # lazy import
-    from app.telemetry.metrics import inc_verifier_outcome
-    import time
 
     provider_names = load_providers_order()
     est_tokens = max(1, len(text) // 4)
@@ -266,16 +295,19 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             continue
         last_provider = getattr(prov, "name", None) or name or "unknown"
 
+        if _BREAKERS.is_open(last_provider):
+            continue
+
         try:
             async def _run() -> Dict[str, Any]:
                 return await prov.assess(text, meta=ctx_meta)
 
             t0 = time.perf_counter()
             res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
+            _BREAKERS.on_success(last_provider)
 
             # Guard telemetry so failures never affect pipeline behavior.
             try:
-                from app.telemetry.metrics import observe_verifier_latency
                 observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
             except Exception:  # pragma: no cover
                 pass
@@ -283,8 +315,27 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         except asyncio.CancelledError:
             # Propagate cancellation promptly.
             raise
+        except asyncio.TimeoutError:
+            try:
+                inc_verifier_provider_error(str(last_provider), "timeout")
+            except Exception:
+                pass
+            if _BREAKERS.on_failure(str(last_provider)):
+                try:
+                    inc_verifier_breaker_open(str(last_provider))
+                except Exception:
+                    pass
+            continue
         except Exception:
-            # Fail over on any other error.
+            try:
+                inc_verifier_provider_error(str(last_provider), "error")
+            except Exception:
+                pass
+            if _BREAKERS.on_failure(str(last_provider)):
+                try:
+                    inc_verifier_breaker_open(str(last_provider))
+                except Exception:
+                    pass
             continue
 
         status = str(res.get("status") or "ambiguous").lower()

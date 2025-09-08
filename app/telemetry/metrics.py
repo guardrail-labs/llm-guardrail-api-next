@@ -177,6 +177,20 @@ guardrail_verifier_latency_seconds: HistogramLike = _mk_histogram(
     ["verifier"],
 )
 
+# Errors by provider and kind (timeout/error/etc.)
+guardrail_verifier_provider_errors_total: CounterLike = _mk_counter(
+    "guardrail_verifier_provider_errors_total",
+    "Verifier provider errors by kind.",
+    ["verifier", "kind"],
+)
+
+# Breaker opens by provider
+guardrail_verifier_breaker_opens_total: CounterLike = _mk_counter(
+    "guardrail_verifier_breaker_opens_total",
+    "Times a provider breaker opened.",
+    ["verifier"],
+)
+
 # OCR observability (optional, lightweight)
 guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "guardrail_ocr_extractions_total",
@@ -268,6 +282,16 @@ def inc_verifier_outcome(verifier: str, outcome: str) -> None:
 
 def observe_verifier_latency(verifier: str, seconds: float) -> None:
     guardrail_verifier_latency_seconds.labels(str(verifier or "unknown")).observe(float(seconds))
+
+
+def inc_verifier_provider_error(verifier: str, kind: str) -> None:
+    guardrail_verifier_provider_errors_total.labels(
+        str(verifier or "unknown"), str(kind or "error")
+    ).inc()
+
+
+def inc_verifier_breaker_open(verifier: str) -> None:
+    guardrail_verifier_breaker_opens_total.labels(str(verifier or "unknown")).inc()
 
 
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
