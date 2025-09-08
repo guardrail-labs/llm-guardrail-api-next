@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import math
 import random
-from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
@@ -44,13 +45,29 @@ __all__ = [
 # If you have concrete implementations elsewhere, you can replace these.
 # ------------------------------------------------------------------------------
 
-class Verdict(NamedTuple):
-    safe: bool
-    reason: str
+class Verdict(Enum):
+    SAFE = "safe"
+    UNSAFE = "unsafe"
+    UNCLEAR = "unclear"
 
 
-class Verifier(Protocol):
-    async def verify(self, text: str, ctx_meta: Dict[str, Any]) -> Verdict: ...
+class Verifier:
+    """
+    Minimal stub Verifier compatible with app/routes/batch.py:
+      v = Verifier(providers)
+      verdict, provider = v.assess_intent(text, meta={...})
+    Replace with a real implementation as needed.
+    """
+    def __init__(self, providers: Optional[List[str]] = None) -> None:
+        self.providers = providers or []
+
+    async def assess_intent(
+        self,
+        text: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Verdict, Optional[str]]:
+        # Default stub: we cannot decide → UNCLEAR, no provider resolved.
+        return Verdict.UNCLEAR, (self.providers[0] if self.providers else None)
 
 
 def content_fingerprint(text: str) -> str:
