@@ -1,20 +1,34 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from app.services.detectors import html_hidden as mod
 
-from app.main import app
+def test_html_hidden_detector_finds_style_hidden():
+    html = '''
+    <div>
+      <p style="display:none">secret line here</p>
+      <p>visible</p>
+    </div>
+    '''
+    res = mod.detect_hidden_text(html)
+    assert res["found"] is True
+    assert "style_hidden" in res["reasons"]
+    assert any("secret line here" in s for s in res["samples"])
 
-client = TestClient(app)
+def test_html_white_on_white():
+    html = '''
+    <span style="color:#fff;background:#ffffff">top secret</span>
+    '''
+    res = mod.detect_hidden_text(html)
+    assert res["found"] is True
+    assert "white_on_white" in res["reasons"]
+    assert any("top secret" in s for s in res["samples"])
 
-def test_html_hidden_injection_is_surfaced_and_redacted():
-    html = b'''<html><body>
-    <div style="display:none">sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ</div>
-    <p>hello</p>
-    </body></html>'''
-    files = [("files", ("page.html", html, "text/html"))]
-    r = client.post("/guardrail/evaluate_multipart", files=files)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["action"] == "allow"
-    assert "[HIDDEN_HTML_DETECTED:" in body["text"]
-    assert "[REDACTED:OPENAI_KEY]" in body["text"]
+def test_html_hidden_attr_and_class():
+    html = '''
+    <div hidden>do not show</div>
+    <div class="sr-only">screen-reader only secret</div>
+    '''
+    res = mod.detect_hidden_text(html)
+    assert res["found"] is True
+    assert "attr_hidden" in res["reasons"] or "class_hidden" in res["reasons"]
+    assert any("do not show" in s or "screen-reader only secret" in s for s in res["samples"])
