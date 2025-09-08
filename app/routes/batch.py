@@ -206,7 +206,7 @@ async def batch_evaluate(
         if do_verify:
             providers = load_providers_order()
             v = Verifier(providers)
-            verdict, provider = v.assess_intent(text_in, meta={"hint": ""})
+            verdict, provider = await v.assess_intent(text_in, meta={"hint": ""})
 
             if verdict is None:
                 # providers unreachable: pick based on prior harmful cache

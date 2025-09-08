@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast, overload
 
 # ---- Protocols (surface we rely on) ------------------------------------------
 
@@ -150,6 +150,14 @@ guardrail_redactions_total: CounterLike = _mk_counter(
     "guardrail_redactions_total", "Redactions by direction and mask.", ["direction", "mask"]
 )
 
+
+def _labels2_direction_mask(direction: object, mask: object) -> tuple[str, str]:
+    """Coerce to two string labels (direction, mask), never None/empty."""
+
+    d = str(direction) if direction not in (None, "") else "unknown"
+    m = str(mask) if mask not in (None, "") else "unknown"
+    return d, m
+
 # Direction-scoped decision families
 guardrail_ingress_decisions_family_total: CounterLike = _mk_counter(
     "guardrail_ingress_decisions_family_total", "Ingress decisions by family.", ["family"]
@@ -259,12 +267,42 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     guardrail_quota_rejects_total.labels(tenant, bot).inc()
 
 
-def inc_redaction(mask: str, direction: str = "unknown", amount: float = 1.0) -> None:
+@overload
+def inc_redaction(direction: str, mask: str, amount: float = 1.0) -> None: ...
+
+
+@overload
+def inc_redaction(mask: str, amount: float = 1.0) -> None: ...
+
+
+@overload
+def inc_redaction(
+    *,
+    direction: str | None = ...,
+    mask: str | None = ...,
+    amount: float = 1.0,
+) -> None: ...
+
+
+def inc_redaction(*args: Any, **kwargs: Any) -> None:
     """
-    Increment redaction counters with direction + mask.
-    `amount` lets callers record multiple substitutions in one go.
+    Backward-compatible redaction counter:
+      - Accepts (direction, mask), or (mask) legacy single arg, or keywords.
+      - Always supplies TWO labels in order (direction, mask) with defaults.
     """
-    guardrail_redactions_total.labels(direction, mask).inc(amount)
+
+    amount = float(kwargs.get("amount", 1.0))
+    direction = kwargs.get("direction")
+    mask = kwargs.get("mask")
+
+    if len(args) >= 2:
+        direction = args[0] if direction is None else direction
+        mask = args[1] if mask is None else mask
+    elif len(args) == 1:
+        mask = args[0] if mask is None else mask
+
+    d, m = _labels2_direction_mask(direction, mask)
+    guardrail_redactions_total.labels(d, m).inc(amount)
 
 
 def inc_ocr_extraction(typ: str, outcome: str) -> None:
