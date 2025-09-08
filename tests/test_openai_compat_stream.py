@@ -61,3 +61,4 @@ def test_openai_streaming_sse(monkeypatch):
         assert r.headers.get("X-Guardrail-Policy-Version")
         assert r.headers.get("X-Guardrail-Ingress-Action") in ("allow", "deny")
         assert r.headers.get("X-Guardrail-Egress-Action") == "allow"
+        assert r.headers.get("X-Guardrail-Ingress-Redactions") == "0"
