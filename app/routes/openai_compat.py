@@ -430,7 +430,10 @@ async def chat_completions(
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": "allow",
-            # Reason hits & redactions are finalized after streaming; surface empties for parity.
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
+            "X-Guardrail-Tenant": tenant_id,
+            "X-Guardrail-Bot": bot_id,
+            # Reason hits & egress redactions finalize at end; keep parity with empties during SSE.
             "X-Guardrail-Reason-Hints": "",
             "X-Guardrail-Egress-Redactions": "0",
         }
@@ -1458,7 +1461,10 @@ async def completions(
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": e_action,
             "X-Guardrail-Egress-Redactions": str(e_reds),
-            # During streaming we don’t know final hits yet; keep parity with empty value.
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
+            "X-Guardrail-Tenant": tenant_id,
+            "X-Guardrail-Bot": bot_id,
+            # We’re chunking a precomputed string here; still keep hints empty for consistency.
             "X-Guardrail-Reason-Hints": "",
         }
         return StreamingResponse(gen(), headers=headers)
