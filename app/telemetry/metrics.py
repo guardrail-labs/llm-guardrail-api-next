@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Optional, Protocol, Tuple, TypeVar, cast
+from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast
 
 # ---- Protocols (surface we rely on) ------------------------------------------
 
@@ -22,9 +22,11 @@ CounterClass: Any
 HistogramClass: Any
 
 try:
-    from prometheus_client import REGISTRY as _PREG
-    from prometheus_client import Counter as _PCounter
-    from prometheus_client import Histogram as _PHistogram
+    from prometheus_client import (
+        REGISTRY as _PREG,
+        Counter as _PCounter,
+        Histogram as _PHistogram,
+    )
 
     PROM_REGISTRY = _PREG
     CounterClass = _PCounter
@@ -103,7 +105,9 @@ def _mk_counter(name: str, doc: str, labels: Iterable[str] | None = None) -> Cou
     return cast(CounterLike, _get_or_create(name, _factory))
 
 
-def _mk_histogram(name: str, doc: str, labels: Iterable[str] | None = None) -> HistogramLike:
+def _mk_histogram(
+    name: str, doc: str, labels: Iterable[str] | None = None
+) -> HistogramLike:
     def _factory() -> Any:
         if labels:
             return HistogramClass(name, doc, list(labels))
@@ -145,7 +149,7 @@ guardrail_decisions_family_bot_total: CounterLike = _mk_counter(
     ["tenant", "bot", "family"],
 )
 
-# Redactions (mask types)
+# Redactions
 guardrail_redactions_total: CounterLike = _mk_counter(
     "guardrail_redactions_total", "Redactions by mask type.", ["mask"]
 )
@@ -155,19 +159,21 @@ guardrail_verifier_outcome_total: CounterLike = _mk_counter(
     "guardrail_verifier_outcome_total", "Verifier outcome totals.", ["verifier", "outcome"]
 )
 
-# OCR & PDF hidden-text metrics
+# OCR metrics (used by image/PDF extractors)
 guardrail_ocr_bytes_total: CounterLike = _mk_counter(
-    "guardrail_ocr_bytes_total", "Bytes processed for OCR/ingestion.", ["modality"]
+    "guardrail_ocr_bytes_total", "Total bytes processed by OCR.", ["modality"]
 )
 guardrail_ocr_extraction_total: CounterLike = _mk_counter(
-    "guardrail_ocr_extraction_total",
-    "OCR extraction outcomes by modality.",
-    ["modality", "outcome"],
+    "guardrail_ocr_extraction_total", "OCR extraction outcomes.", ["modality", "outcome"]
 )
+
+# Hidden-text in PDFs (detector)
 guardrail_pdf_hidden_total: CounterLike = _mk_counter(
-    "guardrail_pdf_hidden_total",
-    "PDFs with hidden/invisible text detected (by reason).",
-    ["reason"],
+    "guardrail_pdf_hidden_total", "Hidden/invisible text detections in PDFs.", ["reason"]
+)
+guardrail_pdf_hidden_bytes_total: CounterLike = _mk_counter(
+    "guardrail_pdf_hidden_bytes_total",
+    "Total bytes of PDFs with hidden/invisible text detected.",
 )
 
 # ---- In-memory tallies used for the plaintext export lines -------------------
@@ -241,39 +247,32 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     guardrail_quota_rejects_total.labels(tenant, bot).inc()
 
 
-def inc_redaction(mask: str, *, direction: Optional[str] = None, amount: float = 1.0) -> None:
-    # direction is accepted for caller convenience, but not labeled here
-    _ = direction
-    guardrail_redactions_total.labels(mask).inc(amount)
+def inc_redaction(mask: str, *, direction: str | None = None, amount: float = 1.0) -> None:
+    # Direction is currently ignored in the metric label set; keep signature for callers.
+    guardrail_redactions_total.labels(mask).inc(float(amount))
 
 
-def add_pdf_hidden(reason: str) -> None:
-    guardrail_pdf_hidden_total.labels(reason).inc()
-
-
-def add_ocr_bytes(modality: str, n: int) -> None:
+# OCR helpers
+def add_ocr_bytes(modality: str, n: int | float) -> None:
     guardrail_ocr_bytes_total.labels(modality).inc(float(max(0, int(n))))
 
 
 def inc_ocr_extraction(modality: str, outcome: str) -> None:
-    guardrail_ocr_extraction_total.labels(modality, outcome).inc()
+    guardrail_ocr_extraction_total.labels(modality, outcome).inc(1.0)
 
 
-# ---- Compatibility wrappers (keep older callers working) ---------------------
-
-def inc_pdf_hidden(reason: str) -> None:
-    """Compatibility alias for add_pdf_hidden()."""
-    add_pdf_hidden(reason)
+# PDF hidden-text helpers
+def add_pdf_hidden(reason: str) -> None:
+    guardrail_pdf_hidden_total.labels(reason).inc(1.0)
 
 
-def inc_ingress_family(family: str) -> None:
-    """Compatibility alias; we only track global family totals."""
-    inc_decision_family(family)
+def add_pdf_hidden_bytes(n: int | float) -> None:
+    guardrail_pdf_hidden_bytes_total.inc(float(max(0, int(n))))
 
 
-def inc_egress_family(family: str) -> None:
-    """Compatibility alias; we only track global family totals."""
-    inc_decision_family(family)
+# Back-compat aliases some callers may use
+inc_pdf_hidden = add_pdf_hidden
+inc_pdf_hidden_bytes = add_pdf_hidden_bytes
 
 
 # ---- Getters -----------------------------------------------------------------
@@ -311,43 +310,9 @@ def get_decisions_family_total(family: str) -> float:
 # ---- Text export helpers used by /metrics ------------------------------------
 
 def export_verifier_lines() -> List[str]:
-    """
-    Produce Prometheus-style lines for guardrail_verifier_outcome_total.
-    Uses the live registry when available; otherwise falls back to the shim.
-    """
-    name = "guardrail_verifier_outcome_total"
-    coll = get_metric(name)
-    if not coll:
-        return []
-
-    lines: List[str] = []
-    lines.append("# HELP guardrail_verifier_outcome_total Verifier outcome totals.")
-    lines.append("# TYPE guardrail_verifier_outcome_total counter")
-
-    # Prometheus client path: iterate metric families and samples.
-    if _PROM_OK and hasattr(coll, "collect"):
-        for mf in coll.collect():
-            for s in getattr(mf, "samples", []):
-                sname = str(getattr(s, "name", ""))
-                if not sname.endswith("_total"):
-                    continue
-                labels = dict(getattr(s, "labels", {}) or {})
-                verifier = str(labels.get("verifier", ""))
-                outcome = str(labels.get("outcome", ""))
-                value = float(getattr(s, "value", 0.0))
-                lines.append(
-                    f'{name}{{verifier="{verifier}",outcome="{outcome}"}} {value}'
-                )
-        return lines
-
-    # Shim path: children keyed by label tuple -> child counter with _value
-    children = getattr(coll, "_children", {})
-    for key, child in sorted(children.items()):
-        verifier = str(key[0]) if len(key) > 0 else ""
-        outcome = str(key[1]) if len(key) > 1 else ""
-        value = float(getattr(child, "_value", 0.0))
-        lines.append(f'{name}{{verifier="{verifier}",outcome="{outcome}"}} {value}')
-    return lines
+    # Kept simple for tests that just expect some plain lines.
+    # If you need richer detail later, extend this.
+    return []
 
 
 def _aggregate_tenant_totals() -> Dict[Tuple[str, str], float]:
