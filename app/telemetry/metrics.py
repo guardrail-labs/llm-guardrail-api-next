@@ -274,6 +274,14 @@ def add_pdf_hidden_bytes(n: int | float) -> None:
 inc_pdf_hidden = add_pdf_hidden
 inc_pdf_hidden_bytes = add_pdf_hidden_bytes
 
+# Compatibility for older imports in routes (delegates to family counter)
+def inc_ingress_family(family: str) -> None:
+    inc_decision_family(family)
+
+
+def inc_egress_family(family: str) -> None:
+    inc_decision_family(family)
+
 
 # ---- Getters -----------------------------------------------------------------
 
@@ -311,7 +319,6 @@ def get_decisions_family_total(family: str) -> float:
 
 def export_verifier_lines() -> List[str]:
     # Kept simple for tests that just expect some plain lines.
-    # If you need richer detail later, extend this.
     return []
 
 
