@@ -137,7 +137,10 @@ def _apply_redactions(
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            m.inc_redaction("email")
+            try:
+                m.inc_redaction("email")
+            except Exception:
+                pass
         redactions += len(matches)
 
     matches = list(RE_PHONE.finditer(original))
@@ -146,7 +149,10 @@ def _apply_redactions(
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            m.inc_redaction("phone")
+            try:
+                m.inc_redaction("phone")
+            except Exception:
+                pass
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
@@ -162,7 +168,10 @@ def _apply_redactions(
                     "secrets:openai_key",
                 )
             )
-            m.inc_redaction("openai_key")
+            try:
+                m.inc_redaction("openai_key")
+            except Exception:
+                pass
         redactions += len(matches)
 
     matches = list(RE_AWS.finditer(original))
@@ -178,7 +187,10 @@ def _apply_redactions(
                     "secrets:aws_key",
                 )
             )
-            m.inc_redaction("aws_access_key_id")
+            try:
+                m.inc_redaction("aws_access_key_id")
+            except Exception:
+                pass
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
@@ -525,7 +537,6 @@ async def _handle_upload_to_text(
       - audio/* -> marker
       - text/plain -> read and decode
       - application/pdf -> decode if decode_pdf=True, else marker
-      - other -> generic marker
     Also falls back on filename extension when content_type is missing.
     """
     from app.services.detectors import pdf_hidden as _pdf_hidden
