@@ -208,6 +208,16 @@ def inc_decision_family(family: str) -> None:
     _FAMILY_TOTALS[family] = _FAMILY_TOTALS.get(family, 0.0) + 1.0
 
 
+def inc_ingress_family(family: str) -> None:
+    """Compatibility alias for ingress-scoped decision family."""
+    inc_decision_family(family)
+
+
+def inc_egress_family(family: str) -> None:
+    """Compatibility alias for egress-scoped decision family."""
+    inc_decision_family(family)
+
+
 def inc_decision_family_tenant_bot(family: str, tenant: str, bot: str) -> None:
     guardrail_decisions_family_total.labels(family).inc()
     guardrail_decisions_family_tenant_total.labels(tenant, family).inc()
@@ -299,8 +309,7 @@ def export_family_breakdown_lines() -> List[str]:
     tenant_agg = _aggregate_tenant_totals()
     if tenant_agg:
         lines.append(
-            "# HELP guardrail_decisions_family_tenant_total "
-            "Decision totals by tenant and family."
+            "# HELP guardrail_decisions_family_tenant_total Decision totals by tenant and family."
         )
         lines.append("# TYPE guardrail_decisions_family_tenant_total counter")
         for (tenant, family), v in sorted(tenant_agg.items()):
@@ -312,8 +321,7 @@ def export_family_breakdown_lines() -> List[str]:
     # Tenant/bot-level totals
     if _FAMILY_TENANT_BOT:
         lines.append(
-            "# HELP guardrail_decisions_family_bot_total "
-            "Decision totals by tenant/bot and family."
+            "# HELP guardrail_decisions_family_bot_total Decision totals by tenant/bot and family."
         )
         lines.append("# TYPE guardrail_decisions_family_bot_total counter")
         for (family, tenant, bot), v in sorted(_FAMILY_TENANT_BOT.items()):
