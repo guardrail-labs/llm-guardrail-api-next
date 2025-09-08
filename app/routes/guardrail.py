@@ -137,10 +137,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            try:
-                m.inc_redaction("email")
-            except Exception:
-                pass
+            m.inc_redaction("email")
         redactions += len(matches)
 
     matches = list(RE_PHONE.finditer(original))
@@ -149,10 +146,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            try:
-                m.inc_redaction("phone")
-            except Exception:
-                pass
+            m.inc_redaction("phone")
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
@@ -168,10 +162,7 @@ def _apply_redactions(
                     "secrets:openai_key",
                 )
             )
-            try:
-                m.inc_redaction("openai_key")
-            except Exception:
-                pass
+            m.inc_redaction("openai_key")
         redactions += len(matches)
 
     matches = list(RE_AWS.finditer(original))
@@ -187,10 +178,7 @@ def _apply_redactions(
                     "secrets:aws_key",
                 )
             )
-            try:
-                m.inc_redaction("aws_access_key_id")
-            except Exception:
-                pass
+            m.inc_redaction("aws_access_key_id")
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
@@ -536,7 +524,9 @@ async def _handle_upload_to_text(
       - image/* -> marker
       - audio/* -> marker
       - text/plain -> read and decode
+      - text/html -> detect hidden/invisible text markers (if detector available)
       - application/pdf -> decode if decode_pdf=True, else marker
+      - other -> generic marker
     Also falls back on filename extension when content_type is missing.
     """
     from app.services.detectors import pdf_hidden as _pdf_hidden
@@ -568,6 +558,33 @@ async def _handle_upload_to_text(
         if ctype == "text/plain" or ext == "txt":
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
+
+        # HTML (optional hidden-content detector)
+        if ctype == "text/html" or ext in {"html", "htm"}:
+            raw = await obj.read()
+            try:
+                from app.services.detectors import html_hidden as _html_hidden
+                text_html = raw.decode("utf-8", errors="ignore")
+                hidden = _html_hidden.detect_hidden_text(text_html)
+
+                hidden_block = ""
+                if hidden.get("found"):
+                    # Casts for mypy
+                    reasons_list = cast(List[str], hidden.get("reasons") or [])
+                    samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    reasons = ",".join(reasons_list) or "detected"
+                    joined = " ".join(samples_list)[:500]
+                    hidden_block = (
+                        f"\n[HIDDEN_HTML_DETECTED:{reasons}]\n{joined}\n"
+                        "[HIDDEN_HTML_END]\n"
+                    )
+
+                mods["file"] = mods.get("file", 0) + 1
+                return hidden_block or f"[FILE:{name}]", name
+            except Exception:
+                mods["file"] = mods.get("file", 0) + 1
+                return f"[FILE:{name}]", name
 
         # PDF
         if ctype == "application/pdf" or ext == "pdf":
