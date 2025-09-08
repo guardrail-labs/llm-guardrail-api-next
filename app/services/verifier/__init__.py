@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
-from app.services.verifier.providers.base import Provider
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -24,13 +23,14 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_PROVIDER_TIMEOUT_MS,
     VERIFIER_PROVIDERS,
-    VERIFIER_TIMEOUT_MS,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
 )
+from app.services.verifier.providers.base import Provider
 
 __all__ = [
     "verify_intent_hardened",
@@ -237,7 +237,7 @@ def verifier_enabled() -> bool:
 
 
 # ------------------------------------------------------------------------------
-# Optional base verifier (tests may monkeypatch)
+# Provider-backed verify_intent (wired to pipeline) with metrics surfacing
 # ------------------------------------------------------------------------------
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -245,10 +245,9 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     Provider-backed verification. Returns legacy shape plus "provider":
       {"status": "...", "reason": "...", "tokens_used": N, "provider": "name"}
     """
-    import time
-
     from app.services.verifier.providers import build_provider  # lazy import
-    from app.telemetry.metrics import inc_verifier_outcome, observe_verifier_latency
+    from app.telemetry.metrics import inc_verifier_outcome
+    import time
 
     provider_names = load_providers_order()
     est_tokens = max(1, len(text) // 4)
@@ -268,10 +267,19 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
 
             t0 = time.perf_counter()
             res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
-            observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
+
+            # Guard telemetry so failures never affect pipeline behavior.
+            try:
+                from app.telemetry.metrics import observe_verifier_latency
+                observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
+            except Exception:  # pragma: no cover
+                pass
+
         except asyncio.CancelledError:
+            # Propagate cancellation promptly.
             raise
         except Exception:
+            # Fail over on any other error.
             continue
 
         status = str(res.get("status") or "ambiguous").lower()
@@ -306,7 +314,7 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------------------
-# Hardened wrapper (unchanged behavior)
+# Hardened wrapper (unchanged behavior + provider in headers/audit)
 # ------------------------------------------------------------------------------
 
 def _ctx_from_meta(ctx_meta: Dict[str, Any]) -> VerifierContext:
@@ -380,7 +388,6 @@ async def verify_intent_hardened(
     except Exception as e:  # noqa: BLE001
         last_err = e
         incident_id = incident_id or new_incident_id()
-        outcome = _map_error_to_outcome(last_err)
         emit_audit_event(
             {
                 "event": "verifier_fallback",
@@ -389,9 +396,10 @@ async def verify_intent_hardened(
                 "incident_id": incident_id,
                 "error": type(e).__name__,
                 "stage": "precheck",
-                "verifier_provider": outcome.get("provider"),
+                "verifier_provider": None,
             }
         )
+        outcome = _map_error_to_outcome(last_err)
         headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
         return outcome, headers
 
@@ -404,6 +412,7 @@ async def verify_intent_hardened(
         try:
             result: Dict[str, Any] = await _call_under_timeout(_delegate(), timeout_ms)
             used = int(result.get("tokens_used") or est_tokens)
+
             try:
                 _ENFORCER.post_consume(ctx, used)
             except Exception as e:  # noqa: BLE001
@@ -432,6 +441,7 @@ async def verify_intent_hardened(
             prov = result.get("provider")
             if isinstance(prov, str) and prov:
                 outcome["provider"] = prov
+
             headers = _map_headers_for_outcome(outcome, incident_id=None)
             return outcome, headers
 
@@ -484,7 +494,7 @@ async def verify_intent_hardened(
             "incident_id": incident_id,
             "error": type(last_err).__name__ if last_err else "unknown",
             "stage": "delegate_or_retry",
-            "verifier_provider": outcome.get("provider"),
+            "verifier_provider": None,
         }
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
