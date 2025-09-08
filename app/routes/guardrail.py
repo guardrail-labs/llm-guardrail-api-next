@@ -749,12 +749,17 @@ async def guardrail_legacy(
     )
 
     if action == "block":
-        return _respond_legacy_block(
+        _resp = _respond_legacy_block(
             request_id, rule_hits, redacted, policy_version, redactions
         )
-    return _respond_legacy_allow(
-        redacted, request_id, rule_hits, policy_version, redactions
-    )
+    else:
+        _resp = _respond_legacy_allow(
+            redacted, request_id, rule_hits, policy_version, redactions
+        )
+    # Echo resolved context for logs/trace correlation
+    _resp.headers["X-Guardrail-Tenant"] = tenant
+    _resp.headers["X-Guardrail-Bot"] = bot
+    return _resp
 
 
 @router.post("/guardrail/evaluate")
@@ -854,7 +859,7 @@ async def guardrail_evaluate(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
-    return _respond_action(
+    _resp = _respond_action(
         action,
         redacted,
         request_id,
@@ -867,6 +872,9 @@ async def guardrail_evaluate(request: Request):
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
         },
     )
+    _resp.headers["X-Guardrail-Tenant"] = tenant
+    _resp.headers["X-Guardrail-Bot"] = bot
+    return _resp
 
 
 @router.post("/guardrail/evaluate_multipart")
@@ -954,7 +962,7 @@ async def guardrail_evaluate_multipart(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
-    return _respond_action(
+    _resp = _respond_action(
         action,
         redacted,
         request_id,
@@ -967,6 +975,9 @@ async def guardrail_evaluate_multipart(request: Request):
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
         },
     )
+    _resp.headers["X-Guardrail-Tenant"] = tenant
+    _resp.headers["X-Guardrail-Bot"] = bot
+    return _resp
 
 
 @router.post("/guardrail/egress_evaluate")
@@ -1038,7 +1049,7 @@ async def guardrail_egress(request: Request):
     )
     _bump_family("egress", "egress_evaluate", action, tenant, bot)
 
-    return _respond_action(
+    _resp = _respond_action(
         action,
         redacted,
         request_id,
@@ -1051,3 +1062,6 @@ async def guardrail_egress(request: Request):
             "X-Guardrail-Egress-Redactions": str(int(redaction_count)),
         },
     )
+    _resp.headers["X-Guardrail-Tenant"] = tenant
+    _resp.headers["X-Guardrail-Bot"] = bot
+    return _resp
