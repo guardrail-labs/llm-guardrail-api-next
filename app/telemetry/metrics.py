@@ -153,10 +153,10 @@ guardrail_redactions_total: CounterLike = _mk_counter(
 
 def _labels2_direction_mask(direction: object, mask: object) -> tuple[str, str]:
     """Coerce to two string labels (direction, mask), never None/empty."""
-
     d = str(direction) if direction not in (None, "") else "unknown"
     m = str(mask) if mask not in (None, "") else "unknown"
     return d, m
+
 
 # Direction-scoped decision families
 guardrail_ingress_decisions_family_total: CounterLike = _mk_counter(
@@ -269,12 +269,11 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
 
 @overload
 def inc_redaction(direction: str, mask: str, amount: float = 1.0) -> None: ...
-
-
 @overload
 def inc_redaction(mask: str, amount: float = 1.0) -> None: ...
-
-
+# NEW overload: allow positional mask + keyword direction (matches openai_compat usage)
+@overload
+def inc_redaction(mask: str, *, direction: str | None = ..., amount: float = 1.0) -> None: ...
 @overload
 def inc_redaction(
     *,
@@ -287,10 +286,9 @@ def inc_redaction(
 def inc_redaction(*args: Any, **kwargs: Any) -> None:
     """
     Backward-compatible redaction counter:
-      - Accepts (direction, mask), or (mask) legacy single arg, or keywords.
+      - Accepts (direction, mask), or (mask) legacy single arg, or keyword forms.
       - Always supplies TWO labels in order (direction, mask) with defaults.
     """
-
     amount = float(kwargs.get("amount", 1.0))
     direction = kwargs.get("direction")
     mask = kwargs.get("mask")
