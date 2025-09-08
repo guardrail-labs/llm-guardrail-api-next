@@ -14,6 +14,15 @@ VERIFIER_CIRCUIT_WINDOW_S = 60
 VERIFIER_CIRCUIT_COOLDOWN_S = 30
 VERIFIER_TIMEOUT_MS = 8000
 
+# Provider pipeline configuration
+VERIFIER_PROVIDERS = (
+    os.getenv("VERIFIER_PROVIDERS", "local_rules").strip() or "local_rules"
+)
+# Per-provider call timebox (ms)
+VERIFIER_PROVIDER_TIMEOUT_MS = int(
+    os.getenv("VERIFIER_PROVIDER_TIMEOUT_MS", "1600") or "1600"
+)
+
 # --- Verifier harm-cache persistence (optional Redis) ---
 VERIFIER_HARM_CACHE_URL = os.getenv("VERIFIER_HARM_CACHE_URL", "").strip()
 # Days to keep a harmful fingerprint in the cache (default 90 days)

@@ -26,6 +26,8 @@ from app.settings import (
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
     VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_PROVIDERS,
     VERIFIER_TIMEOUT_MS,
 )
 
@@ -52,63 +54,110 @@ class Verdict(Enum):
     UNCLEAR = "unclear"
 
 
+# Provider plumbing (avoid cycles by importing inside methods where needed)
 class Verifier:
     """
-    Minimal stub Verifier compatible with routes/batch.py:
-      v = Verifier(providers)
-      verdict, provider = await v.assess_intent(text, meta={...})
-    Replace with a real implementation as needed.
+    Provider-backed verifier with ordered failover and per-provider timebox.
+    Returns (Optional[Verdict], Optional[str]) where None indicates
+    no provider could be reached/constructed.
     """
 
     def __init__(self, providers: Optional[List[str]] = None) -> None:
-        self.providers = providers or []
+        self._provider_names = providers or []
+        self._timeout_ms = int(VERIFIER_PROVIDER_TIMEOUT_MS)
+        self._providers = self._build_providers(self._provider_names)
+
+    @staticmethod
+    def _build_providers(names: List[str]) -> List[Any]:
+        from app.services.verifier.providers import build_provider
+        out: List[Any] = []
+        for n in names:
+            p = build_provider(n)
+            if p is not None:
+                out.append(p)
+        return out
+
+    async def _call_with_timebox(self, prov: Any, text: str,
+                                 meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        async def _run() -> Dict[str, Any]:
+            return await prov.assess(text, meta=meta)
+
+        return await asyncio.wait_for(_run(), timeout=self._timeout_ms / 1000.0)
+
+    @staticmethod
+    def _map_status_to_verdict(status: str) -> Verdict:
+        s = (status or "").lower()
+        if s == "unsafe":
+            return Verdict.UNSAFE
+        if s == "safe":
+            return Verdict.SAFE
+        return Verdict.UNCLEAR
 
     async def assess_intent(
         self,
         text: str,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[Verdict], Optional[str]]:
-        # Default stub: undecided → UNCLEAR, no provider resolved.
-        return Verdict.UNCLEAR, (self.providers[0] if self.providers else None)
+        if not self._providers:
+            return None, None
+
+        last_provider: Optional[str] = None
+
+        for prov in self._providers:
+            last_provider = getattr(prov, "name", None) or "unknown"
+            try:
+                result = await self._call_with_timebox(prov, text, meta)
+            except Exception:
+                # fail over to the next provider
+                continue
+
+            status = str(result.get("status") or "ambiguous")
+            verdict = self._map_status_to_verdict(status)
+            # Return on first decisive answer; otherwise keep trying.
+            if verdict != Verdict.UNCLEAR:
+                return verdict, last_provider
+
+        # All providers either failed or were ambiguous
+        return Verdict.UNCLEAR, last_provider
+
+# ------------------------------------------------------------------------------
+# Fingerprint + harmful cache (Redis hybrid from Task 1)
+# ------------------------------------------------------------------------------
 
 
 def content_fingerprint(text: str) -> str:
     return f"fp:{abs(hash(text)) % 10**12}"
 
 
-# ------------------------------------------------------------------------------
-# Harmful fingerprint cache (Redis with TTL if available; safe in-memory fallback)
-# ------------------------------------------------------------------------------
+_HARM_CACHE: Set[str] = set()
+_HARM_LOCK = RLock()
+
+
+def _harm_key(fp: str) -> str:
+    return str(fp)
 
 
 class _MemoryHarmStore:
-    def __init__(self) -> None:
-        self._s: Set[str] = set()
-        self._lk = RLock()
-
     def is_known(self, fp: str) -> bool:
-        k = str(fp)
-        with self._lk:
-            return k in self._s
+        k = _harm_key(fp)
+        with _HARM_LOCK:
+            return k in _HARM_CACHE
 
     def mark(self, fp: str) -> None:
-        k = str(fp)
-        with self._lk:
-            self._s.add(k)
+        k = _harm_key(fp)
+        with _HARM_LOCK:
+            _HARM_CACHE.add(k)
 
 
 class _RedisHarmStore:
     def __init__(self, url: str, ttl_seconds: int) -> None:
         self._ttl = int(max(1, ttl_seconds))
-        self._url = url
         self._cli = None
         try:
-            # Lazy optional dependency; do not hard-require redis
-            import redis
-
+            import redis  # type: ignore
             self._cli = redis.from_url(url, decode_responses=True)
         except Exception:
-            self._cli = None  # degrade to memory
+            self._cli = None
 
     @staticmethod
     def _key(fp: str) -> str:
@@ -118,7 +167,6 @@ class _RedisHarmStore:
         if not self._cli:
             return False
         try:
-            # EXISTS returns int/boolean depending on client; normalize to bool
             return bool(self._cli.exists(self._key(fp)))
         except Exception:
             return False
@@ -127,10 +175,8 @@ class _RedisHarmStore:
         if not self._cli:
             return
         try:
-            # set value with TTL; value is irrelevant
             self._cli.setex(self._key(fp), self._ttl, "1")
         except Exception:
-            # On any Redis failure, swallow and let wrapper behave as if unknown
             return
 
 
@@ -140,17 +186,13 @@ def _build_harm_store() -> Any:
     ttl_seconds = ttl_days * 24 * 60 * 60
     if url:
         store = _RedisHarmStore(url, ttl_seconds)
-        # If client couldn't initialize, it returns "unknown" on read and no-op on write.
-        # We still keep a memory store in front to preserve deny decisions within a process.
         mem = _MemoryHarmStore()
 
         class _Hybrid:
             def is_known(self, fp: str) -> bool:
-                # Memory hit is fastest; if not, consult Redis.
                 if mem.is_known(fp):
                     return True
                 if store.is_known(fp):
-                    # warm local cache for subsequent requests
                     mem.mark(fp)
                     return True
                 return False
@@ -167,46 +209,33 @@ _HARM_STORE = _build_harm_store()
 
 
 def is_known_harmful(fp: str) -> bool:
-    """Return True if the fingerprint is known harmful."""
-    return bool(_HARM_STORE.is_known(fp))
+    return _HARM_STORE.is_known(fp)
 
 
 def mark_harmful(fp: str) -> None:
-    """Record the fingerprint as harmful for future deny when verifier is down."""
     _HARM_STORE.mark(fp)
 
 
 def load_providers_order() -> List[str]:
-    return []
+    # e.g., "openai,local_rules" or just "local_rules"
+    return [p.strip() for p in VERIFIER_PROVIDERS.split(",") if p.strip()]
 
 
 def verifier_enabled() -> bool:
     return True
 
-
 # ------------------------------------------------------------------------------
-# Optional base verifier (tests typically monkeypatch this)
+# Optional base verifier (tests may monkeypatch)
 # ------------------------------------------------------------------------------
 
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Replace with real implementation or monkeypatch in tests.
-
-    Returns:
-      {
-        "status": "safe" | "unsafe" | "ambiguous",
-        "reason": str,
-        "tokens_used": int
-      }
-    """
     raise NotImplementedError(
-        "verify_intent is a stub here; provide a real impl or monkeypatch in tests."
+        "verify_intent is a stub; either use Verifier pipeline or monkeypatch in tests."
     )
 
-
 # ------------------------------------------------------------------------------
-# Hardened wrapper utilities
+# Hardened wrapper (unchanged behavior)
 # ------------------------------------------------------------------------------
 
 
@@ -254,11 +283,6 @@ def _map_headers_for_outcome(
     return headers
 
 
-# ------------------------------------------------------------------------------
-# Process-wide enforcer
-# ------------------------------------------------------------------------------
-
-
 _ENFORCER = VerifierEnforcer(
     max_tokens_per_request=VERIFIER_MAX_TOKENS_PER_REQUEST,
     daily_budget=VERIFIER_DAILY_TOKEN_BUDGET,
@@ -268,26 +292,16 @@ _ENFORCER = VerifierEnforcer(
 )
 
 
-# ------------------------------------------------------------------------------
-# Public hardened wrapper — NEVER raises
-# ------------------------------------------------------------------------------
-
-
 async def verify_intent_hardened(
     text: str,
     ctx_meta: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """
-    Enforces caps, budgets, breaker, timeout (with one jittered retry),
-    and maps outcomes to deterministic fallbacks + headers.
-    """
     ctx = _ctx_from_meta(ctx_meta)
     est_tokens = _estimate_tokens(text)
     timeout_ms = int(VERIFIER_TIMEOUT_MS)
     incident_id: Optional[str] = None
     last_err: Optional[Exception] = None
 
-    # Precheck: convert all failures to fallback
     try:
         _ENFORCER.precheck(ctx, est_tokens)
     except Exception as e:  # noqa: BLE001
@@ -308,12 +322,9 @@ async def verify_intent_hardened(
         return outcome, headers
 
     async def _delegate() -> Dict[str, Any]:
-        # runtime import so tests can monkeypatch this symbol
         from app.services.verifier import verify_intent as _verify_intent
-
         return await _verify_intent(text, ctx_meta)
 
-    # Try once; optionally retry transiently
     for attempt in (1, 2):
         try:
             result: Dict[str, Any] = await _call_under_timeout(_delegate(), timeout_ms)
@@ -396,4 +407,3 @@ async def verify_intent_hardened(
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
     return outcome, headers
-
