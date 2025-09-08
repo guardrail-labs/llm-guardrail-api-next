@@ -3,49 +3,99 @@ from __future__ import annotations
 import asyncio
 import math
 import random
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
 from app.services.verifier_limits import (
-    VerifierContext,
-    VerifierEnforcer,
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
+    VerifierContext,
+    VerifierEnforcer,
     VerifierLimitError,
     VerifierTimeoutError,
     new_incident_id,
 )
 from app.settings import (
-    VERIFIER_TIMEOUT_MS,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_CIRCUIT_COOLDOWN_S,
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
-    VERIFIER_CIRCUIT_COOLDOWN_S,
+    VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_TIMEOUT_MS,
 )
 
 __all__ = [
+    # hardened wrapper
     "verify_intent_hardened",
     "verify_intent",
+    # re-exported verifier symbols used by routes
+    "content_fingerprint",
+    "Verdict",
+    "Verifier",
+    "is_known_harmful",
+    "load_providers_order",
+    "mark_harmful",
+    "verifier_enabled",
 ]
 
 # ------------------------------------------------------------------------------
-# Optional/placeholder base verifier (tests will monkeypatch this function).
-# In production, replace this stub with your actual implementation or import it.
+# Re-export verifier symbols so route imports remain stable.
+# If a concrete implementation exists, import it; otherwise provide safe stubs.
+# ------------------------------------------------------------------------------
+
+try:
+    # If you have a concrete module, these imports will win.
+    from .core import (  # type: ignore
+        content_fingerprint,
+        Verdict,
+        Verifier,
+        is_known_harmful,
+        load_providers_order,
+        mark_harmful,
+        verifier_enabled,
+    )
+except Exception:
+    # Fallback lightweight types/impls to satisfy mypy and callers.
+    class Verdict(NamedTuple):
+        safe: bool
+        reason: str
+
+    class Verifier(Protocol):
+        async def verify(self, text: str, ctx_meta: Dict[str, Any]) -> Verdict: ...
+
+    def content_fingerprint(text: str) -> str:
+        # Stable but simple fingerprint (replace with real impl where available)
+        return f"fp:{abs(hash(text)) % 10**12}"
+
+    def is_known_harmful(fp: str) -> bool:
+        return False
+
+    def mark_harmful(fp: str) -> None:
+        return None
+
+    def load_providers_order() -> List[str]:
+        return []
+
+    def verifier_enabled() -> bool:
+        return True
+
+# ------------------------------------------------------------------------------
+# Optional/placeholder base verifier (tests often monkeypatch this function).
+# In production, replace with your real implementation or import it here.
 # ------------------------------------------------------------------------------
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Placeholder verifier. Replace with your real implementation or ensure tests
-    monkeypatch this symbol.
+    Placeholder verifier. Replace with the real implementation or ensure tests
+    monkeypatch this function.
 
     Expected return shape:
-    {
-      "status": "safe" | "unsafe" | "ambiguous",
-      "reason": str,
-      "tokens_used": int
-    }
+      {
+        "status": "safe" | "unsafe" | "ambiguous",
+        "reason": str,
+        "tokens_used": int
+      }
     """
     raise NotImplementedError(
         "verify_intent is a stub here. Provide a real implementation or monkeypatch in tests."
@@ -129,12 +179,13 @@ async def verify_intent_hardened(
       - per-request token cap
       - daily budget
       - circuit breaker
-      - total timeout (with at most one jittered retry)
+      - total timeout (<= VERIFIER_TIMEOUT_MS) with one jittered retry
       - consistent outcome mapping + audit + headers
 
     Returns: (outcome, header_overrides)
 
-    This function NEVER raises; it always converts failures into deterministic fallbacks.
+    This function NEVER raises; it always converts failures into deterministic
+    fallbacks with audit and headers.
     """
     ctx = _ctx_from_meta(ctx_meta)
     est_tokens = _estimate_tokens(text)
@@ -145,18 +196,18 @@ async def verify_intent_hardened(
     # Precheck must not leak exceptions: convert to fallback deterministically
     try:
         _ENFORCER.precheck(ctx, est_tokens)
-    except Exception as e:  # noqa: BLE001 - we want a single fallback path
+    except Exception as e:  # noqa: BLE001
         last_err = e
         incident_id = incident_id or new_incident_id()
         emit_audit_event(
-            "verifier_fallback",
             {
+                "event": "verifier_fallback",
                 "tenant_id": ctx.tenant_id,
                 "bot_id": ctx.bot_id,
                 "incident_id": incident_id,
                 "error": type(e).__name__,
                 "stage": "precheck",
-            },
+            }
         )
         outcome = _map_error_to_outcome(last_err)
         headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
@@ -164,9 +215,7 @@ async def verify_intent_hardened(
 
     async def _delegate() -> Dict[str, Any]:
         # Import at runtime so tests can monkeypatch app.services.verifier.verify_intent
-        from app.services.verifier import (  # type: ignore
-            verify_intent as _verify_intent,
-        )
+        from app.services.verifier import verify_intent as _verify_intent
         return await _verify_intent(text, ctx_meta)
 
     # Try once (timeboxed), maybe retry if transient and time remains
@@ -181,14 +230,14 @@ async def verify_intent_hardened(
                 last_err = e
                 incident_id = incident_id or new_incident_id()
                 emit_audit_event(
-                    "verifier_fallback",
                     {
+                        "event": "verifier_fallback",
                         "tenant_id": ctx.tenant_id,
                         "bot_id": ctx.bot_id,
                         "incident_id": incident_id,
                         "error": type(e).__name__,
                         "stage": "post_consume",
-                    },
+                    }
                 )
                 break  # leave loop, produce fallback below
 
@@ -206,12 +255,12 @@ async def verify_intent_hardened(
             last_err = e
             incident_id = incident_id or new_incident_id()
             emit_audit_event(
-                "verifier_timeout",
                 {
+                    "event": "verifier_timeout",
                     "tenant_id": ctx.tenant_id,
                     "bot_id": ctx.bot_id,
                     "incident_id": incident_id,
-                },
+                }
             )
             # Single quick retry if first attempt and window is not tiny
             if attempt == 1 and timeout_ms > 600:
@@ -234,13 +283,13 @@ async def verify_intent_hardened(
             # Non-transient: mark a failure for circuit breaker and fall back
             state = _ENFORCER.on_failure(ctx)
             emit_audit_event(
-                "verifier_error",
                 {
+                    "event": "verifier_error",
                     "tenant_id": ctx.tenant_id,
                     "bot_id": ctx.bot_id,
                     "state": state,
                     "error": type(e).__name__,
-                },
+                }
             )
             break
 
@@ -248,14 +297,14 @@ async def verify_intent_hardened(
     outcome = _map_error_to_outcome(last_err)
     incident_id = incident_id or new_incident_id()
     emit_audit_event(
-        "verifier_fallback",
         {
+            "event": "verifier_fallback",
             "tenant_id": ctx.tenant_id,
             "bot_id": ctx.bot_id,
             "incident_id": incident_id,
             "error": type(last_err).__name__ if last_err else "unknown",
             "stage": "delegate_or_retry",
-        },
+        }
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
     return outcome, headers
