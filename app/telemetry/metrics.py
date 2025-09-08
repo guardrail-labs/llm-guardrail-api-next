@@ -414,6 +414,34 @@ def export_family_breakdown_lines() -> List[str]:
 def get_metric(name: str) -> Any:
     return _registry_map().get(name)
 
+# --- Hidden-text scanning telemetry ------------------------------------------
+
+# New generic hidden-text counters (format: 'html' | 'docx' | 'pdf' ...)
+guardrail_hidden_text_total: CounterLike = _mk_counter(
+    "guardrail_hidden_text_total",
+    "Hidden text detections by format and reason.",
+    ["format", "reason"],
+)
+guardrail_hidden_text_bytes_total: CounterLike = _mk_counter(
+    "guardrail_hidden_text_bytes_total",
+    "Total bytes processed for hidden-text scans by format.",
+    ["format"],
+)
+
+
+def inc_hidden_text(fmt: str, reason: str) -> None:
+    guardrail_hidden_text_total.labels(
+        str(fmt or "unknown"), str(reason or "unknown")
+    ).inc()
+
+
+def add_hidden_text_bytes(fmt: str, n: int | float) -> None:
+    try:
+        v = float(n)
+    except Exception:
+        v = 0.0
+    guardrail_hidden_text_bytes_total.labels(str(fmt or "unknown")).inc(v)
+
 # --- PDF hidden-text telemetry ------------------------------------------------
 # Placed here to avoid touching existing counters and keep diff minimal.
 
