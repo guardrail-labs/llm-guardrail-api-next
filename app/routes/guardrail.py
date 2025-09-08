@@ -319,6 +319,7 @@ def _respond_legacy_allow(
     headers = {
         "X-Guardrail-Policy-Version": policy_version,
         "X-Guardrail-Ingress-Action": "allow",
+        "X-Guardrail-Ingress-Redactions": str(int(redactions)),
     }
     return JSONResponse(body, headers=headers)
 
@@ -345,6 +346,7 @@ def _respond_legacy_block(
         "X-Guardrail-Policy-Version": policy_version,
         # Legacy "block" maps to a deny decision in headers.
         "X-Guardrail-Ingress-Action": "deny",
+        "X-Guardrail-Ingress-Redactions": str(int(redactions)),
     }
     return JSONResponse(body, headers=headers)
 
@@ -860,7 +862,10 @@ async def guardrail_evaluate(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=mods,
-        extra_headers={"X-Guardrail-Ingress-Action": action},
+        extra_headers={
+            "X-Guardrail-Ingress-Action": action,
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
+        },
     )
 
 
@@ -957,7 +962,10 @@ async def guardrail_evaluate_multipart(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=mods,
-        extra_headers={"X-Guardrail-Ingress-Action": action},
+        extra_headers={
+            "X-Guardrail-Ingress-Action": action,
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count)),
+        },
     )
 
 
@@ -1038,5 +1046,8 @@ async def guardrail_egress(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=None,
-        extra_headers={"X-Guardrail-Egress-Action": action},
+        extra_headers={
+            "X-Guardrail-Egress-Action": action,
+            "X-Guardrail-Egress-Redactions": str(int(redaction_count)),
+        },
     )
