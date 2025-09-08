@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
+from app.services.verifier.providers.base import Provider
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -23,14 +24,13 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_PROVIDERS,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
     VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_PROVIDERS,
+    VERIFIER_TIMEOUT_MS,
 )
-from app.services.verifier.providers.base import Provider
 
 __all__ = [
     "verify_intent_hardened",
@@ -241,9 +241,70 @@ def verifier_enabled() -> bool:
 # ------------------------------------------------------------------------------
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
-    raise NotImplementedError(
-        "verify_intent is a stub; either use Verifier pipeline or monkeypatch in tests."
-    )
+    """
+    Provider-backed intent verification returning the legacy dict shape:
+      {"status": "safe" | "unsafe" | "ambiguous", "reason": str, "tokens_used": int}
+    Uses VERIFIER_PROVIDERS order with per-provider timebox.
+    Emits outcome metrics per provider.
+    Never raises; timeouts and errors fail over to next provider.
+    """
+    from app.services.verifier.providers import build_provider  # lazy import
+    from app.telemetry.metrics import inc_verifier_outcome
+
+    provider_names = load_providers_order()
+    est_tokens = max(1, len(text) // 4)
+    timeout_s = max(0.05, float(VERIFIER_PROVIDER_TIMEOUT_MS) / 1000.0)
+
+    last_provider: Optional[str] = None
+
+    for name in provider_names:
+        prov = build_provider(name)
+        if prov is None:
+            continue
+        last_provider = getattr(prov, "name", None) or name or "unknown"
+
+        try:
+            async def _run() -> Dict[str, Any]:
+                return await prov.assess(text, meta=ctx_meta)
+
+            import time
+
+            t0 = time.perf_counter()
+            res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
+            try:
+                from app.telemetry.metrics import observe_verifier_latency
+
+                observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
+            except Exception:  # pragma: no cover - metrics shouldn't fail pipeline
+                pass
+        except asyncio.CancelledError:
+            # Propagate cancellation promptly.
+            raise
+        except Exception:
+            # Fail over on any other error.
+            continue
+
+        status = str(res.get("status") or "ambiguous").lower()
+        reason = str(res.get("reason") or "")
+        tokens_used = int(res.get("tokens_used") or est_tokens)
+
+        # Metric per provider outcome
+        try:
+            inc_verifier_outcome(str(last_provider), status)
+        except Exception:  # pragma: no cover - metrics shouldn't fail pipeline
+            pass
+
+        # Return on decisive outcome; else try next provider
+        if status in ("safe", "unsafe"):
+            return {"status": status, "reason": reason, "tokens_used": tokens_used}
+
+    # All providers missing/failed/ambiguous
+    if last_provider:
+        try:
+            inc_verifier_outcome(str(last_provider), "ambiguous")
+        except Exception:  # pragma: no cover
+            pass
+    return {"status": "ambiguous", "reason": "", "tokens_used": est_tokens}
 
 
 # ------------------------------------------------------------------------------
