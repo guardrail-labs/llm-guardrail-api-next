@@ -29,7 +29,7 @@ __all__ = [
     # hardened wrapper
     "verify_intent_hardened",
     "verify_intent",
-    # re-exported verifier symbols used by routes
+    # exported verifier symbols used by routes
     "content_fingerprint",
     "Verdict",
     "Verifier",
@@ -40,45 +40,38 @@ __all__ = [
 ]
 
 # ------------------------------------------------------------------------------
-# Re-export verifier symbols so route imports remain stable.
-# If a concrete implementation exists, import it; otherwise provide safe stubs.
+# Minimal, typed exports so existing route imports remain stable.
+# If you have concrete implementations elsewhere, you can replace these.
 # ------------------------------------------------------------------------------
 
-try:
-    # If you have a concrete module, these imports will win.
-    from .core import (  # type: ignore
-        content_fingerprint,
-        Verdict,
-        Verifier,
-        is_known_harmful,
-        load_providers_order,
-        mark_harmful,
-        verifier_enabled,
-    )
-except Exception:
-    # Fallback lightweight types/impls to satisfy mypy and callers.
-    class Verdict(NamedTuple):
-        safe: bool
-        reason: str
+class Verdict(NamedTuple):
+    safe: bool
+    reason: str
 
-    class Verifier(Protocol):
-        async def verify(self, text: str, ctx_meta: Dict[str, Any]) -> Verdict: ...
 
-    def content_fingerprint(text: str) -> str:
-        # Stable but simple fingerprint (replace with real impl where available)
-        return f"fp:{abs(hash(text)) % 10**12}"
+class Verifier(Protocol):
+    async def verify(self, text: str, ctx_meta: Dict[str, Any]) -> Verdict: ...
 
-    def is_known_harmful(fp: str) -> bool:
-        return False
 
-    def mark_harmful(fp: str) -> None:
-        return None
+def content_fingerprint(text: str) -> str:
+    # Stable but simple fingerprint (swap with your stronger impl as needed)
+    return f"fp:{abs(hash(text)) % 10**12}"
 
-    def load_providers_order() -> List[str]:
-        return []
 
-    def verifier_enabled() -> bool:
-        return True
+def is_known_harmful(fp: str) -> bool:
+    return False
+
+
+def mark_harmful(fp: str) -> None:
+    return None
+
+
+def load_providers_order() -> List[str]:
+    return []
+
+
+def verifier_enabled() -> bool:
+    return True
 
 # ------------------------------------------------------------------------------
 # Optional/placeholder base verifier (tests often monkeypatch this function).
@@ -98,7 +91,8 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
       }
     """
     raise NotImplementedError(
-        "verify_intent is a stub here. Provide a real implementation or monkeypatch in tests."
+        "verify_intent is a stub here. Provide a real implementation or "
+        "monkeypatch in tests."
     )
 
 # ------------------------------------------------------------------------------
