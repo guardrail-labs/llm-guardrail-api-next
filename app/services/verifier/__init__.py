@@ -242,14 +242,13 @@ def verifier_enabled() -> bool:
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Provider-backed intent verification returning the legacy dict shape:
-      {"status": "safe" | "unsafe" | "ambiguous", "reason": str, "tokens_used": int}
-    Uses VERIFIER_PROVIDERS order with per-provider timebox.
-    Emits outcome metrics per provider.
-    Never raises; timeouts and errors fail over to next provider.
+    Provider-backed verification. Returns legacy shape plus "provider":
+      {"status": "...", "reason": "...", "tokens_used": N, "provider": "name"}
     """
+    import time
+
     from app.services.verifier.providers import build_provider  # lazy import
-    from app.telemetry.metrics import inc_verifier_outcome
+    from app.telemetry.metrics import inc_verifier_outcome, observe_verifier_latency
 
     provider_names = load_providers_order()
     est_tokens = max(1, len(text) // 4)
@@ -267,44 +266,43 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             async def _run() -> Dict[str, Any]:
                 return await prov.assess(text, meta=ctx_meta)
 
-            import time
-
             t0 = time.perf_counter()
             res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
-            try:
-                from app.telemetry.metrics import observe_verifier_latency
-
-                observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
-            except Exception:  # pragma: no cover - metrics shouldn't fail pipeline
-                pass
+            observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
         except asyncio.CancelledError:
-            # Propagate cancellation promptly.
             raise
         except Exception:
-            # Fail over on any other error.
             continue
 
         status = str(res.get("status") or "ambiguous").lower()
         reason = str(res.get("reason") or "")
         tokens_used = int(res.get("tokens_used") or est_tokens)
 
-        # Metric per provider outcome
         try:
             inc_verifier_outcome(str(last_provider), status)
-        except Exception:  # pragma: no cover - metrics shouldn't fail pipeline
+        except Exception:
             pass
 
-        # Return on decisive outcome; else try next provider
         if status in ("safe", "unsafe"):
-            return {"status": status, "reason": reason, "tokens_used": tokens_used}
+            return {
+                "status": status,
+                "reason": reason,
+                "tokens_used": tokens_used,
+                "provider": str(last_provider),
+            }
 
-    # All providers missing/failed/ambiguous
     if last_provider:
         try:
             inc_verifier_outcome(str(last_provider), "ambiguous")
-        except Exception:  # pragma: no cover
+        except Exception:
             pass
-    return {"status": "ambiguous", "reason": "", "tokens_used": est_tokens}
+
+    return {
+        "status": "ambiguous",
+        "reason": "",
+        "tokens_used": est_tokens,
+        "provider": str(last_provider or "unknown"),
+    }
 
 
 # ------------------------------------------------------------------------------
@@ -352,6 +350,9 @@ def _map_headers_for_outcome(
     }
     if incident_id:
         headers["X-Guardrail-Incident-ID"] = incident_id
+    prov = outcome.get("provider")
+    if isinstance(prov, str) and prov:
+        headers["X-Guardrail-Verifier"] = prov
     return headers
 
 
@@ -379,6 +380,7 @@ async def verify_intent_hardened(
     except Exception as e:  # noqa: BLE001
         last_err = e
         incident_id = incident_id or new_incident_id()
+        outcome = _map_error_to_outcome(last_err)
         emit_audit_event(
             {
                 "event": "verifier_fallback",
@@ -387,9 +389,9 @@ async def verify_intent_hardened(
                 "incident_id": incident_id,
                 "error": type(e).__name__,
                 "stage": "precheck",
+                "verifier_provider": outcome.get("provider"),
             }
         )
-        outcome = _map_error_to_outcome(last_err)
         headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
         return outcome, headers
 
@@ -415,6 +417,7 @@ async def verify_intent_hardened(
                         "incident_id": incident_id,
                         "error": type(e).__name__,
                         "stage": "post_consume",
+                        "verifier_provider": result.get("provider"),
                     }
                 )
                 break
@@ -426,6 +429,9 @@ async def verify_intent_hardened(
                 "reason": str(result.get("reason") or ""),
                 "tokens_used": used,
             }
+            prov = result.get("provider")
+            if isinstance(prov, str) and prov:
+                outcome["provider"] = prov
             headers = _map_headers_for_outcome(outcome, incident_id=None)
             return outcome, headers
 
@@ -438,6 +444,7 @@ async def verify_intent_hardened(
                     "tenant_id": ctx.tenant_id,
                     "bot_id": ctx.bot_id,
                     "incident_id": incident_id,
+                    "verifier_provider": None,
                 }
             )
             if attempt == 1 and timeout_ms > 600:
@@ -462,6 +469,7 @@ async def verify_intent_hardened(
                     "bot_id": ctx.bot_id,
                     "state": state,
                     "error": type(e).__name__,
+                    "verifier_provider": None,
                 }
             )
             break
@@ -476,6 +484,7 @@ async def verify_intent_hardened(
             "incident_id": incident_id,
             "error": type(last_err).__name__ if last_err else "unknown",
             "stage": "delegate_or_retry",
+            "verifier_provider": outcome.get("provider"),
         }
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
