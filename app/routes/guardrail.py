@@ -610,6 +610,28 @@ async def _handle_upload_to_text(
             mods["file"] = mods.get("file", 0) + 1
             return f"[FILE:{name}]", name
 
+        # HTML
+        if ctype == "text/html" or ext in {"html", "htm"}:
+            raw = await obj.read()
+            try:
+                from app.services.detectors import html_hidden as _html_hidden
+                text = raw.decode("utf-8", errors="ignore")
+                hidden = _html_hidden.detect_hidden_text(text)
+                hidden_block = ""
+                if hidden.get("found"):
+                    reasons = ",".join(hidden.get("reasons") or []) or "detected"
+                    samples = " ".join(hidden.get("samples") or [])[:500]
+                hidden_block = (
+                    f"\n[HIDDEN_HTML_DETECTED:{reasons}]\n{samples}\n[HIDDEN_HTML_END]\n"
+                )
+                mods["file"] = mods.get("file", 0) + 1
+                # We don't render full HTML; we surface hidden beacons so existing
+                # redactors can act.
+                return hidden_block or f"[FILE:{name}]", name
+            except Exception:
+                mods["file"] = mods.get("file", 0) + 1
+                return f"[FILE:{name}]", name
+
         # Unknown file type -> generic marker
         mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]", name
