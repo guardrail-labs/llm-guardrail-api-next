@@ -4,7 +4,8 @@ import asyncio
 import math
 import random
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from threading import RLock
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
@@ -38,11 +39,9 @@ __all__ = [
     "verifier_enabled",
 ]
 
-
-# ---------------------------
+# ------------------------------------------------------------------------------
 # Minimal typed exports used by routes
-# ---------------------------
-
+# ------------------------------------------------------------------------------
 
 class Verdict(Enum):
     SAFE = "safe"
@@ -74,12 +73,26 @@ def content_fingerprint(text: str) -> str:
     return f"fp:{abs(hash(text)) % 10**12}"
 
 
+# ------------------------------------------------------------------------------
+# In-memory harmful-content cache (thread-safe)
+# ------------------------------------------------------------------------------
+
+_HARM_CACHE: Set[str] = set()
+_HARM_LOCK = RLock()
+
+
 def is_known_harmful(fp: str) -> bool:
-    return False
+    """Return True if the fingerprint is in the harmful cache."""
+    key = str(fp)
+    with _HARM_LOCK:
+        return key in _HARM_CACHE
 
 
 def mark_harmful(fp: str) -> None:
-    return None
+    """Record the fingerprint as harmful for future deny when verifier is down."""
+    key = str(fp)
+    with _HARM_LOCK:
+        _HARM_CACHE.add(key)
 
 
 def load_providers_order() -> List[str]:
@@ -89,11 +102,9 @@ def load_providers_order() -> List[str]:
 def verifier_enabled() -> bool:
     return True
 
-
-# ---------------------------
+# ------------------------------------------------------------------------------
 # Optional base verifier (tests typically monkeypatch this)
-# ---------------------------
-
+# ------------------------------------------------------------------------------
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -110,11 +121,9 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         "verify_intent is a stub here; provide a real impl or monkeypatch in tests."
     )
 
-
-# ---------------------------
+# ------------------------------------------------------------------------------
 # Hardened wrapper utilities
-# ---------------------------
-
+# ------------------------------------------------------------------------------
 
 def _ctx_from_meta(ctx_meta: Dict[str, Any]) -> VerifierContext:
     tenant_id = str(ctx_meta.get("tenant_id") or "unknown-tenant")
@@ -159,11 +168,9 @@ def _map_headers_for_outcome(
         headers["X-Guardrail-Incident-ID"] = incident_id
     return headers
 
-
-# ---------------------------
+# ------------------------------------------------------------------------------
 # Process-wide enforcer
-# ---------------------------
-
+# ------------------------------------------------------------------------------
 
 _ENFORCER = VerifierEnforcer(
     max_tokens_per_request=VERIFIER_MAX_TOKENS_PER_REQUEST,
@@ -173,11 +180,9 @@ _ENFORCER = VerifierEnforcer(
     breaker_cooldown_s=VERIFIER_CIRCUIT_COOLDOWN_S,
 )
 
-
-# ---------------------------
+# ------------------------------------------------------------------------------
 # Public hardened wrapper — NEVER raises
-# ---------------------------
-
+# ------------------------------------------------------------------------------
 
 async def verify_intent_hardened(
     text: str,
@@ -187,7 +192,6 @@ async def verify_intent_hardened(
     Enforces caps, budgets, breaker, timeout (with one jittered retry),
     and maps outcomes to deterministic fallbacks + headers.
     """
-
     ctx = _ctx_from_meta(ctx_meta)
     est_tokens = _estimate_tokens(text)
     timeout_ms = int(VERIFIER_TIMEOUT_MS)
@@ -217,7 +221,6 @@ async def verify_intent_hardened(
     async def _delegate() -> Dict[str, Any]:
         # runtime import so tests can monkeypatch this symbol
         from app.services.verifier import verify_intent as _verify_intent
-
         return await _verify_intent(text, ctx_meta)
 
     # Try once; optionally retry transiently
@@ -303,4 +306,3 @@ async def verify_intent_hardened(
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
     return outcome, headers
-
