@@ -23,6 +23,17 @@ VERIFIER_PROVIDER_TIMEOUT_MS = int(
     os.getenv("VERIFIER_PROVIDER_TIMEOUT_MS", "1600") or "1600"
 )
 
+# Per-provider breaker config
+VERIFIER_PROVIDER_BREAKER_FAILS = int(
+    os.getenv("VERIFIER_PROVIDER_BREAKER_FAILS", "5") or "5"
+)
+VERIFIER_PROVIDER_BREAKER_WINDOW_S = int(
+    os.getenv("VERIFIER_PROVIDER_BREAKER_WINDOW_S", "60") or "60"
+)
+VERIFIER_PROVIDER_BREAKER_COOLDOWN_S = int(
+    os.getenv("VERIFIER_PROVIDER_BREAKER_COOLDOWN_S", "30") or "30"
+)
+
 # Anthropic provider (optional)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 VERIFIER_ANTHROPIC_MODEL = os.getenv(
