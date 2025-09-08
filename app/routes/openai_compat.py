@@ -412,6 +412,7 @@ async def chat_completions(
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": "allow",
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
         }
         return StreamingResponse(gen(), headers=headers)
 
@@ -479,6 +480,7 @@ async def chat_completions(
     response.headers["X-Guardrail-Ingress-Action"] = ingress_action
     response.headers["X-Guardrail-Egress-Action"] = e_action
     response.headers["X-Guardrail-Egress-Redactions"] = str(e_reds)
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
 
     return oai_resp
 
@@ -634,6 +636,7 @@ async def images_generations(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
 
     return {"created": now_ts, "data": data}
 
@@ -776,6 +779,7 @@ async def images_edits(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
 
     return {"created": now_ts, "data": data}
 
@@ -918,6 +922,7 @@ async def images_variations(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
 
     return {"created": now_ts, "data": data}
 
@@ -1018,9 +1023,11 @@ async def create_moderation(
     now_ts = int(time.time())
 
     results: List[Dict[str, Any]] = []
+    total_redactions = 0
 
     for item in body.input:
         sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
+        total_redactions += int(redaction_count or 0)
         if threat_feed_enabled():
             dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
             sanitized = dyn_text
@@ -1030,6 +1037,7 @@ async def create_moderation(
                 fams = sorted(base)
             if dyn_reds:
                 redaction_count = (redaction_count or 0) + dyn_reds
+                total_redactions += int(dyn_reds or 0)
 
         det = evaluate_prompt(sanitized)
         det_action = str(det.get("action", "allow"))
@@ -1101,6 +1109,7 @@ async def create_moderation(
     response.headers["X-Guardrail-Ingress-Action"] = "deny" if final_flag else "allow"
     response.headers["X-Guardrail-Egress-Action"] = "skipped"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(total_redactions))
 
     return {
         "id": f"modr-{uuid.uuid4().hex[:12]}",
@@ -1151,9 +1160,11 @@ async def create_embeddings(
     dim = int(_os.environ.get("OAI_COMPAT_EMBED_DIM") or "1536")
 
     data: List[Dict[str, Any]] = []
+    total_redactions = 0
 
     for idx, item in enumerate(body.input):
         sanitized, fams, redaction_count, _ = sanitize_text(item, debug=want_debug)
+        total_redactions += int(redaction_count or 0)
         if threat_feed_enabled():
             dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
             sanitized = dyn_text
@@ -1163,6 +1174,7 @@ async def create_embeddings(
                 fams = sorted(base)
             if dyn_reds:
                 redaction_count = (redaction_count or 0) + dyn_reds
+                total_redactions += int(dyn_reds or 0)
 
         det = evaluate_prompt(sanitized)
         det_action = str(det.get("action", "allow"))
@@ -1224,6 +1236,7 @@ async def create_embeddings(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(total_redactions))
 
     return {
         "object": "list",
@@ -1408,6 +1421,7 @@ async def completions(
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": e_action,
             "X-Guardrail-Egress-Redactions": str(e_reds),
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
         }
         return StreamingResponse(gen(), headers=headers)
 
@@ -1424,5 +1438,6 @@ async def completions(
     response.headers["X-Guardrail-Ingress-Action"] = ingress_action
     response.headers["X-Guardrail-Egress-Action"] = e_action
     response.headers["X-Guardrail-Egress-Redactions"] = str(e_reds)
+    response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
 
     return resp
