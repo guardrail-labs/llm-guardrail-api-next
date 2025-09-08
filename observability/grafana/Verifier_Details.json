@@ -1,0 +1,47 @@
+{
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Verifier Invocations",
+      "targets": [
+        { "expr": "rate(guardrail_verifier_invocations_total[5m])" }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Verifier Skipped (by reason)",
+      "targets": [
+        { "expr": "sum by (reason) (rate(guardrail_verifier_skipped_total[5m]))" }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Verifier Errors (by kind)",
+      "targets": [
+        { "expr": "sum by (kind) (rate(guardrail_verifier_errors_total[5m]))" }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Verifier Latency P95",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(guardrail_verifier_latency_ms_bucket[5m])))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "title": "Guardrail — Verifier Details",
+  "uid": "guardrail-verifier-v1",
+  "version": 1
+}
