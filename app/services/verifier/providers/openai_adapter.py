@@ -7,8 +7,8 @@ from typing import Any, Dict, Optional
 class OpenAIProvider:
     """
     Optional provider that calls OpenAI. No hard dependency:
-    - If SDK/env missing -> raises at construct-time and will be skipped
-      by the factory.
+    - If SDK/env missing -> raises at construct-time and will be skipped by
+      the factory.
     - If runtime error -> Verifier will catch and fail over.
     """
 
@@ -19,20 +19,16 @@ class OpenAIProvider:
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY missing")
         # Lazy import; do not pin types
-        try:
-            import openai  # type: ignore
-        except Exception as e:  # pragma: no cover
-            raise RuntimeError("openai SDK not installed") from e
+        import openai  # mypy treats this as Any (no stubs required)
         self._openai = openai
         self._openai.api_key = api_key
 
-    async def assess(self, text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        # NOTE: Keep simple; map provider output to our schema.
-        # Replace with your actual prompt & model.
+    async def assess(
+        self, text: str, meta: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        # Minimal mapping; replace with real SDK call as needed.
         prompt = f"Classify the user intent as safe/unsafe/ambiguous:\n\n{text}"
         try:
-            # Minimal pseudo-call; adapt to your SDK version as needed.
-            # We do not assume async SDK; you may wrap in anyio.to_thread if needed.
             resp = await _call_openai_chat(self._openai, prompt)
             label = str(resp.get("label", "ambiguous")).lower()
             reason = str(resp.get("reason") or "")
