@@ -265,6 +265,7 @@ def _respond_action(
     debug: Optional[Dict[str, Any]] = None,
     redaction_count: int = 0,
     modalities: Optional[Dict[str, int]] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     m.inc_decisions_total(fam)
@@ -292,6 +293,8 @@ def _respond_action(
         body["debug"] = debug
     body = apply_injection_default(body)
     headers = {"X-Guardrail-Policy-Version": current_rules_version()}
+    if extra_headers:
+        headers.update(extra_headers)
     return JSONResponse(body, headers=headers)
 
 
@@ -313,7 +316,10 @@ def _respond_legacy_allow(
         "redactions": int(redactions),
     }
     # Parity with newer endpoints: always expose active policy version in a header.
-    headers = {"X-Guardrail-Policy-Version": policy_version}
+    headers = {
+        "X-Guardrail-Policy-Version": policy_version,
+        "X-Guardrail-Ingress-Action": "allow",
+    }
     return JSONResponse(body, headers=headers)
 
 
@@ -335,7 +341,11 @@ def _respond_legacy_block(
         "redactions": int(redactions),
     }
     # Parity with newer endpoints: always expose active policy version in a header.
-    headers = {"X-Guardrail-Policy-Version": policy_version}
+    headers = {
+        "X-Guardrail-Policy-Version": policy_version,
+        # Legacy "block" maps to a deny decision in headers.
+        "X-Guardrail-Ingress-Action": "deny",
+    }
     return JSONResponse(body, headers=headers)
 
 
@@ -850,6 +860,7 @@ async def guardrail_evaluate(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=mods,
+        extra_headers={"X-Guardrail-Ingress-Action": action},
     )
 
 
@@ -946,6 +957,7 @@ async def guardrail_evaluate_multipart(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=mods,
+        extra_headers={"X-Guardrail-Ingress-Action": action},
     )
 
 
@@ -1026,4 +1038,5 @@ async def guardrail_egress(request: Request):
         dbg,
         redaction_count=redaction_count,
         modalities=None,
+        extra_headers={"X-Guardrail-Egress-Action": action},
     )
