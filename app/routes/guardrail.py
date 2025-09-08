@@ -312,6 +312,7 @@ def _respond_legacy_allow(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
+    # Parity with newer endpoints: always expose active policy version in a header.
     headers = {"X-Guardrail-Policy-Version": policy_version}
     return JSONResponse(body, headers=headers)
 
@@ -333,6 +334,7 @@ def _respond_legacy_block(
         "policy_version": policy_version,
         "redactions": int(redactions),
     }
+    # Parity with newer endpoints: always expose active policy version in a header.
     headers = {"X-Guardrail-Policy-Version": policy_version}
     return JSONResponse(body, headers=headers)
 
