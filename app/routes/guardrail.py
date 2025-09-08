@@ -525,16 +525,25 @@ async def _handle_upload_to_text(
             hidden = _pdf_hidden.detect_hidden_text(raw)
             hidden_block = ""
             if hidden.get("found"):
-                # per-reason counters
-                for r in (hidden.get("reasons", []) or []):
-                    m.add_pdf_hidden(str(r))
-                # bytes total for PDFs with hidden text
+                # Normalize reasons -> List[str]
+                reasons_any: Any = hidden.get("reasons") or []
+                if not isinstance(reasons_any, (list, tuple)):
+                    reasons_any = [reasons_any]
+                reasons_list: List[str] = [str(x) for x in reasons_any]
+
+                for r in reasons_list:
+                    m.add_pdf_hidden(r)
                 m.add_pdf_hidden_bytes(len(raw))
 
-                samples = hidden.get("samples", []) or []
+                # Normalize samples -> List[str]
+                samples_any: Any = hidden.get("samples") or []
+                if not isinstance(samples_any, (list, tuple)):
+                    samples_any = [samples_any]
+                samples_list: List[str] = [str(x) for x in samples_any]
+
                 # Keep short + bounded; samples feed into redactors downstream.
-                joined = " ".join(samples)[:500]
-                reasons = ",".join(hidden.get("reasons", []) or []) or "detected"
+                joined = " ".join(samples_list)[:500]
+                reasons = ",".join(reasons_list) or "detected"
                 hidden_block = (
                     f"\n[HIDDEN_TEXT_DETECTED:{reasons}]\n{joined}\n[HIDDEN_TEXT_END]\n"
                 )
