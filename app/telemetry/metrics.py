@@ -316,9 +316,49 @@ def get_decisions_family_total(family: str) -> float:
 
 
 def export_verifier_lines() -> List[str]:
-    # Kept simple for tests that just expect some plain lines.
-    # If you need richer detail later, extend this.
-    return []
+    """
+    Emit Prometheus-style plaintext for guardrail_verifier_outcome_total.
+
+    Works with both the real ``prometheus_client`` and the in-process shim.
+    """
+    name = "guardrail_verifier_outcome_total"
+    coll = get_metric(name)
+    if coll is None:
+        return []
+
+    lines: List[str] = []
+    lines.append("# HELP guardrail_verifier_outcome_total Verifier outcome totals.")
+    lines.append("# TYPE guardrail_verifier_outcome_total counter")
+    try:
+        if _PROM_OK and hasattr(coll, "collect"):
+            # Use the collector's samples from prometheus_client.
+            for mf in coll.collect():  # type: ignore[attr-defined]
+                for s in getattr(mf, "samples", []):
+                    # Only the *_total sample contains the counter value.
+                    if not str(s.name).endswith("_total"):
+                        continue
+                    labels = dict(getattr(s, "labels", {}) or {})
+                    verifier = str(labels.get("verifier", ""))
+                    outcome = str(labels.get("outcome", ""))
+                    value = float(getattr(s, "value", 0.0))
+                    lines.append(
+                        f'{name}{{verifier="{verifier}",outcome="{outcome}"}} {value}'
+                    )
+        else:
+            # Shim path: walk child counters.
+            children = getattr(coll, "_children", {})  # type: ignore[attr-defined]
+            for key, child in sorted(children.items()):
+                verifier = str(key[0]) if len(key) > 0 else ""
+                outcome = str(key[1]) if len(key) > 1 else ""
+                value = float(getattr(child, "_value", 0.0))
+                lines.append(
+                    f'{name}{{verifier="{verifier}",outcome="{outcome}"}} {value}'
+                )
+    except Exception:
+        # Best-effort only.
+        return []
+
+    return lines
 
 
 def _aggregate_tenant_totals() -> Dict[Tuple[str, str], float]:
