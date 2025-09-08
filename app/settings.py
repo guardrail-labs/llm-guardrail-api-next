@@ -28,3 +28,10 @@ VERIFIER_HARM_CACHE_URL = os.getenv("VERIFIER_HARM_CACHE_URL", "").strip()
 # Days to keep a harmful fingerprint in the cache (default 90 days)
 VERIFIER_HARM_TTL_DAYS = int(os.getenv("VERIFIER_HARM_TTL_DAYS", "90") or "90")
 
+# Hidden-text scanning (opt-in)
+HIDDEN_TEXT_SCAN = (os.getenv("HIDDEN_TEXT_SCAN", "0").strip() == "1")
+# Soft size cap for scans (bytes); 0 disables cap
+HIDDEN_TEXT_SCAN_MAX_BYTES = int(
+    os.getenv("HIDDEN_TEXT_SCAN_MAX_BYTES", "1048576") or "0"
+)
+
