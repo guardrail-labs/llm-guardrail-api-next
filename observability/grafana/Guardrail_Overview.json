@@ -1,0 +1,46 @@
+{
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Requests by Decision Family",
+      "targets": [
+        { "expr": "sum by (family) (rate(guardrail_decisions_total[5m]))" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "req/s" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Redactions by Direction",
+      "targets": [
+        { "expr": "sum by (direction) (rate(guardrail_redactions_total[5m]))" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "1/s" } },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "bargauge",
+      "title": "Top Tenants/Bots (5m)",
+      "targets": [
+        { "expr": "topk(10, sum by (tenant,bot) (rate(guardrail_decision_family_tenant_bot_total[5m])))" }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "PDF Hidden Text Detections by Reason",
+      "targets": [
+        { "expr": "sum by (reason) (rate(guardrail_pdf_hidden_total[5m]))" }
+      ],
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 14 }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "title": "Guardrail — Overview",
+  "uid": "guardrail-overview-v1",
+  "version": 1
+}
