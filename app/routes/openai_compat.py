@@ -182,6 +182,24 @@ def _chunk_text(s: str, max_len: int) -> List[str]:
     return out
 
 
+def _reason_hints(rule_hits: Optional[Union[List[str], Dict[str, Any]]]) -> str:
+    """
+    Build a compact, bounded CSV of reason keys for headers.
+    Accepts either a list of strings, a dict[tag] -> [...patterns], or None.
+    """
+    if not rule_hits:
+        return ""
+    if isinstance(rule_hits, dict):
+        keys = list(rule_hits.keys())
+    elif isinstance(rule_hits, list):
+        keys = [str(x) for x in rule_hits]
+    else:
+        keys = [str(rule_hits)]
+    # Normalize and bound to avoid header bloat
+    out = ",".join(sorted(set(keys)))
+    return out[:200]
+
+
 # ---------------------------
 # Routes
 # ---------------------------
@@ -415,6 +433,9 @@ async def chat_completions(
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
             "X-Guardrail-Tenant": tenant_id,
             "X-Guardrail-Bot": bot_id,
+            # Reason hits & egress redactions finalize at end; keep parity with empties during SSE.
+            "X-Guardrail-Reason-Hints": "",
+            "X-Guardrail-Egress-Redactions": "0",
         }
         return StreamingResponse(gen(), headers=headers)
 
@@ -482,6 +503,7 @@ async def chat_completions(
     response.headers["X-Guardrail-Ingress-Action"] = ingress_action
     response.headers["X-Guardrail-Egress-Action"] = e_action
     response.headers["X-Guardrail-Egress-Redactions"] = str(e_reds)
+    response.headers["X-Guardrail-Reason-Hints"] = _reason_hints(e_hits)
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
@@ -640,6 +662,7 @@ async def images_generations(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Reason-Hints"] = ""
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
@@ -785,6 +808,7 @@ async def images_edits(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Reason-Hints"] = ""
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
@@ -930,6 +954,7 @@ async def images_variations(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Reason-Hints"] = ""
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
@@ -1248,6 +1273,7 @@ async def create_embeddings(
     response.headers["X-Guardrail-Ingress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Action"] = "allow"
     response.headers["X-Guardrail-Egress-Redactions"] = "0"
+    response.headers["X-Guardrail-Reason-Hints"] = ""
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(total_redactions))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
@@ -1438,6 +1464,8 @@ async def completions(
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
             "X-Guardrail-Tenant": tenant_id,
             "X-Guardrail-Bot": bot_id,
+            # We’re chunking a precomputed string here; still keep hints empty for consistency.
+            "X-Guardrail-Reason-Hints": "",
         }
         return StreamingResponse(gen(), headers=headers)
 
@@ -1454,6 +1482,7 @@ async def completions(
     response.headers["X-Guardrail-Ingress-Action"] = ingress_action
     response.headers["X-Guardrail-Egress-Action"] = e_action
     response.headers["X-Guardrail-Egress-Redactions"] = str(e_reds)
+    response.headers["X-Guardrail-Reason-Hints"] = _reason_hints(e_hits)
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
