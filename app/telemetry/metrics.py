@@ -171,6 +171,12 @@ guardrail_verifier_outcome_total: CounterLike = _mk_counter(
     "guardrail_verifier_outcome_total", "Verifier outcome totals.", ["verifier", "outcome"]
 )
 
+guardrail_verifier_latency_seconds: HistogramLike = _mk_histogram(
+    "guardrail_verifier_latency_seconds",
+    "Verifier provider latency (seconds).",
+    ["verifier"],
+)
+
 # OCR observability (optional, lightweight)
 guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "guardrail_ocr_extractions_total",
@@ -258,6 +264,10 @@ def inc_decision_family_tenant_bot(family: str, tenant: str, bot: str) -> None:
 
 def inc_verifier_outcome(verifier: str, outcome: str) -> None:
     guardrail_verifier_outcome_total.labels(verifier, outcome).inc()
+
+
+def observe_verifier_latency(verifier: str, seconds: float) -> None:
+    guardrail_verifier_latency_seconds.labels(str(verifier or "unknown")).observe(float(seconds))
 
 
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
