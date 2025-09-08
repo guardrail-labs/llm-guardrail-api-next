@@ -5,7 +5,7 @@ import math
 import random
 from enum import Enum
 from threading import RLock
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import map_verifier_outcome_to_action
@@ -23,13 +23,14 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_PROVIDER_TIMEOUT_MS,
     VERIFIER_PROVIDERS,
-    VERIFIER_TIMEOUT_MS,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
 )
+from app.services.verifier.providers.base import Provider
 
 __all__ = [
     "verify_intent_hardened",
@@ -47,38 +48,37 @@ __all__ = [
 # Minimal typed exports used by routes
 # ------------------------------------------------------------------------------
 
-
 class Verdict(Enum):
     SAFE = "safe"
     UNSAFE = "unsafe"
     UNCLEAR = "unclear"
 
 
-# Provider plumbing (avoid cycles by importing inside methods where needed)
+# Provider-backed verifier with ordered failover
 class Verifier:
     """
-    Provider-backed verifier with ordered failover and per-provider timebox.
-    Returns (Optional[Verdict], Optional[str]) where None indicates
-    no provider could be reached/constructed.
+    Returns (Optional[Verdict], Optional[str]) where None indicates no provider
+    could be reached/constructed.
     """
 
     def __init__(self, providers: Optional[List[str]] = None) -> None:
         self._provider_names = providers or []
         self._timeout_ms = int(VERIFIER_PROVIDER_TIMEOUT_MS)
-        self._providers = self._build_providers(self._provider_names)
+        self._providers: List[Provider] = self._build_providers(self._provider_names)
 
     @staticmethod
-    def _build_providers(names: List[str]) -> List[Any]:
+    def _build_providers(names: List[str]) -> List[Provider]:
         from app.services.verifier.providers import build_provider
-        out: List[Any] = []
+        out: List[Provider] = []
         for n in names:
             p = build_provider(n)
             if p is not None:
                 out.append(p)
         return out
 
-    async def _call_with_timebox(self, prov: Any, text: str,
-                                 meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _call_with_timebox(
+        self, prov: Provider, text: str, meta: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         async def _run() -> Dict[str, Any]:
             return await prov.assess(text, meta=meta)
 
@@ -113,7 +113,6 @@ class Verifier:
 
             status = str(result.get("status") or "ambiguous")
             verdict = self._map_status_to_verdict(status)
-            # Return on first decisive answer; otherwise keep trying.
             if verdict != Verdict.UNCLEAR:
                 return verdict, last_provider
 
@@ -123,7 +122,6 @@ class Verifier:
 # ------------------------------------------------------------------------------
 # Fingerprint + harmful cache (Redis hybrid from Task 1)
 # ------------------------------------------------------------------------------
-
 
 def content_fingerprint(text: str) -> str:
     return f"fp:{abs(hash(text)) % 10**12}"
@@ -135,6 +133,11 @@ _HARM_LOCK = RLock()
 
 def _harm_key(fp: str) -> str:
     return str(fp)
+
+
+class HarmStore(Protocol):
+    def is_known(self, fp: str) -> bool: ...
+    def mark(self, fp: str) -> None: ...
 
 
 class _MemoryHarmStore:
@@ -154,7 +157,7 @@ class _RedisHarmStore:
         self._ttl = int(max(1, ttl_seconds))
         self._cli = None
         try:
-            import redis  # type: ignore
+            import redis
             self._cli = redis.from_url(url, decode_responses=True)
         except Exception:
             self._cli = None
@@ -180,7 +183,7 @@ class _RedisHarmStore:
             return
 
 
-def _build_harm_store() -> Any:
+def _build_harm_store() -> HarmStore:
     url = (VERIFIER_HARM_CACHE_URL or "").strip()
     ttl_days = int(max(1, int(VERIFIER_HARM_TTL_DAYS or 90)))
     ttl_seconds = ttl_days * 24 * 60 * 60
@@ -205,11 +208,11 @@ def _build_harm_store() -> Any:
     return _MemoryHarmStore()
 
 
-_HARM_STORE = _build_harm_store()
+_HARM_STORE: HarmStore = _build_harm_store()
 
 
 def is_known_harmful(fp: str) -> bool:
-    return _HARM_STORE.is_known(fp)
+    return bool(_HARM_STORE.is_known(fp))
 
 
 def mark_harmful(fp: str) -> None:
@@ -228,7 +231,6 @@ def verifier_enabled() -> bool:
 # Optional base verifier (tests may monkeypatch)
 # ------------------------------------------------------------------------------
 
-
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     raise NotImplementedError(
         "verify_intent is a stub; either use Verifier pipeline or monkeypatch in tests."
@@ -237,7 +239,6 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
 # ------------------------------------------------------------------------------
 # Hardened wrapper (unchanged behavior)
 # ------------------------------------------------------------------------------
-
 
 def _ctx_from_meta(ctx_meta: Dict[str, Any]) -> VerifierContext:
     tenant_id = str(ctx_meta.get("tenant_id") or "unknown-tenant")
