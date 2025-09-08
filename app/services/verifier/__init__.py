@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import random
 from enum import Enum
 from threading import RLock
@@ -228,8 +229,12 @@ def mark_harmful(fp: str) -> None:
 
 
 def load_providers_order() -> List[str]:
-    # e.g., "openai,local_rules" or just "local_rules"
-    return [p.strip() for p in VERIFIER_PROVIDERS.split(",") if p.strip()]
+    """
+    Return provider order, honoring dynamic env overrides.
+    Env var takes precedence; falls back to compiled setting.
+    """
+    raw = os.getenv("VERIFIER_PROVIDERS", VERIFIER_PROVIDERS) or "local_rules"
+    return [p.strip() for p in raw.split(",") if p.strip()]
 
 
 def verifier_enabled() -> bool:
