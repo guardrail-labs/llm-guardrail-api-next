@@ -93,6 +93,29 @@ def emit_audit_event(payload: Dict[str, Any]) -> None:
     _emit(payload)
 
 
+def _reason_hints_from_hits(
+    rule_hits: Dict[str, List[str]] | List[str],
+    limit: int = 5,
+    max_chars: int = 120,
+) -> str:
+    """Return a compact comma-separated string of hit families.
+
+    Accepts either a mapping of family->patterns or a list of family strings.
+    Only the first ``limit`` families are included and the string is trimmed to
+    ``max_chars`` characters to keep the header bounded.
+    """
+
+    keys: List[str]
+    if isinstance(rule_hits, dict):
+        keys = sorted([k for k in rule_hits.keys() if k])
+    else:
+        keys = sorted([str(k) for k in rule_hits if k])
+
+    top = [k[:40] for k in keys[:limit]]
+    out = ",".join(top)
+    return out[:max_chars]
+
+
 def _normalize_wildcards(
     rule_hits: Dict[str, List[str]], is_deny: bool
 ) -> None:
@@ -295,7 +318,11 @@ def _respond_action(
     headers = {"X-Guardrail-Policy-Version": current_rules_version()}
     if extra_headers:
         headers.update(extra_headers)
-    return JSONResponse(body, headers=headers)
+
+    resp = JSONResponse(body, headers=headers)
+    resp.headers["X-Guardrail-Reason-Hints"] = _reason_hints_from_hits(rule_hits)
+    resp.headers["X-Guardrail-Redactions"] = str(int(redaction_count))
+    return resp
 
 
 def _respond_legacy_allow(
@@ -321,7 +348,10 @@ def _respond_legacy_allow(
         "X-Guardrail-Ingress-Action": "allow",
         "X-Guardrail-Ingress-Redactions": str(int(redactions)),
     }
-    return JSONResponse(body, headers=headers)
+    resp = JSONResponse(body, headers=headers)
+    resp.headers["X-Guardrail-Reason-Hints"] = _reason_hints_from_hits(rule_hits)
+    resp.headers["X-Guardrail-Redactions"] = str(int(redactions))
+    return resp
 
 
 def _respond_legacy_block(
@@ -348,7 +378,10 @@ def _respond_legacy_block(
         "X-Guardrail-Ingress-Action": "deny",
         "X-Guardrail-Ingress-Redactions": str(int(redactions)),
     }
-    return JSONResponse(body, headers=headers)
+    resp = JSONResponse(body, headers=headers)
+    resp.headers["X-Guardrail-Reason-Hints"] = _reason_hints_from_hits(rule_hits)
+    resp.headers["X-Guardrail-Redactions"] = str(int(redactions))
+    return resp
 
 
 # ------------------------------- audit -------------------------------
