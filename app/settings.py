@@ -23,6 +23,12 @@ VERIFIER_PROVIDER_TIMEOUT_MS = int(
     os.getenv("VERIFIER_PROVIDER_TIMEOUT_MS", "1600") or "1600"
 )
 
+# Anthropic provider (optional)
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+VERIFIER_ANTHROPIC_MODEL = os.getenv(
+    "VERIFIER_ANTHROPIC_MODEL", "claude-3-haiku"
+).strip()
+
 # --- Verifier harm-cache persistence (optional Redis) ---
 VERIFIER_HARM_CACHE_URL = os.getenv("VERIFIER_HARM_CACHE_URL", "").strip()
 # Days to keep a harmful fingerprint in the cache (default 90 days)

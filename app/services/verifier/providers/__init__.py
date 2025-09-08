@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from app.settings import ANTHROPIC_API_KEY, VERIFIER_ANTHROPIC_MODEL
+
 from .base import Provider
 from .local_rules import LocalRulesProvider
 
@@ -22,5 +24,10 @@ def build_provider(name: str) -> Optional[Provider]:
         except Exception:
             return None
 
-    # Future: anthropic, vertex, etc.
+    if key in ("anthropic", "claude"):
+        try:
+            from .anthropic_adapter import AnthropicProvider
+            return AnthropicProvider(ANTHROPIC_API_KEY, VERIFIER_ANTHROPIC_MODEL)
+        except Exception:
+            return None
     return None
