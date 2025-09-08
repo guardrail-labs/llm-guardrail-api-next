@@ -23,6 +23,8 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_HARM_CACHE_URL,
+    VERIFIER_HARM_TTL_DAYS,
     VERIFIER_MAX_TOKENS_PER_REQUEST,
     VERIFIER_TIMEOUT_MS,
 )
@@ -42,6 +44,7 @@ __all__ = [
 # ------------------------------------------------------------------------------
 # Minimal typed exports used by routes
 # ------------------------------------------------------------------------------
+
 
 class Verdict(Enum):
     SAFE = "safe"
@@ -74,25 +77,103 @@ def content_fingerprint(text: str) -> str:
 
 
 # ------------------------------------------------------------------------------
-# In-memory harmful-content cache (thread-safe)
+# Harmful fingerprint cache (Redis with TTL if available; safe in-memory fallback)
 # ------------------------------------------------------------------------------
 
-_HARM_CACHE: Set[str] = set()
-_HARM_LOCK = RLock()
+
+class _MemoryHarmStore:
+    def __init__(self) -> None:
+        self._s: Set[str] = set()
+        self._lk = RLock()
+
+    def is_known(self, fp: str) -> bool:
+        k = str(fp)
+        with self._lk:
+            return k in self._s
+
+    def mark(self, fp: str) -> None:
+        k = str(fp)
+        with self._lk:
+            self._s.add(k)
+
+
+class _RedisHarmStore:
+    def __init__(self, url: str, ttl_seconds: int) -> None:
+        self._ttl = int(max(1, ttl_seconds))
+        self._url = url
+        self._cli = None
+        try:
+            # Lazy optional dependency; do not hard-require redis
+            import redis
+
+            self._cli = redis.from_url(url, decode_responses=True)
+        except Exception:
+            self._cli = None  # degrade to memory
+
+    @staticmethod
+    def _key(fp: str) -> str:
+        return f"harm:fp:{fp}"
+
+    def is_known(self, fp: str) -> bool:
+        if not self._cli:
+            return False
+        try:
+            # EXISTS returns int/boolean depending on client; normalize to bool
+            return bool(self._cli.exists(self._key(fp)))
+        except Exception:
+            return False
+
+    def mark(self, fp: str) -> None:
+        if not self._cli:
+            return
+        try:
+            # set value with TTL; value is irrelevant
+            self._cli.setex(self._key(fp), self._ttl, "1")
+        except Exception:
+            # On any Redis failure, swallow and let wrapper behave as if unknown
+            return
+
+
+def _build_harm_store() -> Any:
+    url = (VERIFIER_HARM_CACHE_URL or "").strip()
+    ttl_days = int(max(1, int(VERIFIER_HARM_TTL_DAYS or 90)))
+    ttl_seconds = ttl_days * 24 * 60 * 60
+    if url:
+        store = _RedisHarmStore(url, ttl_seconds)
+        # If client couldn't initialize, it returns "unknown" on read and no-op on write.
+        # We still keep a memory store in front to preserve deny decisions within a process.
+        mem = _MemoryHarmStore()
+
+        class _Hybrid:
+            def is_known(self, fp: str) -> bool:
+                # Memory hit is fastest; if not, consult Redis.
+                if mem.is_known(fp):
+                    return True
+                if store.is_known(fp):
+                    # warm local cache for subsequent requests
+                    mem.mark(fp)
+                    return True
+                return False
+
+            def mark(self, fp: str) -> None:
+                mem.mark(fp)
+                store.mark(fp)
+
+        return _Hybrid()
+    return _MemoryHarmStore()
+
+
+_HARM_STORE = _build_harm_store()
 
 
 def is_known_harmful(fp: str) -> bool:
-    """Return True if the fingerprint is in the harmful cache."""
-    key = str(fp)
-    with _HARM_LOCK:
-        return key in _HARM_CACHE
+    """Return True if the fingerprint is known harmful."""
+    return bool(_HARM_STORE.is_known(fp))
 
 
 def mark_harmful(fp: str) -> None:
     """Record the fingerprint as harmful for future deny when verifier is down."""
-    key = str(fp)
-    with _HARM_LOCK:
-        _HARM_CACHE.add(key)
+    _HARM_STORE.mark(fp)
 
 
 def load_providers_order() -> List[str]:
@@ -102,9 +183,11 @@ def load_providers_order() -> List[str]:
 def verifier_enabled() -> bool:
     return True
 
+
 # ------------------------------------------------------------------------------
 # Optional base verifier (tests typically monkeypatch this)
 # ------------------------------------------------------------------------------
+
 
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -121,9 +204,11 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         "verify_intent is a stub here; provide a real impl or monkeypatch in tests."
     )
 
+
 # ------------------------------------------------------------------------------
 # Hardened wrapper utilities
 # ------------------------------------------------------------------------------
+
 
 def _ctx_from_meta(ctx_meta: Dict[str, Any]) -> VerifierContext:
     tenant_id = str(ctx_meta.get("tenant_id") or "unknown-tenant")
@@ -168,9 +253,11 @@ def _map_headers_for_outcome(
         headers["X-Guardrail-Incident-ID"] = incident_id
     return headers
 
+
 # ------------------------------------------------------------------------------
 # Process-wide enforcer
 # ------------------------------------------------------------------------------
+
 
 _ENFORCER = VerifierEnforcer(
     max_tokens_per_request=VERIFIER_MAX_TOKENS_PER_REQUEST,
@@ -180,9 +267,11 @@ _ENFORCER = VerifierEnforcer(
     breaker_cooldown_s=VERIFIER_CIRCUIT_COOLDOWN_S,
 )
 
+
 # ------------------------------------------------------------------------------
 # Public hardened wrapper — NEVER raises
 # ------------------------------------------------------------------------------
+
 
 async def verify_intent_hardened(
     text: str,
@@ -221,6 +310,7 @@ async def verify_intent_hardened(
     async def _delegate() -> Dict[str, Any]:
         # runtime import so tests can monkeypatch this symbol
         from app.services.verifier import verify_intent as _verify_intent
+
         return await _verify_intent(text, ctx_meta)
 
     # Try once; optionally retry transiently
@@ -306,3 +396,4 @@ async def verify_intent_hardened(
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
     return outcome, headers
+
