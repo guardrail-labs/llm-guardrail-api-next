@@ -191,6 +191,13 @@ guardrail_verifier_breaker_opens_total: CounterLike = _mk_counter(
     ["verifier"],
 )
 
+# Cache hits by outcome
+guardrail_verifier_cache_hits_total: CounterLike = _mk_counter(
+    "guardrail_verifier_cache_hits_total",
+    "Verifier result cache hits by outcome.",
+    ["outcome"],
+)
+
 # OCR observability (optional, lightweight)
 guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "guardrail_ocr_extractions_total",
@@ -292,6 +299,10 @@ def inc_verifier_provider_error(verifier: str, kind: str) -> None:
 
 def inc_verifier_breaker_open(verifier: str) -> None:
     guardrail_verifier_breaker_opens_total.labels(str(verifier or "unknown")).inc()
+
+
+def inc_verifier_cache_hit(outcome: str) -> None:
+    guardrail_verifier_cache_hits_total.labels(str(outcome or "unknown")).inc()
 
 
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:

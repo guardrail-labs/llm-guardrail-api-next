@@ -10,9 +10,7 @@ from threading import RLock
 from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
-from app.services.policy import map_verifier_outcome_to_action
-from app.services.verifier.provider_breaker import ProviderBreakerRegistry
-from app.services.verifier.providers.base import Provider
+from app.services.policy import current_rules_version, map_verifier_outcome_to_action
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -27,28 +25,30 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+    VERIFIER_PROVIDERS,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
     VERIFIER_PROVIDER_BREAKER_FAILS,
     VERIFIER_PROVIDER_BREAKER_WINDOW_S,
-    VERIFIER_PROVIDER_TIMEOUT_MS,
-    VERIFIER_PROVIDERS,
-    VERIFIER_TIMEOUT_MS,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+)
+from app.services.verifier.providers.base import Provider
+from app.services.verifier.provider_breaker import ProviderBreakerRegistry
+from app.services.verifier.result_cache import (
+    ENABLED as RC_ENABLED,
+    CACHE as RC,
+    cache_key,
+    reset_memory as RC_RESET_MEMORY,
 )
 from app.telemetry.metrics import (
-    inc_verifier_breaker_open,
     inc_verifier_outcome,
-    inc_verifier_provider_error,
     observe_verifier_latency,
-)
-
-# single process registry
-_BREAKERS = ProviderBreakerRegistry(
-    VERIFIER_PROVIDER_BREAKER_FAILS,
-    VERIFIER_PROVIDER_BREAKER_WINDOW_S,
-    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+    inc_verifier_provider_error,
+    inc_verifier_breaker_open,
+    inc_verifier_cache_hit,
 )
 
 __all__ = [
@@ -63,9 +63,13 @@ __all__ = [
     "verifier_enabled",
 ]
 
-# ------------------------------------------------------------------------------
-# Minimal typed exports used by routes
-# ------------------------------------------------------------------------------
+# Clear in-process result cache on module (re)load for test isolation.
+if os.getenv("VERIFIER_RESULT_CACHE_RESET_ON_IMPORT", "1").strip() == "1":
+    try:
+        RC_RESET_MEMORY()
+    except Exception:
+        pass
+
 
 class Verdict(Enum):
     SAFE = "safe"
@@ -73,7 +77,13 @@ class Verdict(Enum):
     UNCLEAR = "unclear"
 
 
-# Provider-backed verifier with ordered failover
+_BREAKERS = ProviderBreakerRegistry(
+    VERIFIER_PROVIDER_BREAKER_FAILS,
+    VERIFIER_PROVIDER_BREAKER_WINDOW_S,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+)
+
+
 class Verifier:
     """
     Returns (Optional[Verdict], Optional[str]) where None indicates no provider
@@ -128,18 +138,21 @@ class Verifier:
 
         for prov in self._providers:
             last_provider = getattr(prov, "name", None) or "unknown"
-            # skip if breaker open
+
             if _BREAKERS.is_open(last_provider):
                 continue
+
             try:
+                t0 = time.perf_counter()
                 result = await self._call_with_timebox(prov, text, meta)
-                # success -> close/reset
+                try:
+                    observe_verifier_latency(last_provider, time.perf_counter() - t0)
+                except Exception:  # pragma: no cover
+                    pass
                 _BREAKERS.on_success(last_provider)
             except asyncio.CancelledError:
-                # Propagate cancellation promptly (do not swallow).
                 raise
             except asyncio.TimeoutError:
-                # record timeout, update breaker, maybe open
                 inc_verifier_provider_error(last_provider, "timeout")
                 if _BREAKERS.on_failure(last_provider):
                     inc_verifier_breaker_open(last_provider)
@@ -155,13 +168,8 @@ class Verifier:
             if verdict != Verdict.UNCLEAR:
                 return verdict, last_provider
 
-        # All providers either failed or were ambiguous
         return Verdict.UNCLEAR, last_provider
 
-
-# ------------------------------------------------------------------------------
-# Fingerprint + harmful cache (Redis hybrid from Task 1)
-# ------------------------------------------------------------------------------
 
 def content_fingerprint(text: str) -> str:
     return f"fp:{abs(hash(text)) % 10**12}"
@@ -272,16 +280,38 @@ def verifier_enabled() -> bool:
     return True
 
 
-# ------------------------------------------------------------------------------
-# Provider-backed verify_intent (wired to pipeline) with metrics surfacing
-# ------------------------------------------------------------------------------
-
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     Provider-backed verification. Returns legacy shape plus "provider":
       {"status": "...", "reason": "...", "tokens_used": N, "provider": "name"}
     """
     from app.services.verifier.providers import build_provider  # lazy import
+
+    tenant = str(ctx_meta.get("tenant_id") or "unknown-tenant")
+    bot = str(ctx_meta.get("bot_id") or "unknown-bot")
+    policy_ver = current_rules_version()
+    fp = content_fingerprint(text)
+    ck = cache_key(tenant, bot, fp, policy_ver)
+
+    if RC_ENABLED:
+        hit = RC.get(ck)
+        if hit in ("safe", "unsafe"):
+            try:
+                inc_verifier_cache_hit(hit)
+                inc_verifier_outcome("cache", hit)
+            except Exception:
+                pass
+            if hit == "unsafe":
+                try:
+                    mark_harmful(fp)
+                except Exception:
+                    pass
+            return {
+                "status": hit,
+                "reason": "cached",
+                "tokens_used": 0,
+                "provider": "cache",
+            }
 
     provider_names = load_providers_order()
     est_tokens = max(1, len(text) // 4)
@@ -304,16 +334,15 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
 
             t0 = time.perf_counter()
             res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
-            _BREAKERS.on_success(last_provider)
 
-            # Guard telemetry so failures never affect pipeline behavior.
             try:
                 observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
             except Exception:  # pragma: no cover
                 pass
 
+            _BREAKERS.on_success(str(last_provider))
+
         except asyncio.CancelledError:
-            # Propagate cancellation promptly.
             raise
         except asyncio.TimeoutError:
             try:
@@ -348,6 +377,16 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             pass
 
         if status in ("safe", "unsafe"):
+            if RC_ENABLED:
+                try:
+                    RC.set(ck, status)
+                except Exception:
+                    pass
+            if status == "unsafe":
+                try:
+                    mark_harmful(fp)
+                except Exception:
+                    pass
             return {
                 "status": status,
                 "reason": reason,
@@ -368,10 +407,6 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         "provider": str(last_provider or "unknown"),
     }
 
-
-# ------------------------------------------------------------------------------
-# Hardened wrapper (unchanged behavior + provider in headers/audit)
-# ------------------------------------------------------------------------------
 
 def _ctx_from_meta(ctx_meta: Dict[str, Any]) -> VerifierContext:
     tenant_id = str(ctx_meta.get("tenant_id") or "unknown-tenant")
