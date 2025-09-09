@@ -21,7 +21,7 @@ from app.services.verifier.result_cache import (
     cache_key,
     reset_memory as RC_RESET_MEMORY,
 )
-from app.services.verifier.sandbox import maybe_schedule_sandbox
+from app.services.verifier.sandbox import analyze_and_surface_diffs, maybe_schedule_sandbox
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -491,23 +491,33 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             except Exception:
                 pass
 
-            # Fire sandbox for alternates; do not block unless tests demand it
-            try:
-                _ = await maybe_schedule_sandbox(
-                    primary=pname,
-                    all_providers=provider_names,
-                    text=text,
-                    meta=ctx_meta,
-                )
-            except Exception:
-                pass
-
-            return {
+            out: Dict[str, Any] = {
                 "status": status,
                 "reason": reason,
                 "tokens_used": tokens_used,
                 "provider": pname,
             }
+
+            # Launch sandbox and analyze disagreements (non-blocking in prod; sync in tests)
+            try:
+                sb = await maybe_schedule_sandbox(
+                    primary=pname,
+                    all_providers=provider_names,
+                    text=text,
+                    meta=ctx_meta,
+                )
+                if sb is not None:
+                    tenant_id = tenant
+                    bot_id = bot
+                    summary = analyze_and_surface_diffs(pname, status, sb, tenant_id, bot_id)
+                    if summary:
+                        res_extra = out if isinstance(out, dict) else {}
+                        res_extra["sandbox_summary"] = summary
+                        out = res_extra
+            except Exception:
+                pass
+
+            return out
 
         # ambiguous: treat as non-decisive; continue loop
 
@@ -569,6 +579,9 @@ def _map_headers_for_outcome(
     prov = outcome.get("provider")
     if isinstance(prov, str) and prov:
         headers["X-Guardrail-Verifier"] = prov
+    summ = outcome.get("sandbox_summary")
+    if isinstance(summ, str) and summ:
+        headers["X-Guardrail-Sandbox"] = summ
     return headers
 
 
