@@ -11,6 +11,17 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import current_rules_version, map_verifier_outcome_to_action
+from app.services.verifier.provider_breaker import ProviderBreakerRegistry
+from app.services.verifier.provider_quota import QuotaSkipRegistry
+from app.services.verifier.provider_router import ProviderRouter
+from app.services.verifier.providers.base import Provider, ProviderRateLimited
+from app.services.verifier.result_cache import (
+    CACHE as RC,
+    ENABLED as RC_ENABLED,
+    cache_key,
+    reset_memory as RC_RESET_MEMORY,
+)
+from app.services.verifier.sandbox import maybe_schedule_sandbox
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -25,36 +36,26 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_PROVIDERS,
-    VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
     VERIFIER_PROVIDER_BREAKER_FAILS,
     VERIFIER_PROVIDER_BREAKER_WINDOW_S,
-    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
     VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED,
-)
-from app.services.verifier.providers.base import Provider, ProviderRateLimited
-from app.services.verifier.provider_breaker import ProviderBreakerRegistry
-from app.services.verifier.provider_quota import QuotaSkipRegistry
-from app.services.verifier.provider_router import ProviderRouter
-from app.services.verifier.result_cache import (
-    ENABLED as RC_ENABLED,
-    CACHE as RC,
-    cache_key,
-    reset_memory as RC_RESET_MEMORY,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_PROVIDERS,
+    VERIFIER_TIMEOUT_MS,
 )
 from app.telemetry.metrics import (
-    inc_verifier_outcome,
-    observe_verifier_latency,
-    inc_verifier_provider_error,
-    inc_verifier_breaker_open,
-    inc_verifier_cache_hit,
-    inc_verifier_quota,
     inc_route_rank,
     inc_route_reorder,
+    inc_verifier_breaker_open,
+    inc_verifier_cache_hit,
+    inc_verifier_outcome,
+    inc_verifier_provider_error,
+    inc_verifier_quota,
+    observe_verifier_latency,
 )
 
 __all__ = [
@@ -200,6 +201,16 @@ class Verifier:
             status = str(result.get("status") or "ambiguous")
             verdict = self._map_status_to_verdict(status)
             if verdict != Verdict.UNCLEAR:
+                # Fire sandbox for alternates; do not block unless tests demand it
+                try:
+                    _ = await maybe_schedule_sandbox(
+                        primary=pname,
+                        all_providers=self._provider_names,
+                        text=text,
+                        meta=meta or {},
+                    )
+                except Exception:
+                    pass
                 return verdict, last_provider
 
         return Verdict.UNCLEAR, last_provider
@@ -477,6 +488,17 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             # success feedback to router
             try:
                 _ROUTER.record_success(tenant, bot, pname, time.perf_counter() - t0)
+            except Exception:
+                pass
+
+            # Fire sandbox for alternates; do not block unless tests demand it
+            try:
+                _ = await maybe_schedule_sandbox(
+                    primary=pname,
+                    all_providers=provider_names,
+                    text=text,
+                    meta=ctx_meta,
+                )
             except Exception:
                 pass
 

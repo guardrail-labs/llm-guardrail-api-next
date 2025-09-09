@@ -108,6 +108,25 @@ VERIFIER_EGRESS_REUSE_TTL_SECONDS = int(
     os.getenv("VERIFIER_EGRESS_REUSE_TTL_SECONDS", "300") or "300"
 )
 
+# Shadow-call alternate providers without changing decisions
+VERIFIER_SANDBOX_ENABLED = (os.getenv("VERIFIER_SANDBOX_ENABLED", "1").strip() == "1")
+# Fraction of requests that trigger sandbox (0..1)
+VERIFIER_SANDBOX_SAMPLE_RATE = float(os.getenv("VERIFIER_SANDBOX_SAMPLE_RATE", "0.05") or "0.05")
+# Timebox for each shadow call in ms (kept tight)
+VERIFIER_SANDBOX_TIMEOUT_MS = int(os.getenv("VERIFIER_SANDBOX_TIMEOUT_MS", "500") or "500")
+# Max simultaneous shadow calls
+VERIFIER_SANDBOX_MAX_CONCURRENCY = int(
+    os.getenv("VERIFIER_SANDBOX_MAX_CONCURRENCY", "2") or "2"
+)
+# In tests, run synchronously (await) so assertions can see results
+VERIFIER_SANDBOX_SYNC_FOR_TESTS = (
+    os.getenv("VERIFIER_SANDBOX_SYNC_FOR_TESTS", "0").strip() == "1"
+)
+# Cap number of sandbox results attached to audit/headers
+VERIFIER_SANDBOX_MAX_RESULTS = int(
+    os.getenv("VERIFIER_SANDBOX_MAX_RESULTS", "3") or "3"
+)
+
 # Anthropic provider (optional)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 VERIFIER_ANTHROPIC_MODEL = os.getenv(

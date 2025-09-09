@@ -225,6 +225,17 @@ guardrail_verifier_reuse_total: CounterLike = _mk_counter(
     ["outcome"],
 )
 
+guardrail_verifier_sandbox_total: CounterLike = _mk_counter(
+    "guardrail_verifier_sandbox_total",
+    "Sandbox outcomes by provider and kind.",
+    ["provider", "kind"],
+)
+guardrail_verifier_sandbox_latency_seconds: HistogramLike = _mk_histogram(
+    "guardrail_verifier_sandbox_latency_seconds",
+    "Sandbox latency by provider.",
+    ["provider"],
+)
+
 # OCR observability (optional, lightweight)
 guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "guardrail_ocr_extractions_total",
@@ -348,6 +359,16 @@ def inc_route_reorder(tenant: str, bot: str, from_p: str, to_p: str) -> None:
 
 def inc_verifier_reuse(outcome: str) -> None:
     guardrail_verifier_reuse_total.labels(str(outcome or "unknown")).inc()
+
+
+def inc_sandbox(provider: str, kind: str) -> None:
+    guardrail_verifier_sandbox_total.labels(str(provider or "unknown"), str(kind or "error")).inc()
+
+
+def observe_sandbox_latency(provider: str, seconds: float) -> None:
+    guardrail_verifier_sandbox_latency_seconds.labels(
+        str(provider or "unknown")
+    ).observe(float(seconds))
 
 
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
