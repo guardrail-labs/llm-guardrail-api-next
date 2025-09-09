@@ -6,8 +6,8 @@ from typing import Dict, Optional
 
 from app.settings import (
     VERIFIER_RESULT_CACHE_ENABLED,
-    VERIFIER_RESULT_CACHE_TTL_SECONDS,
     VERIFIER_RESULT_CACHE_URL,
+    VERIFIER_RESULT_CACHE_TTL_SECONDS,
 )
 
 Outcome = str  # "safe" | "unsafe"
@@ -35,14 +35,17 @@ class _MemCache:
         with self._lock:
             self._data[key] = (outcome, time.time())
 
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
 
 class _RedisCache:
     def __init__(self, url: str, ttl_s: int) -> None:
         self._ttl = max(1, int(ttl_s))
         self._cli = None
         try:
-            import redis
-
+            import redis  # type: ignore
             self._cli = redis.from_url(url, decode_responses=True)
         except Exception:
             self._cli = None
@@ -52,9 +55,7 @@ class _RedisCache:
             return None
         try:
             val = self._cli.get(key)
-            if not isinstance(val, str):
-                return None
-            if val not in ("safe", "unsafe"):
+            if not val or val not in ("safe", "unsafe"):
                 return None
             return val
         except Exception:
@@ -76,11 +77,11 @@ class ResultCache:
     """
 
     def __init__(self, url: str, ttl_s: int) -> None:
+        self._ttl = int(ttl_s)
         self._mem = _MemCache(ttl_s)
         self._redis = _RedisCache(url, ttl_s) if url else None
 
     def get(self, key: str) -> Optional[Outcome]:
-        # Prefer mem; fall back to redis (and warm mem on hit).
         out = self._mem.get(key)
         if out is not None:
             return out
@@ -98,9 +99,22 @@ class ResultCache:
         if self._redis:
             self._redis.set(key, outcome)
 
+    # ---- test/dev helpers ----
+    def reset_memory(self) -> None:
+        """Clear only the in-process cache (keeps Redis intact)."""
+        self._mem = _MemCache(self._ttl)
+
 
 ENABLED = VERIFIER_RESULT_CACHE_ENABLED
 CACHE = ResultCache(VERIFIER_RESULT_CACHE_URL, VERIFIER_RESULT_CACHE_TTL_SECONDS)
+
+
+def reset_memory() -> None:
+    """Public helper: clear only in-process cache."""
+    try:
+        CACHE.reset_memory()
+    except Exception:
+        pass
 
 
 def cache_key(tenant: str, bot: str, fp: str, policy_version: str) -> str:
