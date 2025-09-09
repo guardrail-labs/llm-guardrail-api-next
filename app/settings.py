@@ -49,6 +49,42 @@ VERIFIER_PROVIDER_QUOTA_MAX_SKIP_S = int(
     os.getenv("VERIFIER_PROVIDER_QUOTA_MAX_SKIP_S", "600") or "600"
 )
 
+# Adaptive provider routing (opt-in; defaults to on)
+VERIFIER_ADAPTIVE_ROUTING_ENABLED = (
+    os.getenv("VERIFIER_ADAPTIVE_ROUTING_ENABLED", "1").strip() == "1"
+)
+
+# EWMA half-life for latency/success weighting (seconds)
+VERIFIER_ADAPTIVE_HALFLIFE_S = int(
+    os.getenv("VERIFIER_ADAPTIVE_HALFLIFE_S", "120") or "120"
+)
+
+# Minimum samples before reordering (avoid thrash)
+VERIFIER_ADAPTIVE_MIN_SAMPLES = int(
+    os.getenv("VERIFIER_ADAPTIVE_MIN_SAMPLES", "5") or "5"
+)
+
+# Score penalties (ms-equivalent) for issues
+VERIFIER_ADAPTIVE_PENALTY_TIMEOUT_MS = int(
+    os.getenv("VERIFIER_ADAPTIVE_PENALTY_TIMEOUT_MS", "800") or "800"
+)
+VERIFIER_ADAPTIVE_PENALTY_ERROR_MS = int(
+    os.getenv("VERIFIER_ADAPTIVE_PENALTY_ERROR_MS", "400") or "400"
+)
+VERIFIER_ADAPTIVE_PENALTY_RATE_LIMIT_MS = int(
+    os.getenv("VERIFIER_ADAPTIVE_PENALTY_RATE_LIMIT_MS", "600") or "600"
+)
+
+# Sticky ordering window before we allow re-rank (seconds)
+VERIFIER_ADAPTIVE_STICKY_S = int(
+    os.getenv("VERIFIER_ADAPTIVE_STICKY_S", "30") or "30"
+)
+
+# Cap how often we'll keep per-tenant/bot stats in memory (seconds)
+VERIFIER_ADAPTIVE_TTL_S = int(
+    os.getenv("VERIFIER_ADAPTIVE_TTL_S", "900") or "900"
+)
+
 # Result cache for verify_intent (opt-in; defaults to on)
 VERIFIER_RESULT_CACHE_ENABLED = (
     os.getenv("VERIFIER_RESULT_CACHE_ENABLED", "1").strip() == "1"

@@ -205,6 +205,19 @@ guardrail_verifier_quota_events_total: CounterLike = _mk_counter(
     ["verifier", "kind"],
 )
 
+# Adaptive routing telemetry
+guardrail_verifier_route_rank_total: CounterLike = _mk_counter(
+    "guardrail_verifier_route_rank_total",
+    "Observed provider rank chosen for a tenant/bot.",
+    ["tenant", "bot", "provider", "rank"],
+)
+
+guardrail_verifier_route_reorders_total: CounterLike = _mk_counter(
+    "guardrail_verifier_route_reorders_total",
+    "Times adaptive routing changed the first-choice provider.",
+    ["tenant", "bot", "from", "to"],
+)
+
 # Ingress→egress verification reuse by outcome
 guardrail_verifier_reuse_total: CounterLike = _mk_counter(
     "guardrail_verifier_reuse_total",
@@ -323,6 +336,14 @@ def inc_verifier_quota(verifier: str, kind: str) -> None:
     guardrail_verifier_quota_events_total.labels(
         str(verifier or "unknown"), str(kind or "rate_limited")
     ).inc()
+
+
+def inc_route_rank(tenant: str, bot: str, provider: str, rank: int) -> None:
+    guardrail_verifier_route_rank_total.labels(tenant, bot, provider, str(int(rank))).inc()
+
+
+def inc_route_reorder(tenant: str, bot: str, from_p: str, to_p: str) -> None:
+    guardrail_verifier_route_reorders_total.labels(tenant, bot, from_p, to_p).inc()
 
 
 def inc_verifier_reuse(outcome: str) -> None:
