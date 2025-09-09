@@ -198,6 +198,13 @@ guardrail_verifier_cache_hits_total: CounterLike = _mk_counter(
     ["outcome"],
 )
 
+# Ingress→egress verification reuse by outcome
+guardrail_verifier_reuse_total: CounterLike = _mk_counter(
+    "guardrail_verifier_reuse_total",
+    "Ingress→egress verification reuse by outcome.",
+    ["outcome"],
+)
+
 # OCR observability (optional, lightweight)
 guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "guardrail_ocr_extractions_total",
@@ -303,6 +310,10 @@ def inc_verifier_breaker_open(verifier: str) -> None:
 
 def inc_verifier_cache_hit(outcome: str) -> None:
     guardrail_verifier_cache_hits_total.labels(str(outcome or "unknown")).inc()
+
+
+def inc_verifier_reuse(outcome: str) -> None:
+    guardrail_verifier_reuse_total.labels(str(outcome or "unknown")).inc()
 
 
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:

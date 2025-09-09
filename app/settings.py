@@ -47,6 +47,16 @@ VERIFIER_RESULT_CACHE_TTL_SECONDS = int(
     os.getenv("VERIFIER_RESULT_CACHE_TTL_SECONDS", "86400") or "0"
 )
 
+# Reuse ingress verification for matching egress requests (opt-in; on by default)
+VERIFIER_EGRESS_REUSE_ENABLED = (
+    os.getenv("VERIFIER_EGRESS_REUSE_ENABLED", "1").strip() == "1"
+)
+
+# TTL for reuse entries (short-lived, per-request)
+VERIFIER_EGRESS_REUSE_TTL_SECONDS = int(
+    os.getenv("VERIFIER_EGRESS_REUSE_TTL_SECONDS", "300") or "300"
+)
+
 # Anthropic provider (optional)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 VERIFIER_ANTHROPIC_MODEL = os.getenv(

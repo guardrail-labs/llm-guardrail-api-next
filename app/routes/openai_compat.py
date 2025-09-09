@@ -31,6 +31,11 @@ from app.services.policy import (
 )
 from app.services.threat_feed import apply_dynamic_redactions, threat_feed_enabled
 from app.services.verifier import content_fingerprint
+from app.services.verifier.reuse_cache import (
+    ENABLED as REUSE_ENABLED,
+    get as reuse_get,
+    make_key as reuse_key,
+)
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.shared.request_meta import get_client_meta
 from app.telemetry.metrics import (
@@ -39,6 +44,7 @@ from app.telemetry.metrics import (
     inc_egress_family,
     inc_ingress_family,
     inc_redaction,
+    inc_verifier_reuse,
 )
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
@@ -436,6 +442,7 @@ async def chat_completions(
             # Reason hits & egress redactions finalize at end; keep parity with empties during SSE.
             "X-Guardrail-Reason-Hints": "",
             "X-Guardrail-Egress-Redactions": "0",
+            "X-Request-ID": req_id,
         }
         return StreamingResponse(gen(), headers=headers)
 
@@ -443,11 +450,39 @@ async def chat_completions(
     client = get_client()
     model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
 
-    payload, _ = egress_check(model_text, debug=want_debug)
-    e_action = str(payload.get("action", "allow"))
-    e_text = str(payload.get("text", ""))
-    e_reds = int(payload.get("redactions") or 0)
-    e_hits = list(payload.get("rule_hits") or []) or None
+    fp_out = content_fingerprint(model_text)
+    reused_flag = False
+    if REUSE_ENABLED:
+        key = reuse_key(
+            request_id=req_id,
+            tenant=tenant_id,
+            bot=bot_id,
+            policy_version=policy_version,
+            fingerprint=fp_out,
+        )
+        reused = reuse_get(key)
+        if reused in ("safe", "unsafe"):
+            reused_flag = True
+            inc_verifier_reuse(reused)
+            if reused == "unsafe":
+                e_action = "deny"
+            else:
+                e_action = "allow"
+            e_text = model_text
+            e_reds = 0
+            e_hits = None
+        else:
+            payload, _ = egress_check(model_text, debug=want_debug)
+            e_action = str(payload.get("action", "allow"))
+            e_text = str(payload.get("text", ""))
+            e_reds = int(payload.get("redactions") or 0)
+            e_hits = list(payload.get("rule_hits") or []) or None
+    else:
+        payload, _ = egress_check(model_text, debug=want_debug)
+        e_action = str(payload.get("action", "allow"))
+        e_text = str(payload.get("text", ""))
+        e_reds = int(payload.get("redactions") or 0)
+        e_hits = list(payload.get("rule_hits") or []) or None
 
     e_family = _family_for(e_action, e_reds)
     inc_decision_family(e_family)
@@ -467,13 +502,15 @@ async def chat_completions(
                 "decision": e_action,
                 "rule_hits": e_hits,
                 "policy_version": policy_version,
+                "verifier_provider": "reuse" if reused_flag else None,
                 "redaction_count": e_reds,
-                "hash_fingerprint": content_fingerprint(model_text),
+                "hash_fingerprint": fp_out,
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
                 "meta": {
                     "provider": model_meta,
                     "client": get_client_meta(request),
+                    **({"reuse": True} if reused_flag else {}),
                 },
             }
         )
@@ -507,6 +544,9 @@ async def chat_completions(
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
+    response.headers["X-Request-ID"] = req_id
+    if reused_flag:
+        response.headers["X-Guardrail-Verification-Reused"] = "1"
 
     return oai_resp
 

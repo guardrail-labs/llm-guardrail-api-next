@@ -32,11 +32,18 @@ from app.services.verifier import (
     mark_harmful,
     verifier_enabled,
 )
+from app.services.verifier.reuse_cache import (
+    ENABLED as REUSE_ENABLED,
+    get as reuse_get,
+    make_key as reuse_key,
+    set_decisive as reuse_set,
+)
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
 from app.telemetry.metrics import (
     inc_decision_family,
     inc_decision_family_tenant_bot,
     inc_verifier_outcome,
+    inc_verifier_reuse,
 )
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
@@ -260,6 +267,15 @@ async def batch_evaluate(
 
             # ensure provider is a string for metrics
             inc_verifier_outcome(str(provider or "unknown"), outcome)
+            if REUSE_ENABLED and outcome in ("safe", "unsafe"):
+                key = reuse_key(
+                    request_id=req_id,
+                    tenant=tenant_id,
+                    bot=bot_id,
+                    policy_version=policy_version,
+                    fingerprint=fp_all,
+                )
+                reuse_set(key, outcome)
 
         # metrics
         inc_decision_family(family)
@@ -336,6 +352,64 @@ async def egress_batch(
         text_in = itm.text or ""
         req_id = itm.request_id or str(uuid.uuid4())
         fp_all = content_fingerprint(text_in)
+        hits: Optional[List[str]] = None
+
+        if REUSE_ENABLED:
+            key = reuse_key(
+                request_id=req_id,
+                tenant=tenant_id,
+                bot=bot_id,
+                policy_version=policy_version,
+                fingerprint=fp_all,
+            )
+            reused = reuse_get(key)
+            if reused in ("safe", "unsafe"):
+                if reused == "unsafe":
+                    action = "deny"
+                    family = "block"
+                else:
+                    action = "allow"
+                    family = "allow"
+                inc_verifier_reuse(reused)
+                payload_bytes = int(_blen(text_in))
+                xformed = text_in
+                hits = (hits or None)
+                out_items.append(
+                    BatchItemOut(
+                        request_id=req_id,
+                        action=action,
+                        text=xformed,
+                        transformed_text=xformed,
+                        risk_score=0,
+                        rule_hits=hits,
+                        redactions=None,
+                        decisions=None,
+                    )
+                )
+                try:
+                    emit_audit_event(
+                        {
+                            "ts": None,
+                            "tenant_id": tenant_id,
+                            "bot_id": bot_id,
+                            "request_id": req_id,
+                            "direction": "egress",
+                            "decision": action,
+                            "rule_hits": hits,
+                            "policy_version": policy_version,
+                            "verifier_provider": "reuse",
+                            "fallback_used": None,
+                            "status_code": 200,
+                            "redaction_count": 0,
+                            "hash_fingerprint": fp_all,
+                            "payload_bytes": payload_bytes,
+                            "sanitized_bytes": int(_blen(xformed)),
+                            "meta": {"reuse": True},
+                        }
+                    )
+                except Exception:
+                    pass
+                continue
 
         payload, _ = egress_check(text_in, debug=want_debug)
         action = str(payload.get("action", "allow"))
