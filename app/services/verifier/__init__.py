@@ -68,6 +68,7 @@ __all__ = [
     "load_providers_order",
     "mark_harmful",
     "verifier_enabled",
+    "get_ops_overview",
 ]
 
 # Clear in-process result cache on module (re)load for test isolation.
@@ -169,7 +170,7 @@ class Verifier:
                 result = await self._call_with_timebox(prov, text, meta)
                 try:
                     observe_verifier_latency(pname, time.perf_counter() - t0)
-                except Exception:  # pragma: no cover
+                except Exception:  # pragma: no cover - metrics must not affect control flow
                     pass
                 _BREAKERS.on_success(pname)
                 try:
@@ -325,6 +326,28 @@ def verifier_enabled() -> bool:
     return True
 
 
+def get_ops_overview(tenant: str | None = None, bot: str | None = None) -> Dict[str, object]:
+    """Return a snapshot of verifier ops state."""
+    provs = load_providers_order()
+
+    # Current effective order for the requested tenant/bot (or default).
+    # IMPORTANT: do NOT call _ROUTER.rank() here, it mutates sticky timestamps.
+    t = tenant or "default"
+    b = bot or "default"
+    effective_order = list(provs)
+    try:
+        last_orders = _ROUTER.get_last_order_snapshot()
+        for entry in last_orders:
+            if entry.get("tenant") == t and entry.get("bot") == b:
+                cached = entry.get("order")
+                if isinstance(cached, list) and cached:
+                    effective_order = list(cached)
+                break
+    except Exception:
+        pass
+
+    return {"providers": provs, "effective_order": effective_order}
+
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     Provider-backed verification. Returns legacy shape plus "provider":
@@ -410,7 +433,7 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
 
             try:
                 observe_verifier_latency(pname, time.perf_counter() - t0)
-            except Exception:  # pragma: no cover
+            except Exception:  # pragma: no cover - metrics must not affect control flow
                 pass
 
             _BREAKERS.on_success(pname)
