@@ -4,19 +4,24 @@ import pytest
 import app.services.verifier as v
 
 
+@pytest.fixture
+def anyio_backend() -> str:
+    # Force AnyIO to use asyncio for this file (no trio dependency).
+    return "asyncio"
+
+
 class SlowProv:
     name = "slow"
 
     async def assess(self, text, meta=None):
         import asyncio
-
         # Sleep long enough to exceed sandbox timebox to verify timeout handling.
         await asyncio.sleep(1.0)
         return {"status": "safe", "reason": "ok", "tokens_used": 1}
 
 
-@pytest.mark.anyio("asyncio")
-async def test_sandbox_timeboxes(monkeypatch):
+@pytest.mark.anyio
+async def test_sandbox_timeboxes(monkeypatch: pytest.MonkeyPatch):
     import app.services.verifier.providers as prov
 
     # Primary + alternate; "slow" is the alternate shadow target.
