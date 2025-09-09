@@ -30,56 +30,6 @@ from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
-# ---- soft rate limiter (no 429s) --------------------------------------------
-
-try:
-    # Token bucket helper (simple, in-repo)
-    from app.services.rate_limit import TokenBucket  # type: ignore
-except Exception:  # pragma: no cover
-    TokenBucket = None  # type: ignore
-
-def _mk_bucket() -> Any:
-    """
-    Build a shared token bucket if env is configured. If not configured,
-    the limiter is disabled. This is deliberately SOFT: we never return 429
-    from these endpoints; we only count and annotate a header.
-    """
-    try:
-        cap = int(os.getenv("LEGACY_RATE_LIMIT_CAP", "0") or "0")
-        rps = float(os.getenv("LEGACY_RATE_LIMIT_RPS", "0") or "0")
-    except Exception:
-        cap, rps = 0, 0.0
-    if TokenBucket is None or cap <= 0 or rps <= 0.0:
-        return None
-    return TokenBucket(capacity=cap, refill_per_sec=rps)
-
-_BUCKET: Any = _mk_bucket()
-_HARD_LIMIT = (os.getenv("LEGACY_RATE_LIMIT_HARD", "0").strip() == "1")
-
-def _rate_limit_soft(tenant: str, bot: str, endpoint: str) -> bool:
-    """
-    Returns True if the request is rate limited (soft). We never raise/return
-    429 here; callers should attach 'X-Guardrail-Rate-Limited: 1' when True.
-    """
-    b = _BUCKET
-    if not b:
-        return False
-    key = f"{endpoint}:{tenant}:{bot}"
-    allowed = False
-    try:
-        allowed = bool(b.allow(key))
-    except Exception:
-        # Defensive: never break the pipeline on limiter issues
-        return False
-
-    if not allowed:
-        try:
-            m.inc_rate_limited(1.0)
-        except Exception:
-            pass
-        return True
-    return False
-
 router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
@@ -100,7 +50,9 @@ RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
 RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
 RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-RE_PHONE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b")
+RE_PHONE = re.compile(
+    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
+)
 
 RE_PRIVATE_KEY_ENVELOPE = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
@@ -125,7 +77,9 @@ def _req_id(existing: Optional[str]) -> str:
 
 
 def _fingerprint(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+    return hashlib.sha256(
+        text.encode("utf-8", errors="ignore")
+    ).hexdigest()
 
 
 def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
@@ -201,7 +155,12 @@ def _apply_redactions(
         rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
         for m_ in matches:
             spans.append(
-                (m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key")
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:OPENAI_KEY]",
+                    "secrets:openai_key",
+                )
             )
             m.inc_redaction("openai_key")
         redactions += len(matches)
@@ -230,7 +189,12 @@ def _apply_redactions(
         )
         for m_ in matches:
             spans.append(
-                (m_.start(), m_.end(), "[REDACTED:PRIVATE_KEY]", "secrets:private_key")
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
             )
         redactions += len(matches)
 
@@ -242,7 +206,12 @@ def _apply_redactions(
         )
         for m_ in matches:
             spans.append(
-                (m_.start(), m_.end(), "[REDACTED:PRIVATE_KEY]", "secrets:private_key")
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
             )
         redactions += len(matches)
 
@@ -250,11 +219,20 @@ def _apply_redactions(
     if matches:
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
         for m_ in matches:
             spans.append(
-                (m_.start(), m_.end(), "[REDACTED:INJECTION]", INJECTION_PROMPT_INJ_ID)
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:INJECTION]",
+                    INJECTION_PROMPT_INJ_ID,
+                )
             )
         redactions += len(matches)
 
@@ -744,9 +722,6 @@ async def guardrail_legacy(
     )
     _set_binding_ctx(tenant, bot)
 
-    # Soft rate limit (legacy endpoint)
-    limited = _rate_limit_soft(tenant, bot, "guardrail_legacy")
-
     policy_blob = _get_policy()
     policy_version = str(policy_blob.version)
 
@@ -790,16 +765,12 @@ async def guardrail_legacy(
     )
 
     if action == "block":
-        resp = _respond_legacy_block(
+        return _respond_legacy_block(
             request_id, rule_hits, redacted, policy_version, redactions
         )
-    else:
-        resp = _respond_legacy_allow(
-            redacted, request_id, rule_hits, policy_version, redactions
-        )
-
-    resp.headers["X-Guardrail-Rate-Limited"] = "1" if limited else "0"
-    return resp
+    return _respond_legacy_allow(
+        redacted, request_id, rule_hits, policy_version, redactions
+    )
 
 
 @router.post("/guardrail/evaluate")
@@ -807,9 +778,6 @@ async def guardrail_evaluate(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
-
-    # Soft rate limit (ingress evaluate)
-    limited = _rate_limit_soft(tenant, bot, "ingress_evaluate")
 
     content_type = (headers.get("content-type") or "").lower()
     combined_text = ""
@@ -889,7 +857,9 @@ async def guardrail_evaluate(request: Request):
     pct = _verifier_sampling_pct()
     if pct > 0.0 and _hits_trigger_verifier(policy_hits):
         if random.random() < pct:
-            base_decision = maybe_route_to_verifier(base_decision, text=combined_text)
+            base_decision = maybe_route_to_verifier(
+                base_decision, text=combined_text
+            )
             action = base_decision.get("action", action)
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
@@ -909,7 +879,7 @@ async def guardrail_evaluate(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
-    resp = _respond_action(
+    return _respond_action(
         action,
         redacted,
         request_id,
@@ -920,8 +890,6 @@ async def guardrail_evaluate(request: Request):
         verifier_sampled=verifier_sampled,
         direction="ingress",
     )
-    resp.headers["X-Guardrail-Rate-Limited"] = "1" if limited else "0"
-    return resp
 
 
 @router.post("/guardrail/evaluate_multipart")
@@ -930,10 +898,9 @@ async def guardrail_evaluate_multipart(request: Request):
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
 
-    # Soft rate limit (ingress evaluate multipart)
-    limited = _rate_limit_soft(tenant, bot, "ingress_evaluate_multipart")
-
-    combined_text, mods, sources = await _read_form_and_merge(request, decode_pdf=True)
+    combined_text, mods, sources = await _read_form_and_merge(
+        request, decode_pdf=True
+    )
     request_id = _req_id(None)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
@@ -997,7 +964,9 @@ async def guardrail_evaluate_multipart(request: Request):
     pct = _verifier_sampling_pct()
     if pct > 0.0 and _hits_trigger_verifier(policy_hits):
         if random.random() < pct:
-            base_decision = maybe_route_to_verifier(base_decision, text=combined_text)
+            base_decision = maybe_route_to_verifier(
+                base_decision, text=combined_text
+            )
             action = base_decision.get("action", action)
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
@@ -1017,7 +986,7 @@ async def guardrail_evaluate_multipart(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
-    resp = _respond_action(
+    return _respond_action(
         action,
         redacted,
         request_id,
@@ -1028,8 +997,6 @@ async def guardrail_evaluate_multipart(request: Request):
         verifier_sampled=verifier_sampled,
         direction="ingress",
     )
-    resp.headers["X-Guardrail-Rate-Limited"] = "1" if limited else "0"
-    return resp
 
 
 @router.post("/guardrail/egress_evaluate")
@@ -1037,9 +1004,6 @@ async def guardrail_egress(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
-
-    # Soft rate limit (egress evaluate)
-    limited = _rate_limit_soft(tenant, bot, "egress_evaluate")
 
     payload = await request.json()
     text = str(payload.get("text") or "")
@@ -1102,7 +1066,7 @@ async def guardrail_egress(request: Request):
     )
     _bump_family("egress", "egress_evaluate", action, tenant, bot)
 
-    resp = _respond_action(
+    return _respond_action(
         action,
         redacted,
         request_id,
@@ -1113,5 +1077,3 @@ async def guardrail_egress(request: Request):
         verifier_sampled=False,
         direction="egress",
     )
-    resp.headers["X-Guardrail-Rate-Limited"] = "1" if limited else "0"
-    return resp
