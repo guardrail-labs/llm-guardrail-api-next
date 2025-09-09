@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from app.settings import (
     VERIFIER_ADAPTIVE_ROUTING_ENABLED,
@@ -21,7 +21,7 @@ from app.settings import (
 class _Stat:
     # EWMA latency in ms
     lat_ms: float = 300.0
-    # EWMA success prob in [0,1]
+    # EWMA success prob in [0, 1]
     p_ok: float = 0.8
     # observations
     n: int = 0
@@ -41,7 +41,6 @@ class ProviderRouter:
     Sticky window semantic:
       - During a short sticky window, continue returning the *last ranked order*
         instead of recomputing and then falling back to the static provider list.
-      - This avoids flip-flopping to the default order on every call.
     """
 
     def __init__(self) -> None:
@@ -66,11 +65,11 @@ class ProviderRouter:
         hl = max(1.0, float(VERIFIER_ADAPTIVE_HALFLIFE_S))
         return 1.0 - math.exp(-math.log(2.0) * max(0.0, dt) / hl)
 
-    def _touch(self, k: Tuple[str, str, str]) -> _Stat:
-        s = self._stats.get(k)
+    def _touch(self, k_stats: Tuple[str, str, str]) -> _Stat:
+        s = self._stats.get(k_stats)
         if not s:
             s = _Stat()
-            self._stats[k] = s
+            self._stats[k_stats] = s
         s.last_touch = self._now()
         return s
 
@@ -78,21 +77,25 @@ class ProviderRouter:
         ttl = max(60.0, float(VERIFIER_ADAPTIVE_TTL_S))
         now = self._now()
 
-        # prune stats
-        stale_stats = [k for k, v in self._stats.items() if (now - v.last_touch) > ttl]
-        for k in stale_stats:
-            self._stats.pop(k, None)
+        # prune stats (keys are (tenant, bot, provider))
+        stale_stats_keys = [
+            k_stats for k_stats, v in self._stats.items() if (now - v.last_touch) > ttl
+        ]
+        for k_stats in stale_stats_keys:
+            self._stats.pop(k_stats, None)
 
-        # prune cached last order
-        stale_order = [k for k, (_, ts) in self._last_order.items() if (now - ts) > ttl]
-        for k in stale_order:
-            self._last_order.pop(k, None)
+        # prune cached last order (keys are (tenant, bot))
+        stale_order_keys = [
+            k_tb for k_tb, (_order, ts) in self._last_order.items() if (now - ts) > ttl
+        ]
+        for k_tb in stale_order_keys:
+            self._last_order.pop(k_tb, None)
 
     # ---- event ingestion -----------------------------------------------------
 
     def record_success(self, tenant: str, bot: str, prov: str, latency_s: float) -> None:
-        k = self._key(tenant, bot, prov)
-        s = self._touch(k)
+        k_stats = self._key(tenant, bot, prov)
+        s = self._touch(k_stats)
         a = self._alpha(1.0)
         lat_ms = max(1.0, float(latency_s) * 1000.0)
         s.lat_ms = (1 - a) * s.lat_ms + a * lat_ms
@@ -101,8 +104,8 @@ class ProviderRouter:
         self._prune()
 
     def record_timeout(self, tenant: str, bot: str, prov: str) -> None:
-        k = self._key(tenant, bot, prov)
-        s = self._touch(k)
+        k_stats = self._key(tenant, bot, prov)
+        s = self._touch(k_stats)
         a = self._alpha(1.0)
         s.lat_ms = (1 - a) * s.lat_ms + a * max(
             float(VERIFIER_ADAPTIVE_PENALTY_TIMEOUT_MS), s.lat_ms
@@ -112,8 +115,8 @@ class ProviderRouter:
         self._prune()
 
     def record_error(self, tenant: str, bot: str, prov: str) -> None:
-        k = self._key(tenant, bot, prov)
-        s = self._touch(k)
+        k_stats = self._key(tenant, bot, prov)
+        s = self._touch(k_stats)
         a = self._alpha(1.0)
         s.lat_ms = (1 - a) * s.lat_ms + a * max(
             float(VERIFIER_ADAPTIVE_PENALTY_ERROR_MS), s.lat_ms * 0.9
@@ -123,8 +126,8 @@ class ProviderRouter:
         self._prune()
 
     def record_rate_limited(self, tenant: str, bot: str, prov: str) -> None:
-        k = self._key(tenant, bot, prov)
-        s = self._touch(k)
+        k_stats = self._key(tenant, bot, prov)
+        s = self._touch(k_stats)
         a = self._alpha(1.0)
         s.lat_ms = (1 - a) * s.lat_ms + a * max(
             float(VERIFIER_ADAPTIVE_PENALTY_RATE_LIMIT_MS), s.lat_ms
