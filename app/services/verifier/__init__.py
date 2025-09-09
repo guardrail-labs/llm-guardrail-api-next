@@ -720,3 +720,89 @@ async def verify_intent_hardened(
     )
     headers = _map_headers_for_outcome(outcome, incident_id=incident_id)
     return outcome, headers
+
+
+# ---- Ops overview ------------------------------------------------------------
+
+def get_ops_overview(tenant: str | None = None, bot: str | None = None) -> Dict[str, object]:
+    """
+    Return a read-only snapshot for ops UIs / internal checks.
+    Avoids secrets/PII; safe for internal use.
+    """
+    try:
+        provs = load_providers_order()
+    except Exception:
+        provs = []
+
+    # Provider states
+    providers: List[Dict[str, object]] = []
+    for name in provs:
+        try:
+            providers.append(
+                {
+                    "name": name,
+                    "breaker_open": bool(_BREAKERS.is_open(name)),
+                    "quota_skipped": bool(_QUOTA.is_skipped(name)),
+                }
+            )
+        except Exception:
+            providers.append(
+                {"name": name, "breaker_open": False, "quota_skipped": False}
+            )
+
+    # Adaptive router snapshots
+    try:
+        router_stats = _ROUTER.get_stats_snapshot()
+        router_last = _ROUTER.get_last_order_snapshot()
+    except Exception:
+        router_stats = []
+        router_last = []
+
+    # Current effective order for the requested tenant/bot (or default)
+    t = tenant or "default"
+    b = bot or "default"
+    try:
+        effective_order = _ROUTER.rank(t, b, provs)
+    except Exception:
+        effective_order = provs
+
+    # A few behavior-shaping settings (non-sensitive)
+    from app.settings import (  # local import to avoid cycles at import time
+        VERIFIER_ADAPTIVE_HALFLIFE_S,
+        VERIFIER_ADAPTIVE_MIN_SAMPLES,
+        VERIFIER_ADAPTIVE_ROUTING_ENABLED,
+        VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+        VERIFIER_PROVIDER_BREAKER_FAILS,
+        VERIFIER_PROVIDER_BREAKER_WINDOW_S,
+        VERIFIER_PROVIDER_TIMEOUT_MS,
+        VERIFIER_RESULT_CACHE_ENABLED,
+        VERIFIER_SANDBOX_ENABLED,
+        VERIFIER_SANDBOX_SAMPLE_RATE,
+    )
+
+    settings: Dict[str, object] = {
+        "adaptive_routing_enabled": bool(VERIFIER_ADAPTIVE_ROUTING_ENABLED),
+        "adaptive_min_samples": int(VERIFIER_ADAPTIVE_MIN_SAMPLES),
+        "adaptive_halflife_s": int(VERIFIER_ADAPTIVE_HALFLIFE_S),
+        "provider_timeout_ms": int(VERIFIER_PROVIDER_TIMEOUT_MS),
+        "breaker": {
+            "max_fails": int(VERIFIER_PROVIDER_BREAKER_FAILS),
+            "window_s": int(VERIFIER_PROVIDER_BREAKER_WINDOW_S),
+            "cooldown_s": int(VERIFIER_PROVIDER_BREAKER_COOLDOWN_S),
+        },
+        "sandbox": {
+            "enabled": bool(VERIFIER_SANDBOX_ENABLED),
+            "sample_rate": float(VERIFIER_SANDBOX_SAMPLE_RATE),
+        },
+        "result_cache_enabled": bool(VERIFIER_RESULT_CACHE_ENABLED),
+    }
+
+    return {
+        "providers": providers,
+        "router": {
+            "effective_order": effective_order,
+            "stats": router_stats,
+            "last_order": router_last,
+        },
+        "settings": settings,
+    }

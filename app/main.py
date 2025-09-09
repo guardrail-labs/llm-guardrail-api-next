@@ -202,6 +202,8 @@ def _include_all_route_modules(app: FastAPI) -> int:
 
     count = 0
     for m in pkgutil.iter_modules(routes_pkg.__path__, routes_pkg.__name__ + "."):
+        if m.name == "app.routes.internal_verifier":
+            continue
         try:
             mod = importlib.import_module(m.name)
         except Exception:
@@ -282,6 +284,12 @@ def create_app() -> FastAPI:
 
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
+
+    from app.routes.internal_verifier import (
+        router as internal_verifier_router,
+    )
+
+    app.include_router(internal_verifier_router)
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")

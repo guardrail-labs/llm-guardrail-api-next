@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from app.settings import (
-    VERIFIER_ADAPTIVE_ROUTING_ENABLED,
     VERIFIER_ADAPTIVE_HALFLIFE_S,
     VERIFIER_ADAPTIVE_MIN_SAMPLES,
-    VERIFIER_ADAPTIVE_PENALTY_TIMEOUT_MS,
     VERIFIER_ADAPTIVE_PENALTY_ERROR_MS,
     VERIFIER_ADAPTIVE_PENALTY_RATE_LIMIT_MS,
+    VERIFIER_ADAPTIVE_PENALTY_TIMEOUT_MS,
+    VERIFIER_ADAPTIVE_ROUTING_ENABLED,
     VERIFIER_ADAPTIVE_STICKY_S,
     VERIFIER_ADAPTIVE_TTL_S,
 )
@@ -185,4 +185,43 @@ class ProviderRouter:
         # Cache the computed order for the sticky window
         self._last_order[tb] = (out[:], now)
         self._prune()
+        return out
+
+    # ---- snapshots -----------------------------------------------------------
+
+    def get_stats_snapshot(self) -> List[Dict[str, object]]:
+        """
+        Return a serializable list of stats:
+        [{tenant, bot, provider, lat_ms, p_ok, n, last_touch}, ...]
+        """
+        out: List[Dict[str, object]] = []
+        for (tenant, bot, prov), s in self._stats.items():
+            out.append(
+                {
+                    "tenant": tenant,
+                    "bot": bot,
+                    "provider": prov,
+                    "lat_ms": float(s.lat_ms),
+                    "p_ok": float(s.p_ok),
+                    "n": int(s.n),
+                    "last_touch": float(s.last_touch),
+                }
+            )
+        return out
+
+    def get_last_order_snapshot(self) -> List[Dict[str, object]]:
+        """
+        Return cached sticky orders:
+        [{tenant, bot, order:[...], ranked_at}, ...]
+        """
+        out: List[Dict[str, object]] = []
+        for (tenant, bot), (order, ts) in self._last_order.items():
+            out.append(
+                {
+                    "tenant": tenant,
+                    "bot": bot,
+                    "order": list(order),
+                    "ranked_at": float(ts),
+                }
+            )
         return out
