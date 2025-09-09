@@ -14,10 +14,35 @@ Outcome = str  # "safe" | "unsafe"
 
 
 class _MemCache:
-    def __init__(self, ttl_s: int) -> None:
+    """
+    Simple in-process TTL cache.
+    - Drops expired entries on read for the accessed key.
+    - Also performs a periodic sweep on writes to avoid unbounded growth
+      when keys are never read again.
+    """
+
+    def __init__(self, ttl_s: int, prune_interval_s: float = 5.0) -> None:
         self._ttl = max(1, int(ttl_s))
         self._data: Dict[str, tuple[Outcome, float]] = {}
         self._lock = RLock()
+        self._prune_interval_s = float(prune_interval_s)
+        self._last_prune_ts: float = time.time()
+
+    def _prune_expired(self, now: float) -> None:
+        """Remove all expired entries. Called periodically under the lock."""
+        # Snapshot keys to avoid dict-size change during iteration issues.
+        expired_keys = [
+            k
+            for k, (_outcome, ts) in self._data.items()
+            if now - ts > self._ttl
+        ]
+        for k in expired_keys:
+            self._data.pop(k, None)
+
+    def _maybe_prune(self, now: float) -> None:
+        if (now - self._last_prune_ts) >= self._prune_interval_s:
+            self._prune_expired(now)
+            self._last_prune_ts = now
 
     def get(self, key: str) -> Optional[Outcome]:
         now = time.time()
@@ -29,11 +54,16 @@ class _MemCache:
             if now - ts > self._ttl:
                 self._data.pop(key, None)
                 return None
+            # Opportunistic periodic sweep on reads, too (cheap and bounded).
+            self._maybe_prune(now)
             return outcome
 
     def set(self, key: str, outcome: Outcome) -> None:
+        now = time.time()
         with self._lock:
-            self._data[key] = (outcome, time.time())
+            # Periodic sweep on writes ensures TTL actually bounds memory.
+            self._maybe_prune(now)
+            self._data[key] = (outcome, now)
 
     def clear(self) -> None:
         with self._lock:
@@ -45,7 +75,7 @@ class _RedisCache:
         self._ttl = max(1, int(ttl_s))
         self._cli = None
         try:
-            import redis  # type: ignore
+            import redis  # noqa: F401
             self._cli = redis.from_url(url, decode_responses=True)
         except Exception:
             self._cli = None
