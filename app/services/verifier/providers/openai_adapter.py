@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
+from app.services.verifier.providers.base import ProviderRateLimited
+
 
 class OpenAIProvider:
     """
@@ -39,6 +41,21 @@ class OpenAIProvider:
                 "reason": reason,
                 "tokens_used": int(resp.get("tokens_used") or max(1, len(text) // 4)),
             }
+        except self._openai.RateLimitError as e:
+            retry_after = None
+            try:
+                hdrs = getattr(e, "response", None)
+                if hdrs and getattr(hdrs, "headers", None):
+                    ra = hdrs.headers.get("retry-after") or hdrs.headers.get("Retry-After")
+                    if ra is not None:
+                        retry_after = float(ra)
+            except Exception:  # pragma: no cover
+                retry_after = None
+            raise ProviderRateLimited("rate_limited", retry_after_s=retry_after)
+        except self._openai.APIError as e:
+            if getattr(e, "status_code", None) == 429:
+                raise ProviderRateLimited("rate_limited", retry_after_s=None)
+            raise
         except Exception:
             # Let the Verifier decide to fail over
             raise

@@ -11,6 +11,15 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import current_rules_version, map_verifier_outcome_to_action
+from app.services.verifier.provider_breaker import ProviderBreakerRegistry
+from app.services.verifier.provider_quota import QuotaSkipRegistry
+from app.services.verifier.providers.base import Provider, ProviderRateLimited
+from app.services.verifier.result_cache import (
+    CACHE as RC,
+    ENABLED as RC_ENABLED,
+    cache_key,
+    reset_memory as RC_RESET_MEMORY,
+)
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -25,30 +34,24 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_PROVIDERS,
-    VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
     VERIFIER_PROVIDER_BREAKER_FAILS,
     VERIFIER_PROVIDER_BREAKER_WINDOW_S,
-    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
-)
-from app.services.verifier.providers.base import Provider
-from app.services.verifier.provider_breaker import ProviderBreakerRegistry
-from app.services.verifier.result_cache import (
-    ENABLED as RC_ENABLED,
-    CACHE as RC,
-    cache_key,
-    reset_memory as RC_RESET_MEMORY,
+    VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
+    VERIFIER_PROVIDERS,
+    VERIFIER_TIMEOUT_MS,
 )
 from app.telemetry.metrics import (
-    inc_verifier_outcome,
-    observe_verifier_latency,
-    inc_verifier_provider_error,
     inc_verifier_breaker_open,
     inc_verifier_cache_hit,
+    inc_verifier_outcome,
+    inc_verifier_provider_error,
+    inc_verifier_quota,
+    observe_verifier_latency,
 )
 
 __all__ = [
@@ -82,6 +85,8 @@ _BREAKERS = ProviderBreakerRegistry(
     VERIFIER_PROVIDER_BREAKER_WINDOW_S,
     VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
 )
+
+_QUOTA = QuotaSkipRegistry()
 
 
 class Verifier:
@@ -142,12 +147,24 @@ class Verifier:
             if _BREAKERS.is_open(last_provider):
                 continue
 
+            if VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED and _QUOTA.is_skipped(last_provider):
+                try:
+                    inc_verifier_quota(last_provider, "skipped")
+                except Exception:
+                    pass
+                continue
+
             try:
                 t0 = time.perf_counter()
                 result = await self._call_with_timebox(prov, text, meta)
                 try:
                     observe_verifier_latency(last_provider, time.perf_counter() - t0)
                 except Exception:  # pragma: no cover
+                    pass
+                try:
+                    _QUOTA.clear(last_provider)
+                    inc_verifier_quota(last_provider, "reset")
+                except Exception:
                     pass
                 _BREAKERS.on_success(last_provider)
             except asyncio.CancelledError:
@@ -156,6 +173,13 @@ class Verifier:
                 inc_verifier_provider_error(last_provider, "timeout")
                 if _BREAKERS.on_failure(last_provider):
                     inc_verifier_breaker_open(last_provider)
+                continue
+            except ProviderRateLimited as e:
+                try:
+                    _QUOTA.on_rate_limited(last_provider, getattr(e, "retry_after_s", None))
+                    inc_verifier_quota(last_provider, "rate_limited")
+                except Exception:
+                    pass
                 continue
             except Exception:
                 inc_verifier_provider_error(last_provider, "error")
@@ -328,6 +352,13 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         if _BREAKERS.is_open(last_provider):
             continue
 
+        if VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED and _QUOTA.is_skipped(last_provider):
+            try:
+                inc_verifier_quota(last_provider, "skipped")
+            except Exception:
+                pass
+            continue
+
         try:
             async def _run() -> Dict[str, Any]:
                 return await prov.assess(text, meta=ctx_meta)
@@ -338,6 +369,12 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             try:
                 observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
             except Exception:  # pragma: no cover
+                pass
+
+            try:
+                _QUOTA.clear(str(last_provider))
+                inc_verifier_quota(str(last_provider), "reset")
+            except Exception:
                 pass
 
             _BREAKERS.on_success(str(last_provider))
@@ -354,6 +391,13 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
                     inc_verifier_breaker_open(str(last_provider))
                 except Exception:
                     pass
+            continue
+        except ProviderRateLimited as e:
+            try:
+                _QUOTA.on_rate_limited(str(last_provider), getattr(e, "retry_after_s", None))
+                inc_verifier_quota(str(last_provider), "rate_limited")
+            except Exception:
+                pass
             continue
         except Exception:
             try:

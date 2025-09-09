@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from app.services.verifier.providers.base import ProviderRateLimited
+
 
 class AnthropicProvider:
     """
@@ -21,6 +23,7 @@ class AnthropicProvider:
         import anthropic
 
         self._anthropic = anthropic.Anthropic(api_key=api_key)
+        self._anthropic_mod = anthropic
 
     async def assess(
         self, text: str, meta: Optional[Dict[str, Any]] = None
@@ -38,6 +41,13 @@ class AnthropicProvider:
                 label = "ambiguous"
             tokens = int(resp.get("tokens_used") or max(1, len(text) // 4))
             return {"status": label, "reason": reason, "tokens_used": tokens}
+        except self._anthropic_mod.RateLimitError as e:
+            retry_after = getattr(e, "retry_after", None)
+            raise ProviderRateLimited("rate_limited", retry_after_s=retry_after)
+        except self._anthropic_mod.APIStatusError as e:
+            if getattr(e, "status_code", None) == 429:
+                raise ProviderRateLimited("rate_limited", retry_after_s=None)
+            raise
         except Exception:
             # Let the Verifier pipeline decide to fail over
             raise

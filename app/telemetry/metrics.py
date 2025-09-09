@@ -198,6 +198,13 @@ guardrail_verifier_cache_hits_total: CounterLike = _mk_counter(
     ["outcome"],
 )
 
+# Quota events by provider and kind
+guardrail_verifier_quota_events_total: CounterLike = _mk_counter(
+    "guardrail_verifier_quota_events_total",
+    "Provider quota events by verifier and kind.",
+    ["verifier", "kind"],
+)
+
 # Ingress→egress verification reuse by outcome
 guardrail_verifier_reuse_total: CounterLike = _mk_counter(
     "guardrail_verifier_reuse_total",
@@ -310,6 +317,12 @@ def inc_verifier_breaker_open(verifier: str) -> None:
 
 def inc_verifier_cache_hit(outcome: str) -> None:
     guardrail_verifier_cache_hits_total.labels(str(outcome or "unknown")).inc()
+
+
+def inc_verifier_quota(verifier: str, kind: str) -> None:
+    guardrail_verifier_quota_events_total.labels(
+        str(verifier or "unknown"), str(kind or "rate_limited")
+    ).inc()
 
 
 def inc_verifier_reuse(outcome: str) -> None:
