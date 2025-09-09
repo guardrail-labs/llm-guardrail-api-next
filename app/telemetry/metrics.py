@@ -236,6 +236,12 @@ guardrail_verifier_sandbox_latency_seconds: HistogramLike = _mk_histogram(
     ["provider"],
 )
 
+guardrail_verifier_sandbox_disagreements_total: CounterLike = _mk_counter(
+    "guardrail_verifier_sandbox_disagreements_total",
+    "Sandbox disagreements vs primary by shadow provider and (primary,shadow) tuple.",
+    ["provider", "primary", "shadow"],
+)
+
 # OCR observability (optional, lightweight)
 guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "guardrail_ocr_extractions_total",
@@ -369,6 +375,12 @@ def observe_sandbox_latency(provider: str, seconds: float) -> None:
     guardrail_verifier_sandbox_latency_seconds.labels(
         str(provider or "unknown")
     ).observe(float(seconds))
+
+
+def inc_sandbox_disagreement(provider: str, primary: str, shadow: str) -> None:
+    guardrail_verifier_sandbox_disagreements_total.labels(
+        str(provider or "unknown"), str(primary or "ambiguous"), str(shadow or "ambiguous")
+    ).inc()
 
 
 def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:

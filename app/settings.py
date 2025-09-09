@@ -127,6 +127,31 @@ VERIFIER_SANDBOX_MAX_RESULTS = int(
     os.getenv("VERIFIER_SANDBOX_MAX_RESULTS", "3") or "3"
 )
 
+# Emit metrics when sandbox results disagree with the primary decision.
+VERIFIER_SANDBOX_DIFF_ENABLED = (
+    os.getenv("VERIFIER_SANDBOX_DIFF_ENABLED", "1").strip() == "1"
+)
+
+# Attach a compact summary to headers/audit when diffs occur (off by default).
+VERIFIER_SANDBOX_DIFF_ATTACH_HEADER = (
+    os.getenv("VERIFIER_SANDBOX_DIFF_ATTACH_HEADER", "0").strip() == "1"
+)
+
+# If attaching, cap how many items we surface.
+VERIFIER_SANDBOX_DIFF_MAX_ATTACH = int(
+    os.getenv("VERIFIER_SANDBOX_DIFF_MAX_ATTACH", "2") or "2"
+)
+
+# Only consider diffs when the primary is decisive (safe/unsafe).
+VERIFIER_SANDBOX_DIFF_ONLY_ON_DECISIVE = (
+    os.getenv("VERIFIER_SANDBOX_DIFF_ONLY_ON_DECISIVE", "1").strip() == "1"
+)
+
+# Randomly emit an audit event when a diff happens (0..1). 0 disables.
+VERIFIER_SANDBOX_DIFF_AUDIT_RATE = float(
+    os.getenv("VERIFIER_SANDBOX_DIFF_AUDIT_RATE", "0.0") or "0.0"
+)
+
 # Anthropic provider (optional)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 VERIFIER_ANTHROPIC_MODEL = os.getenv(
