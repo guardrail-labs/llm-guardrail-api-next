@@ -34,6 +34,21 @@ VERIFIER_PROVIDER_BREAKER_COOLDOWN_S = int(
     os.getenv("VERIFIER_PROVIDER_BREAKER_COOLDOWN_S", "30") or "30"
 )
 
+# Quota-aware skip (opt-in; on by default)
+VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED = (
+    os.getenv("VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED", "1").strip() == "1"
+)
+
+# Default skip window if no explicit reset is provided by the provider (seconds).
+VERIFIER_PROVIDER_QUOTA_DEFAULT_SKIP_S = int(
+    os.getenv("VERIFIER_PROVIDER_QUOTA_DEFAULT_SKIP_S", "60") or "60"
+)
+
+# Maximum cap for provider-advertised retry-after to avoid pathological values.
+VERIFIER_PROVIDER_QUOTA_MAX_SKIP_S = int(
+    os.getenv("VERIFIER_PROVIDER_QUOTA_MAX_SKIP_S", "600") or "600"
+)
+
 # Result cache for verify_intent (opt-in; defaults to on)
 VERIFIER_RESULT_CACHE_ENABLED = (
     os.getenv("VERIFIER_RESULT_CACHE_ENABLED", "1").strip() == "1"
