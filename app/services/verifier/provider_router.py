@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.settings import (
     VERIFIER_ADAPTIVE_ROUTING_ENABLED,
@@ -46,8 +46,8 @@ class ProviderRouter:
     def __init__(self) -> None:
         # (tenant, bot, provider) -> stats
         self._stats: Dict[Tuple[str, str, str], _Stat] = {}
-        # (tenant, bot) -> (last_order, when_ranked)
-        self._last_order: Dict[Tuple[str, str], Tuple[List[str], float]] = {}
+        # (tenant, bot) -> {"order": [...], "last_ranked_at": ts}
+        self._last_order: dict[tuple[str, str], dict[str, Any]] = {}
 
     # ---- internals -----------------------------------------------------------
 
@@ -73,9 +73,10 @@ class ProviderRouter:
         s.last_touch = self._now()
         return s
 
-    def _prune(self) -> None:
+    def _prune(self, now: float | None = None) -> None:
+        """Prune stale stats and sticky-cache entries."""
         ttl = max(60.0, float(VERIFIER_ADAPTIVE_TTL_S))
-        now = self._now()
+        now = self._now() if now is None else now
 
         # prune stats (keys are (tenant, bot, provider))
         stale_stats_keys = [
@@ -84,12 +85,34 @@ class ProviderRouter:
         for k_stats in stale_stats_keys:
             self._stats.pop(k_stats, None)
 
-        # prune cached last order (keys are (tenant, bot))
-        stale_order_keys = [
-            k_tb for k_tb, (_order, ts) in self._last_order.items() if (now - ts) > ttl
-        ]
-        for k_tb in stale_order_keys:
-            self._last_order.pop(k_tb, None)
+        # prune cached last order using sticky-horizon (10x sticky window)
+        try:
+            horizon = float(VERIFIER_ADAPTIVE_STICKY_S) * 10.0
+        except Exception:
+            horizon = 600.0
+        dead = []
+        for k, payload in self._last_order.items():
+            ts = float(payload.get("last_ranked_at") or 0.0)
+            if now - ts > horizon:
+                dead.append(k)
+        for k in dead:
+            self._last_order.pop(k, None)
+
+    def get_last_order_snapshot(self) -> list[dict[str, object]]:
+        """Return a snapshot of cached last orders for ops inspection."""
+        snap: list[dict[str, object]] = []
+        for (tenant, bot), payload in self._last_order.items():
+            order_val = payload.get("order")
+            order_list = list(order_val) if isinstance(order_val, list) else []
+            snap.append(
+                {
+                    "tenant": tenant,
+                    "bot": bot,
+                    "order": order_list,
+                    "last_ranked_at": float(payload.get("last_ranked_at") or 0.0),
+                }
+            )
+        return snap
 
     # ---- event ingestion -----------------------------------------------------
 
@@ -162,10 +185,13 @@ class ProviderRouter:
 
         # Sticky: if we have a recent order, keep using it
         cached = self._last_order.get(tb)
-        if cached is not None:
-            last_order, ts = cached
+        if cached:
+            ts = float(cached.get("last_ranked_at") or 0.0)
             if (now - ts) < float(VERIFIER_ADAPTIVE_STICKY_S):
-                return last_order[:]
+                order_val = cached.get("order")
+                if isinstance(order_val, list):
+                    return list(order_val)
+                return providers[:]
 
         # Compute scores and rank
         base_idx = {p: i for i, p in enumerate(providers)}
@@ -175,14 +201,14 @@ class ProviderRouter:
 
         # If all are inf (cold start), keep default order but cache it for stickiness
         if all(math.isinf(sc) for sc, _ in scored):
-            self._last_order[tb] = (providers[:], now)
-            self._prune()
+            self._last_order[tb] = {"order": providers[:], "last_ranked_at": now}
+            self._prune(now)
             return providers[:]
 
         ranked = sorted(scored, key=lambda t: (t[0], base_idx[t[1]]))
         out = [p for _, p in ranked]
 
         # Cache the computed order for the sticky window
-        self._last_order[tb] = (out[:], now)
-        self._prune()
+        self._last_order[tb] = {"order": out[:], "last_ranked_at": now}
+        self._prune(now)
         return out

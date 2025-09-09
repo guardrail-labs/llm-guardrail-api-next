@@ -58,8 +58,11 @@ class _MemCache:
     def set(self, key: str, outcome: Outcome) -> None:
         now = time.time()
         with self._lock:
-            # Periodic sweep on writes ensures TTL actually bounds memory.
-            self._maybe_prune(now)
+            # Purge expired entries opportunistically on writes
+            ttl = self._ttl
+            expired = [k for k, (_, ts) in self._data.items() if (now - ts) > ttl]
+            for k in expired:
+                self._data.pop(k, None)
             self._data[key] = (outcome, now)
 
     def clear(self) -> None:
