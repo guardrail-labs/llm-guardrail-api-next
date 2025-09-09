@@ -10,9 +10,10 @@ from threading import RLock
 from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
-from app.services.policy import map_verifier_outcome_to_action
+from app.services.policy import current_rules_version, map_verifier_outcome_to_action
 from app.services.verifier.provider_breaker import ProviderBreakerRegistry
 from app.services.verifier.providers.base import Provider
+from app.services.verifier.result_cache import CACHE as RC, ENABLED as RC_ENABLED, cache_key
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -39,6 +40,7 @@ from app.settings import (
 )
 from app.telemetry.metrics import (
     inc_verifier_breaker_open,
+    inc_verifier_cache_hit,
     inc_verifier_outcome,
     inc_verifier_provider_error,
     observe_verifier_latency,
@@ -283,6 +285,28 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     from app.services.verifier.providers import build_provider  # lazy import
 
+    # --- Cache lookup (safe, zero-token) ------------------------------------
+    tenant = str(ctx_meta.get("tenant_id") or "unknown-tenant")
+    bot = str(ctx_meta.get("bot_id") or "unknown-bot")
+    policy_ver = current_rules_version()
+    fp = content_fingerprint(text)
+    ck = ""
+    if RC_ENABLED:
+        ck = cache_key(tenant, bot, fp, policy_ver)
+        hit = RC.get(ck)
+        if hit in ("safe", "unsafe"):
+            try:
+                inc_verifier_cache_hit(hit)
+                inc_verifier_outcome("cache", hit)
+            except Exception:
+                pass
+            return {
+                "status": hit,
+                "reason": "cached",
+                "tokens_used": 0,
+                "provider": "cache",
+            }
+
     provider_names = load_providers_order()
     est_tokens = max(1, len(text) // 4)
     timeout_s = max(0.05, float(VERIFIER_PROVIDER_TIMEOUT_MS) / 1000.0)
@@ -348,6 +372,17 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             pass
 
         if status in ("safe", "unsafe"):
+            # Store decisive outcomes only
+            if RC_ENABLED:
+                try:
+                    RC.set(ck, status)
+                except Exception:
+                    pass
+            if status == "unsafe":
+                try:
+                    mark_harmful(fp)
+                except Exception:
+                    pass
             return {
                 "status": status,
                 "reason": reason,

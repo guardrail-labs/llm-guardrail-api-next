@@ -34,6 +34,19 @@ VERIFIER_PROVIDER_BREAKER_COOLDOWN_S = int(
     os.getenv("VERIFIER_PROVIDER_BREAKER_COOLDOWN_S", "30") or "30"
 )
 
+# Result cache for verify_intent (opt-in; defaults to on)
+VERIFIER_RESULT_CACHE_ENABLED = (
+    os.getenv("VERIFIER_RESULT_CACHE_ENABLED", "1").strip() == "1"
+)
+
+# Optional Redis for cross-process cache. If empty, in-memory only.
+VERIFIER_RESULT_CACHE_URL = os.getenv("VERIFIER_RESULT_CACHE_URL", "").strip()
+
+# TTL in seconds for cache entries (both safe and unsafe)
+VERIFIER_RESULT_CACHE_TTL_SECONDS = int(
+    os.getenv("VERIFIER_RESULT_CACHE_TTL_SECONDS", "86400") or "0"
+)
+
 # Anthropic provider (optional)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 VERIFIER_ANTHROPIC_MODEL = os.getenv(
