@@ -30,11 +30,8 @@ class _MemCache:
 
     def _prune_expired(self, now: float) -> None:
         """Remove all expired entries. Called periodically under the lock."""
-        # Snapshot keys to avoid dict-size change during iteration issues.
         expired_keys = [
-            k
-            for k, (_outcome, ts) in self._data.items()
-            if now - ts > self._ttl
+            k for k, (_outcome, ts) in self._data.items() if now - ts > self._ttl
         ]
         for k in expired_keys:
             self._data.pop(k, None)
@@ -54,7 +51,7 @@ class _MemCache:
             if now - ts > self._ttl:
                 self._data.pop(key, None)
                 return None
-            # Opportunistic periodic sweep on reads, too (cheap and bounded).
+            # Opportunistic periodic sweep on reads, too.
             self._maybe_prune(now)
             return outcome
 
@@ -85,7 +82,10 @@ class _RedisCache:
             return None
         try:
             val = self._cli.get(key)
-            if not val or val not in ("safe", "unsafe"):
+            # mypy: ensure val is a str before returning
+            if not isinstance(val, str):
+                return None
+            if val not in ("safe", "unsafe"):
                 return None
             return val
         except Exception:
