@@ -7,6 +7,7 @@ from app.telemetry.metrics import add_hidden_text_bytes, inc_hidden_text
 
 from .docx import scan_docx_for_hidden
 from .html import scan_html_for_hidden
+from .policy import decide_for_hidden_reasons as decide_for_hidden_reasons
 
 
 def scan_and_record_html(html: str) -> List[str]:

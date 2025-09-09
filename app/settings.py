@@ -52,3 +52,20 @@ HIDDEN_TEXT_SCAN_MAX_BYTES = int(
     os.getenv("HIDDEN_TEXT_SCAN_MAX_BYTES", "1048576") or "0"
 )
 
+# Enable policy hook: when 1 and a rule matches, set decision to clarify/deny.
+HIDDEN_TEXT_POLICY = (os.getenv("HIDDEN_TEXT_POLICY", "0").strip() == "1")
+
+# Comma-separated reason lists -> action. Reasons are normalized lowercase tokens
+# you already emit (e.g., style_hidden, attr_hidden, zero_width_chars, docx_vanish).
+HIDDEN_TEXT_DENY_REASONS = os.getenv("HIDDEN_TEXT_DENY_REASONS", "docx_vanish").strip()
+HIDDEN_TEXT_CLARIFY_REASONS = os.getenv(
+    "HIDDEN_TEXT_CLARIFY_REASONS",
+    "style_hidden,attr_hidden,zero_width_chars,docx_track_ins,docx_track_del,docx_comments",
+).strip()
+
+# Optional format allowlist (comma-separated): html, docx, pdf, etc. Empty => all
+HIDDEN_TEXT_FORMATS = os.getenv("HIDDEN_TEXT_FORMATS", "").strip()
+
+# Optional minimum reasons required to trigger (default 1)
+HIDDEN_TEXT_MIN_MATCH = int(os.getenv("HIDDEN_TEXT_MIN_MATCH", "1") or "1")
+

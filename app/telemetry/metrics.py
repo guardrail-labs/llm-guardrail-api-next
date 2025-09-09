@@ -462,10 +462,23 @@ guardrail_hidden_text_bytes_total: CounterLike = _mk_counter(
     ["format"],
 )
 
+# Action taken based on hidden-text detection
+guardrail_hidden_text_actions_total: CounterLike = _mk_counter(
+    "guardrail_hidden_text_actions_total",
+    "Policy actions taken due to hidden-text detections.",
+    ["format", "reason", "action"],  # action: clarify|deny
+)
+
 
 def inc_hidden_text(fmt: str, reason: str) -> None:
     guardrail_hidden_text_total.labels(
         str(fmt or "unknown"), str(reason or "unknown")
+    ).inc()
+
+
+def inc_hidden_text_action(fmt: str, reason: str, action: str) -> None:
+    guardrail_hidden_text_actions_total.labels(
+        str(fmt or "unknown"), str(reason or "unknown"), str(action or "clarify")
     ).inc()
 
 

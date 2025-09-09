@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Request, Response
 from pydantic import BaseModel
 
 from app.services.audit import emit_audit_event
@@ -14,6 +14,10 @@ from app.services.policy import (
     _normalize_family,
     current_rules_version,
     sanitize_text,
+)
+from app.services.scanners.hidden_text import (
+    decide_for_hidden_reasons,
+    scan_and_record_html,
 )
 from app.services.threat_feed import (
     apply_dynamic_redactions,
@@ -141,6 +145,7 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
 async def batch_evaluate(
     request: Request,
     body: BatchIn,
+    response: Response,
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
     x_force_unclear: Optional[str] = Header(
         default=None, alias="X-Force-Unclear", convert_underscores=False
@@ -161,6 +166,7 @@ async def batch_evaluate(
     policy_version = current_rules_version()
 
     out_items: List[BatchItemOut] = []
+    header_hidden_reasons: List[str] = []
 
     for itm in body.items:
         text_in = itm.text or ""
@@ -178,6 +184,16 @@ async def batch_evaluate(
                 families = sorted(base)
             if dyn_reds:
                 redaction_count = (redaction_count or 0) + dyn_reds
+
+        # Hidden-text scan & policy hook for HTML
+        html_like = "<" in sanitized and ">" in sanitized and "</" in sanitized
+        hidden_reasons: List[str] = []
+        if html_like:
+            hidden_reasons = scan_and_record_html(sanitized)
+
+        hidden_action: Optional[str] = None
+        if hidden_reasons:
+            hidden_action, _matched = decide_for_hidden_reasons("html", hidden_reasons)
 
         det = evaluate_prompt(sanitized)
         decisions = list(det.get("decisions", []))
@@ -201,6 +217,17 @@ async def batch_evaluate(
             action = "allow"
 
         family = _family_for(action, int(redaction_count or 0))
+
+        if hidden_action == "deny":
+            action = "deny"
+            family = "block"
+        elif hidden_action == "clarify" and action != "deny":
+            action = "clarify"
+            family = "verify"
+
+        if hidden_reasons:
+            decisions.append({"source": "hidden_text", "type": "html", "matches": hidden_reasons})
+            header_hidden_reasons.extend(hidden_reasons)
 
         # optional verifier (unclear intent path)
         if do_verify:
@@ -240,26 +267,27 @@ async def batch_evaluate(
 
         # audit
         try:
-            emit_audit_event(
-                {
-                    "ts": None,
-                    "tenant_id": tenant_id,
-                    "bot_id": bot_id,
-                    "request_id": req_id,
-                    "direction": "ingress",
-                    "decision": action,
-                    "rule_hits": (combined_hits or None),
-                    "policy_version": policy_version,
-                    "verifier_provider": None,
-                    "fallback_used": None,
-                    "status_code": 200,
-                    "redaction_count": int(redaction_count or 0),
-                    "hash_fingerprint": fp_all,
-                    "payload_bytes": int(_blen(text_in)),
-                    "sanitized_bytes": int(_blen(xformed)),
-                    "meta": {},
-                }
-            )
+            event: Dict[str, Any] = {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": req_id,
+                "direction": "ingress",
+                "decision": action,
+                "rule_hits": (combined_hits or None),
+                "policy_version": policy_version,
+                "verifier_provider": None,
+                "fallback_used": None,
+                "status_code": 200,
+                "redaction_count": int(redaction_count or 0),
+                "hash_fingerprint": fp_all,
+                "payload_bytes": int(_blen(text_in)),
+                "sanitized_bytes": int(_blen(xformed)),
+                "meta": {},
+            }
+            if hidden_reasons:
+                event["hidden_text"] = {"format": "html", "reasons": hidden_reasons}
+            emit_audit_event(event)
         except Exception:
             pass
 
@@ -276,6 +304,10 @@ async def batch_evaluate(
             )
         )
 
+    if header_hidden_reasons:
+        uniq = sorted({r for r in header_hidden_reasons})
+        response.headers["X-Guardrail-Hidden-Text"] = f"fmt=html;reasons={','.join(uniq)}"
+
     return BatchOut(items=out_items, count=len(out_items))
 
 
@@ -283,6 +315,7 @@ async def batch_evaluate(
 async def egress_batch(
     request: Request,
     body: BatchIn,
+    response: Response,
     x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
 ) -> BatchOut:
     """
@@ -297,6 +330,7 @@ async def egress_batch(
     policy_version = current_rules_version()
 
     out_items: List[BatchItemOut] = []
+    header_hidden_reasons: List[str] = []
 
     for itm in body.items:
         text_in = itm.text or ""
@@ -309,7 +343,30 @@ async def egress_batch(
         redactions = int(payload.get("redactions") or 0)
         hits = list(payload.get("rule_hits") or []) or None
 
+        hidden_reasons: List[str] = []
+        html_like = "<" in xformed and ">" in xformed and "</" in xformed
+        if html_like:
+            hidden_reasons = scan_and_record_html(xformed)
+
+        hidden_action: Optional[str] = None
+        if hidden_reasons:
+            hidden_action, _matched = decide_for_hidden_reasons("html", hidden_reasons)
+            if hidden_action == "deny":
+                action = "deny"
+            elif hidden_action == "clarify" and action != "deny":
+                action = "clarify"
+
+        if hidden_reasons:
+            hits = (hits or []) + [f"hidden_text:html:{r}" for r in hidden_reasons]
+
         family = _family_for(action, redactions)
+        if hidden_action == "deny":
+            family = "block"
+        elif hidden_action == "clarify" and action != "deny":
+            family = "verify"
+
+        if hidden_reasons:
+            header_hidden_reasons.extend(hidden_reasons)
 
         # metrics
         inc_decision_family(family)
@@ -317,26 +374,27 @@ async def egress_batch(
 
         # audit
         try:
-            emit_audit_event(
-                {
-                    "ts": None,
-                    "tenant_id": tenant_id,
-                    "bot_id": bot_id,
-                    "request_id": req_id,
-                    "direction": "egress",
-                    "decision": action,
-                    "rule_hits": hits,
-                    "policy_version": policy_version,
-                    "verifier_provider": None,
-                    "fallback_used": None,
-                    "status_code": 200,
-                    "redaction_count": redactions,
-                    "hash_fingerprint": fp_all,
-                    "payload_bytes": int(_blen(text_in)),
-                    "sanitized_bytes": int(_blen(xformed)),
-                    "meta": {},
-                }
-            )
+            event: Dict[str, Any] = {
+                "ts": None,
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "request_id": req_id,
+                "direction": "egress",
+                "decision": action,
+                "rule_hits": hits,
+                "policy_version": policy_version,
+                "verifier_provider": None,
+                "fallback_used": None,
+                "status_code": 200,
+                "redaction_count": redactions,
+                "hash_fingerprint": fp_all,
+                "payload_bytes": int(_blen(text_in)),
+                "sanitized_bytes": int(_blen(xformed)),
+                "meta": {},
+            }
+            if hidden_reasons:
+                event["hidden_text"] = {"format": "html", "reasons": hidden_reasons}
+            emit_audit_event(event)
         except Exception:
             pass
 
@@ -352,5 +410,9 @@ async def egress_batch(
                 decisions=None,
             )
         )
+
+    if header_hidden_reasons:
+        uniq = sorted({r for r in header_hidden_reasons})
+        response.headers["X-Guardrail-Hidden-Text"] = f"fmt=html;reasons={','.join(uniq)}"
 
     return BatchOut(items=out_items, count=len(out_items))
