@@ -11,16 +11,6 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import current_rules_version, map_verifier_outcome_to_action
-from app.services.verifier.provider_breaker import ProviderBreakerRegistry
-from app.services.verifier.provider_quota import QuotaSkipRegistry
-from app.services.verifier.provider_router import ProviderRouter
-from app.services.verifier.providers.base import Provider, ProviderRateLimited
-from app.services.verifier.result_cache import (
-    CACHE as RC,
-    ENABLED as RC_ENABLED,
-    cache_key,
-    reset_memory as RC_RESET_MEMORY,
-)
 from app.services.verifier_limits import (
     VerifierBudgetExceeded,
     VerifierCircuitOpen,
@@ -35,26 +25,36 @@ from app.settings import (
     VERIFIER_CIRCUIT_FAILS,
     VERIFIER_CIRCUIT_WINDOW_S,
     VERIFIER_DAILY_TOKEN_BUDGET,
+    VERIFIER_MAX_TOKENS_PER_REQUEST,
+    VERIFIER_TIMEOUT_MS,
     VERIFIER_HARM_CACHE_URL,
     VERIFIER_HARM_TTL_DAYS,
-    VERIFIER_MAX_TOKENS_PER_REQUEST,
-    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
+    VERIFIER_PROVIDERS,
+    VERIFIER_PROVIDER_TIMEOUT_MS,
     VERIFIER_PROVIDER_BREAKER_FAILS,
     VERIFIER_PROVIDER_BREAKER_WINDOW_S,
+    VERIFIER_PROVIDER_BREAKER_COOLDOWN_S,
     VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED,
-    VERIFIER_PROVIDER_TIMEOUT_MS,
-    VERIFIER_PROVIDERS,
-    VERIFIER_TIMEOUT_MS,
+)
+from app.services.verifier.providers.base import Provider, ProviderRateLimited
+from app.services.verifier.provider_breaker import ProviderBreakerRegistry
+from app.services.verifier.provider_quota import QuotaSkipRegistry
+from app.services.verifier.provider_router import ProviderRouter
+from app.services.verifier.result_cache import (
+    ENABLED as RC_ENABLED,
+    CACHE as RC,
+    cache_key,
+    reset_memory as RC_RESET_MEMORY,
 )
 from app.telemetry.metrics import (
-    inc_route_rank,
-    inc_route_reorder,
+    inc_verifier_outcome,
+    observe_verifier_latency,
+    inc_verifier_provider_error,
     inc_verifier_breaker_open,
     inc_verifier_cache_hit,
-    inc_verifier_outcome,
-    inc_verifier_provider_error,
     inc_verifier_quota,
-    observe_verifier_latency,
+    inc_route_rank,
+    inc_route_reorder,
 )
 
 __all__ = [
@@ -90,7 +90,6 @@ _BREAKERS = ProviderBreakerRegistry(
 )
 
 _QUOTA = QuotaSkipRegistry()
-
 _ROUTER = ProviderRouter()
 
 
@@ -144,89 +143,58 @@ class Verifier:
         if not self._providers:
             return None, None
 
-        meta = meta or {}
-        tenant = str(meta.get("tenant_id") or "unknown-tenant")
-        bot = str(meta.get("bot_id") or "unknown-bot")
-
-        provider_names = [getattr(p, "name", None) or "unknown" for p in self._providers]
-        ordered_names = _ROUTER.rank(tenant, bot, provider_names)
-        for idx, name in enumerate(ordered_names, start=1):
-            try:
-                inc_route_rank(tenant, bot, name, idx)
-            except Exception:
-                pass
-        if ordered_names and provider_names and ordered_names[0] != provider_names[0]:
-            try:
-                inc_route_reorder(tenant, bot, provider_names[0], ordered_names[0])
-            except Exception:
-                pass
-        name_to_prov = {n: p for n, p in zip(provider_names, self._providers)}
-        self._providers = [name_to_prov[n] for n in ordered_names if n in name_to_prov]
-
         last_provider: Optional[str] = None
 
         for prov in self._providers:
-            last_provider = getattr(prov, "name", None) or "unknown"
+            pname = getattr(prov, "name", None) or "unknown"
 
-            if _BREAKERS.is_open(last_provider):
+            # Breaker check BEFORE adopting as last_provider
+            if _BREAKERS.is_open(pname):
                 continue
 
-            if VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED and _QUOTA.is_skipped(last_provider):
+            # Quota-aware skip (if enabled)
+            if VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED and _QUOTA.is_skipped(pname):
                 try:
-                    inc_verifier_quota(last_provider, "skipped")
+                    inc_verifier_quota(pname, "skipped")
                 except Exception:
                     pass
                 continue
+
+            # Only assign last_provider once we intend to try it
+            last_provider = pname
 
             try:
                 t0 = time.perf_counter()
                 result = await self._call_with_timebox(prov, text, meta)
                 try:
-                    observe_verifier_latency(last_provider, time.perf_counter() - t0)
+                    observe_verifier_latency(pname, time.perf_counter() - t0)
                 except Exception:  # pragma: no cover
                     pass
+                _BREAKERS.on_success(pname)
                 try:
-                    _QUOTA.clear(last_provider)
-                    inc_verifier_quota(last_provider, "reset")
-                except Exception:
-                    pass
-                _BREAKERS.on_success(last_provider)
-                try:
-                    _ROUTER.record_success(
-                        tenant, bot, last_provider, time.perf_counter() - t0
-                    )
+                    _QUOTA.clear(pname)
+                    inc_verifier_quota(pname, "reset")
                 except Exception:
                     pass
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                try:
-                    _ROUTER.record_timeout(tenant, bot, last_provider)
-                except Exception:
-                    pass
-                inc_verifier_provider_error(last_provider, "timeout")
-                if _BREAKERS.on_failure(last_provider):
-                    inc_verifier_breaker_open(last_provider)
+                inc_verifier_provider_error(pname, "timeout")
+                if _BREAKERS.on_failure(pname):
+                    inc_verifier_breaker_open(pname)
                 continue
             except ProviderRateLimited as e:
                 try:
-                    _QUOTA.on_rate_limited(last_provider, getattr(e, "retry_after_s", None))
-                    inc_verifier_quota(last_provider, "rate_limited")
+                    _ = _QUOTA.on_rate_limited(pname, getattr(e, "retry_after_s", None))
+                    inc_verifier_quota(pname, "rate_limited")
                 except Exception:
                     pass
-                try:
-                    _ROUTER.record_rate_limited(tenant, bot, last_provider)
-                except Exception:
-                    pass
+                # Do not trip breaker on quota; skip to next
                 continue
             except Exception:
-                try:
-                    _ROUTER.record_error(tenant, bot, last_provider)
-                except Exception:
-                    pass
-                inc_verifier_provider_error(last_provider, "error")
-                if _BREAKERS.on_failure(last_provider):
-                    inc_verifier_breaker_open(last_provider)
+                inc_verifier_provider_error(pname, "error")
+                if _BREAKERS.on_failure(pname):
+                    inc_verifier_breaker_open(pname)
                 continue
 
             status = str(result.get("status") or "ambiguous")
@@ -359,6 +327,7 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     fp = content_fingerprint(text)
     ck = cache_key(tenant, bot, fp, policy_ver)
 
+    # Cache lookup (zero-token)
     if RC_ENABLED:
         hit = RC.get(ck)
         if hit in ("safe", "unsafe"):
@@ -379,21 +348,21 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
                 "provider": "cache",
             }
 
-    provider_names = load_providers_order()
-
-    ordered = _ROUTER.rank(tenant, bot, provider_names)
+    # Provider ordering (adaptive)
+    base_names = load_providers_order()
+    ordered = _ROUTER.rank(tenant, bot, base_names)
     for idx, name in enumerate(ordered, start=1):
         try:
             inc_route_rank(tenant, bot, name, idx)
         except Exception:
             pass
-    if ordered and provider_names and ordered[0] != provider_names[0]:
+    if ordered and base_names and ordered[0] != base_names[0]:
         try:
-            inc_route_reorder(tenant, bot, provider_names[0], ordered[0])
+            inc_route_reorder(tenant, bot, base_names[0], ordered[0])
         except Exception:
             pass
-    provider_names = ordered
 
+    provider_names = ordered
     est_tokens = max(1, len(text) // 4)
     timeout_s = max(0.05, float(VERIFIER_PROVIDER_TIMEOUT_MS) / 1000.0)
 
@@ -403,17 +372,23 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         prov = build_provider(name)
         if prov is None:
             continue
-        last_provider = getattr(prov, "name", None) or name or "unknown"
 
-        if _BREAKERS.is_open(last_provider):
+        pname = getattr(prov, "name", None) or name or "unknown"
+
+        # Breaker check BEFORE adopting as last_provider
+        if _BREAKERS.is_open(pname):
             continue
 
-        if VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED and _QUOTA.is_skipped(last_provider):
+        # Quota-aware skip (if enabled)
+        if VERIFIER_PROVIDER_QUOTA_SKIP_ENABLED and _QUOTA.is_skipped(pname):
             try:
-                inc_verifier_quota(last_provider, "skipped")
+                inc_verifier_quota(pname, "skipped")
             except Exception:
                 pass
             continue
+
+        # Only now adopt as last_provider since we intend to try it
+        last_provider = pname
 
         try:
             async def _run() -> Dict[str, Any]:
@@ -423,22 +398,14 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
 
             try:
-                observe_verifier_latency(str(last_provider), time.perf_counter() - t0)
+                observe_verifier_latency(pname, time.perf_counter() - t0)
             except Exception:  # pragma: no cover
                 pass
 
+            _BREAKERS.on_success(pname)
             try:
-                _QUOTA.clear(str(last_provider))
-                inc_verifier_quota(str(last_provider), "reset")
-            except Exception:
-                pass
-
-            _BREAKERS.on_success(str(last_provider))
-
-            try:
-                _ROUTER.record_success(
-                    tenant, bot, str(last_provider), time.perf_counter() - t0
-                )
+                _QUOTA.clear(pname)
+                inc_verifier_quota(pname, "reset")
             except Exception:
                 pass
 
@@ -446,44 +413,45 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             raise
         except asyncio.TimeoutError:
             try:
-                _ROUTER.record_timeout(tenant, bot, str(last_provider))
+                inc_verifier_provider_error(pname, "timeout")
             except Exception:
                 pass
-            try:
-                inc_verifier_provider_error(str(last_provider), "timeout")
-            except Exception:
-                pass
-            if _BREAKERS.on_failure(str(last_provider)):
+            if _BREAKERS.on_failure(pname):
                 try:
-                    inc_verifier_breaker_open(str(last_provider))
+                    inc_verifier_breaker_open(pname)
                 except Exception:
                     pass
+            # record into adaptive router
+            try:
+                _ROUTER.record_timeout(tenant, bot, pname)
+            except Exception:
+                pass
             continue
         except ProviderRateLimited as e:
             try:
-                _QUOTA.on_rate_limited(str(last_provider), getattr(e, "retry_after_s", None))
-                inc_verifier_quota(str(last_provider), "rate_limited")
+                _ = _QUOTA.on_rate_limited(pname, getattr(e, "retry_after_s", None))
+                inc_verifier_quota(pname, "rate_limited")
             except Exception:
                 pass
             try:
-                _ROUTER.record_rate_limited(tenant, bot, str(last_provider))
+                _ROUTER.record_rate_limited(tenant, bot, pname)
             except Exception:
                 pass
             continue
         except Exception:
             try:
-                _ROUTER.record_error(tenant, bot, str(last_provider))
+                inc_verifier_provider_error(pname, "error")
             except Exception:
                 pass
-            try:
-                inc_verifier_provider_error(str(last_provider), "error")
-            except Exception:
-                pass
-            if _BREAKERS.on_failure(str(last_provider)):
+            if _BREAKERS.on_failure(pname):
                 try:
-                    inc_verifier_breaker_open(str(last_provider))
+                    inc_verifier_breaker_open(pname)
                 except Exception:
                     pass
+            try:
+                _ROUTER.record_error(tenant, bot, pname)
+            except Exception:
+                pass
             continue
 
         status = str(res.get("status") or "ambiguous").lower()
@@ -491,7 +459,7 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         tokens_used = int(res.get("tokens_used") or est_tokens)
 
         try:
-            inc_verifier_outcome(str(last_provider), status)
+            inc_verifier_outcome(pname, status)
         except Exception:
             pass
 
@@ -506,16 +474,24 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
                     mark_harmful(fp)
                 except Exception:
                     pass
+            # success feedback to router
+            try:
+                _ROUTER.record_success(tenant, bot, pname, time.perf_counter() - t0)
+            except Exception:
+                pass
+
             return {
                 "status": status,
                 "reason": reason,
                 "tokens_used": tokens_used,
-                "provider": str(last_provider),
+                "provider": pname,
             }
+
+        # ambiguous: treat as non-decisive; continue loop
 
     if last_provider:
         try:
-            inc_verifier_outcome(str(last_provider), "ambiguous")
+            inc_verifier_outcome(last_provider, "ambiguous")
         except Exception:
             pass
 
