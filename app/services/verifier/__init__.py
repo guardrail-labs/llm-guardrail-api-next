@@ -13,6 +13,7 @@ from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import current_rules_version, map_verifier_outcome_to_action
 from app.services.verifier.provider_breaker import ProviderBreakerRegistry
 from app.services.verifier.provider_quota import QuotaSkipRegistry
+from app.services.verifier.provider_router import ProviderRouter
 from app.services.verifier.providers.base import Provider, ProviderRateLimited
 from app.services.verifier.result_cache import (
     CACHE as RC,
@@ -46,6 +47,8 @@ from app.settings import (
     VERIFIER_TIMEOUT_MS,
 )
 from app.telemetry.metrics import (
+    inc_route_rank,
+    inc_route_reorder,
     inc_verifier_breaker_open,
     inc_verifier_cache_hit,
     inc_verifier_outcome,
@@ -87,6 +90,8 @@ _BREAKERS = ProviderBreakerRegistry(
 )
 
 _QUOTA = QuotaSkipRegistry()
+
+_ROUTER = ProviderRouter()
 
 
 class Verifier:
@@ -139,6 +144,25 @@ class Verifier:
         if not self._providers:
             return None, None
 
+        meta = meta or {}
+        tenant = str(meta.get("tenant_id") or "unknown-tenant")
+        bot = str(meta.get("bot_id") or "unknown-bot")
+
+        provider_names = [getattr(p, "name", None) or "unknown" for p in self._providers]
+        ordered_names = _ROUTER.rank(tenant, bot, provider_names)
+        for idx, name in enumerate(ordered_names, start=1):
+            try:
+                inc_route_rank(tenant, bot, name, idx)
+            except Exception:
+                pass
+        if ordered_names and provider_names and ordered_names[0] != provider_names[0]:
+            try:
+                inc_route_reorder(tenant, bot, provider_names[0], ordered_names[0])
+            except Exception:
+                pass
+        name_to_prov = {n: p for n, p in zip(provider_names, self._providers)}
+        self._providers = [name_to_prov[n] for n in ordered_names if n in name_to_prov]
+
         last_provider: Optional[str] = None
 
         for prov in self._providers:
@@ -167,9 +191,19 @@ class Verifier:
                 except Exception:
                     pass
                 _BREAKERS.on_success(last_provider)
+                try:
+                    _ROUTER.record_success(
+                        tenant, bot, last_provider, time.perf_counter() - t0
+                    )
+                except Exception:
+                    pass
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
+                try:
+                    _ROUTER.record_timeout(tenant, bot, last_provider)
+                except Exception:
+                    pass
                 inc_verifier_provider_error(last_provider, "timeout")
                 if _BREAKERS.on_failure(last_provider):
                     inc_verifier_breaker_open(last_provider)
@@ -180,8 +214,16 @@ class Verifier:
                     inc_verifier_quota(last_provider, "rate_limited")
                 except Exception:
                     pass
+                try:
+                    _ROUTER.record_rate_limited(tenant, bot, last_provider)
+                except Exception:
+                    pass
                 continue
             except Exception:
+                try:
+                    _ROUTER.record_error(tenant, bot, last_provider)
+                except Exception:
+                    pass
                 inc_verifier_provider_error(last_provider, "error")
                 if _BREAKERS.on_failure(last_provider):
                     inc_verifier_breaker_open(last_provider)
@@ -338,6 +380,20 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     provider_names = load_providers_order()
+
+    ordered = _ROUTER.rank(tenant, bot, provider_names)
+    for idx, name in enumerate(ordered, start=1):
+        try:
+            inc_route_rank(tenant, bot, name, idx)
+        except Exception:
+            pass
+    if ordered and provider_names and ordered[0] != provider_names[0]:
+        try:
+            inc_route_reorder(tenant, bot, provider_names[0], ordered[0])
+        except Exception:
+            pass
+    provider_names = ordered
+
     est_tokens = max(1, len(text) // 4)
     timeout_s = max(0.05, float(VERIFIER_PROVIDER_TIMEOUT_MS) / 1000.0)
 
@@ -379,9 +435,20 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
 
             _BREAKERS.on_success(str(last_provider))
 
+            try:
+                _ROUTER.record_success(
+                    tenant, bot, str(last_provider), time.perf_counter() - t0
+                )
+            except Exception:
+                pass
+
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
+            try:
+                _ROUTER.record_timeout(tenant, bot, str(last_provider))
+            except Exception:
+                pass
             try:
                 inc_verifier_provider_error(str(last_provider), "timeout")
             except Exception:
@@ -398,8 +465,16 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
                 inc_verifier_quota(str(last_provider), "rate_limited")
             except Exception:
                 pass
+            try:
+                _ROUTER.record_rate_limited(tenant, bot, str(last_provider))
+            except Exception:
+                pass
             continue
         except Exception:
+            try:
+                _ROUTER.record_error(tenant, bot, str(last_provider))
+            except Exception:
+                pass
             try:
                 inc_verifier_provider_error(str(last_provider), "error")
             except Exception:
