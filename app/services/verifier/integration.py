@@ -1,8 +1,7 @@
 from __future__ import annotations
-
 import os
-from typing import Dict, Optional, Tuple
-
+import inspect
+from typing import Any, Dict, Optional, Tuple, cast
 
 def _get_mode() -> str:
     """
@@ -15,6 +14,55 @@ def _get_mode() -> str:
     if v in {"headers", "enforce", "off"}:
         return v
     return "off"
+
+
+def _normalize_headers(outcome: Dict[str, Any], hdrs_in: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Build stable X-Guardrail-* headers from whatever the hardened verifier returns.
+    We avoid strong typing assumptions and cast to strings defensively.
+    """
+    hdrs: Dict[str, str] = {}
+    if isinstance(hdrs_in, dict):
+        # Coerce incoming headers to str-str (dropping non-serializable values)
+        for k, v in list(hdrs_in.items()):
+            try:
+                hdrs.setdefault(str(k), str(v))
+            except Exception:
+                continue
+
+    status = str(outcome.get("status", outcome.get("outcome", "error")) or "error").lower()
+    hdrs.setdefault("X-Guardrail-Outcome", status)
+
+    reason = outcome.get("reason")
+    if isinstance(reason, str) and reason:
+        hdrs.setdefault("X-Guardrail-Reason", reason[:512])
+
+    # Prefer an explicit source header if provider already gave one
+    if "X-Guardrail-Decision-Source" not in hdrs:
+        used_fallback = bool(outcome.get("used_fallback", False))
+        hdrs["X-Guardrail-Decision-Source"] = "verifier-fallback" if used_fallback else "verifier-live"
+
+    return hdrs
+
+
+def _map_to_action(status: str, *, direction: str) -> Optional[str]:
+    """
+    Conservative mapping used only when VERIFIER_HARDENED_MODE='enforce'.
+    Returns an action override or None to keep current action.
+    """
+    if direction == "ingress":
+        if status == "safe":
+            return "allow"
+        if status == "unsafe":
+            return "deny"
+        if status == "ambiguous":
+            return "clarify"
+        return None
+    else:
+        # egress: only escalate clear unsafe; let redactors handle ambiguous
+        if status == "unsafe":
+            return "deny"
+        return None
 
 
 def maybe_verify_and_headers(
@@ -32,52 +80,19 @@ def maybe_verify_and_headers(
 
     - In "headers" mode, action_override is None (no behavior change), but headers
       include decision source/outcome/reason if available.
-    - In "enforce" mode, action_override may be "allow" | "deny" | "clarify" etc.
+    - In "enforce" mode, action_override may be "allow" | "deny" | "clarify".
     - In "off" mode, returns (None, {}).
+
+    Note: We DO NOT assume the hardened verifier's signature beyond accepting `text`.
+    If the function is async, we bail (no-op) to avoid awaiting from a sync context.
     """
     mode = _get_mode()
     if mode == "off":
         return None, {}
 
     try:
-        from app.services.verifier import verify_intent_hardened  # type: ignore
+        from app.services.verifier import verify_intent_hardened  # dynamic import; typing: Any
     except Exception:
         return None, {}
 
-    try:
-        outcome, used_fallback, reason, v_headers = verify_intent_hardened(
-            text=text,
-            tenant_id=tenant_id,
-            bot_id=bot_id,
-            family=(family or "general"),
-            latency_budget_ms=latency_budget_ms,
-            token_budget=token_budget,
-            direction=direction,
-        )
-        hdrs: Dict[str, str] = dict(v_headers or {})
-        hdrs.setdefault(
-            "X-Guardrail-Decision-Source",
-            "verifier-fallback" if used_fallback else "verifier-live",
-        )
-        norm_outcome = str(outcome or "").lower() or "error"
-        hdrs.setdefault("X-Guardrail-Outcome", norm_outcome)
-        if reason:
-            hdrs.setdefault("X-Guardrail-Reason", str(reason)[:512])
-
-        if mode == "enforce":
-            if direction == "ingress":
-                if norm_outcome == "safe":
-                    return "allow", hdrs
-                if norm_outcome == "unsafe":
-                    return "deny", hdrs
-                if norm_outcome == "ambiguous":
-                    return "clarify", hdrs
-                return None, hdrs
-            else:
-                if norm_outcome == "unsafe":
-                    return "deny", hdrs
-                return None, hdrs
-
-        return None, hdrs
-    except Exception:
-        return None, {}
+    # If the provider is async, skip (our rou
