@@ -111,7 +111,7 @@ def _is_hidden(el) -> List[str]:
     left = css.get("left")
     top = css.get("top")
     col = css.get("color")
-    # Accept both background-color and background
+    # Accept both background-color and background shorthand
     bg = css.get("background-color") or css.get("background")
     clip = css.get("clip")
     clip_path = css.get("clip-path")
@@ -143,9 +143,7 @@ def _is_hidden(el) -> List[str]:
     if clip and _CLIP_ZERO_RE.match(clip):
         reasons.append("css:clip-zero")
         style_hidden = True
-    if clip_path and (
-        _CLIP_PATH_INSET_HALF_RE.match(clip_path) or "clip-path: inset(50%)" in clip_path
-    ):
+    if clip_path and _CLIP_PATH_INSET_HALF_RE.match(clip_path):
         reasons.append("css:clip-path-inset-50")
         style_hidden = True
 
@@ -201,18 +199,18 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
     except FeatureNotFound:
         soup = BeautifulSoup(html or "", "html.parser")
 
-    reasons: List[str] = []
+    all_reasons: List[str] = []
     samples: List[str] = []
 
     for el in soup.find_all(True):
         try:
-            r = _is_hidden(el)
-            if not r:
+            hidden_reasons = _is_hidden(el)
+            if not hidden_reasons:
                 continue
             txt = (el.get_text() or "").strip()
             if txt:
                 samples.append(txt[:200])
-            reasons.extend(r)
+            all_reasons.extend(hidden_reasons)
             if len(samples) >= 5:
                 break
         except Exception:
@@ -220,11 +218,11 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
 
     # Dedupe + sort for stable outputs
     uniq_reasons: List[str] = []
-    seen = set()
-    for r in reasons:
-        if r not in seen:
-            uniq_reasons.append(r)
-            seen.add(r)
+    seen: set[str] = set()
+    for reason in all_reasons:
+        if reason not in seen:
+            uniq_reasons.append(reason)
+            seen.add(reason)
 
     return {
         "found": bool(uniq_reasons and samples),
