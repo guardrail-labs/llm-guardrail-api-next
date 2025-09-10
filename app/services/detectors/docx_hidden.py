@@ -13,7 +13,9 @@ def _is_hidden_run(run) -> List[str]:
     except Exception:
         pass
     try:
-        if run.font.color and run.font.color.rgb and str(run.font.color.rgb).lower() in {"ffffff"}:
+        if run.font.color and run.font.color.rgb and str(run.font.color.rgb).lower() in {
+            "ffffff"
+        }:
             reasons.append("font:white")
     except Exception:
         pass
@@ -44,11 +46,14 @@ def detect_hidden_text(docx_bytes: bytes) -> Dict[str, object]:
                 samples.append(t[:200])
             reasons.extend(rs)
             if len(samples) >= 5:
-                return {"found": True, "reasons": sorted(set(reasons))[:8], "samples": samples[:5]}
+                return {
+                    "found": True,
+                    "reasons": sorted(set(reasons))[:8],
+                    "samples": samples[:5],
+                }
 
     return {
         "found": bool(reasons and samples),
         "reasons": sorted(set(reasons))[:8],
         "samples": samples[:5],
     }
-
