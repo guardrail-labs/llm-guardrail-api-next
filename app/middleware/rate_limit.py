@@ -7,6 +7,8 @@ FastAPI middleware for per-API-key and per-IP rate limiting.
 - Exposes inc_rate_limited() and _get_trace_id() for tests to monkeypatch.
 - Supports legacy envs: RATE_LIMIT_PER_MINUTE, RATE_LIMIT_BURST
   and split envs: RATE_LIMIT_PER_API_KEY_PER_MIN, RATE_LIMIT_PER_IP_PER_MIN.
+
+NOTE: Disabled by default. Enable by setting RATE_LIMIT_ENABLED=true|1.
 """
 
 from __future__ import annotations
@@ -64,7 +66,8 @@ def _parse_limits_from_env() -> Tuple[bool, int, int, int, int, bool]:
     New split config:
       RATE_LIMIT_PER_API_KEY_PER_MIN, RATE_LIMIT_PER_IP_PER_MIN
     """
-    enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    # Default: DISABLED unless explicitly enabled in env.
+    enabled = os.getenv("RATE_LIMIT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
     legacy = "RATE_LIMIT_PER_MINUTE" in os.environ or "RATE_LIMIT_BURST" in os.environ
     if legacy:
@@ -105,7 +108,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         (
             env_enabled,
             env_per_min,
-            _env_burst,  # keep for backward-compat but do not default capacities to this
+            _env_burst,  # kept for compatibility; we compute capacities below
             env_key_min,
             env_ip_min,
             legacy_unified,
@@ -120,7 +123,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         per_ip = env_ip_min if per_ip_per_min is None else per_ip_per_min
 
         # IMPORTANT: If no explicit burst is given, default capacity to each dimension's limit.
-        # (This fixes tests that expect the 3rd request with per_key=2 to be 429.)
         key_capacity = burst if burst is not None else per_key
         ip_capacity = burst if burst is not None else per_ip
 
