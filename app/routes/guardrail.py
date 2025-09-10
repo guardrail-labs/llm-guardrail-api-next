@@ -37,6 +37,7 @@ try:
     from app.services.verifier.integration import (
         maybe_verify_and_headers as _hardened_impl,
     )
+
     _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl
 except Exception:  # pragma: no cover
     _maybe_hardened_verify = None
@@ -560,17 +561,7 @@ async def _handle_upload_to_text(
     decode_pdf: bool,
     mods: Dict[str, int],
 ) -> Tuple[str, str]:
-    # NOTE: we import exact functions to satisfy mypy and avoid module-attr access.
-    from app.services.detectors.pdf_hidden import detect_hidden_text as detect_pdf_hidden
-    from app.services.detectors.html_hidden import (
-        detect_hidden_text as detect_html_hidden,
-    )
-    try:
-        from app.services.detectors.docx_hidden import (
-            detect_hidden_text as detect_docx_hidden,
-        )
-    except Exception:
-        detect_docx_hidden = None  # type: ignore[assignment]
+    from app.services.detectors import pdf_hidden as _pdf_hidden
 
     name = getattr(obj, "filename", None) or "file"
     ctype = (getattr(obj, "content_type", "") or "").lower()
@@ -604,8 +595,13 @@ async def _handle_upload_to_text(
         if ctype == "text/html" or ext in {"html", "htm"}:
             raw = await obj.read()
             try:
+                # Import the function directly to keep mypy happy
+                from app.services.detectors.html_hidden import (
+                    detect_hidden_text as _detect_html_hidden,
+                )
+
                 text_html = raw.decode("utf-8", errors="ignore")
-                hidden = detect_html_hidden(text_html)
+                hidden = _detect_html_hidden(text_html)
 
                 hidden_block = ""
                 if hidden.get("found"):
@@ -632,22 +628,28 @@ async def _handle_upload_to_text(
         if ctype == DOCX_MIME or ext == "docx":
             raw = await obj.read()
             try:
+                # Import the function directly to keep mypy happy
+                from app.services.detectors.docx_hidden import (
+                    detect_hidden_text as _detect_docx_hidden,
+                )
+
+                hidden = _detect_docx_hidden(raw)
+
                 hidden_block = ""
-                if detect_docx_hidden is not None:
-                    hidden = detect_docx_hidden(raw)
-                    if hidden.get("found"):
-                        reasons_list = cast(List[str], hidden.get("reasons") or [])
-                        samples_list = cast(List[str], hidden.get("samples") or [])
+                if hidden.get("found"):
+                    reasons_list = cast(List[str], hidden.get("reasons") or [])
+                    samples_list = cast(List[str], hidden.get("samples") or [])
 
-                        for r in reasons_list:
-                            _maybe_metric("inc_docx_hidden", str(r))
+                    for r in reasons_list:
+                        _maybe_metric("inc_docx_hidden", str(r))
 
-                        reasons = ",".join(reasons_list) or "detected"
-                        joined = " ".join(samples_list)[:500]
-                        hidden_block = (
-                            f"\n[HIDDEN_DOCX_DETECTED:{reasons}]\n{joined}\n"
-                            "[HIDDEN_DOCX_END]\n"
-                        )
+                    reasons = ",".join(reasons_list) or "detected"
+                    joined = " ".join(samples_list)[:500]
+                    hidden_block = (
+                        f"\n[HIDDEN_DOCX_DETECTED:{reasons}]\n{joined}\n"
+                        "[HIDDEN_DOCX_END]\n"
+                    )
+
                 mods["file"] = mods.get("file", 0) + 1
                 return hidden_block or f"[FILE:{name}]", name
             except Exception:
@@ -658,7 +660,7 @@ async def _handle_upload_to_text(
         if ctype == "application/pdf" or ext == "pdf":
             raw = await obj.read()
 
-            hidden = detect_pdf_hidden(raw)
+            hidden = _pdf_hidden.detect_hidden_text(raw)
             hidden_block = ""
             if hidden.get("found"):
                 reasons_list = cast(List[str], hidden.get("reasons") or [])
@@ -1217,4 +1219,35 @@ async def guardrail_egress(request: Request):
     verifier_info = None
     if hv_headers:
         verifier_info = {
-            "provider": hv_headers.get("X-Guardrail-Ver
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
+
+    _audit(
+        "egress",
+        text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
+        verifier=verifier_info,
+    )
+    _bump_family("egress", "egress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        rule_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=None,
+        verifier_sampled=False,
+        direction="egress",
+        extra_headers=hv_headers,
+    )
