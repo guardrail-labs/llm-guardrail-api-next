@@ -471,6 +471,17 @@ def _evaluate_ingress_policy(
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
 
+    # Hidden-text markers injected by file handlers → hard deny
+    if (
+        "[HIDDEN_TEXT_DETECTED:" in text
+        or "[HIDDEN_HTML_DETECTED:" in text
+        or "[HIDDEN_DOCX_DETECTED:" in text
+    ):
+        hits.setdefault("injection:hidden_text", []).append("hidden_text_marker")
+        dbg["explanations"] = ["hidden_text_detected"]
+        _normalize_wildcards(hits, is_deny=True)
+        return "deny", hits, (dbg if dbg else None)
+
     if RE_HACK_WIFI.search(text or ""):
         hits.setdefault("unsafe:illicit", []).append("hack_wifi_or_bypass_wpa2")
         dbg["explanations"] = ["illicit_request"]
@@ -564,12 +575,47 @@ async def _handle_upload_to_text(
                     # Casts for mypy
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
+                    for r in reasons_list:
+                        try:
+                            m.inc_html_hidden(str(r))  # if defined
+                        except Exception:
+                            pass
 
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
                     hidden_block = (
                         f"\n[HIDDEN_HTML_DETECTED:{reasons}]\n{joined}\n"
                         "[HIDDEN_HTML_END]\n"
+                    )
+
+                mods["file"] = mods.get("file", 0) + 1
+                return hidden_block or f"[FILE:{name}]", name
+            except Exception:
+                mods["file"] = mods.get("file", 0) + 1
+                return f"[FILE:{name}]", name
+
+        # DOCX (hidden-text detector)
+        if ctype == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or ext == "docx":
+            raw = await obj.read()
+            try:
+                from app.services.detectors import docx_hidden as _docx_hidden
+                hidden = _docx_hidden.detect_hidden_text(raw)
+
+                hidden_block = ""
+                if hidden.get("found"):
+                    reasons_list = cast(List[str], hidden.get("reasons") or [])
+                    samples_list = cast(List[str], hidden.get("samples") or [])
+                    # metrics (optional)
+                    for r in reasons_list:
+                        try:
+                            m.inc_docx_hidden(str(r))  # if defined
+                        except Exception:
+                            pass
+                    reasons = ",".join(reasons_list) or "detected"
+                    joined = " ".join(samples_list)[:500]
+                    hidden_block = (
+                        f"\n[HIDDEN_DOCX_DETECTED:{reasons}]\n{joined}\n"
+                        "[HIDDEN_DOCX_END]\n"
                     )
 
                 mods["file"] = mods.get("file", 0) + 1

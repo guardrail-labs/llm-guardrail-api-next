@@ -26,11 +26,11 @@ def test_pdf_hidden_hex_is_exposed_and_redacted():
     files = [("files", ("hidden.pdf", pdf, "application/pdf"))]
     # Avoid Prometheus label conflicts in test environment.
     m.inc_redaction = lambda *a, **k: None
-    r = client.post("/guardrail/evaluate_multipart", files=files)
+    r = client.post("/guardrail/evaluate_multipart", files=files, headers={"X-Debug": "1"})
     assert r.status_code == 200
     body = r.json()
 
-    # API still allows; redactions are applied in transformed text.
-    assert body["action"] == "allow"
-    assert "[HIDDEN_TEXT_DETECTED" in body["text"]
-    assert "[REDACTED:OPENAI_KEY]" in body["text"]
+    # Denied due to hidden-text markers in PDF.
+    assert body["action"] == "deny"
+    assert "[HIDDEN_TEXT_DETECTED" in body.get("text", "")
+    assert "[REDACTED:OPENAI_KEY]" in body.get("text", "")
