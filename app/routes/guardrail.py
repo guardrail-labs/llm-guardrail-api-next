@@ -32,10 +32,7 @@ from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
 # NEW: hardened verifier integration (safe, optional) with proper Optional typing
-HardenedVerifyFn = Callable[
-    ...,
-    Awaitable[Tuple[Optional[str], Dict[str, str]]],
-]
+HardenedVerifyFn = Callable[..., Awaitable[Tuple[Optional[str], Dict[str, str]]]]
 try:
     from app.services.verifier.integration import (
         maybe_verify_and_headers as _hardened_impl,
@@ -870,7 +867,7 @@ async def guardrail_evaluate(request: Request):
                 origin="ingress",
                 modality="text",
                 mime_type="text/plain",
-                size_bytes=len(combined_text.encode("utf-8"))),
+                size_bytes=len(combined_text.encode("utf-8")),
                 content_bytes=combined_text.encode("utf-8"),
                 rule_hits=policy_hits,
                 redactions=redaction_spans,
@@ -998,7 +995,7 @@ async def guardrail_evaluate_multipart(request: Request):
                 origin="ingress",
                 modality="text",
                 mime_type="text/plain",
-                size_bytes=len(combined_text.encode("utf-8"))),
+                size_bytes=len(combined_text.encode("utf-8")),
                 content_bytes=combined_text.encode("utf-8"),
                 rule_hits=policy_hits,
                 redactions=redaction_spans,
@@ -1121,13 +1118,13 @@ async def guardrail_egress(request: Request):
             dbg.setdefault("explanations", []).append("redactions_applied")
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
-            dbg["explanations"].extend(list(debug_info["explanations"])]
+            dbg["explanations"].extend(list(debug_info["explanations"]))
         dbg_sources.append(
             make_source(
                 origin="egress",
                 modality="text",
                 mime_type="text/plain",
-                size_bytes=len(redacted.encode("utf-8"))),
+                size_bytes=len(redacted.encode("utf-8")),
                 content_bytes=redacted.encode("utf-8"),
                 rule_hits=rule_hits,
                 redactions=redaction_spans,
