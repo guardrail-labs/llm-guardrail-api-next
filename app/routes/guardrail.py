@@ -46,6 +46,11 @@ router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
 
+# Short constant to avoid long-line issues in checks
+DOCX_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
 
 def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
     if x_api_key:
@@ -562,7 +567,7 @@ async def _handle_upload_to_text(
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
 
-        # HTML (hidden-content detector with parser fallback)
+        # HTML (optional hidden-content detector)
         if ctype == "text/html" or ext in {"html", "htm"}:
             raw = await obj.read()
             try:
@@ -574,11 +579,14 @@ async def _handle_upload_to_text(
                 if hidden.get("found"):
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    # optional metrics bump
                     for r in reasons_list:
                         try:
-                            m.inc_html_hidden(str(r))  # optional metric
+                            m.inc_html_hidden(str(r))
                         except Exception:
                             pass
+
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
                     hidden_block = (
@@ -592,8 +600,8 @@ async def _handle_upload_to_text(
                 mods["file"] = mods.get("file", 0) + 1
                 return f"[FILE:{name}]", name
 
-        # DOCX (hidden-text detector; wrap bytes in BytesIO inside detector)
-        if ctype == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or ext == "docx":
+        # DOCX (hidden-text detector)
+        if ctype == DOCX_MIME or ext == "docx":
             raw = await obj.read()
             try:
                 from app.services.detectors import docx_hidden as _docx_hidden
@@ -603,11 +611,14 @@ async def _handle_upload_to_text(
                 if hidden.get("found"):
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    # optional metrics bump
                     for r in reasons_list:
                         try:
-                            m.inc_docx_hidden(str(r))  # optional metric
+                            m.inc_docx_hidden(str(r))
                         except Exception:
                             pass
+
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
                     hidden_block = (
@@ -900,6 +911,7 @@ async def guardrail_evaluate(request: Request):
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+
         dbg = {"matches": matches}
         if redaction_hits:
             dbg["redaction_sources"] = list(redaction_hits.keys())
