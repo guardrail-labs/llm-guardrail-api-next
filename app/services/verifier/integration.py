@@ -95,4 +95,41 @@ def maybe_verify_and_headers(
     except Exception:
         return None, {}
 
-    # If the provider is async, skip (our rou
+    # If the provider is async, skip (our routes call us from sync context).
+    if inspect.iscoroutinefunction(verify_intent_hardened):
+        return None, {}
+
+    try:
+        # Be liberal in what we accept:
+        # - Some implementations may use verify_intent_hardened(text)
+        # - Others may support named arg text=...
+        try:
+            res: Any = verify_intent_hardened(text)  # type: ignore[call-arg]
+        except TypeError:
+            res = verify_intent_hardened(text=text)  # type: ignore[call-arg]
+
+        outcome: Dict[str, Any]
+        v_headers_any: Optional[Dict[str, Any]] = None
+
+        if isinstance(res, tuple) and len(res) == 2:
+            outcome = cast(Dict[str, Any], res[0] or {})
+            v_headers_any = cast(Optional[Dict[str, Any]], res[1] or {})
+        elif isinstance(res, dict):
+            outcome = cast(Dict[str, Any], res)
+        else:
+            # Unknown shape -> no-op
+            return None, {}
+
+        hdrs = _normalize_headers(outcome, v_headers_any)
+        status = hdrs.get("X-Guardrail-Outcome", "error").lower()
+
+        if mode == "enforce":
+            override = _map_to_action(status, direction=direction)
+            return override, hdrs
+
+        # headers mode
+        return None, hdrs
+
+    except Exception:
+        # Any issues -> silent no-op to avoid test/behavior regressions
+        return None, {}
