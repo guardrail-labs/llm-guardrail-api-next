@@ -6,6 +6,7 @@ import os
 import random
 import re
 import uuid
+import time
 from typing import Any, Dict, List, Optional, Tuple, cast, Callable, Awaitable
 
 from fastapi import APIRouter, Header, Request, UploadFile
@@ -276,7 +277,7 @@ def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dic
         return base
     for k, v in extra.items():
         try:
-            base.setdefault(k, str(v))
+            base[str(k)] = str(v)
         except Exception:
             pass
     return base
@@ -322,6 +323,8 @@ def _respond_action(
     headers = {
         "X-Guardrail-Policy-Version": current_rules_version(),
         "X-Guardrail-Verifier-Sampled": "1" if verifier_sampled else "0",
+        "X-Guardrail-Decision": action,
+        "X-Guardrail-Decision-Source": "policy-only",
     }
     if direction == "ingress":
         headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
@@ -329,6 +332,7 @@ def _respond_action(
         headers["X-Guardrail-Egress-Redactions"] = str(int(redaction_count or 0))
 
     headers = _merge_headers(headers, extra_headers)
+    headers["X-Guardrail-Decision"] = action
     return JSONResponse(body, headers=headers)
 
 
@@ -696,12 +700,15 @@ async def _maybe_hardened(
     if _maybe_hardened_verify is None:
         return None, {}
     try:
+        lb = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
+        latency_ms = int(lb) if lb else None
         return await _maybe_hardened_verify(
             text=text,
             direction=direction,
             tenant_id=tenant,
             bot_id=bot,
             family=family,
+            latency_budget_ms=latency_ms,
         )
     except Exception:
         return None, {}
@@ -884,7 +891,8 @@ async def guardrail_evaluate(request: Request):
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
 
-    # Hardened verifier (optional, non-breaking; headers-only by default)
+    # Hardened verifier (optional, authoritative)
+    t_hv = time.perf_counter()
     hv_action, hv_headers = await _maybe_hardened(
         text=combined_text,
         direction="ingress",
@@ -892,8 +900,17 @@ async def guardrail_evaluate(request: Request):
         bot=bot,
         family=headers.get("X-Model-Family"),
     )
-    if hv_action:
+    latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    if hv_action is not None:
         action = hv_action
+
+    verifier_info = None
+    if hv_headers:
+        verifier_info = {
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
 
     _audit(
         "ingress",
@@ -906,7 +923,7 @@ async def guardrail_evaluate(request: Request):
         policy_hits,
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
-        verifier=(dbg or {}).get("verifier") if want_debug else None,
+        verifier=verifier_info,
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
@@ -1003,6 +1020,7 @@ async def guardrail_evaluate_multipart(request: Request):
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
 
+    t_hv = time.perf_counter()
     hv_action, hv_headers = await _maybe_hardened(
         text=combined_text,
         direction="ingress",
@@ -1010,8 +1028,17 @@ async def guardrail_evaluate_multipart(request: Request):
         bot=bot,
         family=headers.get("X-Model-Family"),
     )
-    if hv_action:
+    latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    if hv_action is not None:
         action = hv_action
+
+    verifier_info = None
+    if hv_headers:
+        verifier_info = {
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
 
     _audit(
         "ingress",
@@ -1024,7 +1051,7 @@ async def guardrail_evaluate_multipart(request: Request):
         policy_hits,
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
-        verifier=(dbg or {}).get("verifier") if want_debug else None,
+        verifier=verifier_info,
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
@@ -1096,6 +1123,7 @@ async def guardrail_egress(request: Request):
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
     # Hardened verifier AFTER egress policy + redactions
+    t_hv = time.perf_counter()
     hv_action, hv_headers = await _maybe_hardened(
         text=redacted,
         direction="egress",
@@ -1103,8 +1131,17 @@ async def guardrail_egress(request: Request):
         bot=bot,
         family=headers.get("X-Model-Family"),
     )
-    if hv_action:
+    latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    if hv_action is not None:
         action = hv_action
+
+    verifier_info = None
+    if hv_headers:
+        verifier_info = {
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
 
     _audit(
         "egress",
@@ -1117,6 +1154,7 @@ async def guardrail_egress(request: Request):
         rule_hits,
         redaction_count,
         debug_sources=dbg_sources if want_debug else None,
+        verifier=verifier_info,
     )
     _bump_family("egress", "egress_evaluate", action, tenant, bot)
 
