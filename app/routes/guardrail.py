@@ -32,13 +32,16 @@ from app.services import ocr as _ocr
 
 # NEW: hardened verifier integration (safe, optional)
 try:
-    from app.services.verifier.integration import maybe_verify_and_headers as _maybe_hardened_verify
+    from app.services.verifier.integration import (
+        maybe_verify_and_headers as _maybe_hardened_verify,
+    )
 except Exception:  # pragma: no cover
-    _maybe_hardened_verify = None  # type: ignore
+    _maybe_hardened_verify = None  # fallback to no-op
 
 router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
+
 
 def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
     if x_api_key:
@@ -46,6 +49,7 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
     if auth and auth.strip():
         return True
     return False
+
 
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
@@ -75,21 +79,26 @@ JAILBREAK_DAN_ID = "jailbreak:dan"
 SECRETS_API_KEY_ID = "secrets:api_key_like"
 PAYLOAD_BLOB_ID = "payload:encoded_blob"
 
+
 def _req_id(existing: Optional[str]) -> str:
     return existing or str(uuid.uuid4())
+
 
 def _fingerprint(text: str) -> str:
     return hashlib.sha256(
         text.encode("utf-8", errors="ignore")
     ).hexdigest()
 
+
 def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
     tenant = (t or "default").strip() or "default"
     bot = (b or "default").strip() or "default"
     return tenant, bot
 
+
 def emit_audit_event(payload: Dict[str, Any]) -> None:
     _emit(payload)
+
 
 def _normalize_wildcards(
     rule_hits: Dict[str, List[str]],
@@ -107,6 +116,7 @@ def _normalize_wildcards(
         rule_hits.setdefault("jailbreak:*", [])
     if is_deny:
         rule_hits.setdefault("policy:deny:*", [])
+
 
 def _apply_redactions(
     text: str,
@@ -148,7 +158,9 @@ def _apply_redactions(
         redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
         rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
         for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key"))
+            spans.append(
+                (m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key")
+            )
             m.inc_redaction("openai_key")
         redactions += len(matches)
 
@@ -157,24 +169,49 @@ def _apply_redactions(
         redacted = RE_AWS.sub("[REDACTED:AWS_ACCESS_KEY_ID]", redacted)
         rule_hits.setdefault("secrets:aws_key", []).append(RE_AWS.pattern)
         for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:AWS_ACCESS_KEY_ID]", "secrets:aws_key"))
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:AWS_ACCESS_KEY_ID]",
+                    "secrets:aws_key",
+                )
+            )
             m.inc_redaction("aws_access_key_id")
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
     if matches:
         redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
-        rule_hits.setdefault("secrets:private_key", []).append(RE_PRIVATE_KEY_ENVELOPE.pattern)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_ENVELOPE.pattern
+        )
         for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:PRIVATE_KEY]", "secrets:private_key"))
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
+            )
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_MARKER.finditer(original))
     if matches:
         redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
-        rule_hits.setdefault("secrets:private_key", []).append(RE_PRIVATE_KEY_MARKER.pattern)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_MARKER.pattern
+        )
         for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:PRIVATE_KEY]", "secrets:private_key"))
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
+            )
         redactions += len(matches)
 
     matches = list(RE_PROMPT_INJ.finditer(original))
@@ -182,18 +219,30 @@ def _apply_redactions(
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
         for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:INJECTION]", INJECTION_PROMPT_INJ_ID))
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:INJECTION]",
+                    INJECTION_PROMPT_INJ_ID,
+                )
+            )
         redactions += len(matches)
 
     _normalize_wildcards(rule_hits, is_deny=False)
     return redacted, rule_hits, redactions, spans
 
+
 def _debug_requested(x_debug: Optional[str]) -> bool:
     return bool(x_debug)
 
+
 # --------------------- verifier sampling helpers ---------------------
+
 
 def _verifier_sampling_pct() -> float:
     raw = (os.getenv("VERIFIER_SAMPLING_PCT") or "").strip()
@@ -205,13 +254,16 @@ def _verifier_sampling_pct() -> float:
         return 0.0
     return max(0.0, min(1.0, v))
 
+
 def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
     keys = list(hits.keys())
     return any(
         k.startswith(("injection:", "jailbreak:", "unsafe:illicit")) for k in keys
     )
 
+
 # ------------------------------- responses -------------------------------
+
 
 def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dict[str, str]:
     if not extra:
@@ -222,6 +274,7 @@ def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dic
         except Exception:
             pass
     return base
+
 
 def _respond_action(
     action: str,
@@ -272,6 +325,7 @@ def _respond_action(
     headers = _merge_headers(headers, extra_headers)
     return JSONResponse(body, headers=headers)
 
+
 def _respond_legacy_allow(
     prompt: str,
     request_id: str,
@@ -294,6 +348,7 @@ def _respond_legacy_allow(
         "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
     }
     return JSONResponse(body, headers=headers)
+
 
 def _respond_legacy_block(
     request_id: str,
@@ -318,7 +373,9 @@ def _respond_legacy_block(
     }
     return JSONResponse(body, headers=headers)
 
+
 # ------------------------------- audit -------------------------------
+
 
 def _audit(
     direction: str,
@@ -361,6 +418,7 @@ def _audit(
         }
     emit_audit_event(payload)
 
+
 def _bump_family(
     direction: str,
     endpoint: str,
@@ -372,7 +430,9 @@ def _bump_family(
     fam = "allow" if action == "allow" else "deny"
     m.inc_decision_family_tenant_bot(fam, tenant, bot)
 
+
 # ------------------------------- policies -------------------------------
+
 
 def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
     hits: List[str] = []
@@ -396,6 +456,7 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
             return "block", hits
 
     return "allow", hits
+
 
 def _evaluate_ingress_policy(
     text: str,
@@ -425,6 +486,7 @@ def _evaluate_ingress_policy(
 
     return "allow", hits, None
 
+
 def _egress_policy(
     text: str,
     want_debug: bool,
@@ -443,7 +505,9 @@ def _egress_policy(
         dbg = {"note": "redactions_may_apply"}
     return "allow", text, rule_hits_allow, dbg
 
+
 # ------------------------------- form parsing -------------------------------
+
 
 async def _handle_upload_to_text(
     obj: UploadFile,
@@ -457,6 +521,7 @@ async def _handle_upload_to_text(
     ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
 
     try:
+        # Images
         if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
             mods["image"] = mods.get("image", 0) + 1
             if _ocr.ocr_enabled():
@@ -469,14 +534,17 @@ async def _handle_upload_to_text(
                 m.inc_ocr_extraction("image", "empty")
             return f"[IMAGE:{name}]", name
 
+        # Audio
         if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
             mods["audio"] = mods.get("audio", 0) + 1
             return f"[AUDIO:{name}]", name
 
+        # Plain text
         if ctype == "text/plain" or ext == "txt":
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
 
+        # HTML (optional hidden-content detector)
         if ctype == "text/html" or ext in {"html", "htm"}:
             raw = await obj.read()
             try:
@@ -486,8 +554,10 @@ async def _handle_upload_to_text(
 
                 hidden_block = ""
                 if hidden.get("found"):
+                    # Casts for mypy
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
+
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
                     hidden_block = (
@@ -501,6 +571,7 @@ async def _handle_upload_to_text(
                 mods["file"] = mods.get("file", 0) + 1
                 return f"[FILE:{name}]", name
 
+        # PDF
         if ctype == "application/pdf" or ext == "pdf":
             raw = await obj.read()
 
@@ -509,6 +580,7 @@ async def _handle_upload_to_text(
             if hidden.get("found"):
                 reasons_list = cast(List[str], hidden.get("reasons") or [])
                 samples_list = cast(List[str], hidden.get("samples") or [])
+                # metrics: increment reason counters
                 for r in reasons_list:
                     try:
                         m.inc_pdf_hidden(str(r))
@@ -540,6 +612,7 @@ async def _handle_upload_to_text(
             mods["file"] = mods.get("file", 0) + 1
             return f"[FILE:{name}]", name
 
+        # Unknown file type -> generic marker
         mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]", name
 
@@ -555,10 +628,16 @@ async def _handle_upload_to_text(
         mods["file"] = mods.get("file", 0) + 1
         return f"[FILE:{name}]", name
 
+
 async def _read_form_and_merge(
     request: Request,
     decode_pdf: bool,
 ) -> Tuple[str, Dict[str, int], List[Dict[str, str]]]:
+    """
+    Merge 'text' plus files from multipart form data. Iterate over
+    form.multi_items() to capture *all* file fields. Any file-like value
+    (has filename + read) is handled. Returns (text, modality_counts, sources).
+    """
     form = await request.form()
     combined: List[str] = []
     mods: Dict[str, int] = {}
@@ -592,9 +671,9 @@ async def _read_form_and_merge(
     text = "\n".join([s for s in combined if s])
     return text, mods, sources
 
-# ------------------------------- hardened verifier hook -------------------------------
 
 # ------------------------------- hardened verifier hook -------------------------------
+
 
 async def _maybe_hardened(
     *,
@@ -611,7 +690,7 @@ async def _maybe_hardened(
     if _maybe_hardened_verify is None:
         return None, {}
     try:
-        return await _maybe_hardened_verify(  # type: ignore[misc]
+        return await _maybe_hardened_verify(
             text=text,
             direction=direction,
             tenant_id=tenant,
@@ -623,6 +702,7 @@ async def _maybe_hardened(
 
 
 # ------------------------------- endpoints -------------------------------
+
 
 @router.post("/guardrail")
 @router.post("/guardrail/")  # avoid redirect that would double-count in rate limiter
@@ -706,6 +786,7 @@ async def guardrail_legacy(
         redacted, request_id, rule_hits, policy_version, redactions
     )
 
+
 @router.post("/guardrail/evaluate")
 async def guardrail_evaluate(request: Request):
     headers = request.headers
@@ -777,6 +858,7 @@ async def guardrail_evaluate(request: Request):
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
+    # Always apply injection default first (before sampling gate).
     base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
     if dbg is not None:
         base_decision["debug"] = dbg
@@ -784,6 +866,7 @@ async def guardrail_evaluate(request: Request):
     action = base_decision.get("action", action)
     dbg = base_decision.get("debug", dbg)
 
+    # Verifier sampling gate (stateless)
     verifier_sampled = False
     pct = _verifier_sampling_pct()
     if pct > 0.0 and _hits_trigger_verifier(policy_hits):
@@ -796,7 +879,7 @@ async def guardrail_evaluate(request: Request):
             verifier_sampled = True
 
     # Hardened verifier (optional, non-breaking; headers-only by default)
-    hv_action, hv_headers = _maybe_hardened(
+    hv_action, hv_headers = await _maybe_hardened(
         text=combined_text,
         direction="ingress",
         tenant=tenant,
@@ -833,6 +916,7 @@ async def guardrail_evaluate(request: Request):
         direction="ingress",
         extra_headers=hv_headers,
     )
+
 
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
@@ -893,6 +977,7 @@ async def guardrail_evaluate_multipart(request: Request):
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
+    # Always apply injection default first (before sampling gate).
     base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
     if dbg is not None:
         base_decision["debug"] = dbg
@@ -900,6 +985,7 @@ async def guardrail_evaluate_multipart(request: Request):
     action = base_decision.get("action", action)
     dbg = base_decision.get("debug", dbg)
 
+    # Verifier sampling gate
     verifier_sampled = False
     pct = _verifier_sampling_pct()
     if pct > 0.0 and _hits_trigger_verifier(policy_hits):
@@ -911,7 +997,7 @@ async def guardrail_evaluate_multipart(request: Request):
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
 
-    hv_action, hv_headers = _maybe_hardened(
+    hv_action, hv_headers = await _maybe_hardened(
         text=combined_text,
         direction="ingress",
         tenant=tenant,
@@ -948,6 +1034,7 @@ async def guardrail_evaluate_multipart(request: Request):
         direction="ingress",
         extra_headers=hv_headers,
     )
+
 
 @router.post("/guardrail/egress_evaluate")
 async def guardrail_egress(request: Request):
@@ -1003,7 +1090,7 @@ async def guardrail_egress(request: Request):
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
     # Hardened verifier AFTER egress policy + redactions
-    hv_action, hv_headers = _maybe_hardened(
+    hv_action, hv_headers = await _maybe_hardened(
         text=redacted,
         direction="egress",
         tenant=tenant,
