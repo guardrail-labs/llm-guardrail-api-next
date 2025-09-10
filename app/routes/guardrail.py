@@ -594,18 +594,24 @@ async def _read_form_and_merge(
 
 # ------------------------------- hardened verifier hook -------------------------------
 
-def _maybe_hardened(
+# ------------------------------- hardened verifier hook -------------------------------
+
+async def _maybe_hardened(
     *,
     text: str,
-    direction: str,
+    direction: str,  # "ingress" | "egress"
     tenant: str,
     bot: str,
     family: Optional[str],
 ) -> Tuple[Optional[str], Dict[str, str]]:
+    """
+    Calls hardened verifier if available/enabled. Returns (maybe_action_override, headers).
+    Safe no-op if integration module not present or VERIFIER_HARDENED_MODE is "off".
+    """
     if _maybe_hardened_verify is None:
         return None, {}
     try:
-        return _maybe_hardened_verify(
+        return await _maybe_hardened_verify(  # type: ignore[misc]
             text=text,
             direction=direction,
             tenant_id=tenant,
@@ -614,6 +620,7 @@ def _maybe_hardened(
         )
     except Exception:
         return None, {}
+
 
 # ------------------------------- endpoints -------------------------------
 
