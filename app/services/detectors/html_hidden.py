@@ -591,13 +591,17 @@ async def _handle_upload_to_text(
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
 
-        # HTML (optional hidden-content detector)
+        # HTML (hidden-content detector)
         if ctype == "text/html" or ext in {"html", "htm"}:
             raw = await obj.read()
             try:
-                from app.services.detectors import html_hidden as _html_hidden
+                # Import the function directly to keep mypy happy
+                from app.services.detectors.html_hidden import (
+                    detect_hidden_text as _detect_html_hidden,
+                )
+
                 text_html = raw.decode("utf-8", errors="ignore")
-                hidden = _html_hidden.detect_hidden_text(text_html)
+                hidden = _detect_html_hidden(text_html)
 
                 hidden_block = ""
                 if hidden.get("found"):
@@ -624,8 +628,12 @@ async def _handle_upload_to_text(
         if ctype == DOCX_MIME or ext == "docx":
             raw = await obj.read()
             try:
-                from app.services.detectors import docx_hidden as _docx_hidden
-                hidden = _docx_hidden.detect_hidden_text(raw)
+                # Import the function directly to keep mypy happy
+                from app.services.detectors.docx_hidden import (
+                    detect_hidden_text as _detect_docx_hidden,
+                )
+
+                hidden = _detect_docx_hidden(raw)
 
                 hidden_block = ""
                 if hidden.get("found"):
