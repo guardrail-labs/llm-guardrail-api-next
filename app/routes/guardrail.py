@@ -40,7 +40,7 @@ try:
         maybe_verify_and_headers as _hardened_impl,
     )
 
-    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl  # type: ignore[assignment]
+    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl 
 except Exception:  # pragma: no cover
     _maybe_hardened_verify = None
 
