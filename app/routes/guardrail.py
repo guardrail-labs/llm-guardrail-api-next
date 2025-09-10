@@ -46,7 +46,7 @@ router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
 
-# Short constant to avoid long-line issues in checks
+# MIME constant to avoid long-line issues in checks
 DOCX_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
@@ -127,6 +127,20 @@ def _normalize_wildcards(
         rule_hits.setdefault("policy:deny:*", [])
 
 
+def _maybe_metric(func_name: str, *args: Any, **kwargs: Any) -> None:
+    """
+    Call a metric function if it exists; ignore if absent.
+    (Appeases mypy's attr-defined and prevents runtime errors.)
+    """
+    try:
+        fn = getattr(m, func_name, None)
+        if callable(fn):
+            fn(*args, **kwargs)
+    except Exception:
+        # metrics must not break request flow
+        pass
+
+
 def _apply_redactions(
     text: str,
     *,
@@ -150,7 +164,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            m.inc_redaction("email")
+            _maybe_metric("inc_redaction", "email")
         redactions += len(matches)
 
     matches = list(RE_PHONE.finditer(original))
@@ -159,7 +173,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            m.inc_redaction("phone")
+            _maybe_metric("inc_redaction", "phone")
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
@@ -170,7 +184,7 @@ def _apply_redactions(
             spans.append(
                 (m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key")
             )
-            m.inc_redaction("openai_key")
+            _maybe_metric("inc_redaction", "openai_key")
         redactions += len(matches)
 
     matches = list(RE_AWS.finditer(original))
@@ -186,7 +200,7 @@ def _apply_redactions(
                     "secrets:aws_key",
                 )
             )
-            m.inc_redaction("aws_access_key_id")
+            _maybe_metric("inc_redaction", "aws_access_key_id")
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
@@ -299,7 +313,7 @@ def _respond_action(
     extra_headers: Optional[Dict[str, str]] = None,  # NEW
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
-    m.inc_decisions_total(fam)
+    _maybe_metric("inc_decisions_total", fam)
 
     decisions: List[Dict[str, Any]] = []
     if redaction_count > 0:
@@ -345,7 +359,7 @@ def _respond_legacy_allow(
     policy_version: str,
     redactions: int,
 ) -> JSONResponse:
-    m.inc_decisions_total("allow")
+    _maybe_metric("inc_decisions_total", "allow")
     body: Dict[str, Any] = {
         "request_id": request_id,
         "decision": "allow",
@@ -369,7 +383,7 @@ def _respond_legacy_block(
     policy_version: str,
     redactions: int,
 ) -> JSONResponse:
-    m.inc_decisions_total("deny")
+    _maybe_metric("inc_decisions_total", "deny")
     body: Dict[str, Any] = {
         "request_id": request_id,
         "decision": "block",
@@ -438,9 +452,9 @@ def _bump_family(
     tenant: str,
     bot: str,
 ) -> None:
-    m.inc_requests_total(endpoint)
+    _maybe_metric("inc_requests_total", endpoint)
     fam = "allow" if action == "allow" else "deny"
-    m.inc_decision_family_tenant_bot(fam, tenant, bot)
+    _maybe_metric("inc_decision_family_tenant_bot", fam, tenant, bot)
 
 
 # ------------------------------- policies -------------------------------
@@ -549,12 +563,12 @@ async def _handle_upload_to_text(
             mods["image"] = mods.get("image", 0) + 1
             if _ocr.ocr_enabled():
                 raw = await obj.read()
-                m.add_ocr_bytes("image", len(raw))
+                _maybe_metric("add_ocr_bytes", "image", len(raw))
                 text = _ocr.extract_from_image(raw)
                 if text and text.strip():
-                    m.inc_ocr_extraction("image", "ok")
+                    _maybe_metric("inc_ocr_extraction", "image", "ok")
                     return text, name
-                m.inc_ocr_extraction("image", "empty")
+                _maybe_metric("inc_ocr_extraction", "image", "empty")
             return f"[IMAGE:{name}]", name
 
         # Audio
@@ -580,12 +594,8 @@ async def _handle_upload_to_text(
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
 
-                    # optional metrics bump
                     for r in reasons_list:
-                        try:
-                            m.inc_html_hidden(str(r))
-                        except Exception:
-                            pass
+                        _maybe_metric("inc_html_hidden", str(r))
 
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
@@ -612,12 +622,8 @@ async def _handle_upload_to_text(
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
 
-                    # optional metrics bump
                     for r in reasons_list:
-                        try:
-                            m.inc_docx_hidden(str(r))
-                        except Exception:
-                            pass
+                        _maybe_metric("inc_docx_hidden", str(r))
 
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
@@ -641,12 +647,8 @@ async def _handle_upload_to_text(
             if hidden.get("found"):
                 reasons_list = cast(List[str], hidden.get("reasons") or [])
                 samples_list = cast(List[str], hidden.get("samples") or [])
-                # metrics: increment reason counters
                 for r in reasons_list:
-                    try:
-                        m.inc_pdf_hidden(str(r))
-                    except Exception:
-                        pass
+                    _maybe_metric("inc_pdf_hidden", str(r))
                 reasons = ",".join(reasons_list) or "detected"
                 joined = " ".join(samples_list)[:500]
                 hidden_block = (
@@ -655,16 +657,17 @@ async def _handle_upload_to_text(
                 )
 
             if _ocr.ocr_enabled():
-                m.add_ocr_bytes("pdf", len(raw))
+                _maybe_metric("add_ocr_bytes", "pdf", len(raw))
                 text, outcome = _ocr.extract_pdf_with_optional_ocr(raw)
                 if text and text.strip():
-                    m.inc_ocr_extraction(
+                    _maybe_metric(
+                        "inc_ocr_extraction",
                         "pdf",
                         outcome if outcome in {"textlayer", "fallback"} else "ok",
                     )
                     mods["file"] = mods.get("file", 0) + 1
                     return (text + hidden_block) if hidden_block else text, name
-                m.inc_ocr_extraction("pdf", outcome if outcome else "empty")
+                _maybe_metric("inc_ocr_extraction", "pdf", outcome if outcome else "empty")
 
             if decode_pdf:
                 mods["file"] = mods.get("file", 0) + 1
@@ -681,9 +684,9 @@ async def _handle_upload_to_text(
         try:
             if _ocr.ocr_enabled():
                 if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
-                    m.inc_ocr_extraction("image", "error")
+                    _maybe_metric("inc_ocr_extraction", "image", "error")
                 elif ctype == "application/pdf" or ext == "pdf":
-                    m.inc_ocr_extraction("pdf", "error")
+                    _maybe_metric("inc_ocr_extraction", "pdf", "error")
         except Exception:
             pass
         mods["file"] = mods.get("file", 0) + 1
