@@ -1,78 +1,86 @@
 from __future__ import annotations
 
+from bs4 import BeautifulSoup, FeatureNotFound
 import re
 from typing import Dict, List
 
-# Very small heuristic HTML hidden-text detector.
-# We look for:
-#  - Inline styles that hide text: display:none, visibility:hidden, opacity:0
-#  - White-on-white text via color:#fff / rgb(255,255,255) combined with background:white-ish
-#  - Hidden attribute and common utility classes (hidden, sr-only, visually-hidden)
-#
-# We then try to extract nearby plain text between tags.
-# This is intentionally conservative and dependency-free.
+_OFFSCREEN_RE = re.compile(r"^-?\d{3,}px$")
+_ZERO_RE = re.compile(r"^0(?:px|em|rem|%)?$", re.I)
+_WHITE_RE = re.compile(r"^(?:#?fff(?:fff)?|white)$", re.I)
+_TRANSPARENT_RE = re.compile(r"^transparent$", re.I)
 
-# Rough patterns for hidden styles / classes / attrs
-_STYLE_HIDDEN_RE = re.compile(
-    r"(?is)style\s*=\s*\"[^\"]*(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0)[^\"]*\""
-)
-_STYLE_WHITE_ON_WHITE_RE = re.compile(
-    r"(?is)style\s*=\s*\"[^\"]*color\s*:\s*(?:#fff\b|#ffffff\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))[^\"]*background(?:-color)?\s*:\s*(?:#fff\b|#ffffff\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))[^\"]*\""
-)
-_ATTR_HIDDEN_RE = re.compile(r"\bhidden\b", re.I)
-_CLASS_HIDDEN_RE = re.compile(
-    r'class\s*=\s*"(?:[^"]*\b(?:hidden|sr-only|visually-hidden)\b[^"]*)"', re.I
-)
 
-# Extract inner text naively (strip tags)
-_TAG_TEXT_RE = re.compile(r"(?s)>([^<]+)<")
+def _parse_style(style: str) -> Dict[str, str]:
+    kv: Dict[str, str] = {}
+    for part in (style or "").split(";"):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            kv[k.strip().lower()] = v.strip().lower()
+    return kv
 
-def _collect_matches(pattern: re.Pattern[str], html: str, max_items: int = 5) -> List[str]:
-    out: List[str] = []
-    for m in pattern.finditer(html):
-        # Take a small window around the match and pull inner text
-        start = max(0, m.start() - 400)
-        end = min(len(html), m.end() + 400)
-        window = html[start:end]
-        for t in _TAG_TEXT_RE.finditer(window):
-            s = t.group(1).strip()
-            if s:
-                out.append(s[:200])
-                if len(out) >= max_items:
-                    return out
-    return out
+
+def _is_hidden(el) -> List[str]:
+    reasons: List[str] = []
+    if el.has_attr("hidden"):
+        reasons.append("attr:hidden")
+    if el.get("aria-hidden", "").lower() == "true":
+        reasons.append("attr:aria-hidden")
+
+    css = _parse_style(el.get("style", ""))
+    disp = css.get("display")
+    vis = css.get("visibility")
+    op = css.get("opacity")
+    fs = css.get("font-size")
+    pos = css.get("position")
+    left = css.get("left")
+    top = css.get("top")
+    col = css.get("color")
+    bg = css.get("background-color")
+
+    if disp == "none":
+        reasons.append("css:display-none")
+    if vis == "hidden":
+        reasons.append("css:visibility-hidden")
+    if op in {"0", "0.0"}:
+        reasons.append("css:opacity-0")
+    if fs and _ZERO_RE.match(fs):
+        reasons.append("css:font-size-0")
+    if pos in {"absolute", "fixed"} and ((left and _OFFSCREEN_RE.match(left)) or (top and _OFFSCREEN_RE.match(top))):
+        reasons.append("css:offscreen")
+    if col and bg and ((_WHITE_RE.search(col) and _WHITE_RE.search(bg)) or _TRANSPARENT_RE.search(col)):
+        reasons.append("css:low-contrast")
+    return reasons
+
 
 def detect_hidden_text(html: str) -> Dict[str, object]:
+    """
+    Return {"found": bool, "reasons": [...], "samples": [...]}
+    Prefer lxml; fall back to built-in html.parser if lxml unavailable.
+    """
+    try:
+        soup = BeautifulSoup(html or "", "lxml")
+    except FeatureNotFound:
+        soup = BeautifulSoup(html or "", "html.parser")
+
     reasons: List[str] = []
     samples: List[str] = []
+    for el in soup.find_all(True):
+        try:
+            r = _is_hidden(el)
+            if not r:
+                continue
+            txt = (el.get_text() or "").strip()
+            if txt:
+                samples.append(txt[:200])
+            reasons.extend(r)
+            if len(samples) >= 5:
+                break
+        except Exception:
+            continue
 
-    # display:none / visibility:hidden / opacity:0
-    if _STYLE_HIDDEN_RE.search(html):
-        reasons.append("style_hidden")
-        samples.extend(_collect_matches(_STYLE_HIDDEN_RE, html))
+    return {
+        "found": bool(reasons and samples),
+        "reasons": sorted(set(reasons))[:8],
+        "samples": samples[:5],
+    }
 
-    # explicit white-on-white foreground+background
-    if _STYLE_WHITE_ON_WHITE_RE.search(html):
-        reasons.append("white_on_white")
-        samples.extend(_collect_matches(_STYLE_WHITE_ON_WHITE_RE, html))
-
-    # hidden attribute (HTML5)
-    if _ATTR_HIDDEN_RE.search(html):
-        reasons.append("attr_hidden")
-        samples.extend(_collect_matches(_ATTR_HIDDEN_RE, html))
-
-    # common utility classes
-    if _CLASS_HIDDEN_RE.search(html):
-        reasons.append("class_hidden")
-        samples.extend(_collect_matches(_CLASS_HIDDEN_RE, html))
-
-    # Deduplicate & bound
-    reasons = sorted(set(reasons))
-    uniq_samples: List[str] = []
-    for s in samples:
-        if s not in uniq_samples:
-            uniq_samples.append(s)
-        if len(uniq_samples) >= 5:
-            break
-
-    return {"found": bool(reasons and uniq_samples), "reasons": reasons, "samples": uniq_samples}
