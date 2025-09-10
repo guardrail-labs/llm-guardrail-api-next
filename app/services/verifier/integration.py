@@ -3,79 +3,25 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional, Tuple, cast
 
+from app.telemetry.metrics import inc_verifier_outcome
+
 # ---------------------------------------------------------------------
-# Feature flag
+# Env helpers
 # ---------------------------------------------------------------------
 
 
 def _get_mode() -> str:
-    """
-    VERIFIER_HARDENED_MODE:
-      - "off"      => do nothing (default if var unset/empty/unknown)
-      - "headers"  => call hardened verifier; attach headers ONLY
-      - "enforce"  => call hardened verifier; map to action and enforce
-    """
-    v = (os.getenv("VERIFIER_HARDENED_MODE") or "").strip().lower()
-    if v in {"headers", "enforce", "off"}:
+    v = (os.getenv("VERIFIER_HARDENED_MODE") or "headers").strip().lower()
+    if v in {"off", "headers", "enforce"}:
         return v
-    return "off"
+    return "headers"
 
 
-# ---------------------------------------------------------------------
-# Header + action normalization
-# ---------------------------------------------------------------------
-
-
-def _normalize_headers(
-    outcome: Dict[str, Any], hdrs_in: Optional[Dict[str, Any]]
-) -> Dict[str, str]:
-    """
-    Build stable X-Guardrail-* headers from whatever the hardened verifier returns.
-    """
-    hdrs: Dict[str, str] = {}
-    if isinstance(hdrs_in, dict):
-        for k, v in list(hdrs_in.items()):
-            try:
-                hdrs.setdefault(str(k), str(v))
-            except Exception:
-                # Drop non-serializable header values
-                pass
-
-    status = str(
-        outcome.get("status", outcome.get("outcome", "error")) or "error"
-    ).lower()
-    hdrs.setdefault("X-Guardrail-Outcome", status)
-
-    reason = outcome.get("reason")
-    if isinstance(reason, str) and reason:
-        hdrs.setdefault("X-Guardrail-Reason", reason[:512])
-
-    # Prefer explicit source header if already present; otherwise synthesize.
-    if "X-Guardrail-Decision-Source" not in hdrs:
-        used_fallback = bool(outcome.get("used_fallback", False))
-        src = "verifier-fallback" if used_fallback else "verifier-live"
-        hdrs["X-Guardrail-Decision-Source"] = src
-
-    return hdrs
-
-
-def _map_to_action(status: str, *, direction: str) -> Optional[str]:
-    """
-    Conservative mapping used only when VERIFIER_HARDENED_MODE='enforce'.
-    Returns an action override or None to keep current action.
-    """
-    if direction == "ingress":
-        if status == "safe":
-            return "allow"
-        if status == "unsafe":
-            return "deny"
-        if status == "ambiguous":
-            return "clarify"
-        return None
-    # egress: escalate only clear unsafe; let redactors handle ambiguous
-    if status == "unsafe":
-        return "deny"
-    return None
+def _get_default_action() -> str:
+    v = (os.getenv("VERIFIER_DEFAULT_ACTION") or "allow").strip().lower()
+    if v in {"allow", "deny", "clarify"}:
+        return v
+    return "allow"
 
 
 # ---------------------------------------------------------------------
@@ -90,31 +36,23 @@ async def maybe_verify_and_headers(
     tenant_id: Optional[str],
     bot_id: Optional[str],
     family: Optional[str],
-    latency_budget_ms: Optional[int] = 1200,
-    token_budget: Optional[int] = 12000,
+    latency_budget_ms: Optional[int] = None,
+    token_budget: Optional[int] = None,
 ) -> Tuple[Optional[str], Dict[str, str]]:
-    """
-    Returns (maybe_action_override, headers).
+    """Call hardened verifier and return (action, headers).
 
-    - In "headers" mode, action_override is None (no behavior change), but headers
-      include decision source/outcome/reason if available.
-    - In "enforce" mode, action_override may be "allow" | "deny" | "clarify".
-    - In "off" mode, returns (None, {}).
-
-    Calls the async hardened verifier as: verify_intent_hardened(text, context)
-    and expects (outcome_dict, headers_dict).
+    On any failure or if disabled, returns (None, {}).
     """
+
     mode = _get_mode()
     if mode == "off":
         return None, {}
 
     try:
-        # app/services/verifier/__init__.py exposes verify_intent_hardened
         from app.services.verifier import verify_intent_hardened
     except Exception:
         return None, {}
 
-    # Build the context object expected by this codebase.
     ctx: Dict[str, Any] = {
         "tenant_id": tenant_id,
         "bot_id": bot_id,
@@ -124,27 +62,61 @@ async def maybe_verify_and_headers(
         "token_budget": token_budget,
     }
 
+    default_action = _get_default_action()
     try:
-        # Await provider and accept canonical shape: (outcome, headers)
-        vfunc: Any = verify_intent_hardened  # cast dynamic import to Any
-        out_obj, v_headers_any = cast(
-            Tuple[Dict[str, Any], Dict[str, Any]],
-            await vfunc(text, ctx),
+        vfunc: Any = verify_intent_hardened
+        out_obj, hdr_in = cast(
+            Tuple[Dict[str, Any], Dict[str, Any]], await vfunc(text, ctx)
         )
+
         outcome = out_obj if isinstance(out_obj, dict) else {}
-        hdrs = _normalize_headers(
-            outcome, v_headers_any if isinstance(v_headers_any, dict) else {}
+        headers_in = hdr_in if isinstance(hdr_in, dict) else {}
+
+        status = str(outcome.get("status", "")).lower()
+        reason = outcome.get("reason")
+        provider = str(
+            outcome.get("provider")
+            or headers_in.get("X-Guardrail-Verifier")
+            or "unknown"
         )
 
-        status = hdrs.get("X-Guardrail-Outcome", "error").lower()
+        if status == "safe":
+            decision = "allow"
+            source = "verifier-live"
+        elif status == "unsafe":
+            decision = "deny"
+            source = "verifier-live"
+        elif status == "ambiguous":
+            decision = "clarify"
+            source = "verifier-live"
+        else:
+            decision = default_action
+            source = "verifier-fallback"
 
-        if mode == "enforce":
-            override = _map_to_action(status, direction=direction)
-            return override, hdrs
+        inc_verifier_outcome(provider, decision if source == "verifier-live" else "fallback")
 
-        # headers mode
-        return None, hdrs
+        headers: Dict[str, str] = {}
+        for k, v in headers_in.items():
+            try:
+                headers[str(k)] = str(v)
+            except Exception:
+                pass
+
+        headers["X-Guardrail-Decision"] = decision
+        headers["X-Guardrail-Decision-Source"] = source
+        if isinstance(reason, str) and reason:
+            headers["X-Guardrail-Reason"] = reason[:512]
+        if "X-Guardrail-Verifier" not in headers and provider:
+            headers["X-Guardrail-Verifier"] = provider
+
+        return decision, headers
 
     except Exception:
-        # Any issues -> silent no-op to avoid behavior regressions
-        return None, {}
+        inc_verifier_outcome("unknown", "error")
+        fallback = _get_default_action()
+        headers = {
+            "X-Guardrail-Decision": fallback,
+            "X-Guardrail-Decision-Source": "verifier-fallback",
+        }
+        return fallback, headers
+
