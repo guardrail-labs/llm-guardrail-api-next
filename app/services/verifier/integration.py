@@ -1,13 +1,18 @@
 from __future__ import annotations
+
 import os
-import inspect
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Optional, Tuple
+
+# ---------------------------------------------------------------------
+# Feature flag
+# ---------------------------------------------------------------------
+
 
 def _get_mode() -> str:
     """
     VERIFIER_HARDENED_MODE:
       - "off"      => do nothing (default if var unset/empty/unknown)
-      - "headers"  => call hardened verifier; attach headers ONLY (no behavior change)
+      - "headers"  => call hardened verifier; attach headers ONLY
       - "enforce"  => call hardened verifier; map to action and enforce
     """
     v = (os.getenv("VERIFIER_HARDENED_MODE") or "").strip().lower()
@@ -16,31 +21,40 @@ def _get_mode() -> str:
     return "off"
 
 
-def _normalize_headers(outcome: Dict[str, Any], hdrs_in: Optional[Dict[str, Any]]) -> Dict[str, str]:
+# ---------------------------------------------------------------------
+# Header + action normalization
+# ---------------------------------------------------------------------
+
+
+def _normalize_headers(
+    outcome: Dict[str, Any], hdrs_in: Optional[Dict[str, Any]]
+) -> Dict[str, str]:
     """
     Build stable X-Guardrail-* headers from whatever the hardened verifier returns.
-    We avoid strong typing assumptions and cast to strings defensively.
     """
     hdrs: Dict[str, str] = {}
     if isinstance(hdrs_in, dict):
-        # Coerce incoming headers to str-str (dropping non-serializable values)
         for k, v in list(hdrs_in.items()):
             try:
                 hdrs.setdefault(str(k), str(v))
             except Exception:
-                continue
+                # Drop non-serializable header values
+                pass
 
-    status = str(outcome.get("status", outcome.get("outcome", "error")) or "error").lower()
+    status = str(
+        outcome.get("status", outcome.get("outcome", "error")) or "error"
+    ).lower()
     hdrs.setdefault("X-Guardrail-Outcome", status)
 
     reason = outcome.get("reason")
     if isinstance(reason, str) and reason:
         hdrs.setdefault("X-Guardrail-Reason", reason[:512])
 
-    # Prefer an explicit source header if provider already gave one
+    # Prefer explicit source header if already present; otherwise synthesize.
     if "X-Guardrail-Decision-Source" not in hdrs:
         used_fallback = bool(outcome.get("used_fallback", False))
-        hdrs["X-Guardrail-Decision-Source"] = "verifier-fallback" if used_fallback else "verifier-live"
+        src = "verifier-fallback" if used_fallback else "verifier-live"
+        hdrs["X-Guardrail-Decision-Source"] = src
 
     return hdrs
 
@@ -58,17 +72,21 @@ def _map_to_action(status: str, *, direction: str) -> Optional[str]:
         if status == "ambiguous":
             return "clarify"
         return None
-    else:
-        # egress: only escalate clear unsafe; let redactors handle ambiguous
-        if status == "unsafe":
-            return "deny"
-        return None
+    # egress: escalate only clear unsafe; let redactors handle ambiguous
+    if status == "unsafe":
+        return "deny"
+    return None
 
 
-def maybe_verify_and_headers(
+# ---------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------
+
+
+async def maybe_verify_and_headers(
     *,
     text: str,
-    direction: str,       # "ingress" | "egress"
+    direction: str,  # "ingress" | "egress"
     tenant_id: Optional[str],
     bot_id: Optional[str],
     family: Optional[str],
@@ -83,44 +101,35 @@ def maybe_verify_and_headers(
     - In "enforce" mode, action_override may be "allow" | "deny" | "clarify".
     - In "off" mode, returns (None, {}).
 
-    Note: We DO NOT assume the hardened verifier's signature beyond accepting `text`.
-    If the function is async, we bail (no-op) to avoid awaiting from a sync context.
+    Calls the async hardened verifier as: verify_intent_hardened(text, context)
+    and expects (outcome_dict, headers_dict).
     """
     mode = _get_mode()
     if mode == "off":
         return None, {}
 
     try:
-        from app.services.verifier import verify_intent_hardened  # dynamic import; typing: Any
+        # app/services/verifier/__init__.py exposes verify_intent_hardened
+        from app.services.verifier import verify_intent_hardened  # type: ignore
     except Exception:
         return None, {}
 
-    # If the provider is async, skip (our routes call us from sync context).
-    if inspect.iscoroutinefunction(verify_intent_hardened):
-        return None, {}
+    # Build the context object expected by this codebase.
+    ctx: Dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "bot_id": bot_id,
+        "family": family or "general",
+        "direction": direction,
+        "latency_budget_ms": latency_budget_ms,
+        "token_budget": token_budget,
+    }
 
     try:
-        # Be liberal in what we accept:
-        # - Some implementations may use verify_intent_hardened(text)
-        # - Others may support named arg text=...
-        try:
-            res: Any = verify_intent_hardened(text)  # type: ignore[call-arg]
-        except TypeError:
-            res = verify_intent_hardened(text=text)  # type: ignore[call-arg]
+        # Await the coroutine and accept the canonical shape: (outcome, headers)
+        out_obj, v_headers_any = await verify_intent_hardened(text, ctx)  # type: ignore[func-returns-value]
+        outcome = out_obj if isinstance(out_obj, dict) else {}
+        hdrs = _normalize_headers(outcome, v_headers_any if isinstance(v_headers_any, dict) else {})
 
-        outcome: Dict[str, Any]
-        v_headers_any: Optional[Dict[str, Any]] = None
-
-        if isinstance(res, tuple) and len(res) == 2:
-            outcome = cast(Dict[str, Any], res[0] or {})
-            v_headers_any = cast(Optional[Dict[str, Any]], res[1] or {})
-        elif isinstance(res, dict):
-            outcome = cast(Dict[str, Any], res)
-        else:
-            # Unknown shape -> no-op
-            return None, {}
-
-        hdrs = _normalize_headers(outcome, v_headers_any)
         status = hdrs.get("X-Guardrail-Outcome", "error").lower()
 
         if mode == "enforce":
@@ -131,5 +140,5 @@ def maybe_verify_and_headers(
         return None, hdrs
 
     except Exception:
-        # Any issues -> silent no-op to avoid test/behavior regressions
+        # Any issues -> silent no-op to avoid behavior regressions
         return None, {}
