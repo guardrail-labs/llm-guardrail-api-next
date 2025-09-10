@@ -41,7 +41,7 @@ try:
         maybe_verify_and_headers as _hardened_impl,
     )
 
-    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl 
+    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl
 except Exception:  # pragma: no cover
     _maybe_hardened_verify = None
 
@@ -714,6 +714,21 @@ async def _maybe_hardened(
         return None, {}
 
 
+def _apply_hardened_override(current_action: str, hv_action: Optional[str]) -> str:
+    """
+    Only allow hardened verifier to force 'allow' or 'deny'.
+    Normalize 'block' -> 'deny'. Ignore 'clarify' or unknowns.
+    """
+    if not hv_action:
+        return current_action
+    norm = hv_action.strip().lower()
+    if norm == "block":
+        norm = "deny"
+    if norm in {"allow", "deny"}:
+        return norm
+    return current_action
+
+
 # ------------------------------- endpoints -------------------------------
 
 
@@ -855,7 +870,7 @@ async def guardrail_evaluate(request: Request):
                 origin="ingress",
                 modality="text",
                 mime_type="text/plain",
-                size_bytes=len(combined_text.encode("utf-8")),
+                size_bytes=len(combined_text.encode("utf-8"))),
                 content_bytes=combined_text.encode("utf-8"),
                 rule_hits=policy_hits,
                 redactions=redaction_spans,
@@ -901,8 +916,7 @@ async def guardrail_evaluate(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
-    if hv_action is not None:
-        action = hv_action
+    action = _apply_hardened_override(action, hv_action)
 
     verifier_info = None
     if hv_headers:
@@ -984,7 +998,7 @@ async def guardrail_evaluate_multipart(request: Request):
                 origin="ingress",
                 modality="text",
                 mime_type="text/plain",
-                size_bytes=len(combined_text.encode("utf-8")),
+                size_bytes=len(combined_text.encode("utf-8"))),
                 content_bytes=combined_text.encode("utf-8"),
                 rule_hits=policy_hits,
                 redactions=redaction_spans,
@@ -1029,8 +1043,7 @@ async def guardrail_evaluate_multipart(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
-    if hv_action is not None:
-        action = hv_action
+    action = _apply_hardened_override(action, hv_action)
 
     verifier_info = None
     if hv_headers:
@@ -1108,13 +1121,13 @@ async def guardrail_egress(request: Request):
             dbg.setdefault("explanations", []).append("redactions_applied")
         if debug_info and "explanations" in debug_info:
             dbg.setdefault("explanations", [])
-            dbg["explanations"].extend(list(debug_info["explanations"]))
+            dbg["explanations"].extend(list(debug_info["explanations"])]
         dbg_sources.append(
             make_source(
                 origin="egress",
                 modality="text",
                 mime_type="text/plain",
-                size_bytes=len(redacted.encode("utf-8")),
+                size_bytes=len(redacted.encode("utf-8"))),
                 content_bytes=redacted.encode("utf-8"),
                 rule_hits=rule_hits,
                 redactions=redaction_spans,
@@ -1132,8 +1145,7 @@ async def guardrail_egress(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
-    if hv_action is not None:
-        action = hv_action
+    action = _apply_hardened_override(action, hv_action)
 
     verifier_info = None
     if hv_headers:
