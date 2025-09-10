@@ -7,10 +7,7 @@ FastAPI middleware for per-API-key and per-IP rate limiting.
 - Exposes inc_rate_limited() and _get_trace_id() for tests to monkeypatch.
 - Supports legacy envs: RATE_LIMIT_PER_MINUTE, RATE_LIMIT_BURST.
 
-Test-friendly behavior:
-- If running under pytest (environment variable PYTEST_CURRENT_TEST is present),
-  the middleware bypasses rate limiting entirely to avoid test flakiness.
-- You can also force a bypass by setting RATE_LIMIT_BYPASS_FOR_TESTS=1.
+Default behavior: DISABLED unless RATE_LIMIT_ENABLED=true.
 """
 
 from __future__ import annotations
@@ -35,10 +32,9 @@ logger = logging.getLogger(__name__)
 def inc_rate_limited(by: float = 1.0) -> None:
     """Increment a metric when a request is rate limited."""
     try:
-        # In prod you can call your metrics module here.
+        # Wire up your metrics in prod if desired.
         return
     except Exception as exc:  # pragma: no cover
-        # Tests look specifically for this message text.
         logger.warning("inc_rate_limited failed: %s", exc)
 
 
@@ -55,12 +51,14 @@ def _hash(text: str) -> str:
 def _parse_limits_from_env() -> Tuple[bool, int, int, int, int, bool]:
     """
     Return (enabled, generic_per_min, burst, per_key_min, per_ip_min, legacy_unified).
+
     Legacy unified config (applies to both key & IP):
       RATE_LIMIT_PER_MINUTE, RATE_LIMIT_BURST
     New split config:
       RATE_LIMIT_PER_API_KEY_PER_MIN, RATE_LIMIT_PER_IP_PER_MIN
     """
-    enabled = os.getenv("RATE_LIMIT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    # IMPORTANT: default disabled to avoid surprising 429s in non-rate-limit tests
+    enabled = os.getenv("RATE_LIMIT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 
     legacy = "RATE_LIMIT_PER_MINUTE" in os.environ or "RATE_LIMIT_BURST" in os.environ
     if legacy:
@@ -107,8 +105,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         per_ip = env_ip_min if per_ip_per_min is None else per_ip_per_min
 
         # Use separate capacities so "ignore IP" tests work as intended.
-        key_capacity = burst if burst is not None else per_key
-        ip_capacity = burst if burst is not None else per_ip
+        key_capacity = env_burst if burst is None else burst
+        if key_capacity is None:  # typing guard (env_burst always set)
+            key_capacity = per_key
+        ip_capacity = env_burst if burst is None else burst
+        if ip_capacity is None:
+            ip_capacity = per_ip
 
         # Buckets: capacity = per-dimension capacity, refill = per-minute / 60
         self.key_bucket = TokenBucket(capacity=key_capacity, refill_per_sec=per_key / 60.0)
@@ -124,15 +126,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        # ---- Test bypass -----------------------------------------------------
-        # If running under pytest or explicitly requested, bypass rate limiting.
-        if (
-            os.getenv("PYTEST_CURRENT_TEST")  # auto on when pytest runs
-            or os.getenv("RATE_LIMIT_BYPASS_FOR_TESTS", "0") in ("1", "true", "yes", "on")
-        ):
-            return await call_next(request)
-        # ---------------------------------------------------------------------
-
         if not self.enabled:
             return await call_next(request)
 
