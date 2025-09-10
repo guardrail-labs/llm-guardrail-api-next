@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 # ---------------------------------------------------------------------
 # Feature flag
@@ -110,7 +110,7 @@ async def maybe_verify_and_headers(
 
     try:
         # app/services/verifier/__init__.py exposes verify_intent_hardened
-        from app.services.verifier import verify_intent_hardened  # type: ignore
+        from app.services.verifier import verify_intent_hardened
     except Exception:
         return None, {}
 
@@ -125,10 +125,16 @@ async def maybe_verify_and_headers(
     }
 
     try:
-        # Await the coroutine and accept the canonical shape: (outcome, headers)
-        out_obj, v_headers_any = await verify_intent_hardened(text, ctx)  # type: ignore[func-returns-value]
+        # Await provider and accept canonical shape: (outcome, headers)
+        vfunc: Any = verify_intent_hardened  # cast dynamic import to Any
+        out_obj, v_headers_any = cast(
+            Tuple[Dict[str, Any], Dict[str, Any]],
+            await vfunc(text, ctx),
+        )
         outcome = out_obj if isinstance(out_obj, dict) else {}
-        hdrs = _normalize_headers(outcome, v_headers_any if isinstance(v_headers_any, dict) else {})
+        hdrs = _normalize_headers(
+            outcome, v_headers_any if isinstance(v_headers_any, dict) else {}
+        )
 
         status = hdrs.get("X-Guardrail-Outcome", "error").lower()
 
