@@ -1,231 +1,1245 @@
+# ruff: noqa: I001
 from __future__ import annotations
 
-from bs4 import BeautifulSoup, FeatureNotFound
+import hashlib
+import os
+import random
 import re
-from typing import Dict, List
+import uuid
+import time
+from typing import Any, Dict, List, Optional, Tuple, cast, Callable, Awaitable
 
-# -----------------------------
-# Heuristics & utility patterns
-# -----------------------------
+from fastapi import APIRouter, Header, Request, UploadFile
+from fastapi.responses import JSONResponse
 
-_OFFSCREEN_RE = re.compile(r"^-?\d{3,}px$")
-_ZERO_RE = re.compile(r"^0(?:px|em|rem|%)?$", re.I)
-_WHITE_RE = re.compile(
-    r"^(?:white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))$",
-    re.I,
+from app.models.debug import SourceDebug
+from app.services.debug_sources import make_source
+from app.services.policy import (
+    apply_injection_default,
+    maybe_route_to_verifier,
+    current_rules_version,
 )
-_TRANSPARENT_RE = re.compile(
-    r"^(?:transparent|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(?:\.0+)?\s*\))$",
-    re.I,
+from app.services.policy_loader import (
+    get_policy as _get_policy,
+    set_binding_context as _set_binding_ctx,
 )
-_CLIP_ZERO_RE = re.compile(r"^rect\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$", re.I)
-_CLIP_PATH_INSET_HALF_RE = re.compile(r"^inset\(\s*50%\s*\)$", re.I)
+from app.services.threat_feed import (
+    apply_dynamic_redactions as tf_apply,
+    threat_feed_enabled as tf_enabled,
+)
+from app.telemetry import metrics as m
+from app.services.audit import emit_audit_event as _emit
+from app.services import ocr as _ocr
 
-# Generic class tokens common across frameworks
-_CLASS_HIDDEN_TOKENS = {
-    "hidden",
-    "invisible",
-    "offscreen",
-    "d-none",
-    "visually-hidden",
-    "sr-only",
-    "screen-reader-text",
-    "visuallyhidden",
-    "a11y-hidden",
-    "u-hidden",
-    "is-hidden",
-    "display-none",
-    "opacity-0",
-}
+# NEW: hardened verifier integration (safe, optional) with proper Optional typing
+HardenedVerifyFn = Callable[..., Awaitable[Tuple[Optional[str], Dict[str, str]]]]
+try:
+    from app.services.verifier.integration import (
+        maybe_verify_and_headers as _hardened_impl,
+    )
 
-# -----------------------------
-# Helpers
-# -----------------------------
+    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl
+except Exception:  # pragma: no cover
+    _maybe_hardened_verify = None
 
+router = APIRouter()
 
-def _parse_style(style: str) -> Dict[str, str]:
-    kv: Dict[str, str] = {}
-    for part in (style or "").split(";"):
-        if ":" in part:
-            k, v = part.split(":", 1)
-            kv[k.strip().lower()] = v.strip().lower()
-    return kv
+# ------------------------- helpers & constants -------------------------
+
+DOCX_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 
 
-def _class_is_hidden(class_token: str) -> List[str]:
-    """
-    Determine if a class token implies hidden content.
-    Supports breakpoint prefixes like 'sm:hidden' / 'md:opacity-0'.
-    """
-    if not class_token:
-        return []
-    tail = class_token.split(":")[-1].lower()
-    reasons: List[str] = []
-    if tail in _CLASS_HIDDEN_TOKENS:
-        reasons.append(f"class:{tail}")
-    if tail.startswith("opacity-") and tail == "opacity-0":
-        reasons.append("class:opacity-0")
-    if "visuallyhidden" in tail.replace("-", ""):
-        reasons.append("class:visuallyhidden")
-    return reasons
+def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
+    if x_api_key:
+        return True
+    if auth and auth.strip():
+        return True
+    return False
 
 
-def _classes_hidden(el) -> List[str]:
-    reasons: List[str] = []
-    cls = el.get("class") or []
-    if isinstance(cls, str):
-        cls = [cls]
-    for c in cls:
-        reasons.extend(_class_is_hidden(str(c)))
-    return reasons
+RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
+RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
+RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
+RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
+RE_LONG_BASE64ISH = re.compile(r"\b[A-Za-z0-9+/=]{200,}\b")
+RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+RE_PHONE = re.compile(
+    r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
+)
+
+RE_PRIVATE_KEY_ENVELOPE = re.compile(
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    re.S,
+)
+RE_PRIVATE_KEY_MARKER = re.compile(
+    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+)
+
+RE_HACK_WIFI = re.compile(r"(?i)(hack\s+a\s+wifi|bypass\s+wpa2)")
+
+PI_PROMPT_INJ_ID = "pi:prompt_injection"
+PAYLOAD_PROMPT_INJ_ID = "payload:prompt_injection"
+INJECTION_PROMPT_INJ_ID = "injection:prompt_injection"
+JAILBREAK_DAN_ID = "jailbreak:dan"
+SECRETS_API_KEY_ID = "secrets:api_key_like"
+PAYLOAD_BLOB_ID = "payload:encoded_blob"
 
 
-def _is_hidden(el) -> List[str]:
-    """
-    Return reasons indicating the element is considered hidden.
-    Empty list means "not hidden".
-    """
-    reasons: List[str] = []
+def _req_id(existing: Optional[str]) -> str:
+    return existing or str(uuid.uuid4())
 
-    # Attribute-level hiding
-    if el.has_attr("hidden"):
-        reasons.append("attr:hidden")
-        reasons.append("attr_hidden")  # legacy generic tag
-    if el.get("aria-hidden", "").lower() == "true":
-        reasons.append("attr:aria-hidden")
-        reasons.append("attr_hidden")  # legacy generic tag
 
-    # Class-based hiding (framework utilities)
-    class_reasons = _classes_hidden(el)
-    if class_reasons:
-        reasons.extend(class_reasons)
-        reasons.append("class_hidden")  # legacy generic tag
+def _fingerprint(text: str) -> str:
+    return hashlib.sha256(
+        text.encode("utf-8", errors="ignore")
+    ).hexdigest()
 
-    # Inline styles
-    css = _parse_style(el.get("style", ""))
-    disp = css.get("display")
-    vis = css.get("visibility")
-    op = css.get("opacity")
-    fs = css.get("font-size")
-    pos = css.get("position")
-    left = css.get("left")
-    top = css.get("top")
-    col = css.get("color")
-    # Accept both background-color and background shorthand
-    bg = css.get("background-color") or css.get("background")
-    clip = css.get("clip")
-    clip_path = css.get("clip-path")
-    width = css.get("width")
-    height = css.get("height")
-    text_indent = css.get("text-indent")
 
-    style_hidden = False
+def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
+    tenant = (t or "default").strip() or "default"
+    bot = (b or "default").strip() or "default"
+    return tenant, bot
 
-    if disp == "none":
-        reasons.append("css:display-none")
-        style_hidden = True
-    if vis == "hidden":
-        reasons.append("css:visibility-hidden")
-        style_hidden = True
-    if op in {"0", "0.0"}:
-        reasons.append("css:opacity-0")
-        style_hidden = True
-    if fs and _ZERO_RE.match(fs):
-        reasons.append("css:font-size-0")
-        style_hidden = True
 
-    if pos in {"absolute", "fixed"} and (
-        (left and _OFFSCREEN_RE.match(left)) or (top and _OFFSCREEN_RE.match(top))
-    ):
-        reasons.append("css:offscreen")
-        style_hidden = True
+def emit_audit_event(payload: Dict[str, Any]) -> None:
+    _emit(payload)
 
-    if clip and _CLIP_ZERO_RE.match(clip):
-        reasons.append("css:clip-zero")
-        style_hidden = True
-    if clip_path and _CLIP_PATH_INSET_HALF_RE.match(clip_path):
-        reasons.append("css:clip-path-inset-50")
-        style_hidden = True
 
-    if width and _ZERO_RE.match(width):
-        reasons.append("css:width-0")
-        style_hidden = True
-    if height and _ZERO_RE.match(height):
-        reasons.append("css:height-0")
-        style_hidden = True
+def _normalize_wildcards(
+    rule_hits: Dict[str, List[str]],
+    is_deny: bool,
+) -> None:
+    if any(k.startswith(("pii:", "pi:")) for k in rule_hits.keys()):
+        rule_hits.setdefault("pi:*", [])
+    if any(k.startswith("secrets:") for k in rule_hits.keys()):
+        rule_hits.setdefault("secrets:*", [])
+    if any(k.startswith("payload:") for k in rule_hits.keys()):
+        rule_hits.setdefault("payload:*", [])
+    if any(k.startswith("injection:") for k in rule_hits.keys()):
+        rule_hits.setdefault("injection:*", [])
+    if any(k.startswith("jailbreak:") for k in rule_hits.keys()):
+        rule_hits.setdefault("jailbreak:*", [])
+    if is_deny:
+        rule_hits.setdefault("policy:deny:*", [])
 
-    # White-on-white or transparent foreground
-    if col and (bg or col):
-        if (bg and _WHITE_RE.match(bg) and _WHITE_RE.match(col)) or _TRANSPARENT_RE.match(
-            col
-        ):
-            reasons.append("css:low-contrast")
-            style_hidden = True
 
-    # Extreme text-indent (offscreen technique)
-    if text_indent:
+def _maybe_metric(func_name: str, *args: Any, **kwargs: Any) -> None:
+    try:
+        fn = getattr(m, func_name, None)
+        if callable(fn):
+            fn(*args, **kwargs)
+    except Exception:
+        pass
+
+
+def _apply_redactions(
+    text: str,
+    *,
+    direction: str,
+) -> Tuple[
+    str,
+    Dict[str, List[str]],
+    int,
+    List[Tuple[int, int, str, Optional[str]]],
+]:
+    rule_hits: Dict[str, List[str]] = {}
+    redactions = 0
+    redacted = text
+    spans: List[Tuple[int, int, str, Optional[str]]] = []
+
+    original = text
+
+    matches = list(RE_EMAIL.finditer(original))
+    if matches:
+        redacted = RE_EMAIL.sub("[REDACTED:EMAIL]", redacted)
+        rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
+            _maybe_metric("inc_redaction", "email")
+        redactions += len(matches)
+
+    matches = list(RE_PHONE.finditer(original))
+    if matches:
+        redacted = RE_PHONE.sub("[REDACTED:PHONE]", redacted)
+        rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
+            _maybe_metric("inc_redaction", "phone")
+        redactions += len(matches)
+
+    matches = list(RE_SECRET.finditer(original))
+    if matches:
+        redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
+        rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
+        for m_ in matches:
+            spans.append(
+                (m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key")
+            )
+            _maybe_metric("inc_redaction", "openai_key")
+        redactions += len(matches)
+
+    matches = list(RE_AWS.finditer(original))
+    if matches:
+        redacted = RE_AWS.sub("[REDACTED:AWS_ACCESS_KEY_ID]", redacted)
+        rule_hits.setdefault("secrets:aws_key", []).append(RE_AWS.pattern)
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:AWS_ACCESS_KEY_ID]",
+                    "secrets:aws_key",
+                )
+            )
+            _maybe_metric("inc_redaction", "aws_access_key_id")
+        redactions += len(matches)
+
+    matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
+    if matches:
+        redacted = RE_PRIVATE_KEY_ENVELOPE.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_ENVELOPE.pattern
+        )
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
+            )
+        redactions += len(matches)
+
+    matches = list(RE_PRIVATE_KEY_MARKER.finditer(original))
+    if matches:
+        redacted = RE_PRIVATE_KEY_MARKER.sub("[REDACTED:PRIVATE_KEY]", redacted)
+        rule_hits.setdefault("secrets:private_key", []).append(
+            RE_PRIVATE_KEY_MARKER.pattern
+        )
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:PRIVATE_KEY]",
+                    "secrets:private_key",
+                )
+            )
+        redactions += len(matches)
+
+    matches = list(RE_PROMPT_INJ.finditer(original))
+    if matches:
+        redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
+        rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
+            RE_PROMPT_INJ.pattern
+        )
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:INJECTION]",
+                    INJECTION_PROMPT_INJ_ID,
+                )
+            )
+        redactions += len(matches)
+
+    _normalize_wildcards(rule_hits, is_deny=False)
+    return redacted, rule_hits, redactions, spans
+
+
+def _debug_requested(x_debug: Optional[str]) -> bool:
+    return bool(x_debug)
+
+
+# --------------------- verifier sampling helpers ---------------------
+
+
+def _verifier_sampling_pct() -> float:
+    raw = (os.getenv("VERIFIER_SAMPLING_PCT") or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        v = float(raw)
+    except Exception:
+        return 0.0
+    return max(0.0, min(1.0, v))
+
+
+def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
+    keys = list(hits.keys())
+    return any(
+        k.startswith(("injection:", "jailbreak:", "unsafe:illicit")) for k in keys
+    )
+
+
+# ------------------------------- responses -------------------------------
+
+
+def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dict[str, str]:
+    if not extra:
+        return base
+    for k, v in extra.items():
         try:
-            if _OFFSCREEN_RE.match(text_indent) or text_indent.strip().startswith(
-                "-999"
-            ):
-                reasons.append("css:text-indent-offscreen")
-                style_hidden = True
+            base[str(k)] = str(v)
         except Exception:
             pass
-
-    # Add legacy generic tag if any style-based hiding was found
-    if style_hidden:
-        reasons.append("style_hidden")
-
-    return reasons
+    return base
 
 
-# -----------------------------
-# Public API
-# -----------------------------
+def _respond_action(
+    action: str,
+    transformed_text: str,
+    request_id: str,
+    rule_hits: Dict[str, List[str]],
+    debug: Optional[Dict[str, Any]] = None,
+    redaction_count: int = 0,
+    modalities: Optional[Dict[str, int]] = None,
+    *,
+    verifier_sampled: bool = False,
+    direction: str = "ingress",
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> JSONResponse:
+    fam = "allow" if action == "allow" else "deny"
+    _maybe_metric("inc_decisions_total", fam)
 
+    decisions: List[Dict[str, Any]] = []
+    if redaction_count > 0:
+        decisions.append({"type": "redaction", "count": redaction_count})
+    if modalities:
+        for tag, count in modalities.items():
+            if count > 0:
+                decisions.append({"type": "modality", "tag": tag, "count": count})
 
-def detect_hidden_text(html: str) -> Dict[str, object]:
-    """
-    Parse HTML and return:
-        {"found": bool, "reasons": [...], "samples": [...]}
-
-    - Uses lxml parser when available; falls back to 'html.parser'.
-    - Considers attribute/class/style-based hiding.
-    - Samples are stripped text content of hidden elements, capped to 5.
-    """
-    try:
-        soup = BeautifulSoup(html or "", "lxml")
-    except FeatureNotFound:
-        soup = BeautifulSoup(html or "", "html.parser")
-
-    all_reasons: List[str] = []
-    samples: List[str] = []
-
-    for el in soup.find_all(True):
-        try:
-            hidden_reasons = _is_hidden(el)
-            if not hidden_reasons:
-                continue
-            txt = (el.get_text() or "").strip()
-            if txt:
-                samples.append(txt[:200])
-            all_reasons.extend(hidden_reasons)
-            if len(samples) >= 5:
-                break
-        except Exception:
-            continue
-
-    # Dedupe + sort for stable outputs
-    uniq_reasons: List[str] = []
-    seen: set[str] = set()
-    for reason in all_reasons:
-        if reason not in seen:
-            uniq_reasons.append(reason)
-            seen.add(reason)
-
-    return {
-        "found": bool(uniq_reasons and samples),
-        "reasons": sorted(uniq_reasons)[:16],
-        "samples": samples[:5],
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "action": action,
+        "transformed_text": transformed_text,
+        "text": transformed_text,
+        "rule_hits": rule_hits,
+        "decisions": decisions,
+        "redactions": int(redaction_count),
     }
+    if debug is not None:
+        body["debug"] = debug
+    body = apply_injection_default(body)
+
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Verifier-Sampled": "1" if verifier_sampled else "0",
+        "X-Guardrail-Decision": action,
+        "X-Guardrail-Decision-Source": "policy-only",
+    }
+    if direction == "ingress":
+        headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
+    else:
+        headers["X-Guardrail-Egress-Redactions"] = str(int(redaction_count or 0))
+
+    headers = _merge_headers(headers, extra_headers)
+    headers["X-Guardrail-Decision"] = action
+    return JSONResponse(body, headers=headers)
+
+
+def _respond_legacy_allow(
+    prompt: str,
+    request_id: str,
+    rule_hits: List[str] | Dict[str, List[str]],
+    policy_version: str,
+    redactions: int,
+) -> JSONResponse:
+    _maybe_metric("inc_decisions_total", "allow")
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "decision": "allow",
+        "transformed_text": prompt,
+        "text": prompt,
+        "rule_hits": rule_hits,
+        "policy_version": policy_version,
+        "redactions": int(redactions),
+    }
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
+    }
+    return JSONResponse(body, headers=headers)
+
+
+def _respond_legacy_block(
+    request_id: str,
+    rule_hits: List[str] | Dict[str, List[str]],
+    transformed_text: str,
+    policy_version: str,
+    redactions: int,
+) -> JSONResponse:
+    _maybe_metric("inc_decisions_total", "deny")
+    body: Dict[str, Any] = {
+        "request_id": request_id,
+        "decision": "block",
+        "transformed_text": transformed_text,
+        "text": transformed_text,
+        "rule_hits": rule_hits,
+        "policy_version": policy_version,
+        "redactions": int(redactions),
+    }
+    headers = {
+        "X-Guardrail-Policy-Version": current_rules_version(),
+        "X-Guardrail-Ingress-Redactions": str(int(redactions or 0)),
+    }
+    return JSONResponse(body, headers=headers)
+
+
+# ------------------------------- audit -------------------------------
+
+
+def _audit(
+    direction: str,
+    original_text: str,
+    transformed_text: str,
+    action_or_decision: str,
+    tenant: str,
+    bot: str,
+    request_id: str,
+    rule_hits: Dict[str, List[str]] | List[str],
+    redaction_count: int,
+    debug_sources: Optional[List[SourceDebug]] = None,
+    verifier: Optional[Dict[str, Any]] = None,
+) -> None:
+    allowed_decisions = {"allow", "block", "deny", "clarify"}
+    decision = (
+        action_or_decision if action_or_decision in allowed_decisions else "allow"
+    )
+
+    payload: Dict[str, Any] = {
+        "event": "prompt_decision",
+        "direction": direction,
+        "decision": decision,
+        "tenant_id": tenant,
+        "bot_id": bot,
+        "request_id": request_id,
+        "payload_bytes": len(original_text.encode("utf-8", errors="ignore")),
+        "sanitized_bytes": len(transformed_text.encode("utf-8", errors="ignore")),
+        "hash_fingerprint": _fingerprint(original_text),
+        "rule_hits": rule_hits,
+        "redaction_count": redaction_count,
+    }
+    if debug_sources:
+        payload["debug_sources"] = [s.model_dump() for s in debug_sources]
+    if verifier:
+        payload["verifier"] = {
+            k: v
+            for k, v in verifier.items()
+            if k in {"provider", "decision", "latency_ms"}
+        }
+    emit_audit_event(payload)
+
+
+def _bump_family(
+    direction: str,
+    endpoint: str,
+    action: str,
+    tenant: str,
+    bot: str,
+) -> None:
+    _maybe_metric("inc_requests_total", endpoint)
+    fam = "allow" if action == "allow" else "deny"
+    _maybe_metric("inc_decision_family_tenant_bot", fam, tenant, bot)
+
+
+# ------------------------------- policies -------------------------------
+
+
+def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
+    hits: List[str] = []
+
+    if RE_LONG_BASE64ISH.search(prompt or ""):
+        hits.append(PAYLOAD_BLOB_ID)
+        return "block", hits
+
+    if RE_SECRET.search(prompt or "") or RE_AWS.search(prompt or ""):
+        hits.append(SECRETS_API_KEY_ID)
+        return "block", hits
+
+    if RE_PROMPT_INJ.search(prompt or "") or RE_SYSTEM_PROMPT.search(prompt or ""):
+        hits.append(PAYLOAD_PROMPT_INJ_ID)
+        return "block", hits
+
+    blob = _get_policy()
+    for rid, rx in blob.deny_compiled:
+        if rx.search(prompt):
+            hits.append(f"policy:deny:{rid}")
+            return "block", hits
+
+    return "allow", hits
+
+
+def _evaluate_ingress_policy(
+    text: str,
+    want_debug: bool,
+) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    """
+    Decide based on lightweight regex and hidden-text markers.
+    Hidden-text markers:
+      - With X-Debug:1 -> deny + tag as injection:hidden_text
+      - Without debug  -> allow (no injection:* tag to avoid default block)
+    """
+    hits: Dict[str, List[str]] = {}
+    dbg: Dict[str, Any] = {}
+
+    # Hidden-text markers
+    has_hidden_marker = any(
+        mark in (text or "")
+        for mark in (
+            "[HIDDEN_TEXT_DETECTED:",
+            "[HIDDEN_HTML_DETECTED:",
+            "[HIDDEN_DOCX_DETECTED:",
+        )
+    )
+    if has_hidden_marker:
+        dbg["explanations"] = ["hidden_text_detected"]
+        if want_debug:
+            hits.setdefault("injection:hidden_text", []).append("hidden_text_marker")
+            _normalize_wildcards(hits, is_deny=True)
+            return "deny", hits, dbg
+        # No debug → informational only, do not add injection:* family
+
+    # Illicit content
+    if RE_HACK_WIFI.search(text or ""):
+        hits.setdefault("unsafe:illicit", []).append("hack_wifi_or_bypass_wpa2")
+        dbg["explanations"] = ["illicit_request"]
+        _normalize_wildcards(hits, is_deny=True)
+        return "deny", hits, dbg
+
+    # Explicit jailbreak cues
+    if RE_DAN.search(text or ""):
+        hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
+        hits.setdefault(JAILBREAK_DAN_ID, []).append(RE_DAN.pattern)
+        _normalize_wildcards(hits, is_deny=False)
+        return "clarify", hits, (dbg if dbg else None)
+
+    if RE_PROMPT_INJ.search(text or ""):
+        hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
+        _normalize_wildcards(hits, is_deny=False)
+        return "allow", hits, (dbg if dbg else None)
+
+    return "allow", hits, (dbg if dbg else None) if dbg else None
+
+
+def _egress_policy(
+    text: str,
+    want_debug: bool,
+) -> Tuple[str, str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    dbg: Optional[Dict[str, Any]] = None
+    if RE_PRIVATE_KEY_ENVELOPE.search(text or "") or RE_PRIVATE_KEY_MARKER.search(
+        text or ""
+    ):
+        rule_hits: Dict[str, List[str]] = {"deny": ["private_key_envelope_or_marker"]}
+        _normalize_wildcards(rule_hits, is_deny=True)
+        if want_debug:
+            dbg = {"explanations": ["private_key_detected"]}
+        return "deny", "", rule_hits, dbg
+    rule_hits_allow: Dict[str, List[str]] = {}
+    if want_debug:
+        dbg = {"note": "redactions_may_apply"}
+    return "allow", text, rule_hits_allow, dbg
+
+
+# ------------------------------- form parsing -------------------------------
+
+
+async def _handle_upload_to_text(
+    obj: UploadFile,
+    decode_pdf: bool,
+    mods: Dict[str, int],
+) -> Tuple[str, str]:
+    from app.services.detectors import pdf_hidden as _pdf_hidden
+
+    name = getattr(obj, "filename", None) or "file"
+    ctype = (getattr(obj, "content_type", "") or "").lower()
+    ext = (name.rsplit(".", 1)[-1].lower() if "." in name else "")
+
+    try:
+        # Images
+        if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+            mods["image"] = mods.get("image", 0) + 1
+            if _ocr.ocr_enabled():
+                raw = await obj.read()
+                _maybe_metric("add_ocr_bytes", "image", len(raw))
+                text = _ocr.extract_from_image(raw)
+                if text and text.strip():
+                    _maybe_metric("inc_ocr_extraction", "image", "ok")
+                    return text, name
+                _maybe_metric("inc_ocr_extraction", "image", "empty")
+            return f"[IMAGE:{name}]", name
+
+        # Audio
+        if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
+            mods["audio"] = mods.get("audio", 0) + 1
+            return f"[AUDIO:{name}]", name
+
+        # Plain text
+        if ctype == "text/plain" or ext == "txt":
+            raw = await obj.read()
+            return raw.decode("utf-8", errors="ignore"), name
+
+        # HTML (optional hidden-content detector)
+        if ctype == "text/html" or ext in {"html", "htm"}:
+            raw = await obj.read()
+            try:
+                from app.services.detectors import html_hidden as _html_hidden
+                text_html = raw.decode("utf-8", errors="ignore")
+                hidden = _html_hidden.detect_hidden_text(text_html)
+
+                hidden_block = ""
+                if hidden.get("found"):
+                    reasons_list = cast(List[str], hidden.get("reasons") or [])
+                    samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    for r in reasons_list:
+                        _maybe_metric("inc_html_hidden", str(r))
+
+                    reasons = ",".join(reasons_list) or "detected"
+                    joined = " ".join(samples_list)[:500]
+                    hidden_block = (
+                        f"\n[HIDDEN_HTML_DETECTED:{reasons}]\n{joined}\n"
+                        "[HIDDEN_HTML_END]\n"
+                    )
+
+                mods["file"] = mods.get("file", 0) + 1
+                return hidden_block or f"[FILE:{name}]", name
+            except Exception:
+                mods["file"] = mods.get("file", 0) + 1
+                return f"[FILE:{name}]", name
+
+        # DOCX (hidden-text detector)
+        if ctype == DOCX_MIME or ext == "docx":
+            raw = await obj.read()
+            try:
+                from app.services.detectors import docx_hidden as _docx_hidden
+                hidden = _docx_hidden.detect_hidden_text(raw)
+
+                hidden_block = ""
+                if hidden.get("found"):
+                    reasons_list = cast(List[str], hidden.get("reasons") or [])
+                    samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    for r in reasons_list:
+                        _maybe_metric("inc_docx_hidden", str(r))
+
+                    reasons = ",".join(reasons_list) or "detected"
+                    joined = " ".join(samples_list)[:500]
+                    hidden_block = (
+                        f"\n[HIDDEN_DOCX_DETECTED:{reasons}]\n{joined}\n"
+                        "[HIDDEN_DOCX_END]\n"
+                    )
+
+                mods["file"] = mods.get("file", 0) + 1
+                return hidden_block or f"[FILE:{name}]", name
+            except Exception:
+                mods["file"] = mods.get("file", 0) + 1
+                return f"[FILE:{name}]", name
+
+        # PDF
+        if ctype == "application/pdf" or ext == "pdf":
+            raw = await obj.read()
+
+            hidden = _pdf_hidden.detect_hidden_text(raw)
+            hidden_block = ""
+            if hidden.get("found"):
+                reasons_list = cast(List[str], hidden.get("reasons") or [])
+                samples_list = cast(List[str], hidden.get("samples") or [])
+                for r in reasons_list:
+                    _maybe_metric("inc_pdf_hidden", str(r))
+                reasons = ",".join(reasons_list) or "detected"
+                joined = " ".join(samples_list)[:500]
+                hidden_block = (
+                    f"\n[HIDDEN_TEXT_DETECTED:{reasons}]\n{joined}\n"
+                    "[HIDDEN_TEXT_END]\n"
+                )
+
+            if _ocr.ocr_enabled():
+                _maybe_metric("add_ocr_bytes", "pdf", len(raw))
+                text, outcome = _ocr.extract_pdf_with_optional_ocr(raw)
+                if text and text.strip():
+                    _maybe_metric(
+                        "inc_ocr_extraction",
+                        "pdf",
+                        outcome if outcome in {"textlayer", "fallback"} else "ok",
+                    )
+                    mods["file"] = mods.get("file", 0) + 1
+                    return (text + hidden_block) if hidden_block else text, name
+                _maybe_metric("inc_ocr_extraction", "pdf", outcome if outcome else "empty")
+
+            if decode_pdf:
+                mods["file"] = mods.get("file", 0) + 1
+                return raw.decode("utf-8", errors="ignore") + hidden_block, name
+
+            mods["file"] = mods.get("file", 0) + 1
+            return f"[FILE:{name}]", name
+
+        # Unknown file type -> generic marker
+        mods["file"] = mods.get("file", 0) + 1
+        return f"[FILE:{name}]", name
+
+    except Exception:
+        try:
+            if _ocr.ocr_enabled():
+                if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+                    _maybe_metric("inc_ocr_extraction", "image", "error")
+                elif ctype == "application/pdf" or ext == "pdf":
+                    _maybe_metric("inc_ocr_extraction", "pdf", "error")
+        except Exception:
+            pass
+        mods["file"] = mods.get("file", 0) + 1
+        return f"[FILE:{name}]", name
+
+
+async def _read_form_and_merge(
+    request: Request,
+    decode_pdf: bool,
+) -> Tuple[str, Dict[str, int], List[Dict[str, str]]]:
+    """
+    Merge 'text' plus files from multipart form data. Iterate over
+    form.multi_items() to capture *all* file fields. Any file-like value
+    (has filename + read) is handled. Returns (text, modality_counts, sources).
+    """
+    form = await request.form()
+    combined: List[str] = []
+    mods: Dict[str, int] = {}
+    sources: List[Dict[str, str]] = []
+
+    base = str(form.get("text") or "")
+    if base:
+        combined.append(base)
+
+    seen: set[int] = set()
+
+    async def _maybe_add(val: Any) -> None:
+        if isinstance(val, UploadFile) or (
+            hasattr(val, "filename") and hasattr(val, "read")
+        ):
+            vid = id(val)
+            if vid in seen:
+                return
+            seen.add(vid)
+            frag, fname = await _handle_upload_to_text(val, decode_pdf, mods)
+            combined.append(frag)
+            sources.append({"filename": fname})
+
+    try:
+        for _, v in form.multi_items():
+            await _maybe_add(v)
+    except Exception:
+        for v in form.values():
+            await _maybe_add(v)
+
+    text = "\n".join([s for s in combined if s])
+    return text, mods, sources
+
+
+# ------------------------------- hardened verifier hook -------------------------------
+
+
+async def _maybe_hardened(
+    *,
+    text: str,
+    direction: str,  # "ingress" | "egress"
+    tenant: str,
+    bot: str,
+    family: Optional[str],
+) -> Tuple[Optional[str], Dict[str, str]]:
+    if _maybe_hardened_verify is None:
+        return None, {}
+    try:
+        lb = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
+        latency_ms = int(lb) if lb else None
+        return await _maybe_hardened_verify(
+            text=text,
+            direction=direction,
+            tenant_id=tenant,
+            bot_id=bot,
+            family=family,
+            latency_budget_ms=latency_ms,
+        )
+    except Exception:
+        return None, {}
+
+
+def _apply_hardened_override(current_action: str, hv_action: Optional[str]) -> str:
+    if not hv_action:
+        return current_action
+    norm = hv_action.strip().lower()
+    if norm == "block":
+        norm = "deny"
+    if norm in {"allow", "deny"}:
+        return norm
+    return current_action
+
+
+# ------------------------------- endpoints -------------------------------
+
+
+@router.post("/guardrail")
+@router.post("/guardrail/")  # avoid redirect that would double-count in rate limiter
+async def guardrail_legacy(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+):
+    if not _has_api_key(x_api_key, authorization):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    payload = await request.json()
+    prompt = str(payload.get("prompt") or "")
+    request_id = _req_id(str(payload.get("request_id") or ""))
+
+    try:
+        max_chars = int(os.getenv("MAX_PROMPT_CHARS", "0"))
+    except Exception:
+        max_chars = 0
+    if max_chars and len(prompt) > max_chars:
+        body = {
+            "detail": "Prompt too large",
+            "code": "payload_too_large",
+            "request_id": request_id,
+        }
+        return JSONResponse(body, status_code=413)
+
+    tenant, bot = _tenant_bot(
+        request.headers.get("X-Tenant-ID"),
+        request.headers.get("X-Bot-ID"),
+    )
+    _set_binding_ctx(tenant, bot)
+
+    policy_blob = _get_policy()
+    policy_version = str(policy_blob.version)
+
+    action, legacy_hits_list = _legacy_policy(prompt)
+
+    redacted, redaction_hits, redactions, _red_spans = _apply_redactions(
+        prompt, direction="ingress"
+    )
+
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
+        redactions += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
+
+    rule_hits: Dict[str, List[str]] = {}
+    for item in legacy_hits_list:
+        rule_hits.setdefault(item, [])
+    for k, v in redaction_hits.items():
+        rule_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(rule_hits, is_deny=(action == "block"))
+
+    _audit(
+        "ingress",
+        prompt,
+        redacted,
+        "block" if action == "block" else "allow",
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redactions,
+        debug_sources=None,
+    )
+    _bump_family(
+        "ingress",
+        "guardrail_legacy",
+        "allow" if action == "allow" else "deny",
+        tenant,
+        bot,
+    )
+
+    if action == "block":
+        return _respond_legacy_block(
+            request_id, rule_hits, redacted, policy_version, redactions
+        )
+    return _respond_legacy_allow(
+        redacted, request_id, rule_hits, policy_version, redactions
+    )
+
+
+@router.post("/guardrail/evaluate")
+async def guardrail_evaluate(request: Request):
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
+
+    content_type = (headers.get("content-type") or "").lower()
+    combined_text = ""
+    explicit_request_id: Optional[str] = None
+    mods: Dict[str, int] = {}
+    sources: List[Dict[str, str]] = []
+
+    if content_type.startswith("application/json"):
+        payload = await request.json()
+        combined_text = str(payload.get("text") or "")
+        explicit_request_id = str(payload.get("request_id") or "") or None
+    else:
+        combined_text, mods, sources = await _read_form_and_merge(
+            request, decode_pdf=False
+        )
+
+    request_id = _req_id(explicit_request_id)
+
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(
+        combined_text, want_debug
+    )
+    (
+        redacted,
+        redaction_hits,
+        redaction_count,
+        redaction_spans,
+    ) = _apply_redactions(combined_text, direction="ingress")
+
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
+
+    for k, v in redaction_hits.items():
+        policy_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
+
+    dbg_sources: List[SourceDebug] = []
+    dbg: Optional[Dict[str, Any]] = None
+    if want_debug:
+        matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+
+        dbg = {"matches": matches}
+        if redaction_hits:
+            dbg["redaction_sources"] = list(redaction_hits.keys())
+        if policy_dbg and "explanations" in policy_dbg:
+            dbg["explanations"] = list(policy_dbg["explanations"])
+        dbg_sources.append(
+            make_source(
+                origin="ingress",
+                modality="text",
+                mime_type="text/plain",
+                size_bytes=len(combined_text.encode("utf-8")),
+                content_bytes=combined_text.encode("utf-8"),
+                rule_hits=policy_hits,
+                redactions=redaction_spans,
+            )
+        )
+        for src in sources:
+            dbg_sources.append(
+                make_source(
+                    origin="ingress",
+                    modality="file",
+                    filename=src.get("filename"),
+                )
+            )
+        dbg["sources"] = [s.model_dump() for s in dbg_sources]
+
+    # Always apply injection default first (before sampling gate).
+    base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+    if dbg is not None:
+        base_decision["debug"] = dbg
+    base_decision = apply_injection_default(base_decision)
+    action = base_decision.get("action", action)
+    dbg = base_decision.get("debug", dbg)
+
+    # Verifier sampling gate (stateless)
+    verifier_sampled = False
+    pct = _verifier_sampling_pct()
+    if pct > 0.0 and _hits_trigger_verifier(policy_hits):
+        if random.random() < pct:
+            base_decision = maybe_route_to_verifier(
+                base_decision, text=combined_text
+            )
+            action = base_decision.get("action", action)
+            dbg = base_decision.get("debug", dbg)
+            verifier_sampled = True
+
+    # Hardened verifier (optional, authoritative)
+    t_hv = time.perf_counter()
+    hv_action, hv_headers = await _maybe_hardened(
+        text=combined_text,
+        direction="ingress",
+        tenant=tenant,
+        bot=bot,
+        family=headers.get("X-Model-Family"),
+    )
+    latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    action = _apply_hardened_override(action, hv_action)
+
+    verifier_info = None
+    if hv_headers:
+        verifier_info = {
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
+
+    _audit(
+        "ingress",
+        combined_text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        policy_hits,
+        redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
+        verifier=verifier_info,
+    )
+    _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        policy_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=mods,
+        verifier_sampled=verifier_sampled,
+        direction="ingress",
+        extra_headers=hv_headers,
+    )
+
+
+@router.post("/guardrail/evaluate_multipart")
+async def guardrail_evaluate_multipart(request: Request):
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
+
+    combined_text, mods, sources = await _read_form_and_merge(
+        request, decode_pdf=True
+    )
+    request_id = _req_id(None)
+
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(
+        combined_text, want_debug
+    )
+    (
+        redacted,
+        redaction_hits,
+        redaction_count,
+        redaction_spans,
+    ) = _apply_redactions(combined_text, direction="ingress")
+
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=want_debug)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
+
+    for k, v in redaction_hits.items():
+        policy_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
+
+    dbg_sources: List[SourceDebug] = []
+    dbg: Optional[Dict[str, Any]] = None
+    if want_debug:
+        matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+        dbg = {"matches": matches}
+        if redaction_hits:
+            dbg["redaction_sources"] = list(redaction_hits.keys())
+        if policy_dbg and "explanations" in policy_dbg:
+            dbg["explanations"] = list(policy_dbg["explanations"])
+        dbg_sources.append(
+            make_source(
+                origin="ingress",
+                modality="text",
+                mime_type="text/plain",
+                size_bytes=len(combined_text.encode("utf-8")),
+                content_bytes=combined_text.encode("utf-8"),
+                rule_hits=policy_hits,
+                redactions=redaction_spans,
+            )
+        )
+        for src in sources:
+            dbg_sources.append(
+                make_source(
+                    origin="ingress",
+                    modality="file",
+                    filename=src.get("filename"),
+                )
+            )
+        dbg["sources"] = [s.model_dump() for s in dbg_sources]
+
+    # Always apply injection default first (before sampling gate).
+    base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}
+    if dbg is not None:
+        base_decision["debug"] = dbg
+    base_decision = apply_injection_default(base_decision)
+    action = base_decision.get("action", action)
+    dbg = base_decision.get("debug", dbg)
+
+    # Verifier sampling gate
+    verifier_sampled = False
+    pct = _verifier_sampling_pct()
+    if pct > 0.0 and _hits_trigger_verifier(policy_hits):
+        if random.random() < pct:
+            base_decision = maybe_route_to_verifier(
+                base_decision, text=combined_text
+            )
+            action = base_decision.get("action", action)
+            dbg = base_decision.get("debug", dbg)
+            verifier_sampled = True
+
+    t_hv = time.perf_counter()
+    hv_action, hv_headers = await _maybe_hardened(
+        text=combined_text,
+        direction="ingress",
+        tenant=tenant,
+        bot=bot,
+        family=headers.get("X-Model-Family"),
+    )
+    latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    action = _apply_hardened_override(action, hv_action)
+
+    verifier_info = None
+    if hv_headers:
+        verifier_info = {
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
+
+    _audit(
+        "ingress",
+        combined_text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        policy_hits,
+        redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
+        verifier=verifier_info,
+    )
+    _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        policy_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=mods,
+        verifier_sampled=verifier_sampled,
+        direction="ingress",
+        extra_headers=hv_headers,
+    )
+
+
+@router.post("/guardrail/egress_evaluate")
+async def guardrail_egress(request: Request):
+    headers = request.headers
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    want_debug = _debug_requested(headers.get("X-Debug"))
+
+    payload = await request.json()
+    text = str(payload.get("text") or "")
+    request_id = _req_id(str(payload.get("request_id") or ""))
+
+    action, transformed, rule_hits, debug_info = _egress_policy(text, want_debug)
+    (
+        redacted,
+        redaction_hits,
+        redaction_count,
+        redaction_spans,
+    ) = _apply_redactions(transformed, direction="egress")
+
+    if tf_enabled():
+        redacted, fams, tf_count, _ = tf_apply(redacted, debug=False)
+        redaction_count += tf_count
+        for tag in fams.keys():
+            redaction_hits.setdefault(tag, []).append("<threat_feed>")
+
+    for k, v in redaction_hits.items():
+        rule_hits.setdefault(k, []).extend(v)
+    _normalize_wildcards(rule_hits, is_deny=(action == "deny"))
+
+    dbg_sources: List[SourceDebug] = []
+    dbg: Optional[Dict[str, Any]] = None
+    if want_debug:
+        matches = [{"tag": k, "patterns": list(v)} for k, v in rule_hits.items()]
+        dbg = {"matches": matches}
+        if redaction_hits:
+            src_keys = list(redaction_hits.keys())
+            dbg["redaction_sources"] = src_keys
+            dbg.setdefault("explanations", []).append("redactions_applied")
+        if debug_info and "explanations" in debug_info:
+            dbg.setdefault("explanations", [])
+            dbg["explanations"].extend(list(debug_info["explanations"]))
+        dbg_sources.append(
+            make_source(
+                origin="egress",
+                modality="text",
+                mime_type="text/plain",
+                size_bytes=len(redacted.encode("utf-8")),
+                content_bytes=redacted.encode("utf-8"),
+                rule_hits=rule_hits,
+                redactions=redaction_spans,
+            )
+        )
+        dbg["sources"] = [s.model_dump() for s in dbg_sources]
+
+    # Hardened verifier AFTER egress policy + redactions
+    t_hv = time.perf_counter()
+    hv_action, hv_headers = await _maybe_hardened(
+        text=redacted,
+        direction="egress",
+        tenant=tenant,
+        bot=bot,
+        family=headers.get("X-Model-Family"),
+    )
+    latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    action = _apply_hardened_override(action, hv_action)
+
+    verifier_info = None
+    if hv_headers:
+        verifier_info = {
+            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "decision": action,
+            "latency_ms": latency_ms,
+        }
+
+    _audit(
+        "egress",
+        text,
+        redacted,
+        "block" if action == "deny" else action,
+        tenant,
+        bot,
+        request_id,
+        rule_hits,
+        redaction_count,
+        debug_sources=dbg_sources if want_debug else None,
+        verifier=verifier_info,
+    )
+    _bump_family("egress", "egress_evaluate", action, tenant, bot)
+
+    return _respond_action(
+        action,
+        redacted,
+        request_id,
+        rule_hits,
+        dbg,
+        redaction_count=redaction_count,
+        modalities=None,
+        verifier_sampled=False,
+        direction="egress",
+        extra_headers=hv_headers,
+    )
