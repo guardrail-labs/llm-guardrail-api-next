@@ -6,7 +6,7 @@ import os
 import random
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast, Callable, Awaitable
 
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -29,6 +29,20 @@ from app.services.threat_feed import (
 from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
+
+# NEW: hardened verifier integration (safe, optional) with proper Optional typing
+HardenedVerifyFn = Callable[
+    ...,
+    Awaitable[Tuple[Optional[str], Dict[str, str]]],
+]
+try:
+    from app.services.verifier.integration import (
+        maybe_verify_and_headers as _hardened_impl,
+    )
+
+    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl 
+except Exception:  # pragma: no cover
+    _maybe_hardened_verify = None
 
 router = APIRouter()
 
@@ -120,10 +134,6 @@ def _apply_redactions(
     int,
     List[Tuple[int, int, str, Optional[str]]],
 ]:
-    """
-    Apply redactions for PII, secrets, and injection markers.
-    Return (redacted_text, rule_hits, redaction_count, spans).
-    """
     rule_hits: Dict[str, List[str]] = {}
     redactions = 0
     redacted = text
@@ -155,12 +165,7 @@ def _apply_redactions(
         rule_hits.setdefault("secrets:openai_key", []).append(RE_SECRET.pattern)
         for m_ in matches:
             spans.append(
-                (
-                    m_.start(),
-                    m_.end(),
-                    "[REDACTED:OPENAI_KEY]",
-                    "secrets:openai_key",
-                )
+                (m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key")
             )
             m.inc_redaction("openai_key")
         redactions += len(matches)
@@ -219,9 +224,7 @@ def _apply_redactions(
     if matches:
         redacted = RE_PROMPT_INJ.sub("[REDACTED:INJECTION]", redacted)
         rule_hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
-        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(
-            RE_PROMPT_INJ.pattern
-        )
+        rule_hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_PROMPT_INJ.pattern)
         rule_hits.setdefault(INJECTION_PROMPT_INJ_ID, []).append(
             RE_PROMPT_INJ.pattern
         )
@@ -259,9 +262,6 @@ def _verifier_sampling_pct() -> float:
 
 
 def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
-    """
-    Eligible if injection/jailbreak/illicit appears.
-    """
     keys = list(hits.keys())
     return any(
         k.startswith(("injection:", "jailbreak:", "unsafe:illicit")) for k in keys
@@ -269,6 +269,17 @@ def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
 
 
 # ------------------------------- responses -------------------------------
+
+
+def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dict[str, str]:
+    if not extra:
+        return base
+    for k, v in extra.items():
+        try:
+            base.setdefault(k, str(v))
+        except Exception:
+            pass
+    return base
 
 
 def _respond_action(
@@ -282,6 +293,7 @@ def _respond_action(
     *,
     verifier_sampled: bool = False,
     direction: str = "ingress",
+    extra_headers: Optional[Dict[str, str]] = None,  # NEW
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     m.inc_decisions_total(fam)
@@ -316,6 +328,7 @@ def _respond_action(
     else:
         headers["X-Guardrail-Egress-Redactions"] = str(int(redaction_count or 0))
 
+    headers = _merge_headers(headers, extra_headers)
     return JSONResponse(body, headers=headers)
 
 
@@ -428,12 +441,6 @@ def _bump_family(
 
 
 def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
-    """
-    Legacy route behavior:
-      - Block secrets and payload blobs
-      - Block prompt-injection phrases
-      - Apply external deny regex (yaml) -> block
-    """
     hits: List[str] = []
 
     if RE_LONG_BASE64ISH.search(prompt or ""):
@@ -460,12 +467,6 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
 def _evaluate_ingress_policy(
     text: str,
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
-    """
-    Return (action, rule_hits_dict, debug).
-      - 'pretend to be DAN' => clarify
-      - Explicit illicit intent => deny
-      - Plain 'ignore previous instructions' => allow (masked)
-    """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
 
@@ -519,16 +520,6 @@ async def _handle_upload_to_text(
     decode_pdf: bool,
     mods: Dict[str, int],
 ) -> Tuple[str, str]:
-    """
-    Turn an UploadFile into a text fragment and return (fragment, filename):
-      - image/* -> marker
-      - audio/* -> marker
-      - text/plain -> read and decode
-      - text/html -> detect hidden/invisible text markers (if detector available)
-      - application/pdf -> decode if decode_pdf=True, else marker
-      - other -> generic marker
-    Also falls back on filename extension when content_type is missing.
-    """
     from app.services.detectors import pdf_hidden as _pdf_hidden
 
     name = getattr(obj, "filename", None) or "file"
@@ -685,6 +676,35 @@ async def _read_form_and_merge(
 
     text = "\n".join([s for s in combined if s])
     return text, mods, sources
+
+
+# ------------------------------- hardened verifier hook -------------------------------
+
+
+async def _maybe_hardened(
+    *,
+    text: str,
+    direction: str,  # "ingress" | "egress"
+    tenant: str,
+    bot: str,
+    family: Optional[str],
+) -> Tuple[Optional[str], Dict[str, str]]:
+    """
+    Calls hardened verifier if available/enabled. Returns (maybe_action_override, headers).
+    Safe no-op if integration module not present or VERIFIER_HARDENED_MODE is "off".
+    """
+    if _maybe_hardened_verify is None:
+        return None, {}
+    try:
+        return await _maybe_hardened_verify(
+            text=text,
+            direction=direction,
+            tenant_id=tenant,
+            bot_id=bot,
+            family=family,
+        )
+    except Exception:
+        return None, {}
 
 
 # ------------------------------- endpoints -------------------------------
@@ -864,6 +884,17 @@ async def guardrail_evaluate(request: Request):
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
 
+    # Hardened verifier (optional, non-breaking; headers-only by default)
+    hv_action, hv_headers = await _maybe_hardened(
+        text=combined_text,
+        direction="ingress",
+        tenant=tenant,
+        bot=bot,
+        family=headers.get("X-Model-Family"),
+    )
+    if hv_action:
+        action = hv_action
+
     _audit(
         "ingress",
         combined_text,
@@ -889,6 +920,7 @@ async def guardrail_evaluate(request: Request):
         modalities=mods,
         verifier_sampled=verifier_sampled,
         direction="ingress",
+        extra_headers=hv_headers,
     )
 
 
@@ -971,6 +1003,16 @@ async def guardrail_evaluate_multipart(request: Request):
             dbg = base_decision.get("debug", dbg)
             verifier_sampled = True
 
+    hv_action, hv_headers = await _maybe_hardened(
+        text=combined_text,
+        direction="ingress",
+        tenant=tenant,
+        bot=bot,
+        family=headers.get("X-Model-Family"),
+    )
+    if hv_action:
+        action = hv_action
+
     _audit(
         "ingress",
         combined_text,
@@ -996,6 +1038,7 @@ async def guardrail_evaluate_multipart(request: Request):
         modalities=mods,
         verifier_sampled=verifier_sampled,
         direction="ingress",
+        extra_headers=hv_headers,
     )
 
 
@@ -1052,6 +1095,17 @@ async def guardrail_egress(request: Request):
         )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
 
+    # Hardened verifier AFTER egress policy + redactions
+    hv_action, hv_headers = await _maybe_hardened(
+        text=redacted,
+        direction="egress",
+        tenant=tenant,
+        bot=bot,
+        family=headers.get("X-Model-Family"),
+    )
+    if hv_action:
+        action = hv_action
+
     _audit(
         "egress",
         text,
@@ -1076,4 +1130,5 @@ async def guardrail_egress(request: Request):
         modalities=None,
         verifier_sampled=False,
         direction="egress",
+        extra_headers=hv_headers,
     )
