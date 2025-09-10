@@ -6,7 +6,7 @@ import os
 import random
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast, Callable, Awaitable
 
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -30,13 +30,19 @@ from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
-# NEW: hardened verifier integration (safe, optional)
+# NEW: hardened verifier integration (safe, optional) with proper Optional typing
+HardenedVerifyFn = Callable[
+    ...,
+    Awaitable[Tuple[Optional[str], Dict[str, str]]],
+]
 try:
     from app.services.verifier.integration import (
-        maybe_verify_and_headers as _maybe_hardened_verify,
+        maybe_verify_and_headers as _hardened_impl,
     )
+
+    _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl  # type: ignore[assignment]
 except Exception:  # pragma: no cover
-    _maybe_hardened_verify = None  # fallback to no-op
+    _maybe_hardened_verify = None
 
 router = APIRouter()
 
