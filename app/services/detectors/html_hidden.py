@@ -11,7 +11,8 @@ from typing import Dict, List
 _OFFSCREEN_RE = re.compile(r"^-?\d{3,}px$")
 _ZERO_RE = re.compile(r"^0(?:px|em|rem|%)?$", re.I)
 _WHITE_RE = re.compile(
-    r"^(?:white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))$", re.I
+    r"^(?:white|#fff(?:fff)?|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))$",
+    re.I,
 )
 _TRANSPARENT_RE = re.compile(
     r"^(?:transparent|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*0(?:\.0+)?\s*\))$",
@@ -20,6 +21,7 @@ _TRANSPARENT_RE = re.compile(
 _CLIP_ZERO_RE = re.compile(r"^rect\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)$", re.I)
 _CLIP_PATH_INSET_HALF_RE = re.compile(r"^inset\(\s*50%\s*\)$", re.I)
 
+# Generic class tokens common across frameworks
 _CLASS_HIDDEN_TOKENS = {
     "hidden",
     "invisible",
@@ -88,11 +90,16 @@ def _is_hidden(el) -> List[str]:
     # Attribute-level hiding
     if el.has_attr("hidden"):
         reasons.append("attr:hidden")
+        reasons.append("attr_hidden")  # legacy generic tag
     if el.get("aria-hidden", "").lower() == "true":
         reasons.append("attr:aria-hidden")
+        reasons.append("attr_hidden")  # legacy generic tag
 
     # Class-based hiding (framework utilities)
-    reasons.extend(_classes_hidden(el))
+    class_reasons = _classes_hidden(el)
+    if class_reasons:
+        reasons.extend(class_reasons)
+        reasons.append("class_hidden")  # legacy generic tag
 
     # Inline styles
     css = _parse_style(el.get("style", ""))
@@ -104,55 +111,73 @@ def _is_hidden(el) -> List[str]:
     left = css.get("left")
     top = css.get("top")
     col = css.get("color")
-    bg = css.get("background-color")
+    # Accept both background-color and background
+    bg = css.get("background-color") or css.get("background")
     clip = css.get("clip")
     clip_path = css.get("clip-path")
     width = css.get("width")
     height = css.get("height")
     text_indent = css.get("text-indent")
 
+    style_hidden = False
+
     if disp == "none":
         reasons.append("css:display-none")
+        style_hidden = True
     if vis == "hidden":
         reasons.append("css:visibility-hidden")
+        style_hidden = True
     if op in {"0", "0.0"}:
         reasons.append("css:opacity-0")
-
+        style_hidden = True
     if fs and _ZERO_RE.match(fs):
         reasons.append("css:font-size-0")
+        style_hidden = True
 
     if pos in {"absolute", "fixed"} and (
         (left and _OFFSCREEN_RE.match(left)) or (top and _OFFSCREEN_RE.match(top))
     ):
         reasons.append("css:offscreen")
+        style_hidden = True
 
     if clip and _CLIP_ZERO_RE.match(clip):
         reasons.append("css:clip-zero")
+        style_hidden = True
     if clip_path and (
-        _CLIP_PATH_INSET_HALF_RE.match(clip_path)
-        or "clip-path: inset(50%)" in clip_path
+        _CLIP_PATH_INSET_HALF_RE.match(clip_path) or "clip-path: inset(50%)" in clip_path
     ):
         reasons.append("css:clip-path-inset-50")
+        style_hidden = True
 
     if width and _ZERO_RE.match(width):
         reasons.append("css:width-0")
+        style_hidden = True
     if height and _ZERO_RE.match(height):
         reasons.append("css:height-0")
+        style_hidden = True
 
+    # White-on-white or transparent foreground
     if col and (bg or col):
         if (bg and _WHITE_RE.match(bg) and _WHITE_RE.match(col)) or _TRANSPARENT_RE.match(
             col
         ):
             reasons.append("css:low-contrast")
+            style_hidden = True
 
+    # Extreme text-indent (offscreen technique)
     if text_indent:
         try:
             if _OFFSCREEN_RE.match(text_indent) or text_indent.strip().startswith(
                 "-999"
             ):
                 reasons.append("css:text-indent-offscreen")
+                style_hidden = True
         except Exception:
             pass
+
+    # Add legacy generic tag if any style-based hiding was found
+    if style_hidden:
+        reasons.append("style_hidden")
 
     return reasons
 
@@ -193,8 +218,16 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
         except Exception:
             continue
 
+    # Dedupe + sort for stable outputs
+    uniq_reasons: List[str] = []
+    seen = set()
+    for r in reasons:
+        if r not in seen:
+            uniq_reasons.append(r)
+            seen.add(r)
+
     return {
-        "found": bool(reasons and samples),
-        "reasons": sorted(set(reasons))[:16],
+        "found": bool(uniq_reasons and samples),
+        "reasons": sorted(uniq_reasons)[:16],
         "samples": samples[:5],
     }
