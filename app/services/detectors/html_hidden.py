@@ -16,8 +16,8 @@ from typing import Dict, List, Tuple, cast
 # Notes
 # -----
 # - We intentionally return the legacy reason keys expected by tests.
-# - We prefer BeautifulSoup when available; otherwise we fall back to
-#   a conservative regex scan so unit tests still pass in minimal envs.
+# - Prefer BeautifulSoup when available, but we ALWAYS run a regex fallback
+#   pass as a backstop to catch simple inline style cases.
 
 # ----------------------------- regex helpers ---------------------------------
 
@@ -61,6 +61,21 @@ _CLASS_HIDDEN = {
     "offscreen",
     "clip",
 }
+
+# Fallback regexes (simple, conservative)
+_FALLBACK_ATTR_HIDDEN_RE = re.compile(
+    r"<[^>]+\s(hidden|aria-hidden=['\"]?true['\"]?)", re.I
+)
+_FALLBACK_CLASS_HIDDEN_RE = re.compile(
+    r'class\s*=\s*["\'][^"\']*('
+    r"sr-only|visually-hidden|screen-reader-only|u-hidden|is-hidden|hidden"
+    r")[^\"']*[\"']",
+    re.I,
+)
+_FALLBACK_WHITE_ON_WHITE_RE = re.compile(
+    r"(?i)color\s*:\s*(#fff(?:fff)?|white)"
+    r".*background(?:-color)?\s*:\s*(#fff(?:fff)?|white)"
+)
 
 # ----------------------------- utils -----------------------------------------
 
@@ -173,6 +188,21 @@ def _collect_matches(rx: re.Pattern[str], html: str) -> List[str]:
     return out
 
 
+def _fallback_enrich(html: str, reasons: List[str], samples: List[str]) -> None:
+    """
+    Always-run regex fallback to ensure we catch simple inline patterns even
+    if the soup-based path is unavailable or conservative.
+    """
+    if _FALLBACK_ATTR_HIDDEN_RE.search(html or ""):
+        _add_reason(reasons, samples, "attr_hidden", "")
+
+    if _FALLBACK_CLASS_HIDDEN_RE.search(html or ""):
+        _add_reason(reasons, samples, "class_hidden", "")
+
+    if _FALLBACK_WHITE_ON_WHITE_RE.search(html or ""):
+        _add_reason(reasons, samples, "white_on_white", "")
+
+
 def detect_hidden_text(html: str) -> Dict[str, object]:
     """
     Scan HTML for hidden or low-contrast text. Returns a dict with:
@@ -205,27 +235,9 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
             sample = _maybe_text_sample(el)
             for r in el_reasons:
                 _add_reason(reasons, samples, r, sample)
-    else:
-        # Fallback: minimal regex-only heuristics
-        # Attribute 'hidden'
-        if re.search(r"<[^>]+\s(hidden|aria-hidden=['\"]?true['\"]?)", html or "", re.I):
-            _add_reason(reasons, samples, "attr_hidden", "")
-        # Class utilities
-        if re.search(
-            r'class\s*=\s*["\'][^"\']*(?:'
-            r"sr-only|visually-hidden|screen-reader-only|u-hidden|is-hidden|hidden"
-            r")[^\"']*[\"']",
-            html or "",
-            re.I,
-        ):
-            _add_reason(reasons, samples, "class_hidden", "")
-        # White on white (very rough)
-        if re.search(
-            r"(?i)color\s*:\s*(?:#fff(?:fff)?|white)"
-            r".*background(?:-color)?\s*:\s*(?:#fff(?:fff)?|white)",
-            html or "",
-        ):
-            _add_reason(reasons, samples, "white_on_white", "")
+
+    # Always run fallback regex checks to bolster coverage.
+    _fallback_enrich(html or "", reasons, samples)
 
     # If we still have no samples, try to produce something from raw matches.
     if not samples and reasons:
