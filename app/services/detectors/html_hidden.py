@@ -28,8 +28,9 @@ _STYLE_HIDDEN_RE = re.compile(
 _ZERO_RE = re.compile(r"(?i)^(0|0(?:\.0+)?|0px|0rem|0em)$")
 
 # White color values (accept hex short/long, rgb/rgba, and keyword 'white')
+# NOTE: Do NOT use VERBOSE ('x') here because of literal '#fff' tokens.
 _WHITE_VALUE_RE = re.compile(
-    r"(?ix)\b("
+    r"(?i)\b("
     r"#fff(?:fff)?"
     r"|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)"
     r"|rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*1(?:\.0+)?\)"
