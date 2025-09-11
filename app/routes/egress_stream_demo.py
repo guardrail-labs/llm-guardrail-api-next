@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import AsyncIterator
+from typing import AsyncIterator, List, Tuple
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from app.middleware.stream_guard import wrap_stream
+from app.middleware.stream_guard import wrap_stream, PatTriplet
 from app.services import runtime_flags as rf
 
 router = APIRouter()
@@ -24,6 +24,25 @@ async def _to_bytes(source: AsyncIterator[str], encoding: str = "utf-8"):
         yield s.encode(encoding)
 
 
+def _precount_redactions(text: str, patterns: List[PatTriplet]) -> int:
+    count = 0
+    tmp = text
+    for rx, _tag, repl in patterns:
+        tmp, n = rx.subn(repl, tmp)
+        count += int(n)
+    return count
+
+
+def _will_deny(text: str) -> bool:
+    import re
+
+    env_re = re.compile(
+        r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
+    )
+    marker_re = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
+    return bool(env_re.search(text) or marker_re.search(text))
+
+
 @router.get("/demo/egress_stream")
 async def demo_egress_stream(
     text: str = Query(...),
@@ -33,20 +52,31 @@ async def demo_egress_stream(
     Demo endpoint for the StreamingGuard. Splits `text` into `chunk`-sized
     pieces and streams them, applying streaming redactions when enabled.
     """
+    from app.services.policy import get_stream_redaction_patterns
+
+    patterns: List[PatTriplet] = list(get_stream_redaction_patterns())
     src = _chunker(text, chunk)
     encoding = "utf-8"
 
-    enabled = bool(rf.get("stream_egress_enabled") or False)
+    val = rf.get("stream_egress_enabled")
+    enabled = True if val is None else bool(val)
+
+    headers = {}
     if enabled:
-        guard = wrap_stream(src, encoding=encoding)
+        # Pre-count redactions to surface a header (tests expect this).
+        redactions = _precount_redactions(text, patterns)
+        deny_hdr = "1" if (_will_deny(text) and bool(rf.get("stream_guard_deny_on_private_key") or True)) else "0"
+        headers.update(
+            {
+                "X-Guardrail-Streaming": "1",
+                "X-Guardrail-Stream-Redactions": str(redactions),
+                "X-Guardrail-Stream-Denied": deny_hdr,
+            }
+        )
+        guard = wrap_stream(src, patterns, encoding=encoding)
         body = _to_bytes(guard, encoding=encoding)
-        headers = {
-            "X-Guardrail-Streaming": "1",
-            # Redaction/deny counts are not known until consumed by client.
-            # This demo keeps headers simple.
-        }
     else:
+        headers["X-Guardrail-Streaming"] = "0"
         body = _to_bytes(src, encoding=encoding)
-        headers = {"X-Guardrail-Streaming": "0"}
 
     return StreamingResponse(body, headers=headers, media_type="application/octet-stream")
