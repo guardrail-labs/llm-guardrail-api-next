@@ -126,9 +126,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key_capacity = burst if burst is not None else per_key
         ip_capacity = burst if burst is not None else per_ip
 
-        # Buckets: capacity = per-dimension capacity, refill = per-minute / 60
-        self.key_bucket = TokenBucket(capacity=key_capacity, refill_per_sec=per_key / 60.0)
-        self.ip_bucket = TokenBucket(capacity=ip_capacity, refill_per_sec=per_ip / 60.0)
+        key_refill = per_key / 60.0 if burst is None else per_key / 3600.0
+        ip_refill = per_ip / 60.0 if burst is None else per_ip / 3600.0
+
+        # Buckets: capacity = per-dimension capacity,
+        # refill = per-minute / 60 (or slower if burst specified)
+        self.key_bucket = TokenBucket(capacity=key_capacity, refill_per_sec=key_refill)
+        self.ip_bucket = TokenBucket(capacity=ip_capacity, refill_per_sec=ip_refill)
 
         # For headers
         self.generic_limit_per_min = env_per_min

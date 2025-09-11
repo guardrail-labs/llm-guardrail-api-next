@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -10,7 +12,9 @@ from app.models import (
     HealthResponse,
 )
 
+os.environ["ADMIN_TOKEN"] = "test-token"
 client = TestClient(app)
+ADMIN_H = {"Authorization": "Bearer test-token"}
 
 
 def test_health_contract_models():
@@ -31,7 +35,7 @@ def test_evaluate_contract_models_and_redaction():
 
 
 def test_admin_reload_contract_model():
-    r = client.post("/admin/policy/reload")
+    r = client.post("/admin/policy/reload", headers=ADMIN_H)
     assert r.status_code == 200
     parsed = AdminReloadResponse.model_validate(r.json())
-    assert parsed.reloaded is True
+    assert parsed.ok is True

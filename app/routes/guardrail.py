@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import random
 import re
 import uuid
@@ -28,6 +27,7 @@ from app.services.threat_feed import (
     apply_dynamic_redactions as tf_apply,
     threat_feed_enabled as tf_enabled,
 )
+from app.services import runtime_flags
 from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
@@ -395,14 +395,10 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
 
 
 def _verifier_sampling_pct() -> float:
-    raw = (os.getenv("VERIFIER_SAMPLING_PCT") or "").strip()
-    if not raw:
-        return 0.0
     try:
-        v = float(raw)
+        return float(runtime_flags.get("verifier_sampling_pct"))
     except Exception:
         return 0.0
-    return max(0.0, min(1.0, v))
 
 
 def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
@@ -891,23 +887,22 @@ async def _maybe_hardened(
         return None, {}
 
     try:
-        lb = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
-        remaining = int(lb) if lb else None
+        remaining = int(runtime_flags.get("verifier_latency_budget_ms"))
     except Exception:
         remaining = None
 
     try:
-        max_retries = int(os.getenv("VERIFIER_MAX_RETRIES", "1"))
+        max_retries = int(runtime_flags.get("verifier_max_retries"))
     except Exception:
         max_retries = 1
     max_retries = max(1, max_retries)
 
     try:
-        backoff_ms = int(os.getenv("VERIFIER_RETRY_BACKOFF_MS", "50"))
+        backoff_ms = int(runtime_flags.get("verifier_retry_backoff_ms"))
     except Exception:
         backoff_ms = 50
     try:
-        jitter_ms = int(os.getenv("VERIFIER_RETRY_JITTER_MS", "50"))
+        jitter_ms = int(runtime_flags.get("verifier_retry_jitter_ms"))
     except Exception:
         jitter_ms = 50
 
@@ -998,7 +993,7 @@ async def guardrail_legacy(
     request_id = _req_id(str(payload.get("request_id") or ""))
 
     try:
-        max_chars = int(os.getenv("MAX_PROMPT_CHARS", "0"))
+        max_chars = int(runtime_flags.get("max_prompt_chars"))
     except Exception:
         max_chars = 0
     if max_chars and len(prompt) > max_chars:

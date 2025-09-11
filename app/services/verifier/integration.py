@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional, Tuple, cast
 
+from app.services import runtime_flags
 from app.telemetry.metrics import inc_verifier_outcome
 
 
 def error_fallback_action() -> str:
-    v = (os.getenv("VERIFIER_ERROR_FALLBACK") or "allow").strip().lower()
-    if v in {"allow", "deny", "clarify"}:
+    v = runtime_flags.get("verifier_error_fallback")
+    if isinstance(v, str) and v in {"allow", "deny", "clarify"}:
         return v
     return "allow"
 

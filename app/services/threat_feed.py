@@ -6,6 +6,8 @@ import re
 from threading import RLock
 from typing import Any, Dict, List, Pattern, Tuple
 
+from app.services import runtime_flags
+
 # Compiled rule: (regex, replacement, tag)
 _Rules: List[Tuple[Pattern[str], str, str]] = []
 _LOCK = RLock()
@@ -16,11 +18,8 @@ def _truthy(val: object) -> bool:
 
 
 def threat_feed_enabled() -> bool:
-    """
-    Gate for dynamic redactions feature.
-    Tests toggle via env THREAT_FEED_ENABLED.
-    """
-    return _truthy(os.environ.get("THREAT_FEED_ENABLED", "false"))
+    """Gate for dynamic redactions feature."""
+    return bool(runtime_flags.get("threat_feed_enabled"))
 
 
 def _fetch_json(url: str) -> Dict[str, Any]:

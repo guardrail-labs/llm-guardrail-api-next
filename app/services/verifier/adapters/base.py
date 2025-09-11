@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Protocol
 
+from app.services import runtime_flags
+
 Verdict = Literal["safe", "unsafe", "unclear"]
 
 
@@ -24,7 +26,7 @@ class AdapterConfig:
         return cls(
             provider=prov,
             timeout_ms=int(os.getenv("VERIFIER_TIMEOUT_MS", "1500")),
-            max_retries=int(os.getenv("VERIFIER_MAX_RETRIES", "1")),
+            max_retries=int(runtime_flags.get("verifier_max_retries")),
             circuit_open_sec=int(os.getenv("VERIFIER_CIRCUIT_OPEN_SEC", "60")),
         )
 

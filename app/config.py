@@ -114,6 +114,15 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def admin_token() -> str | None:
+    token = os.environ.get("ADMIN_TOKEN", "")
+    return token or None
+
+
+def admin_allow_remote() -> bool:
+    return os.environ.get("ADMIN_ALLOW_REMOTE", "") == "1"
+
+
 class ServiceInfo(BaseModel):
     service: str = "llm-guardrail-api-next"
     env: str = Field(default=os.environ.get("ENV", "dev"))

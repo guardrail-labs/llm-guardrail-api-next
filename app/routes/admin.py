@@ -6,10 +6,6 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.services import config_store
-from app.services.policy_loader import (
-    get_policy as _get_policy,
-    reload_now as _reload_now,
-)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -25,30 +21,6 @@ def _require_admin_key(request: Request) -> None:
     provided = request.headers.get("X-Admin-Key")
     if provided != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-
-
-@router.post("/policy/reload")
-async def admin_policy_reload(request: Request) -> Dict[str, Any]:
-    """
-    Contract expected by tests:
-      {
-        "reloaded": true,
-        "version": "...",
-        "rules_loaded": true
-      }
-    This must update the same policy source used by /guardrail (policy_loader).
-    """
-    _require_admin_key(request)
-    try:
-        blob = _reload_now()
-        return {"reloaded": True, "version": str(blob.version), "rules_loaded": True}
-    except Exception:
-        try:
-            cur = _get_policy()
-            ver = str(cur.version)
-        except Exception:
-            ver = "unknown"
-        return {"reloaded": True, "version": ver, "rules_loaded": False}
 
 
 @router.get("/bindings")
