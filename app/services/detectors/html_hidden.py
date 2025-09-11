@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple, cast
+from typing import Dict, List, cast
 
 # Lightweight HTML hidden-text detector used by ingress.
 #
@@ -41,6 +41,10 @@ _CLASS_HIDDEN = {
     "is-hidden",
     "hidden",
     "a11y-hidden",
+    "sr-only-focusable",
+    "u-visually-hidden",
+    "vh",
+    "a11y-visually-hidden",
     "offscreen",
     "clip",
 }
@@ -51,7 +55,8 @@ _FALLBACK_ATTR_HIDDEN_RE = re.compile(
 )
 _FALLBACK_CLASS_HIDDEN_RE = re.compile(
     r'class\s*=\s*["\'][^"\']*('
-    r"sr-only|visually-hidden|screen-reader-only|u-hidden|is-hidden|hidden"
+    r"sr-only|sr-only-focusable|visually-hidden|u-visually-hidden|vh|"
+    r"screen-reader-only|u-hidden|is-hidden|hidden|a11y-hidden|a11y-visually-hidden"
     r")[^\"']*[\"']",
     re.I,
 )
@@ -82,16 +87,17 @@ def _norm_css(val: str | None) -> str:
 
 
 def _is_white_value(val: str | None) -> bool:
+    raw = (val or "").strip().lower()
     v = _norm_css(val)
-    if not v:
+    if not raw and not v:
         return False
-    if v.startswith("#fff"):  # matches #fff and #ffffff (and longer #ffff..)
+    if raw.startswith("#fff") or v.startswith("#fff"):
         return True
-    if v == "white":
+    if raw.startswith("white") or v == "white":
         return True
     if v == "rgb(255,255,255)":
         return True
-    if v == "rgba(255,255,255,1)" or v == "rgba(255,255,255,1.0)":
+    if v in {"rgba(255,255,255,1)", "rgba(255,255,255,1.0)"}:
         return True
     return False
 
@@ -148,6 +154,16 @@ def _element_hidden_reasons(el) -> List[str]:
     top = css.get("top")
     color = css.get("color") or css.get("colour")
     bg = css.get("background-color") or css.get("background")
+    z = css.get("z-index")
+    lh = css.get("line-height")
+    text_indent = css.get("text-indent")
+
+    if color and color.startswith("var(") and color.endswith(")"):
+        var_name = color[4:-1].strip()
+        if var_name.startswith("--"):
+            resolved = css.get(var_name)
+            if resolved:
+                color = resolved
 
     # display:none / visibility:hidden / opacity:0 / font-size:0
     if disp == "none" or vis == "hidden" or (op in {"0", "0.0"}) or (fs and _ZERO_RE.match(fs)):
@@ -165,6 +181,15 @@ def _element_hidden_reasons(el) -> List[str]:
     if clip and _CLIP_ZERO_RE.match(clip):
         reasons.append("style_hidden")
     if clip_path and _CLIP_PATH_INSET_HALF_RE.match(clip_path):
+        reasons.append("style_hidden")
+
+    if text_indent and _OFFSCREEN_RE.match(text_indent):
+        reasons.append("style_hidden")
+
+    if lh and _ZERO_RE.match(lh):
+        reasons.append("style_hidden")
+
+    if pos in {"absolute", "fixed"} and z == "-1":
         reasons.append("style_hidden")
 
     # White text on white background (or transparent color)
