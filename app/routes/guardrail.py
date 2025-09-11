@@ -1,12 +1,12 @@
 # ruff: noqa: I001
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import random
 import re
 import uuid
 import time
+import os
 from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Header, Request, UploadFile
@@ -471,6 +471,11 @@ def _respond_action(
         headers["X-Guardrail-Egress-Redactions"] = str(int(redaction_count or 0))
 
     headers = _merge_headers(headers, extra_headers)
+
+    # If hardened verifier participated, mark source accordingly.
+    if extra_headers and extra_headers.get("X-Guardrail-Verifier"):
+        headers["X-Guardrail-Decision-Source"] = "hardened"
+
     headers["X-Guardrail-Decision"] = action
     return JSONResponse(body, headers=headers)
 
@@ -883,36 +888,51 @@ async def _maybe_hardened(
     bot: str,
     family: Optional[str],
 ) -> Tuple[Optional[str], Dict[str, str]]:
+    """
+    Call hardened verifier with a total latency budget and optional retry budget.
+    Returns (maybe_action_override, headers). On errors we return (None, fallback).
+    Safe no-op if the integration is missing or VERIFIER_HARDENED_MODE disables it.
+    """
     if _maybe_hardened_verify is None:
         return None, {}
 
-    try:
-        remaining = int(runtime_flags.get("verifier_latency_budget_ms"))
-    except Exception:
-        remaining = None
+    # Total time budget (ms) — shared across attempts. Invalid/missing -> unset.
+    lb_raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
+    total_budget_ms: Optional[int] = None
+    if lb_raw is not None:
+        try:
+            ms_val = float(str(lb_raw).strip())
+            if ms_val > 0:
+                total_budget_ms = int(ms_val)
+        except Exception:
+            total_budget_ms = None
 
+    # Retry budget: number of retries (attempts = retries + 1).
     try:
-        max_retries = int(runtime_flags.get("verifier_max_retries"))
+        retry_budget = int(os.getenv("VERIFIER_RETRY_BUDGET", "0"))
     except Exception:
-        max_retries = 1
-    max_retries = max(1, max_retries)
+        retry_budget = 0
+    attempts = max(1, retry_budget + 1)
 
-    try:
-        backoff_ms = int(runtime_flags.get("verifier_retry_backoff_ms"))
-    except Exception:
-        backoff_ms = 50
-    try:
-        jitter_ms = int(runtime_flags.get("verifier_retry_jitter_ms"))
-    except Exception:
-        jitter_ms = 50
+    deadline = (
+        time.perf_counter() + (total_budget_ms / 1000.0)
+        if total_budget_ms is not None
+        else None
+    )
 
-    provider = "unknown"
+    last_fallback_headers: Dict[str, str] = {
+        "X-Guardrail-Verifier": "unknown",
+        "X-Guardrail-Verifier-Mode": "fallback",
+    }
 
-    for attempt in range(1, max_retries + 1):
-        attempts_left = max_retries - attempt + 1
-        timeout_ms: Optional[int] = None
-        if remaining is not None and attempts_left > 0:
-            timeout_ms = max(50, remaining // attempts_left)
+    for _ in range(attempts):
+        # Respect the remaining budget per attempt.
+        remaining_ms: Optional[int] = None
+        if deadline is not None:
+            remaining = (deadline - time.perf_counter()) * 1000.0
+            if remaining <= 0:
+                break
+            remaining_ms = int(remaining)
 
         try:
             action, headers = await _maybe_hardened_verify(
@@ -921,37 +941,29 @@ async def _maybe_hardened(
                 tenant_id=tenant,
                 bot_id=bot,
                 family=family,
-                latency_budget_ms=timeout_ms,
+                latency_budget_ms=remaining_ms,
             )
-            provider = headers.get("X-Guardrail-Verifier", provider)
-            headers.setdefault("X-Guardrail-Mode", "live")
-            if remaining is not None and timeout_ms is not None:
-                remaining = max(0, remaining - timeout_ms)
-            return action, headers
-        except asyncio.TimeoutError:
-            m.inc_verifier_error(provider, "timeout")
-        except Exception as e:  # noqa: BLE001
-            kind = (
-                "status_5xx"
-                if 500 <= getattr(e, "status_code", 0) < 600
-                else "other"
+            # Normalize headers and mark as live path.
+            norm_headers: Dict[str, str] = {}
+            for k, v in (headers or {}).items():
+                try:
+                    norm_headers[str(k)] = str(v)
+                except Exception:
+                    pass
+            norm_headers.setdefault(
+                "X-Guardrail-Verifier",
+                norm_headers.get("X-Guardrail-Verifier", "unknown"),
             )
-            m.inc_verifier_error(provider, kind)
-
-        if remaining is not None and timeout_ms is not None:
-            remaining = max(0, remaining - timeout_ms)
-
-        if attempt < max_retries:
-            m.inc_verifier_retry(provider)
-            delay = backoff_ms + random.randint(0, max(0, jitter_ms))
-            if remaining is not None:
-                remaining = max(0, remaining - delay)
-            await asyncio.sleep(delay / 1000.0)
+            norm_headers["X-Guardrail-Verifier-Mode"] = "live"
+            return action, norm_headers
+        except Exception:
+            last_fallback_headers = {
+                "X-Guardrail-Verifier": "unknown",
+                "X-Guardrail-Verifier-Mode": "fallback",
+            }
             continue
-        break
 
-    headers = {"X-Guardrail-Verifier": provider, "X-Guardrail-Mode": "fallback"}
-    return None, headers
+    return None, last_fallback_headers
 
 
 def _apply_hardened_override(current_action: str, hv_action: Optional[str]) -> str:
@@ -1173,9 +1185,11 @@ async def guardrail_evaluate(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    hv_headers = dict(hv_headers or {})
+    hv_headers.setdefault("X-Guardrail-Verifier-Latency", str(latency_ms))
     m.observe_verifier_latency(latency_ms)
     action = _apply_hardened_override(action, hv_action)
-    if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
+    if hv_action is None and hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
@@ -1194,7 +1208,11 @@ async def guardrail_evaluate(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             m.inc_verifier_retry(provider)
-        mode = "fallback" if hv_headers.get("X-Guardrail-Mode") == "fallback" else "live"
+        mode = (
+            "fallback"
+            if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
+            else "live"
+        )
         m.inc_verifier_mode(mode)
 
     _audit(
@@ -1258,7 +1276,7 @@ async def guardrail_evaluate_multipart(request: Request):
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
     for tag in redaction_hits.keys():
-        m.inc_redaction(tag)
+        _maybe_metric("inc_redaction", tag)
         m.guardrail_redactions_total.labels("ingress", tag).inc()
     docx_hidden_reasons: List[str] = []
     docx_hidden_samples: List[str] = []
@@ -1338,9 +1356,11 @@ async def guardrail_evaluate_multipart(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    hv_headers = dict(hv_headers or {})
+    hv_headers.setdefault("X-Guardrail-Verifier-Latency", str(latency_ms))
     m.observe_verifier_latency(latency_ms)
     action = _apply_hardened_override(action, hv_action)
-    if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
+    if hv_action is None and hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
@@ -1359,7 +1379,11 @@ async def guardrail_evaluate_multipart(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             m.inc_verifier_retry(provider)
-        mode = "fallback" if hv_headers.get("X-Guardrail-Mode") == "fallback" else "live"
+        mode = (
+            "fallback"
+            if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
+            else "live"
+        )
         m.inc_verifier_mode(mode)
 
     _audit(
@@ -1459,9 +1483,11 @@ async def guardrail_egress(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    hv_headers = dict(hv_headers or {})
+    hv_headers.setdefault("X-Guardrail-Verifier-Latency", str(latency_ms))
     m.observe_verifier_latency(latency_ms)
     action = _apply_hardened_override(action, hv_action)
-    if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
+    if hv_action is None and hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
@@ -1480,7 +1506,11 @@ async def guardrail_egress(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             m.inc_verifier_retry(provider)
-        mode = "fallback" if hv_headers.get("X-Guardrail-Mode") == "fallback" else "live"
+        mode = (
+            "fallback"
+            if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
+            else "live"
+        )
         m.inc_verifier_mode(mode)
 
     _audit(
