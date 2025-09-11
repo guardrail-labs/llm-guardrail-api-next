@@ -3,6 +3,14 @@ from __future__ import annotations
 import re
 from typing import AsyncIterator, List, Optional, Pattern, Tuple, Union, cast
 
+from app.services.config_sanitizer import (
+    get_verifier_latency_budget_ms,
+    get_verifier_sampling_pct,
+)
+
+_STREAM_VERIFIER_LAT_MS = get_verifier_latency_budget_ms()
+_STREAM_VERIFIER_SAMPLING = get_verifier_sampling_pct()
+
 StrOrBytes = Union[str, bytes]
 PatTriplet = Tuple[Pattern[str], str, str]  # (regex, tag, replacement)
 

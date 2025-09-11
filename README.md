@@ -49,8 +49,12 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
   → See [`docs/OperatorGuide.md`](docs/OperatorGuide.md)
 - **Integrate**: OpenAI-compatible endpoints (`/v1/*`)  
   → See [`docs/IntegrationOpenAI.md`](docs/IntegrationOpenAI.md)
-- **Demo**: copy/paste POC script  
+- **Demo**: copy/paste POC script
   → See [`docs/DemoScript.md`](docs/DemoScript.md)
+
+## Configuration
+See [CONFIG.md](./CONFIG.md) for all tunables and defaults. Values are normalized by
+`app/services/config_sanitizer.py` to ensure safe, predictable behavior.
 
 ---
 
