@@ -1,25 +1,18 @@
 from __future__ import annotations
 
 import re
-from typing import (
-    AsyncIterator,
-    List,
-    Optional,
-    Pattern,
-    Tuple,
-    Union,
-    cast,
-)
+from typing import AsyncIterator, List, Optional, Pattern, Tuple, Union, cast
 
 StrOrBytes = Union[str, bytes]
 PatTriplet = Tuple[Pattern[str], str, str]  # (regex, tag, replacement)
 
-# Private key envelope across boundaries (deny if configured)
+# Private key envelope and marker (deny if configured)
 _PRIV_KEY_ENV_RE = re.compile(
-    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
-    re.S,
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
 )
-
+_PRIV_KEY_MARKER_RE = re.compile(
+    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+)
 
 # ----------------------------- Optional imports ------------------------------
 
@@ -89,7 +82,7 @@ def _load_stream_patterns() -> List[PatTriplet]:
 class StreamingGuard:
     """
     Wrap an async iterator of str/bytes and perform redactions as data streams.
-    If configured, deny immediately on private key envelopes.
+    If configured, deny immediately on private key envelopes or markers.
 
     NOTE: When lookback == 0, we emit everything immediately (subject to
     flush_min_bytes) instead of slicing with -0, which would buffer the stream.
@@ -129,10 +122,6 @@ class StreamingGuard:
         self._block_yielded = False
         self._redactions = 0
 
-    # Back-compat: allow positional `patterns` in tests
-    # (Tests do: StreamingGuard(gen(), policy.get_stream_redaction_patterns()))
-    # Already supported by second positional arg.
-
     @property
     def redactions(self) -> int:
         return self._redactions
@@ -162,8 +151,7 @@ class StreamingGuard:
         # Pull until we have something to emit or source ends.
         while True:
             try:
-                # Python 3.11: anext() builtin works with async iterators
-                chunk = await anext(self._ait) 
+                chunk = await anext(self._ait)  # type: ignore[name-defined]
             except StopAsyncIteration:
                 self._done = True
                 self._apply_redactions()
@@ -217,7 +205,10 @@ class StreamingGuard:
 
     def _apply_redactions(self) -> None:
         """Apply deny/replace rules over the current tail buffer."""
-        if self._deny_on_pk and _PRIV_KEY_ENV_RE.search(self._tail):
+        if self._deny_on_pk and (
+            _PRIV_KEY_ENV_RE.search(self._tail)
+            or _PRIV_KEY_MARKER_RE.search(self._tail)
+        ):
             self._denied = True
             return
 
