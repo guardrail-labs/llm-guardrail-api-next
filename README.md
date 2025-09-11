@@ -1,4 +1,4 @@
-# LLM Guardrail API
+# LLM Guardrail API - Patent Pending 
 
 **A firewall for prompts and model outputs.**  
 Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe intent**, **sanitize secrets/PII**, and **prove compliance** with **signed audits** and **directional observability** (ingress vs egress).
