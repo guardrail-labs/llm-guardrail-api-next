@@ -8,7 +8,8 @@ PatTriplet = Tuple[Pattern[str], str, str]  # (regex, tag, replacement)
 
 # Private key envelope and marker (deny if configured)
 _PRIV_KEY_ENV_RE = re.compile(
-    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    re.S,
 )
 _PRIV_KEY_MARKER_RE = re.compile(
     r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
@@ -137,6 +138,8 @@ class StreamingGuard:
         # If previously denied, yield the block token once and then stop.
         if self._denied and not self._block_yielded:
             self._block_yielded = True
+            self._done = True       # stop the stream after the block token
+            self._tail = ""         # ensure nothing leaks after block
             m.inc_stream_guard_denied()
             return "[STREAM BLOCKED]"
 
@@ -151,12 +154,14 @@ class StreamingGuard:
         # Pull until we have something to emit or source ends.
         while True:
             try:
-                chunk = await anext(self._ait) 
+                chunk = await anext(self._ait)  # type: ignore[name-defined]
             except StopAsyncIteration:
                 self._done = True
                 self._apply_redactions()
                 if self._denied and not self._block_yielded:
                     self._block_yielded = True
+                    self._done = True
+                    self._tail = ""
                     m.inc_stream_guard_denied()
                     return "[STREAM BLOCKED]"
                 if self._tail:
@@ -173,6 +178,8 @@ class StreamingGuard:
             self._apply_redactions()
             if self._denied and not self._block_yielded:
                 self._block_yielded = True
+                self._done = True
+                self._tail = ""
                 m.inc_stream_guard_denied()
                 return "[STREAM BLOCKED]"
 
@@ -210,6 +217,7 @@ class StreamingGuard:
             or _PRIV_KEY_MARKER_RE.search(self._tail)
         ):
             self._denied = True
+            self._tail = ""  # drop any accumulated content immediately
             return
 
         for rx, tag, repl in self._patterns:
