@@ -12,12 +12,6 @@ from typing import Dict, List, Tuple, cast
 #                                #            attr_hidden | class_hidden
 #       "samples": List[str],    # short text contents near hidden spans
 #   }
-#
-# Notes
-# -----
-# - We intentionally return the legacy reason keys expected by tests.
-# - Prefer BeautifulSoup when available, but we ALWAYS run a regex fallback
-#   pass as a backstop to catch simple inline style cases.
 
 # ----------------------------- regex helpers ---------------------------------
 
@@ -26,17 +20,6 @@ _STYLE_HIDDEN_RE = re.compile(
 )
 
 _ZERO_RE = re.compile(r"(?i)^(0|0(?:\.0+)?|0px|0rem|0em)$")
-
-# White color values (accept hex short/long, rgb/rgba, and keyword 'white')
-# NOTE: Do NOT use VERBOSE ('x') here because of literal '#fff' tokens.
-_WHITE_VALUE_RE = re.compile(
-    r"(?i)\b("
-    r"#fff(?:fff)?"
-    r"|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)"
-    r"|rgba\(\s*255\s*,\s*255\s*,\s*255\s*,\s*1(?:\.0+)?\)"
-    r"|white"
-    r")\b"
-)
 
 _TRANSPARENT_RE = re.compile(r"(?i)\btransparent\b")
 
@@ -94,9 +77,31 @@ def _parse_style(style_str: str) -> Dict[str, str]:
     return out
 
 
+def _norm_css(val: str | None) -> str:
+    return re.sub(r"\s+", "", (val or "").lower())
+
+
+def _is_white_value(val: str | None) -> bool:
+    v = _norm_css(val)
+    if not v:
+        return False
+    if v.startswith("#fff"):  # matches #fff and #ffffff (and longer #ffff..)
+        return True
+    if v == "white":
+        return True
+    if v == "rgb(255,255,255)":
+        return True
+    if v == "rgba(255,255,255,1)" or v == "rgba(255,255,255,1.0)":
+        return True
+    return False
+
+
+def _is_transparent_value(val: str | None) -> bool:
+    return bool(_TRANSPARENT_RE.search(val or ""))
+
+
 def _maybe_text_sample(el) -> str:
     try:
-        # BeautifulSoup's get_text is dynamically typed; cast for mypy.
         txt = cast(str, el.get_text(strip=True))
         if txt:
             return txt[:200]
@@ -163,14 +168,9 @@ def _element_hidden_reasons(el) -> List[str]:
         reasons.append("style_hidden")
 
     # White text on white background (or transparent color)
-    if color:
-        is_white_fg = bool(_WHITE_VALUE_RE.search(color))
-        is_transparent_fg = bool(_TRANSPARENT_RE.search(color))
-    else:
-        is_white_fg = False
-        is_transparent_fg = False
-
-    is_white_bg = bool(bg and _WHITE_VALUE_RE.search(bg))
+    is_white_fg = _is_white_value(color)
+    is_transparent_fg = _is_transparent_value(color)
+    is_white_bg = _is_white_value(bg)
     if (is_white_fg and is_white_bg) or is_transparent_fg:
         reasons.append("white_on_white")
 
