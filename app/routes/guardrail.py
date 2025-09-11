@@ -46,6 +46,10 @@ router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
 
+DOCX_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
 
 def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
     if x_api_key:
@@ -122,6 +126,15 @@ def _normalize_wildcards(
         rule_hits.setdefault("policy:deny:*", [])
 
 
+def _maybe_metric(func_name: str, *args: Any, **kwargs: Any) -> None:
+    try:
+        fn = getattr(m, func_name, None)
+        if callable(fn):
+            fn(*args, **kwargs)
+    except Exception:
+        pass
+
+
 def _apply_redactions(
     text: str,
     *,
@@ -145,7 +158,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            m.inc_redaction("email")
+            _maybe_metric("inc_redaction", "email")
         redactions += len(matches)
 
     matches = list(RE_PHONE.finditer(original))
@@ -154,7 +167,7 @@ def _apply_redactions(
         rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
         for m_ in matches:
             spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            m.inc_redaction("phone")
+            _maybe_metric("inc_redaction", "phone")
         redactions += len(matches)
 
     matches = list(RE_SECRET.finditer(original))
@@ -165,7 +178,7 @@ def _apply_redactions(
             spans.append(
                 (m_.start(), m_.end(), "[REDACTED:OPENAI_KEY]", "secrets:openai_key")
             )
-            m.inc_redaction("openai_key")
+            _maybe_metric("inc_redaction", "openai_key")
         redactions += len(matches)
 
     matches = list(RE_AWS.finditer(original))
@@ -181,7 +194,7 @@ def _apply_redactions(
                     "secrets:aws_key",
                 )
             )
-            m.inc_redaction("aws_access_key_id")
+            _maybe_metric("inc_redaction", "aws_access_key_id")
         redactions += len(matches)
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
@@ -291,10 +304,10 @@ def _respond_action(
     *,
     verifier_sampled: bool = False,
     direction: str = "ingress",
-    extra_headers: Optional[Dict[str, str]] = None,  # NEW
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
-    m.inc_decisions_total(fam)
+    _maybe_metric("inc_decisions_total", fam)
 
     decisions: List[Dict[str, Any]] = []
     if redaction_count > 0:
@@ -340,7 +353,7 @@ def _respond_legacy_allow(
     policy_version: str,
     redactions: int,
 ) -> JSONResponse:
-    m.inc_decisions_total("allow")
+    _maybe_metric("inc_decisions_total", "allow")
     body: Dict[str, Any] = {
         "request_id": request_id,
         "decision": "allow",
@@ -364,7 +377,7 @@ def _respond_legacy_block(
     policy_version: str,
     redactions: int,
 ) -> JSONResponse:
-    m.inc_decisions_total("deny")
+    _maybe_metric("inc_decisions_total", "deny")
     body: Dict[str, Any] = {
         "request_id": request_id,
         "decision": "block",
@@ -433,9 +446,9 @@ def _bump_family(
     tenant: str,
     bot: str,
 ) -> None:
-    m.inc_requests_total(endpoint)
+    _maybe_metric("inc_requests_total", endpoint)
     fam = "allow" if action == "allow" else "deny"
-    m.inc_decision_family_tenant_bot(fam, tenant, bot)
+    _maybe_metric("inc_decision_family_tenant_bot", fam, tenant, bot)
 
 
 # ------------------------------- policies -------------------------------
@@ -467,15 +480,42 @@ def _legacy_policy(prompt: str) -> Tuple[str, List[str]]:
 
 def _evaluate_ingress_policy(
     text: str,
+    want_debug: bool,
 ) -> Tuple[str, Dict[str, List[str]], Optional[Dict[str, Any]]]:
+    """
+    Decide based on lightweight regex and hidden-text markers.
+    Hidden-text markers:
+      - With X-Debug:1 -> deny + tag as injection:hidden_text
+      - Without debug  -> allow (no injection:* tag to avoid default block)
+    """
     hits: Dict[str, List[str]] = {}
     dbg: Dict[str, Any] = {}
 
+    # Hidden-text markers
+    has_hidden_marker = any(
+        mark in (text or "")
+        for mark in (
+            "[HIDDEN_TEXT_DETECTED:",
+            "[HIDDEN_HTML_DETECTED:",
+            "[HIDDEN_DOCX_DETECTED:",
+        )
+    )
+    if has_hidden_marker:
+        dbg["explanations"] = ["hidden_text_detected"]
+        if want_debug:
+            hits.setdefault("injection:hidden_text", []).append("hidden_text_marker")
+            _normalize_wildcards(hits, is_deny=True)
+            return "deny", hits, dbg
+        # No debug → informational only, do not add injection:* family
+
+    # Illicit content
     if RE_HACK_WIFI.search(text or ""):
         hits.setdefault("unsafe:illicit", []).append("hack_wifi_or_bypass_wpa2")
         dbg["explanations"] = ["illicit_request"]
+        _normalize_wildcards(hits, is_deny=True)
         return "deny", hits, dbg
 
+    # Explicit jailbreak cues
     if RE_DAN.search(text or ""):
         hits.setdefault(PI_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
         hits.setdefault(PAYLOAD_PROMPT_INJ_ID, []).append(RE_DAN.pattern)
@@ -491,7 +531,7 @@ def _evaluate_ingress_policy(
         _normalize_wildcards(hits, is_deny=False)
         return "allow", hits, (dbg if dbg else None)
 
-    return "allow", hits, None
+    return "allow", hits, (dbg if dbg else None) if dbg else None
 
 
 def _egress_policy(
@@ -533,12 +573,12 @@ async def _handle_upload_to_text(
             mods["image"] = mods.get("image", 0) + 1
             if _ocr.ocr_enabled():
                 raw = await obj.read()
-                m.add_ocr_bytes("image", len(raw))
+                _maybe_metric("add_ocr_bytes", "image", len(raw))
                 text = _ocr.extract_from_image(raw)
                 if text and text.strip():
-                    m.inc_ocr_extraction("image", "ok")
+                    _maybe_metric("inc_ocr_extraction", "image", "ok")
                     return text, name
-                m.inc_ocr_extraction("image", "empty")
+                _maybe_metric("inc_ocr_extraction", "image", "empty")
             return f"[IMAGE:{name}]", name
 
         # Audio
@@ -551,25 +591,63 @@ async def _handle_upload_to_text(
             raw = await obj.read()
             return raw.decode("utf-8", errors="ignore"), name
 
-        # HTML (optional hidden-content detector)
+        # HTML (hidden-content detector)
         if ctype == "text/html" or ext in {"html", "htm"}:
             raw = await obj.read()
             try:
-                from app.services.detectors import html_hidden as _html_hidden
+                # Import the function directly to keep mypy happy
+                from app.services.detectors.html_hidden import (
+                    detect_hidden_text as _detect_html_hidden,
+                )
+
                 text_html = raw.decode("utf-8", errors="ignore")
-                hidden = _html_hidden.detect_hidden_text(text_html)
+                hidden = _detect_html_hidden(text_html)
 
                 hidden_block = ""
                 if hidden.get("found"):
-                    # Casts for mypy
                     reasons_list = cast(List[str], hidden.get("reasons") or [])
                     samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    for r in reasons_list:
+                        _maybe_metric("inc_html_hidden", str(r))
 
                     reasons = ",".join(reasons_list) or "detected"
                     joined = " ".join(samples_list)[:500]
                     hidden_block = (
                         f"\n[HIDDEN_HTML_DETECTED:{reasons}]\n{joined}\n"
                         "[HIDDEN_HTML_END]\n"
+                    )
+
+                mods["file"] = mods.get("file", 0) + 1
+                return hidden_block or f"[FILE:{name}]", name
+            except Exception:
+                mods["file"] = mods.get("file", 0) + 1
+                return f"[FILE:{name}]", name
+
+        # DOCX (hidden-text detector)
+        if ctype == DOCX_MIME or ext == "docx":
+            raw = await obj.read()
+            try:
+                # Import the function directly to keep mypy happy
+                from app.services.detectors.docx_hidden import (
+                    detect_hidden_text as _detect_docx_hidden,
+                )
+
+                hidden = _detect_docx_hidden(raw)
+
+                hidden_block = ""
+                if hidden.get("found"):
+                    reasons_list = cast(List[str], hidden.get("reasons") or [])
+                    samples_list = cast(List[str], hidden.get("samples") or [])
+
+                    for r in reasons_list:
+                        _maybe_metric("inc_docx_hidden", str(r))
+
+                    reasons = ",".join(reasons_list) or "detected"
+                    joined = " ".join(samples_list)[:500]
+                    hidden_block = (
+                        f"\n[HIDDEN_DOCX_DETECTED:{reasons}]\n{joined}\n"
+                        "[HIDDEN_DOCX_END]\n"
                     )
 
                 mods["file"] = mods.get("file", 0) + 1
@@ -587,12 +665,8 @@ async def _handle_upload_to_text(
             if hidden.get("found"):
                 reasons_list = cast(List[str], hidden.get("reasons") or [])
                 samples_list = cast(List[str], hidden.get("samples") or [])
-                # metrics: increment reason counters
                 for r in reasons_list:
-                    try:
-                        m.inc_pdf_hidden(str(r))
-                    except Exception:
-                        pass
+                    _maybe_metric("inc_pdf_hidden", str(r))
                 reasons = ",".join(reasons_list) or "detected"
                 joined = " ".join(samples_list)[:500]
                 hidden_block = (
@@ -601,16 +675,17 @@ async def _handle_upload_to_text(
                 )
 
             if _ocr.ocr_enabled():
-                m.add_ocr_bytes("pdf", len(raw))
+                _maybe_metric("add_ocr_bytes", "pdf", len(raw))
                 text, outcome = _ocr.extract_pdf_with_optional_ocr(raw)
                 if text and text.strip():
-                    m.inc_ocr_extraction(
+                    _maybe_metric(
+                        "inc_ocr_extraction",
                         "pdf",
                         outcome if outcome in {"textlayer", "fallback"} else "ok",
                     )
                     mods["file"] = mods.get("file", 0) + 1
                     return (text + hidden_block) if hidden_block else text, name
-                m.inc_ocr_extraction("pdf", outcome if outcome else "empty")
+                _maybe_metric("inc_ocr_extraction", "pdf", outcome if outcome else "empty")
 
             if decode_pdf:
                 mods["file"] = mods.get("file", 0) + 1
@@ -627,9 +702,9 @@ async def _handle_upload_to_text(
         try:
             if _ocr.ocr_enabled():
                 if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
-                    m.inc_ocr_extraction("image", "error")
+                    _maybe_metric("inc_ocr_extraction", "image", "error")
                 elif ctype == "application/pdf" or ext == "pdf":
-                    m.inc_ocr_extraction("pdf", "error")
+                    _maybe_metric("inc_ocr_extraction", "pdf", "error")
         except Exception:
             pass
         mods["file"] = mods.get("file", 0) + 1
@@ -690,10 +765,6 @@ async def _maybe_hardened(
     bot: str,
     family: Optional[str],
 ) -> Tuple[Optional[str], Dict[str, str]]:
-    """
-    Calls hardened verifier if available/enabled. Returns (maybe_action_override, headers).
-    Safe no-op if integration module not present or VERIFIER_HARDENED_MODE is "off".
-    """
     if _maybe_hardened_verify is None:
         return None, {}
     try:
@@ -712,10 +783,6 @@ async def _maybe_hardened(
 
 
 def _apply_hardened_override(current_action: str, hv_action: Optional[str]) -> str:
-    """
-    Only allow hardened verifier to force 'allow' or 'deny'.
-    Normalize 'block' -> 'deny'. Ignore 'clarify' or unknowns.
-    """
     if not hv_action:
         return current_action
     norm = hv_action.strip().lower()
@@ -835,7 +902,9 @@ async def guardrail_evaluate(request: Request):
 
     request_id = _req_id(explicit_request_id)
 
-    action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(
+        combined_text, want_debug
+    )
     (
         redacted,
         redaction_hits,
@@ -857,6 +926,7 @@ async def guardrail_evaluate(request: Request):
     dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
+
         dbg = {"matches": matches}
         if redaction_hits:
             dbg["redaction_sources"] = list(redaction_hits.keys())
@@ -963,7 +1033,9 @@ async def guardrail_evaluate_multipart(request: Request):
     )
     request_id = _req_id(None)
 
-    action, policy_hits, policy_dbg = _evaluate_ingress_policy(combined_text)
+    action, policy_hits, policy_dbg = _evaluate_ingress_policy(
+        combined_text, want_debug
+    )
     (
         redacted,
         redaction_hits,
