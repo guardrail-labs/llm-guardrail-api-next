@@ -190,7 +190,7 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
     # Use BeautifulSoup if available for robust element-level checks.
     soup = None
     try:
-        from bs4 import BeautifulSoup  # type: ignore
+        from bs4 import BeautifulSoup 
 
         soup = BeautifulSoup(html or "", "html.parser")
     except Exception:
