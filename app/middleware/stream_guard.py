@@ -163,7 +163,7 @@ class StreamingGuard:
         while True:
             try:
                 # Python 3.11: anext() builtin works with async iterators
-                chunk = await anext(self._ait)  # type: ignore[name-defined]
+                chunk = await anext(self._ait) 
             except StopAsyncIteration:
                 self._done = True
                 self._apply_redactions()
