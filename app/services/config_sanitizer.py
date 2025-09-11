@@ -5,22 +5,6 @@ from math import isfinite
 from typing import Optional
 
 
-def _from_runtime_flags(name: str) -> Optional[str]:
-    """Best effort read from runtime flags without importing at module import time."""
-    try:
-        from app.services import runtime_flags as rf  # local to avoid cycles
-    except Exception:
-        return None
-    try:
-        v = rf.get(name)
-    except Exception:
-        return None
-    if v is None:
-        return None
-    s = str(v).strip()
-    return s if s else None
-
-
 def _clean_float(val: Optional[str]) -> Optional[float]:
     if val is None:
         return None
@@ -49,12 +33,11 @@ def _clean_int(val: Optional[str]) -> Optional[int]:
 
 def get_verifier_latency_budget_ms() -> Optional[int]:
     """
+    Source of truth: env VERIFIER_LATENCY_BUDGET_MS.
     Positive integer → that value.
     Zero/negative/invalid/missing → None (unset = no deadline).
     """
-    raw = _from_runtime_flags("verifier_latency_budget_ms")
-    if raw is None:
-        raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
+    raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
     v = _clean_float(raw)
     if v is None or v <= 0:
         return None
@@ -65,10 +48,11 @@ def get_verifier_latency_budget_ms() -> Optional[int]:
 
 
 def get_verifier_retry_budget() -> int:
-    """Non-negative integer, invalid → 0."""
-    raw = _from_runtime_flags("verifier_retry_budget")
-    if raw is None:
-        raw = os.getenv("VERIFIER_RETRY_BUDGET")
+    """
+    Source of truth: env VERIFIER_RETRY_BUDGET.
+    Non-negative integer → value; invalid/missing → 0.
+    """
+    raw = os.getenv("VERIFIER_RETRY_BUDGET")
     v = _clean_int(raw)
     if v is None or v < 0:
         return 0
@@ -76,10 +60,11 @@ def get_verifier_retry_budget() -> int:
 
 
 def get_stream_guard_lookback_chars(default: int = 256) -> int:
-    """Non-negative integer; invalid → default; negative → 0."""
-    raw = _from_runtime_flags("stream_guard_max_lookback_chars")
-    if raw is None:
-        raw = os.getenv("STREAM_GUARD_MAX_LOOKBACK_CHARS")
+    """
+    Source of truth: env STREAM_GUARD_MAX_LOOKBACK_CHARS.
+    Non-negative integer; invalid → default; negative → 0.
+    """
+    raw = os.getenv("STREAM_GUARD_MAX_LOOKBACK_CHARS")
     v = _clean_int(raw)
     if v is None:
         return max(0, int(default))
@@ -87,10 +72,11 @@ def get_stream_guard_lookback_chars(default: int = 256) -> int:
 
 
 def get_stream_guard_flush_min_bytes(default: int = 0) -> int:
-    """Non-negative integer; invalid → default; negative → 0."""
-    raw = _from_runtime_flags("stream_guard_flush_min_bytes")
-    if raw is None:
-        raw = os.getenv("STREAM_GUARD_FLUSH_MIN_BYTES")
+    """
+    Source of truth: env STREAM_GUARD_FLUSH_MIN_BYTES.
+    Non-negative integer; invalid → default; negative → 0.
+    """
+    raw = os.getenv("STREAM_GUARD_FLUSH_MIN_BYTES")
     v = _clean_int(raw)
     if v is None:
         return max(0, int(default))
@@ -99,12 +85,10 @@ def get_stream_guard_flush_min_bytes(default: int = 0) -> int:
 
 def get_verifier_sampling_pct() -> float:
     """
-    verifier_sampling_pct: prefer runtime flag, else env VERIFIER_SAMPLING_PCT.
+    Source of truth: env VERIFIER_SAMPLING_PCT.
     Invalid → 0.0. Always clamped to [0.0, 1.0].
     """
-    raw = _from_runtime_flags("verifier_sampling_pct")
-    if raw is None:
-        raw = os.getenv("VERIFIER_SAMPLING_PCT")
+    raw = os.getenv("VERIFIER_SAMPLING_PCT")
     f = _clean_float(raw)
     if f is None:
         return 0.0
