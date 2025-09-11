@@ -5,6 +5,13 @@ from typing import Any, Dict, Optional, Tuple, cast
 
 from app.telemetry.metrics import inc_verifier_outcome
 
+
+def error_fallback_action() -> str:
+    v = (os.getenv("VERIFIER_ERROR_FALLBACK") or "allow").strip().lower()
+    if v in {"allow", "deny", "clarify"}:
+        return v
+    return "allow"
+
 # ---------------------------------------------------------------------
 # Env helpers
 # ---------------------------------------------------------------------
@@ -63,60 +70,51 @@ async def maybe_verify_and_headers(
     }
 
     default_action = _get_default_action()
-    try:
-        vfunc: Any = verify_intent_hardened
-        out_obj, hdr_in = cast(
-            Tuple[Dict[str, Any], Dict[str, Any]], await vfunc(text, ctx)
-        )
+    vfunc: Any = verify_intent_hardened
+    out_obj, hdr_in = cast(
+        Tuple[Dict[str, Any], Dict[str, Any]], await vfunc(text, ctx)
+    )
 
-        outcome = out_obj if isinstance(out_obj, dict) else {}
-        headers_in = hdr_in if isinstance(hdr_in, dict) else {}
+    outcome = out_obj if isinstance(out_obj, dict) else {}
+    headers_in = hdr_in if isinstance(hdr_in, dict) else {}
 
-        status = str(outcome.get("status", "")).lower()
-        reason = outcome.get("reason")
-        provider = str(
-            outcome.get("provider")
-            or headers_in.get("X-Guardrail-Verifier")
-            or "unknown"
-        )
+    status = str(outcome.get("status", "")).lower()
+    reason = outcome.get("reason")
+    provider = str(
+        outcome.get("provider")
+        or headers_in.get("X-Guardrail-Verifier")
+        or "unknown"
+    )
 
-        if status == "safe":
-            decision = "allow"
-            source = "verifier-live"
-        elif status == "unsafe":
-            decision = "deny"
-            source = "verifier-live"
-        elif status == "ambiguous":
-            decision = "clarify"
-            source = "verifier-live"
-        else:
-            decision = default_action
-            source = "verifier-fallback"
+    if status == "safe":
+        decision = "allow"
+        source = "verifier-live"
+    elif status == "unsafe":
+        decision = "deny"
+        source = "verifier-live"
+    elif status == "ambiguous":
+        decision = "clarify"
+        source = "verifier-live"
+    else:
+        decision = default_action
+        source = "verifier-fallback"
 
-        inc_verifier_outcome(provider, decision if source == "verifier-live" else "fallback")
+    inc_verifier_outcome(provider, decision if source == "verifier-live" else "fallback")
 
-        headers: Dict[str, str] = {}
-        for k, v in headers_in.items():
-            try:
-                headers[str(k)] = str(v)
-            except Exception:
-                pass
+    headers: Dict[str, str] = {}
+    for k, v in headers_in.items():
+        try:
+            headers[str(k)] = str(v)
+        except Exception:
+            pass
 
-        headers["X-Guardrail-Decision"] = decision
-        headers["X-Guardrail-Decision-Source"] = source
-        if isinstance(reason, str) and reason:
-            headers["X-Guardrail-Reason"] = reason[:512]
-        if "X-Guardrail-Verifier" not in headers and provider:
-            headers["X-Guardrail-Verifier"] = provider
+    headers["X-Guardrail-Decision"] = decision
+    headers["X-Guardrail-Decision-Source"] = source
+    headers["X-Guardrail-Mode"] = "live" if source == "verifier-live" else "fallback"
+    if isinstance(reason, str) and reason:
+        headers["X-Guardrail-Reason"] = reason[:512]
+    if "X-Guardrail-Verifier" not in headers and provider:
+        headers["X-Guardrail-Verifier"] = provider
 
-        return decision, headers
-
-    except Exception:
-        inc_verifier_outcome("unknown", "error")
-        fallback = _get_default_action()
-        headers = {
-            "X-Guardrail-Decision": fallback,
-            "X-Guardrail-Decision-Source": "verifier-fallback",
-        }
-        return fallback, headers
+    return decision, headers
 

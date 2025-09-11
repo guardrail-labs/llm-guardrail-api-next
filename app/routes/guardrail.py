@@ -1,13 +1,14 @@
 # ruff: noqa: I001
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import random
 import re
 import uuid
 import time
-from typing import Any, Dict, List, Optional, Tuple, cast, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -35,12 +36,16 @@ from app.services import ocr as _ocr
 HardenedVerifyFn = Callable[..., Awaitable[Tuple[Optional[str], Dict[str, str]]]]
 try:
     from app.services.verifier.integration import (
+        error_fallback_action,
         maybe_verify_and_headers as _hardened_impl,
     )
 
     _maybe_hardened_verify: Optional[HardenedVerifyFn] = _hardened_impl
 except Exception:  # pragma: no cover
     _maybe_hardened_verify = None
+
+    def error_fallback_action() -> str:
+        return "allow"
 
 router = APIRouter()
 
@@ -753,19 +758,77 @@ async def _maybe_hardened(
 ) -> Tuple[Optional[str], Dict[str, str]]:
     if _maybe_hardened_verify is None:
         return None, {}
+
     try:
         lb = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
-        latency_ms = int(lb) if lb else None
-        return await _maybe_hardened_verify(
-            text=text,
-            direction=direction,
-            tenant_id=tenant,
-            bot_id=bot,
-            family=family,
-            latency_budget_ms=latency_ms,
-        )
+        remaining = int(lb) if lb else None
     except Exception:
-        return None, {}
+        remaining = None
+
+    try:
+        max_retries = int(os.getenv("VERIFIER_MAX_RETRIES", "1"))
+    except Exception:
+        max_retries = 1
+    max_retries = max(1, max_retries)
+
+    try:
+        backoff_ms = int(os.getenv("VERIFIER_RETRY_BACKOFF_MS", "50"))
+    except Exception:
+        backoff_ms = 50
+    try:
+        jitter_ms = int(os.getenv("VERIFIER_RETRY_JITTER_MS", "50"))
+    except Exception:
+        jitter_ms = 50
+
+    provider = "unknown"
+
+    for attempt in range(1, max_retries + 1):
+        attempts_left = max_retries - attempt + 1
+        timeout_ms: Optional[int] = None
+        if remaining is not None and attempts_left > 0:
+            timeout_ms = max(50, remaining // attempts_left)
+
+        try:
+            action, headers = await _maybe_hardened_verify(
+                text=text,
+                direction=direction,
+                tenant_id=tenant,
+                bot_id=bot,
+                family=family,
+                latency_budget_ms=timeout_ms,
+            )
+            provider = headers.get("X-Guardrail-Verifier", provider)
+            m.inc_verifier_attempt(provider)
+            headers.setdefault("X-Guardrail-Mode", "live")
+            if remaining is not None and timeout_ms is not None:
+                remaining = max(0, remaining - timeout_ms)
+            return action, headers
+        except asyncio.TimeoutError:
+            m.inc_verifier_attempt(provider)
+            m.inc_verifier_error(provider, "timeout")
+        except Exception as e:  # noqa: BLE001
+            m.inc_verifier_attempt(provider)
+            kind = (
+                "status_5xx"
+                if 500 <= getattr(e, "status_code", 0) < 600
+                else "other"
+            )
+            m.inc_verifier_error(provider, kind)
+
+        if remaining is not None and timeout_ms is not None:
+            remaining = max(0, remaining - timeout_ms)
+
+        if attempt < max_retries:
+            m.inc_verifier_retry(provider)
+            delay = backoff_ms + random.randint(0, max(0, jitter_ms))
+            if remaining is not None:
+                remaining = max(0, remaining - delay)
+            await asyncio.sleep(delay / 1000.0)
+            continue
+        break
+
+    headers = {"X-Guardrail-Verifier": provider, "X-Guardrail-Mode": "fallback"}
+    return None, headers
 
 
 def _apply_hardened_override(current_action: str, hv_action: Optional[str]) -> str:
@@ -776,6 +839,14 @@ def _apply_hardened_override(current_action: str, hv_action: Optional[str]) -> s
         norm = "deny"
     if norm in {"allow", "deny"}:
         return norm
+    return current_action
+
+
+# Apply configured fallback when hardened verifier fails
+def _apply_hardened_error_fallback(current_action: str) -> str:
+    fb = error_fallback_action()
+    if fb in {"allow", "deny", "clarify"}:
+        return fb
     return current_action
 
 
@@ -970,6 +1041,8 @@ async def guardrail_evaluate(request: Request):
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
     action = _apply_hardened_override(action, hv_action)
+    if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
+        action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
     if hv_headers:
@@ -1116,6 +1189,8 @@ async def guardrail_evaluate_multipart(request: Request):
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
     action = _apply_hardened_override(action, hv_action)
+    if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
+        action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
     if hv_headers:
@@ -1218,6 +1293,8 @@ async def guardrail_egress(request: Request):
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
     action = _apply_hardened_override(action, hv_action)
+    if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
+        action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
     if hv_headers:

@@ -177,6 +177,19 @@ guardrail_verifier_latency_seconds: HistogramLike = _mk_histogram(
     ["verifier"],
 )
 
+# Attempts and retries by provider
+guardrail_verifier_attempt_total: CounterLike = _mk_counter(
+    "guardrail_verifier_attempt_total",
+    "Verifier attempt totals by provider.",
+    ["verifier"],
+)
+
+guardrail_verifier_retry_total: CounterLike = _mk_counter(
+    "guardrail_verifier_retry_total",
+    "Verifier retry totals by provider.",
+    ["verifier"],
+)
+
 # Errors by provider and kind (timeout/error/etc.)
 guardrail_verifier_provider_errors_total: CounterLike = _mk_counter(
     "guardrail_verifier_provider_errors_total",
@@ -335,10 +348,23 @@ def observe_verifier_latency(verifier: str, seconds: float) -> None:
     guardrail_verifier_latency_seconds.labels(str(verifier or "unknown")).observe(float(seconds))
 
 
-def inc_verifier_provider_error(verifier: str, kind: str) -> None:
+def inc_verifier_attempt(verifier: str) -> None:
+    guardrail_verifier_attempt_total.labels(str(verifier or "unknown")).inc()
+
+
+def inc_verifier_retry(verifier: str) -> None:
+    guardrail_verifier_retry_total.labels(str(verifier or "unknown")).inc()
+
+
+def inc_verifier_error(verifier: str, kind: str) -> None:
     guardrail_verifier_provider_errors_total.labels(
         str(verifier or "unknown"), str(kind or "error")
     ).inc()
+
+
+# Backwards compatibility
+def inc_verifier_provider_error(verifier: str, kind: str) -> None:
+    inc_verifier_error(verifier, kind)
 
 
 def inc_verifier_breaker_open(verifier: str) -> None:
