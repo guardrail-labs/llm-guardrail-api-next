@@ -1,21 +1,43 @@
 {
   "title": "Guardrail Overview",
+  "annotations": [
+    {"name": "Alerts", "datasource": "Prometheus Alertmanager"}
+  ],
+  "links": [
+    {
+      "title": "Runbook",
+      "url": "https://example.com/ops/runbook/guardrail_oncall.md"
+    }
+  ],
   "panels": [
+    {
+      "title": "Fallback ratio (5m)",
+      "type": "stat",
+      "targets": [{"expr": "guardrail:verifier_fallback_ratio"}]
+    },
+    {
+      "title": "Deny ratio (5m)",
+      "type": "stat",
+      "targets": [{"expr": "guardrail:deny_ratio"}]
+    },
+    {
+      "title": "Redactions per 1k req",
+      "type": "stat",
+      "targets": [
+        {"expr": "guardrail:redactions_per_1k"}
+      ]
+    },
+    {
+      "title": "Verifier latency p95",
+      "type": "stat",
+      "targets": [{"expr": "guardrail:verifier_p95"}]
+    },
     {
       "title": "Decisions by family",
       "type": "graph",
       "stack": true,
       "targets": [
         {"expr": "sum by (family) (rate(guardrail_decisions_total[5m]))"}
-      ]
-    },
-    {
-      "title": "Redactions per 1k req",
-      "type": "stat",
-      "targets": [
-        {
-          "expr": "1000 * sum(rate(guardrail_redactions_total[5m])) / sum(rate(guardrail_requests_total[5m]))"
-        }
       ]
     },
     {
@@ -40,39 +62,25 @@
       ]
     },
     {
-      "title": "Verifier latency p95",
+      "title": "Verifier latency p95 heatmap",
       "type": "heatmap",
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))"
-        }
-      ]
+      "targets": [{"expr": "guardrail:verifier_p95"}]
     },
     {
       "title": "Verifier latency p50",
       "type": "heatmap",
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))"
-        }
-      ]
+      "targets": [{"expr": "guardrail:verifier_p50"}]
     },
     {
       "title": "Verifier latency p99",
       "type": "heatmap",
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.99, sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))"
-        }
-      ]
+      "targets": [{"expr": "guardrail:verifier_p99"}]
     },
     {
       "title": "Verifier fallback rate",
       "type": "graph",
       "targets": [
-        {
-          "expr": "sum(rate(guardrail_verifier_mode_total{mode=\"fallback\"}[5m])) / sum(rate(guardrail_verifier_mode_total[5m]))"
-        }
+        {"expr": "guardrail:verifier_fallback_ratio"}
       ]
     },
     {

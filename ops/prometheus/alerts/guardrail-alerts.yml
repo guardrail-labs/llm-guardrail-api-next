@@ -1,0 +1,64 @@
+groups:
+  - name: guardrail
+    rules:
+      - alert: GuardrailVerifierFallbackBurnRateWarning
+        expr: |
+          (guardrail:verifier_fallback_ratio_30m > 2 * 0.05)
+            and (guardrail:verifier_fallback_ratio_6h > 0.05)
+            and (guardrail:requests_rps > 0)
+        for: 30m
+        labels:
+          service: guardrail
+          severity: warning
+        annotations:
+          summary: Verifier fallback ratio burn-rate warning
+          runbook_url: https://example.com/ops/runbook/guardrail_oncall.md
+
+      - alert: GuardrailVerifierFallbackBurnRateCritical
+        expr: |
+          (guardrail:verifier_fallback_ratio > 4 * 0.05)
+            and (guardrail:verifier_fallback_ratio_1h > 0.05)
+            and (guardrail:requests_rps > 0)
+        for: 5m
+        labels:
+          service: guardrail
+          severity: critical
+        annotations:
+          summary: Verifier fallback ratio burn-rate critical
+          runbook_url: https://example.com/ops/runbook/guardrail_oncall.md
+
+      - alert: GuardrailDecisionDenySpike
+        expr: |
+          guardrail:deny_ratio > 0.25
+            and (guardrail:requests_rps > 0)
+        for: 15m
+        labels:
+          service: guardrail
+          severity: critical
+        annotations:
+          summary: Decision deny ratio spike
+          runbook_url: https://example.com/ops/runbook/guardrail_oncall.md
+
+      - alert: GuardrailRedactionsAnomaly
+        expr: |
+          guardrail:redactions_per_1k > 100
+            and (guardrail:requests_rps > 0)
+        for: 10m
+        labels:
+          service: guardrail
+          severity: warning
+        annotations:
+          summary: Redactions per 1k requests elevated
+          runbook_url: https://example.com/ops/runbook/guardrail_oncall.md
+
+      - alert: GuardrailVerifierLatencyHigh
+        expr: |
+          guardrail:verifier_p95 > 350
+            and (guardrail:requests_rps > 0)
+        for: 15m
+        labels:
+          service: guardrail
+          severity: warning
+        annotations:
+          summary: Verifier latency p95 high
+          runbook_url: https://example.com/ops/runbook/guardrail_oncall.md
