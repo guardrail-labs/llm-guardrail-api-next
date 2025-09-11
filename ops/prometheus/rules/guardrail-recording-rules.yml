@@ -12,6 +12,21 @@ groups:
       - record: guardrail:verifier_fallback_ratio
         expr: sum(rate(guardrail_verifier_mode_total{mode="fallback"}[5m])) /
           sum(rate(guardrail_verifier_mode_total[5m]))
-      - record: guardrail:verifier_latency_p95
+      - record: guardrail:verifier_p95
         expr: histogram_quantile(0.95,
           sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))
+      - record: guardrail:verifier_p50
+        expr: histogram_quantile(0.50,
+          sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))
+      - record: guardrail:verifier_p99
+        expr: histogram_quantile(0.99,
+          sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))
+      - record: guardrail:verifier_fallback_ratio_30m
+        expr: sum(rate(guardrail_verifier_mode_total{mode="fallback"}[30m])) /
+          sum(rate(guardrail_verifier_mode_total[30m]))
+      - record: guardrail:verifier_fallback_ratio_1h
+        expr: sum(rate(guardrail_verifier_mode_total{mode="fallback"}[1h])) /
+          sum(rate(guardrail_verifier_mode_total[1h]))
+      - record: guardrail:verifier_fallback_ratio_6h
+        expr: sum(rate(guardrail_verifier_mode_total{mode="fallback"}[6h])) /
+          sum(rate(guardrail_verifier_mode_total[6h]))
