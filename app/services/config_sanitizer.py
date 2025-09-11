@@ -12,10 +12,7 @@ def _from_runtime_flags(name: str) -> Optional[str]:
     except Exception:
         return None
     try:
-        store = getattr(rf, "_STORE", {})
-        if name not in store:
-            return None
-        v = rf.get(name)  # type: ignore[no-redef]
+        v = rf.get(name)
     except Exception:
         return None
     if v is None:
