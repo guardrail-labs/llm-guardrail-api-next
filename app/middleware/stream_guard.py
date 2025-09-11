@@ -1,48 +1,49 @@
 from __future__ import annotations
 
 import re
-from typing import AsyncIterator, Iterable, List, Optional, Tuple, Union, Pattern, cast
-
-# Streaming egress guard:
-# - Scans/redacts as chunks stream.
-# - Optionally denies on private key envelope.
-# - Handles patterns that span chunk boundaries via a tail lookback buffer.
-#
-# IMPORTANT FIX:
-# If lookback == 0, we now "emit everything" immediately (subject to flush_min),
-# rather than slicing with -0 which previously buffered the entire stream.
+from typing import (
+    AsyncIterator,
+    List,
+    Optional,
+    Pattern,
+    Tuple,
+    Union,
+    cast,
+)
 
 StrOrBytes = Union[str, bytes]
 PatTriplet = Tuple[Pattern[str], str, str]  # (regex, tag, replacement)
 
 # Private key envelope across boundaries (deny if configured)
 _PRIV_KEY_ENV_RE = re.compile(
-    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
+    r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+    re.S,
 )
 
-# -------- Optional deps (metrics, runtime flags, redaction patterns) ----------
 
-def _noop(*_args, **_kwargs) -> None:  # ruff: disable=ARG001
+# ----------------------------- Optional imports ------------------------------
+
+def _noop(*_a: object, **_k: object) -> None:
     return None
 
 
 try:
-    # Metrics module is expected in this project.
-    from app.telemetry import metrics as m  # type: ignore[attr-defined]
+    from app.telemetry import metrics as m
 except Exception:  # pragma: no cover
     class _M:
         inc_redaction = staticmethod(_noop)
         inc_stream_guard_chunks = staticmethod(_noop)
         inc_stream_guard_denied = staticmethod(_noop)
+
     m = _M()  # type: ignore[assignment]
 
 
 def _get_flag(name: str, default: int | bool) -> int | bool:
+    """Read a runtime flag if available, else return default."""
     try:
-        from app.services import runtime_flags as rf  # type: ignore[attr-defined]
+        from app.services import runtime_flags as rf
 
-        # runtime_flags exposes get(name) -> value (per Codex card F)
-        val = getattr(rf, "get")(name)  # type: ignore[misc]
+        val = getattr(rf, "get")(name)
         if val is None:
             return default
         return cast(int | bool, val)
@@ -53,25 +54,32 @@ def _get_flag(name: str, default: int | bool) -> int | bool:
 def _load_stream_patterns() -> List[PatTriplet]:
     """
     Pull the redaction patterns from policy so streaming behavior matches
-    non-streaming behavior. Falls back to a conservative subset if import fails.
+    non-streaming behavior. Fallback is a conservative subset.
     """
     try:
-        from app.services.policy import (  # type: ignore[attr-defined]
-            get_stream_redaction_patterns,
-        )
+        from app.services.policy import get_stream_redaction_patterns
 
-        return list(get_stream_redaction_patterns())  # type: ignore[return-value]
+        return list(get_stream_redaction_patterns())
     except Exception:  # pragma: no cover
-        # Fallback minimal set (won't be hit in normal deployments).
         return [
-            (re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"), "secrets:openai_key",
-             "[REDACTED:OPENAI_KEY]"),
-            (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "secrets:aws_key",
-             "[REDACTED:AWS_ACCESS_KEY_ID]"),
-            (re.compile(
-                r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"
-             ),
-             "secrets:jwt", "[REDACTED:JWT]"),
+            (
+                re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
+                "secrets:openai_key",
+                "[REDACTED:OPENAI_KEY]",
+            ),
+            (
+                re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+                "secrets:aws_key",
+                "[REDACTED:AWS_ACCESS_KEY_ID]",
+            ),
+            (
+                re.compile(
+                    r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
+                    r"\.[A-Za-z0-9_\-]{10,}\b"
+                ),
+                "secrets:jwt",
+                "[REDACTED:JWT]",
+            ),
         ]
 
 
@@ -79,11 +87,19 @@ def _load_stream_patterns() -> List[PatTriplet]:
 
 
 class StreamingGuard:
+    """
+    Wrap an async iterator of str/bytes and perform redactions as data streams.
+    If configured, deny immediately on private key envelopes.
+
+    NOTE: When lookback == 0, we emit everything immediately (subject to
+    flush_min_bytes) instead of slicing with -0, which would buffer the stream.
+    """
+
     def __init__(
         self,
         source: AsyncIterator[StrOrBytes],
-        *,
         patterns: Optional[List[PatTriplet]] = None,
+        *,
         lookback_chars: Optional[int] = None,
         flush_min_bytes: Optional[int] = None,
         deny_on_private_key: Optional[bool] = None,
@@ -113,7 +129,9 @@ class StreamingGuard:
         self._block_yielded = False
         self._redactions = 0
 
-    # -------------------------- Public properties --------------------------
+    # Back-compat: allow positional `patterns` in tests
+    # (Tests do: StreamingGuard(gen(), policy.get_stream_redaction_patterns()))
+    # Already supported by second positional arg.
 
     @property
     def redactions(self) -> int:
@@ -123,42 +141,40 @@ class StreamingGuard:
     def denied(self) -> bool:
         return self._denied
 
-    # -------------------------- Async iterator API -------------------------
-
     def __aiter__(self) -> "StreamingGuard":
         return self
 
-    async def __anext__(self) -> bytes:
+    async def __anext__(self) -> str:
         # If previously denied, yield the block token once and then stop.
         if self._denied and not self._block_yielded:
             self._block_yielded = True
             m.inc_stream_guard_denied()
-            return b"[STREAM BLOCKED]"
+            return "[STREAM BLOCKED]"
 
-        # If underlying source ended, flush remaining tail and stop.
+        # If source ended, flush remaining tail and stop.
         if self._done:
             if self._tail:
                 out = self._tail
                 self._tail = ""
-                return out.encode(self._encoding)
+                return out
             raise StopAsyncIteration
 
-        # Pull chunks until we have something to emit or source ends.
+        # Pull until we have something to emit or source ends.
         while True:
             try:
-                chunk = await self._ait.__anext__()  # type: ignore[misc]
+                # Python 3.11: anext() builtin works with async iterators
+                chunk = await anext(self._ait)  # type: ignore[name-defined]
             except StopAsyncIteration:
                 self._done = True
-                # Final redaction pass before flushing remainder.
                 self._apply_redactions()
                 if self._denied and not self._block_yielded:
                     self._block_yielded = True
                     m.inc_stream_guard_denied()
-                    return b"[STREAM BLOCKED]"
+                    return "[STREAM BLOCKED]"
                 if self._tail:
                     out = self._tail
                     self._tail = ""
-                    return out.encode(self._encoding)
+                    return out
                 raise
 
             m.inc_stream_guard_chunks()
@@ -170,20 +186,18 @@ class StreamingGuard:
             if self._denied and not self._block_yielded:
                 self._block_yielded = True
                 m.inc_stream_guard_denied()
-                return b"[STREAM BLOCKED]"
+                return "[STREAM BLOCKED]"
 
             # ---- EMIT LOGIC (handles lookback == 0 correctly) ----
             if self._lookback <= 0:
                 # Emit everything we have (subject to flush_min), keep no tail.
                 if self._flush_min:
                     if len(self._tail.encode(self._encoding)) < self._flush_min:
-                        # Not enough to flush yet; keep accumulating.
                         continue
-                out = self._tail
+                out_all = self._tail
                 self._tail = ""
-                if out:
-                    return out.encode(self._encoding)
-                # If empty (e.g., zero-length chunk), continue to next chunk.
+                if out_all:
+                    return out_all
                 continue
 
             # Normal case: only emit when buffer exceeds lookback window.
@@ -192,13 +206,12 @@ class StreamingGuard:
                 remain = self._tail[-self._lookback :]
                 if self._flush_min:
                     if len(emit.encode(self._encoding)) < self._flush_min:
-                        # Accumulate until we meet the flush threshold.
                         self._tail = emit + remain
                         continue
                 self._tail = remain
                 if emit:
-                    return emit.encode(self._encoding)
-                # If emit empty (shouldn't happen here), keep reading.
+                    return emit
+                # Otherwise keep reading.
 
     # ------------------------------- Helpers --------------------------------
 
@@ -208,7 +221,6 @@ class StreamingGuard:
             self._denied = True
             return
 
-        # Apply replacements; count matches; keep order stable.
         for rx, tag, repl in self._patterns:
             new_text, n = rx.subn(repl, self._tail)
             if n:
@@ -220,12 +232,10 @@ class StreamingGuard:
                     pass
 
 
-# ----------------------------- Convenience API -------------------------------
-
 def wrap_stream(
     source: AsyncIterator[StrOrBytes],
-    *,
     patterns: Optional[List[PatTriplet]] = None,
+    *,
     lookback_chars: Optional[int] = None,
     flush_min_bytes: Optional[int] = None,
     deny_on_private_key: Optional[bool] = None,
@@ -237,7 +247,7 @@ def wrap_stream(
     """
     return StreamingGuard(
         source,
-        patterns=patterns,
+        patterns,
         lookback_chars=lookback_chars,
         flush_min_bytes=flush_min_bytes,
         deny_on_private_key=deny_on_private_key,
