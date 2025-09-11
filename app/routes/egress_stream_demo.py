@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import AsyncIterator, List, Tuple
+from typing import AsyncIterator, List
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
@@ -37,9 +37,12 @@ def _will_deny(text: str) -> bool:
     import re
 
     env_re = re.compile(
-        r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----", re.S
+        r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
+        re.S,
     )
-    marker_re = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
+    marker_re = re.compile(
+        r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
+    )
     return bool(env_re.search(text) or marker_re.search(text))
 
 
@@ -65,7 +68,11 @@ async def demo_egress_stream(
     if enabled:
         # Pre-count redactions to surface a header (tests expect this).
         redactions = _precount_redactions(text, patterns)
-        deny_hdr = "1" if (_will_deny(text) and bool(rf.get("stream_guard_deny_on_private_key") or True)) else "0"
+
+        deny_flag_val = rf.get("stream_guard_deny_on_private_key")
+        deny_enabled = True if deny_flag_val is None else bool(deny_flag_val)
+        deny_hdr = "1" if (_will_deny(text) and deny_enabled) else "0"
+
         headers.update(
             {
                 "X-Guardrail-Streaming": "1",
@@ -79,4 +86,6 @@ async def demo_egress_stream(
         headers["X-Guardrail-Streaming"] = "0"
         body = _to_bytes(src, encoding=encoding)
 
-    return StreamingResponse(body, headers=headers, media_type="application/octet-stream")
+    return StreamingResponse(
+        body, headers=headers, media_type="application/octet-stream"
+    )
