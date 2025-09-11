@@ -560,7 +560,7 @@ async def _handle_upload_to_text(
     obj: UploadFile,
     decode_pdf: bool,
     mods: Dict[str, int],
-) -> Tuple[str, str]:
+) -> Tuple[str, str, object | None]:
     from app.services.detectors import pdf_hidden as _pdf_hidden
 
     name = getattr(obj, "filename", None) or "file"
@@ -577,19 +577,19 @@ async def _handle_upload_to_text(
                 text = _ocr.extract_from_image(raw)
                 if text and text.strip():
                     _maybe_metric("inc_ocr_extraction", "image", "ok")
-                    return text, name
+                    return text, name, None
                 _maybe_metric("inc_ocr_extraction", "image", "empty")
-            return f"[IMAGE:{name}]", name
+            return f"[IMAGE:{name}]", name, None
 
         # Audio
         if ctype.startswith("audio/") or ext in {"wav", "mp3", "m4a", "ogg"}:
             mods["audio"] = mods.get("audio", 0) + 1
-            return f"[AUDIO:{name}]", name
+            return f"[AUDIO:{name}]", name, None
 
         # Plain text
         if ctype == "text/plain" or ext == "txt":
             raw = await obj.read()
-            return raw.decode("utf-8", errors="ignore"), name
+            return raw.decode("utf-8", errors="ignore"), name, None
 
         # HTML (hidden-content detector)
         if ctype == "text/html" or ext in {"html", "htm"}:
@@ -619,42 +619,25 @@ async def _handle_upload_to_text(
                     )
 
                 mods["file"] = mods.get("file", 0) + 1
-                return hidden_block or f"[FILE:{name}]", name
+                return hidden_block or f"[FILE:{name}]", name, None
             except Exception:
                 mods["file"] = mods.get("file", 0) + 1
-                return f"[FILE:{name}]", name
+                return f"[FILE:{name}]", name, None
 
-        # DOCX (hidden-text detector)
+        # DOCX (hidden-text + jailbreak detector)
         if ctype == DOCX_MIME or ext == "docx":
             raw = await obj.read()
             try:
-                # Import the function directly to keep mypy happy
-                from app.services.detectors.docx_hidden import (
-                    detect_hidden_text as _detect_docx_hidden,
+                from app.services.detectors.docx_jb import (
+                    detect_and_sanitize_docx as _detect_docx,
                 )
 
-                hidden = _detect_docx_hidden(raw)
-
-                hidden_block = ""
-                if hidden.get("found"):
-                    reasons_list = cast(List[str], hidden.get("reasons") or [])
-                    samples_list = cast(List[str], hidden.get("samples") or [])
-
-                    for r in reasons_list:
-                        _maybe_metric("inc_docx_hidden", str(r))
-
-                    reasons = ",".join(reasons_list) or "detected"
-                    joined = " ".join(samples_list)[:500]
-                    hidden_block = (
-                        f"\n[HIDDEN_DOCX_DETECTED:{reasons}]\n{joined}\n"
-                        "[HIDDEN_DOCX_END]\n"
-                    )
-
+                res = _detect_docx(raw)
                 mods["file"] = mods.get("file", 0) + 1
-                return hidden_block or f"[FILE:{name}]", name
+                return res.sanitized_text or f"[FILE:{name}]", name, res
             except Exception:
                 mods["file"] = mods.get("file", 0) + 1
-                return f"[FILE:{name}]", name
+                return f"[FILE:{name}]", name, None
 
         # PDF
         if ctype == "application/pdf" or ext == "pdf":
@@ -684,19 +667,19 @@ async def _handle_upload_to_text(
                         outcome if outcome in {"textlayer", "fallback"} else "ok",
                     )
                     mods["file"] = mods.get("file", 0) + 1
-                    return (text + hidden_block) if hidden_block else text, name
+                    return (text + hidden_block) if hidden_block else text, name, None
                 _maybe_metric("inc_ocr_extraction", "pdf", outcome if outcome else "empty")
 
             if decode_pdf:
                 mods["file"] = mods.get("file", 0) + 1
-                return raw.decode("utf-8", errors="ignore") + hidden_block, name
+                return raw.decode("utf-8", errors="ignore") + hidden_block, name, None
 
             mods["file"] = mods.get("file", 0) + 1
-            return f"[FILE:{name}]", name
+            return f"[FILE:{name}]", name, None
 
         # Unknown file type -> generic marker
         mods["file"] = mods.get("file", 0) + 1
-        return f"[FILE:{name}]", name
+        return f"[FILE:{name}]", name, None
 
     except Exception:
         try:
@@ -708,13 +691,13 @@ async def _handle_upload_to_text(
         except Exception:
             pass
         mods["file"] = mods.get("file", 0) + 1
-        return f"[FILE:{name}]", name
+        return f"[FILE:{name}]", name, None
 
 
 async def _read_form_and_merge(
     request: Request,
     decode_pdf: bool,
-) -> Tuple[str, Dict[str, int], List[Dict[str, str]]]:
+) -> Tuple[str, Dict[str, int], List[Dict[str, str]], List[object]]:
     """
     Merge 'text' plus files from multipart form data. Iterate over
     form.multi_items() to capture *all* file fields. Any file-like value
@@ -724,6 +707,7 @@ async def _read_form_and_merge(
     combined: List[str] = []
     mods: Dict[str, int] = {}
     sources: List[Dict[str, str]] = []
+    docx_res: List[object] = []
 
     base = str(form.get("text") or "")
     if base:
@@ -739,9 +723,11 @@ async def _read_form_and_merge(
             if vid in seen:
                 return
             seen.add(vid)
-            frag, fname = await _handle_upload_to_text(val, decode_pdf, mods)
+            frag, fname, dres = await _handle_upload_to_text(val, decode_pdf, mods)
             combined.append(frag)
             sources.append({"filename": fname})
+            if dres is not None:
+                docx_res.append(dres)
 
     try:
         for _, v in form.multi_items():
@@ -751,7 +737,7 @@ async def _read_form_and_merge(
             await _maybe_add(v)
 
     text = "\n".join([s for s in combined if s])
-    return text, mods, sources
+    return text, mods, sources, docx_res
 
 
 # ------------------------------- hardened verifier hook -------------------------------
@@ -896,7 +882,7 @@ async def guardrail_evaluate(request: Request):
         combined_text = str(payload.get("text") or "")
         explicit_request_id = str(payload.get("request_id") or "") or None
     else:
-        combined_text, mods, sources = await _read_form_and_merge(
+        combined_text, mods, sources, _docx_unused = await _read_form_and_merge(
             request, decode_pdf=False
         )
 
@@ -1028,7 +1014,7 @@ async def guardrail_evaluate_multipart(request: Request):
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
 
-    combined_text, mods, sources = await _read_form_and_merge(
+    combined_text, mods, sources, docx_results = await _read_form_and_merge(
         request, decode_pdf=True
     )
     request_id = _req_id(None)
@@ -1051,6 +1037,20 @@ async def guardrail_evaluate_multipart(request: Request):
 
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
+    docx_hidden_reasons: List[str] = []
+    docx_hidden_samples: List[str] = []
+    for dres in docx_results:
+        dbg_info = getattr(dres, "debug", {}) or {}
+        h_reasons = cast(List[str], dbg_info.get("hidden_reasons") or [])
+        h_samples = cast(List[str], dbg_info.get("hidden_samples") or [])
+        if h_reasons:
+            action = "deny"
+            docx_hidden_reasons.extend(h_reasons)
+            docx_hidden_samples.extend(h_samples)
+            for r in h_reasons:
+                _maybe_metric("inc_docx_hidden", str(r))
+                policy_hits.setdefault(str(r), []).append("<docx>")
+
     _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
     dbg_sources: List[SourceDebug] = []
@@ -1082,6 +1082,9 @@ async def guardrail_evaluate_multipart(request: Request):
                 )
             )
         dbg["sources"] = [s.model_dump() for s in dbg_sources]
+        if docx_hidden_reasons:
+            dbg["hidden_reasons"] = docx_hidden_reasons
+            dbg["hidden_samples"] = docx_hidden_samples[:5]
 
     # Always apply injection default first (before sampling gate).
     base_decision: Dict[str, Any] = {"action": action, "rule_hits": policy_hits}

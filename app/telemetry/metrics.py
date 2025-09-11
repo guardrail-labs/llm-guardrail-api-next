@@ -604,3 +604,26 @@ def add_pdf_hidden_bytes(n: int) -> None:
     except Exception:
         v = 0.0
     guardrail_pdf_hidden_bytes_total.inc(v)
+
+# HTML hidden-text telemetry
+guardrail_html_hidden_total: CounterLike = _mk_counter(
+    "guardrail_html_hidden_total",
+    "Hidden text detections in HTML.",
+    labels=["reason"],
+)
+
+
+def inc_html_hidden(reason: str) -> None:
+    guardrail_html_hidden_total.labels(str(reason or "unknown")).inc()
+
+
+# DOCX hidden-text telemetry
+guardrail_docx_hidden_total: CounterLike = _mk_counter(
+    "guardrail_docx_hidden_total",
+    "Hidden text detections in DOCX files.",
+    labels=["reason"],
+)
+
+
+def inc_docx_hidden(reason: str) -> None:
+    guardrail_docx_hidden_total.labels(str(reason or "unknown")).inc()
