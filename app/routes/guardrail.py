@@ -27,6 +27,7 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.services import runtime_flags
+# --- BEGIN PR-C wire-up block ---
 from app.services.config_sanitizer import (
     get_verifier_latency_budget_ms,
     get_verifier_retry_budget,
@@ -35,6 +36,11 @@ from app.services.config_sanitizer import (
 from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
+
+# Normalized config values (module-level; safe to import elsewhere)
+VERIFIER_LATENCY_BUDGET_MS = get_verifier_latency_budget_ms()
+VERIFIER_SAMPLING_PCT = get_verifier_sampling_pct()
+# --- END PR-C wire-up block ---
 
 # NEW: hardened verifier integration (safe, optional) with proper Optional typing
 HardenedVerifyFn = Callable[..., Awaitable[Tuple[Optional[str], Dict[str, str]]]]
@@ -400,10 +406,9 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
 
 
 def _verifier_sampling_pct() -> float:
-    try:
-        return float(get_verifier_sampling_pct())
-    except Exception:
-        return 0.0
+    if VERIFIER_SAMPLING_PCT != 0.0:
+        return VERIFIER_SAMPLING_PCT
+    return get_verifier_sampling_pct()
 
 
 def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
@@ -912,7 +917,9 @@ async def _maybe_hardened(
         return None, {}
 
     # Total time budget (ms) — shared across attempts. Invalid or missing → unset.
-    total_budget_ms = get_verifier_latency_budget_ms()
+    total_budget_ms = VERIFIER_LATENCY_BUDGET_MS
+    if total_budget_ms is None:
+        total_budget_ms = get_verifier_latency_budget_ms()
 
     # Retry budget: number of retries (attempts = retries + 1).
     retry_budget = get_verifier_retry_budget()
