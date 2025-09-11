@@ -89,10 +89,8 @@ def test_retry_then_live_override(monkeypatch):
             raise asyncio.TimeoutError
         return "deny", {"X-Guardrail-Verifier": "p"}
 
-    monkeypatch.setenv("VERIFIER_MAX_RETRIES", "2")
+    monkeypatch.setenv("VERIFIER_RETRY_BUDGET", "1")
     monkeypatch.setenv("VERIFIER_LATENCY_BUDGET_MS", "200")
-    monkeypatch.setenv("VERIFIER_RETRY_BACKOFF_MS", "0")
-    monkeypatch.setenv("VERIFIER_RETRY_JITTER_MS", "0")
     monkeypatch.setattr("app.routes.guardrail._maybe_hardened_verify", _fake)
 
     action, headers = asyncio.run(
@@ -101,7 +99,7 @@ def test_retry_then_live_override(monkeypatch):
         )
     )
     assert action == "deny"
-    assert headers.get("X-Guardrail-Mode") == "live"
+    assert headers.get("X-Guardrail-Verifier-Mode") == "live"
     assert len(calls) == 2 and calls[0] >= calls[1]
 
 
@@ -112,10 +110,8 @@ def test_all_timeouts_apply_error_fallback(monkeypatch):
         calls.append(kwargs.get("latency_budget_ms"))
         raise asyncio.TimeoutError
 
-    monkeypatch.setenv("VERIFIER_MAX_RETRIES", "2")
+    monkeypatch.setenv("VERIFIER_RETRY_BUDGET", "1")
     monkeypatch.setenv("VERIFIER_LATENCY_BUDGET_MS", "200")
-    monkeypatch.setenv("VERIFIER_RETRY_BACKOFF_MS", "0")
-    monkeypatch.setenv("VERIFIER_RETRY_JITTER_MS", "0")
     monkeypatch.setenv("VERIFIER_ERROR_FALLBACK", "deny")
     monkeypatch.setattr("app.routes.guardrail._maybe_hardened_verify", _fake)
 
@@ -125,9 +121,9 @@ def test_all_timeouts_apply_error_fallback(monkeypatch):
         )
     )
     assert hv_action is None
-    assert hv_headers.get("X-Guardrail-Mode") == "fallback"
+    assert hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
     base = _apply_hardened_override("allow", hv_action)
-    if hv_headers.get("X-Guardrail-Mode") == "fallback":
+    if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
         base = _apply_hardened_error_fallback(base)
     assert base == "deny"
     assert len(calls) == 2 and calls[0] >= calls[1]
@@ -140,7 +136,7 @@ def test_unsafe_no_retry(monkeypatch):
         calls.append(kwargs.get("latency_budget_ms"))
         return "deny", {"X-Guardrail-Verifier": "p"}
 
-    monkeypatch.setenv("VERIFIER_MAX_RETRIES", "3")
+    monkeypatch.setenv("VERIFIER_RETRY_BUDGET", "2")
     monkeypatch.setattr("app.routes.guardrail._maybe_hardened_verify", _fake)
 
     action, headers = asyncio.run(
@@ -149,5 +145,5 @@ def test_unsafe_no_retry(monkeypatch):
         )
     )
     assert action == "deny"
-    assert headers.get("X-Guardrail-Mode") == "live"
+    assert headers.get("X-Guardrail-Verifier-Mode") == "live"
     assert len(calls) == 1
