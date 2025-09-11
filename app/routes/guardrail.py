@@ -6,7 +6,6 @@ import random
 import re
 import uuid
 import time
-import os
 from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Header, Request, UploadFile
@@ -28,6 +27,11 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.services import runtime_flags
+from app.services.config_sanitizer import (
+    get_verifier_latency_budget_ms,
+    get_verifier_retry_budget,
+    get_verifier_sampling_pct,
+)
 from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
@@ -397,7 +401,7 @@ def _debug_requested(x_debug: Optional[str]) -> bool:
 
 def _verifier_sampling_pct() -> float:
     try:
-        return float(runtime_flags.get("verifier_sampling_pct"))
+        return float(get_verifier_sampling_pct())
     except Exception:
         return 0.0
 
@@ -907,22 +911,11 @@ async def _maybe_hardened(
     if _maybe_hardened_verify is None:
         return None, {}
 
-    # Total time budget (ms) — shared across attempts. Invalid or non-positive -> unset.
-    lb_raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
-    total_budget_ms: Optional[int] = None
-    if lb_raw is not None:
-        try:
-            ms_val = float(str(lb_raw).strip())
-            if ms_val > 0:
-                total_budget_ms = int(ms_val)
-        except Exception:
-            total_budget_ms = None
+    # Total time budget (ms) — shared across attempts. Invalid or missing → unset.
+    total_budget_ms = get_verifier_latency_budget_ms()
 
     # Retry budget: number of retries (attempts = retries + 1).
-    try:
-        retry_budget = int(os.getenv("VERIFIER_RETRY_BUDGET", "0"))
-    except Exception:
-        retry_budget = 0
+    retry_budget = get_verifier_retry_budget()
     attempts = max(1, retry_budget + 1)
 
     deadline = (
