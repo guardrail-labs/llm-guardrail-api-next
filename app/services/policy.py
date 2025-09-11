@@ -470,6 +470,15 @@ def evaluate_and_apply(text: str) -> Dict[str, Any]:
 # Secrets (common)
 _OPENAI_KEY = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
 _AWS_ACCESS_KEY = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+_GITHUB_PAT = re.compile(r"\bghp_[A-Za-z0-9]{36}\b")
+_SLACK_TOKEN = re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,48}\b")
+_GOOGLE_API_KEY = re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")
+_STRIPE_SECRET = re.compile(r"\bsk_(?:live|test)_[0-9a-zA-Z]{24}\b")
+_STRIPE_PUB = re.compile(r"\bpk_(?:live|test)_[0-9a-zA-Z]{24}\b")
+_JWT = re.compile(
+    r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"
+)
+_BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b")
 _PRIV_KEY_BOUNDS = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
 
 # PII (lightweight patterns; we do not claim legal-grade recall)
@@ -487,6 +496,13 @@ _PROMPT_INJ = re.compile(
 REDACTION_MAP: Dict[str, str] = {
     "secrets:openai_key": "[REDACTED:OPENAI_KEY]",
     "secrets:aws_key": "[REDACTED:AWS_ACCESS_KEY_ID]",
+    "secrets:github_pat": "[REDACTED:GITHUB_PAT]",
+    "secrets:slack_token": "[REDACTED:SLACK_TOKEN]",
+    "secrets:google_api_key": "[REDACTED:GOOGLE_API_KEY]",
+    "secrets:stripe_secret": "[REDACTED:STRIPE_SECRET]",
+    "secrets:stripe_pub": "[REDACTED:STRIPE_PUBLISHABLE]",
+    "secrets:jwt": "[REDACTED:JWT]",
+    "secrets:bearer": "[REDACTED:BEARER]",
     "secrets:private_key_marker": "[REDACTED:PRIVATE_KEY]",
     "pi:email": "[REDACTED:EMAIL]",
     "pi:phone": "[REDACTED:PHONE]",
@@ -498,6 +514,29 @@ REDACTION_MAP: Dict[str, str] = {
 REDACTION_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
     (_OPENAI_KEY, "secrets:openai_key", REDACTION_MAP["secrets:openai_key"]),
     (_AWS_ACCESS_KEY, "secrets:aws_key", REDACTION_MAP["secrets:aws_key"]),
+    (_GITHUB_PAT, "secrets:github_pat", REDACTION_MAP["secrets:github_pat"]),
+    (
+        _SLACK_TOKEN,
+        "secrets:slack_token",
+        REDACTION_MAP["secrets:slack_token"],
+    ),
+    (
+        _GOOGLE_API_KEY,
+        "secrets:google_api_key",
+        REDACTION_MAP["secrets:google_api_key"],
+    ),
+    (
+        _STRIPE_SECRET,
+        "secrets:stripe_secret",
+        REDACTION_MAP["secrets:stripe_secret"],
+    ),
+    (
+        _STRIPE_PUB,
+        "secrets:stripe_pub",
+        REDACTION_MAP["secrets:stripe_pub"],
+    ),
+    (_JWT, "secrets:jwt", REDACTION_MAP["secrets:jwt"]),
+    (_BEARER, "secrets:bearer", REDACTION_MAP["secrets:bearer"]),
     (
         _PRIV_KEY_BOUNDS,
         "secrets:private_key_marker",

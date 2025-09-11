@@ -66,6 +66,15 @@ def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
 
 RE_SECRET = re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")
 RE_AWS = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+RE_GITHUB_PAT = re.compile(r"\bghp_[A-Za-z0-9]{36}\b")
+RE_SLACK_TOKEN = re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,48}\b")
+RE_GOOGLE_API_KEY = re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")
+RE_STRIPE_SECRET = re.compile(r"\bsk_(?:live|test)_[0-9a-zA-Z]{24}\b")
+RE_STRIPE_PUB = re.compile(r"\bpk_(?:live|test)_[0-9a-zA-Z]{24}\b")
+RE_JWT = re.compile(
+    r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"
+)
+RE_BEARER = re.compile(r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b")
 RE_PROMPT_INJ = re.compile(r"\bignore\s+previous\s+instructions\b", re.I)
 RE_SYSTEM_PROMPT = re.compile(r"\breveal\s+system\s+prompt\b", re.I)
 RE_DAN = re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I)
@@ -74,6 +83,7 @@ RE_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 RE_PHONE = re.compile(
     r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"
 )
+RE_SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 
 RE_PRIVATE_KEY_ENVELOPE = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
@@ -157,24 +167,6 @@ def _apply_redactions(
 
     original = text
 
-    matches = list(RE_EMAIL.finditer(original))
-    if matches:
-        redacted = RE_EMAIL.sub("[REDACTED:EMAIL]", redacted)
-        rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
-        for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
-            _maybe_metric("inc_redaction", "email")
-        redactions += len(matches)
-
-    matches = list(RE_PHONE.finditer(original))
-    if matches:
-        redacted = RE_PHONE.sub("[REDACTED:PHONE]", redacted)
-        rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
-        for m_ in matches:
-            spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
-            _maybe_metric("inc_redaction", "phone")
-        redactions += len(matches)
-
     matches = list(RE_SECRET.finditer(original))
     if matches:
         redacted = RE_SECRET.sub("[REDACTED:OPENAI_KEY]", redacted)
@@ -185,6 +177,7 @@ def _apply_redactions(
             )
             _maybe_metric("inc_redaction", "openai_key")
         redactions += len(matches)
+        original = redacted
 
     matches = list(RE_AWS.finditer(original))
     if matches:
@@ -201,6 +194,108 @@ def _apply_redactions(
             )
             _maybe_metric("inc_redaction", "aws_access_key_id")
         redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_GITHUB_PAT.finditer(original))
+    if matches:
+        redacted = RE_GITHUB_PAT.sub("[REDACTED:GITHUB_PAT]", redacted)
+        rule_hits.setdefault("secrets:github_pat", []).append(RE_GITHUB_PAT.pattern)
+        for m_ in matches:
+            spans.append(
+                (m_.start(), m_.end(), "[REDACTED:GITHUB_PAT]", "secrets:github_pat")
+            )
+            _maybe_metric("inc_redaction", "github_pat")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_SLACK_TOKEN.finditer(original))
+    if matches:
+        redacted = RE_SLACK_TOKEN.sub("[REDACTED:SLACK_TOKEN]", redacted)
+        rule_hits.setdefault("secrets:slack_token", []).append(RE_SLACK_TOKEN.pattern)
+        for m_ in matches:
+            spans.append(
+                (m_.start(), m_.end(), "[REDACTED:SLACK_TOKEN]", "secrets:slack_token")
+            )
+            _maybe_metric("inc_redaction", "slack_token")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_GOOGLE_API_KEY.finditer(original))
+    if matches:
+        redacted = RE_GOOGLE_API_KEY.sub("[REDACTED:GOOGLE_API_KEY]", redacted)
+        rule_hits.setdefault("secrets:google_api_key", []).append(
+            RE_GOOGLE_API_KEY.pattern
+        )
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:GOOGLE_API_KEY]",
+                    "secrets:google_api_key",
+                )
+            )
+            _maybe_metric("inc_redaction", "google_api_key")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_STRIPE_SECRET.finditer(original))
+    if matches:
+        redacted = RE_STRIPE_SECRET.sub("[REDACTED:STRIPE_SECRET]", redacted)
+        rule_hits.setdefault("secrets:stripe_secret", []).append(
+            RE_STRIPE_SECRET.pattern
+        )
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:STRIPE_SECRET]",
+                    "secrets:stripe_secret",
+                )
+            )
+            _maybe_metric("inc_redaction", "stripe_secret")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_STRIPE_PUB.finditer(original))
+    if matches:
+        redacted = RE_STRIPE_PUB.sub("[REDACTED:STRIPE_PUBLISHABLE]", redacted)
+        rule_hits.setdefault("secrets:stripe_pub", []).append(RE_STRIPE_PUB.pattern)
+        for m_ in matches:
+            spans.append(
+                (
+                    m_.start(),
+                    m_.end(),
+                    "[REDACTED:STRIPE_PUBLISHABLE]",
+                    "secrets:stripe_pub",
+                )
+            )
+            _maybe_metric("inc_redaction", "stripe_pub")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_JWT.finditer(original))
+    if matches:
+        redacted = RE_JWT.sub("[REDACTED:JWT]", redacted)
+        rule_hits.setdefault("secrets:jwt", []).append(RE_JWT.pattern)
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:JWT]", "secrets:jwt"))
+            _maybe_metric("inc_redaction", "jwt")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_BEARER.finditer(original))
+    if matches:
+        redacted = RE_BEARER.sub("[REDACTED:BEARER]", redacted)
+        rule_hits.setdefault("secrets:bearer", []).append(RE_BEARER.pattern)
+        for m_ in matches:
+            spans.append(
+                (m_.start(), m_.end(), "[REDACTED:BEARER]", "secrets:bearer")
+            )
+            _maybe_metric("inc_redaction", "bearer")
+        redactions += len(matches)
+        original = redacted
 
     matches = list(RE_PRIVATE_KEY_ENVELOPE.finditer(original))
     if matches:
@@ -218,6 +313,7 @@ def _apply_redactions(
                 )
             )
         redactions += len(matches)
+        original = redacted
 
     matches = list(RE_PRIVATE_KEY_MARKER.finditer(original))
     if matches:
@@ -235,6 +331,37 @@ def _apply_redactions(
                 )
             )
         redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_EMAIL.finditer(original))
+    if matches:
+        redacted = RE_EMAIL.sub("[REDACTED:EMAIL]", redacted)
+        rule_hits.setdefault("pii:email", []).append(RE_EMAIL.pattern)
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:EMAIL]", "pii:email"))
+            _maybe_metric("inc_redaction", "email")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_PHONE.finditer(original))
+    if matches:
+        redacted = RE_PHONE.sub("[REDACTED:PHONE]", redacted)
+        rule_hits.setdefault("pii:phone", []).append(RE_PHONE.pattern)
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:PHONE]", "pii:phone"))
+            _maybe_metric("inc_redaction", "phone")
+        redactions += len(matches)
+        original = redacted
+
+    matches = list(RE_SSN.finditer(original))
+    if matches:
+        redacted = RE_SSN.sub("[REDACTED:SSN]", redacted)
+        rule_hits.setdefault("pi:ssn", []).append(RE_SSN.pattern)
+        for m_ in matches:
+            spans.append((m_.start(), m_.end(), "[REDACTED:SSN]", "pi:ssn"))
+            _maybe_metric("inc_redaction", "ssn")
+        redactions += len(matches)
+        original = redacted
 
     matches = list(RE_PROMPT_INJ.finditer(original))
     if matches:
@@ -254,6 +381,7 @@ def _apply_redactions(
                 )
             )
         redactions += len(matches)
+        original = redacted
 
     _normalize_wildcards(rule_hits, is_deny=False)
     return redacted, rule_hits, redactions, spans
