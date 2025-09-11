@@ -47,6 +47,7 @@ except Exception:  # pragma: no cover
     def error_fallback_action() -> str:
         return "allow"
 
+
 router = APIRouter()
 
 # ------------------------- helpers & constants -------------------------
@@ -411,7 +412,9 @@ def _hits_trigger_verifier(hits: Dict[str, List[str]]) -> bool:
 # ------------------------------- responses -------------------------------
 
 
-def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dict[str, str]:
+def _merge_headers(
+    base: Dict[str, str], extra: Optional[Dict[str, str]]
+) -> Dict[str, str]:
     if not extra:
         return base
     for k, v in extra.items():
@@ -805,7 +808,9 @@ async def _handle_upload_to_text(
                     )
                     mods["file"] = mods.get("file", 0) + 1
                     return (text + hidden_block) if hidden_block else text, name, None
-                _maybe_metric("inc_ocr_extraction", "pdf", outcome if outcome else "empty")
+                _maybe_metric(
+                    "inc_ocr_extraction", "pdf", outcome if outcome else "empty"
+                )
 
             if decode_pdf:
                 mods["file"] = mods.get("file", 0) + 1
@@ -821,7 +826,13 @@ async def _handle_upload_to_text(
     except Exception:
         try:
             if _ocr.ocr_enabled():
-                if ctype.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "bmp"}:
+                if ctype.startswith("image/") or ext in {
+                    "png",
+                    "jpg",
+                    "jpeg",
+                    "gif",
+                    "bmp",
+                }:
                     _maybe_metric("inc_ocr_extraction", "image", "error")
                 elif ctype == "application/pdf" or ext == "pdf":
                     _maybe_metric("inc_ocr_extraction", "pdf", "error")
@@ -890,18 +901,22 @@ async def _maybe_hardened(
 ) -> Tuple[Optional[str], Dict[str, str]]:
     """
     Call hardened verifier with a total latency budget and optional retry budget.
-    Returns (maybe_action_override, headers). On errors we return (None, fallback).
-    Safe no-op if the integration is missing or VERIFIER_HARDENED_MODE disables it.
+    Returns (maybe_action_override, headers). On errors we return (None, fallback-headers).
+    Safe no-op if the integration is missing or VERIFIER_HARDENED_MODE disables it upstream.
     """
     if _maybe_hardened_verify is None:
         return None, {}
 
-    # Total time budget (ms) — shared across attempts. Invalid or missing -> unset.
+    # Total time budget (ms) — shared across attempts. Invalid or non-positive -> unset.
     lb_raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
-    try:
-        total_budget_ms = int(lb_raw) if lb_raw else None
-    except Exception:
-        total_budget_ms = None
+    total_budget_ms: Optional[int] = None
+    if lb_raw is not None:
+        try:
+            ms_val = float(str(lb_raw).strip())
+            if ms_val > 0:
+                total_budget_ms = int(ms_val)
+        except Exception:
+            total_budget_ms = None
 
     # Retry budget: number of retries (attempts = retries + 1).
     try:
@@ -912,7 +927,7 @@ async def _maybe_hardened(
 
     deadline = (
         time.perf_counter() + (total_budget_ms / 1000.0)
-        if total_budget_ms is not None
+        if total_budget_ms
         else None
     )
 
@@ -922,7 +937,7 @@ async def _maybe_hardened(
     }
 
     for _ in range(attempts):
-        # Respect the remaining budget per attempt.
+        # Respect the remaining budget per attempt
         remaining_ms: Optional[int] = None
         if deadline is not None:
             remaining = (deadline - time.perf_counter()) * 1000.0
@@ -939,20 +954,18 @@ async def _maybe_hardened(
                 family=family,
                 latency_budget_ms=remaining_ms,
             )
-            # Normalize headers and mark as live path.
-            norm_headers: Dict[str, str] = {}
+            # Normalize headers and mark as live path
+            h: Dict[str, str] = {}
             for k, v in (headers or {}).items():
                 try:
-                    norm_headers[str(k)] = str(v)
+                    h[str(k)] = str(v)
                 except Exception:
                     pass
-            norm_headers.setdefault(
-                "X-Guardrail-Verifier",
-                norm_headers.get("X-Guardrail-Verifier", "unknown"),
-            )
-            norm_headers["X-Guardrail-Verifier-Mode"] = "live"
-            return action, norm_headers
+            h.setdefault("X-Guardrail-Verifier", h.get("X-Guardrail-Verifier", "unknown"))
+            h["X-Guardrail-Verifier-Mode"] = "live"
+            return action, h
         except Exception:
+            # Swallow and try again (until budget exhausted)
             last_fallback_headers = {
                 "X-Guardrail-Verifier": "unknown",
                 "X-Guardrail-Verifier-Mode": "fallback",
@@ -1203,13 +1216,13 @@ async def guardrail_evaluate(request: Request):
         except Exception:
             retries = 0
         for _ in range(max(0, retries)):
-            m.inc_verifier_retry(provider)
+            _maybe_metric("inc_verifier_retry", provider)
         mode = (
             "fallback"
             if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
             else "live"
         )
-        m.inc_verifier_mode(mode)
+        _maybe_metric("inc_verifier_mode", mode)
 
     _audit(
         "ingress",
@@ -1272,7 +1285,7 @@ async def guardrail_evaluate_multipart(request: Request):
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
     for tag in redaction_hits.keys():
-        _maybe_metric("inc_redaction", tag)
+        m.inc_redaction(tag)
         m.guardrail_redactions_total.labels("ingress", tag).inc()
     docx_hidden_reasons: List[str] = []
     docx_hidden_samples: List[str] = []
@@ -1374,13 +1387,13 @@ async def guardrail_evaluate_multipart(request: Request):
         except Exception:
             retries = 0
         for _ in range(max(0, retries)):
-            m.inc_verifier_retry(provider)
+            _maybe_metric("inc_verifier_retry", provider)
         mode = (
             "fallback"
             if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
             else "live"
         )
-        m.inc_verifier_mode(mode)
+        _maybe_metric("inc_verifier_mode", mode)
 
     _audit(
         "ingress",
@@ -1501,13 +1514,13 @@ async def guardrail_egress(request: Request):
         except Exception:
             retries = 0
         for _ in range(max(0, retries)):
-            m.inc_verifier_retry(provider)
+            _maybe_metric("inc_verifier_retry", provider)
         mode = (
             "fallback"
             if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
             else "live"
         )
-        m.inc_verifier_mode(mode)
+        _maybe_metric("inc_verifier_mode", mode)
 
     _audit(
         "egress",
