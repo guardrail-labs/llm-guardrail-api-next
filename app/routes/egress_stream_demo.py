@@ -2,43 +2,51 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
 from app.middleware.stream_guard import wrap_stream
-from app.services import runtime_flags
+from app.services import runtime_flags as rf
 
-router = APIRouter(prefix="/demo", tags=["demo"])
+router = APIRouter()
 
 
-@router.get("/egress_stream")
-async def egress_stream(text: str = "", chunk: int = 5) -> StreamingResponse:
-    """Demo streaming endpoint that applies StreamingGuard."""
+async def _chunker(text: str, n: int) -> AsyncIterator[str]:
+    i = 0
+    ln = len(text)
+    while i < ln:
+        yield text[i : i + n]
+        i += n
 
-    async def gen() -> AsyncIterator[str]:
-        for i in range(0, len(text), chunk):
-            yield text[i : i + chunk]
 
-    headers = {
-        "X-Guardrail-Streaming": "0",
-        "X-Guardrail-Stream-Redactions": "0",
-        "X-Guardrail-Stream-Denied": "0",
-    }
+async def _to_bytes(source: AsyncIterator[str], encoding: str = "utf-8"):
+    async for s in source:
+        yield s.encode(encoding)
 
-    source: AsyncIterator[str | bytes] = gen()
-    if runtime_flags.stream_egress_enabled():
-        stream = await wrap_stream(source)
-        pieces = [c async for c in stream]
-        guard = getattr(stream, "guard", None)
-        headers["X-Guardrail-Streaming"] = "1"
-        headers["X-Guardrail-Stream-Redactions"] = str(getattr(guard, "redactions", 0))
-        headers["X-Guardrail-Stream-Denied"] = (
-            "1" if getattr(guard, "denied", False) else "0"
-        )
-        return StreamingResponse(
-            (p for p in pieces),
-            headers=headers,
-            media_type="application/octet-stream",
-        )
 
-    return StreamingResponse(source, headers=headers, media_type="application/octet-stream")
+@router.get("/demo/egress_stream")
+async def demo_egress_stream(
+    text: str = Query(...),
+    chunk: int = Query(8, ge=1, le=4096),
+):
+    """
+    Demo endpoint for the StreamingGuard. Splits `text` into `chunk`-sized
+    pieces and streams them, applying streaming redactions when enabled.
+    """
+    src = _chunker(text, chunk)
+    encoding = "utf-8"
+
+    enabled = bool(rf.get("stream_egress_enabled") or False)
+    if enabled:
+        guard = wrap_stream(src, encoding=encoding)
+        body = _to_bytes(guard, encoding=encoding)
+        headers = {
+            "X-Guardrail-Streaming": "1",
+            # Redaction/deny counts are not known until consumed by client.
+            # This demo keeps headers simple.
+        }
+    else:
+        body = _to_bytes(src, encoding=encoding)
+        headers = {"X-Guardrail-Streaming": "0"}
+
+    return StreamingResponse(body, headers=headers, media_type="application/octet-stream")
