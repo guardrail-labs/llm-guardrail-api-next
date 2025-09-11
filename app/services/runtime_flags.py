@@ -18,6 +18,10 @@ _DEFAULTS: Dict[str, Any] = {
     "image_safe_transform_enabled": True,
     "threat_feed_enabled": False,
     "max_prompt_chars": 0,
+    "stream_egress_enabled": True,
+    "stream_guard_max_lookback_chars": 1024,
+    "stream_guard_flush_min_bytes": 0,
+    "stream_guard_deny_on_private_key": True,
 }
 
 # Mapping of flag name -> environment variable
@@ -34,6 +38,10 @@ _ENV_MAP: Dict[str, str] = {
     "image_safe_transform_enabled": "IMAGE_SAFE_TRANSFORM_ENABLED",
     "threat_feed_enabled": "THREAT_FEED_ENABLED",
     "max_prompt_chars": "MAX_PROMPT_CHARS",
+    "stream_egress_enabled": "STREAM_EGRESS_ENABLED",
+    "stream_guard_max_lookback_chars": "STREAM_GUARD_MAX_LOOKBACK_CHARS",
+    "stream_guard_flush_min_bytes": "STREAM_GUARD_FLUSH_MIN_BYTES",
+    "stream_guard_deny_on_private_key": "STREAM_GUARD_DENY_ON_PRIVATE_KEY",
 }
 
 _LOCK = RLock()
@@ -111,6 +119,14 @@ _VALIDATORS = {
     "image_safe_transform_enabled": _coerce_bool,
     "threat_feed_enabled": _coerce_bool,
     "max_prompt_chars": lambda v: _coerce_int_in_range(v, lo=0, hi=10_000_000),
+    "stream_egress_enabled": _coerce_bool,
+    "stream_guard_max_lookback_chars": lambda v: _coerce_int_in_range(
+        v, lo=0, hi=1_000_000
+    ),
+    "stream_guard_flush_min_bytes": lambda v: _coerce_int_in_range(
+        v, lo=0, hi=1_000_000
+    ),
+    "stream_guard_deny_on_private_key": _coerce_bool,
 }
 
 
@@ -157,3 +173,19 @@ def effective() -> Dict[str, Any]:
 def reset() -> None:
     with _LOCK:
         _STORE.clear()
+
+
+def stream_egress_enabled() -> bool:
+    return bool(get("stream_egress_enabled"))
+
+
+def stream_guard_max_lookback_chars() -> int:
+    return int(get("stream_guard_max_lookback_chars"))
+
+
+def stream_guard_flush_min_bytes() -> int:
+    return int(get("stream_guard_flush_min_bytes"))
+
+
+def stream_guard_deny_on_private_key() -> bool:
+    return bool(get("stream_guard_deny_on_private_key"))

@@ -271,6 +271,16 @@ guardrail_egress_payload_bytes: HistogramLike = _mk_histogram(
     "Egress payload size in bytes.",
 )
 
+# Streaming guard
+guardrail_stream_guard_chunks_total: CounterLike = _mk_counter(
+    "guardrail_stream_guard_chunks_total",
+    "Chunks processed by streaming guard.",
+)
+guardrail_stream_guard_denied_total: CounterLike = _mk_counter(
+    "guardrail_stream_guard_denied_total",
+    "Streams denied by streaming guard.",
+)
+
 # Policy version info gauge
 guardrail_policy_version_info: GaugeLike = _mk_gauge(
     "guardrail_policy_version_info", "Current policy version info.", ["version"]
@@ -472,6 +482,14 @@ def observe_ingress_payload_bytes(nbytes: int | float) -> None:
 
 def observe_egress_payload_bytes(nbytes: int | float) -> None:
     guardrail_egress_payload_bytes.observe(float(nbytes))
+
+
+def inc_stream_guard_chunks() -> None:
+    guardrail_stream_guard_chunks_total.inc()
+
+
+def inc_stream_guard_denied() -> None:
+    guardrail_stream_guard_denied_total.inc()
 
 
 def set_policy_version(version: str) -> None:

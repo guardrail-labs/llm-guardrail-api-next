@@ -550,6 +550,15 @@ REDACTION_PATTERNS: List[Tuple[re.Pattern, str, str]] = [
 ]
 
 
+def get_stream_redaction_patterns() -> List[Tuple[re.Pattern[str], str, str]]:
+    """
+    Return (regex, tag, replacement) tuples mirroring REDACTION_PATTERNS,
+    ordered for stable behavior in streaming mode.
+    """
+
+    return list(REDACTION_PATTERNS)
+
+
 def _normalize_family(hit: str) -> str:
     """
     Map specific hits to their normalized families:
