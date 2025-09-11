@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, cast
 
 # Lightweight HTML hidden-text detector used by ingress.
 #
@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple
 # -----
 # - We intentionally return the legacy reason keys expected by tests.
 # - We prefer BeautifulSoup when available; otherwise we fall back to
-#   conservative regex checks so unit tests still pass in minimal envs.
+#   a conservative regex scan so unit tests still pass in minimal envs.
 
 # ----------------------------- regex helpers ---------------------------------
 
@@ -80,7 +80,8 @@ def _parse_style(style_str: str) -> Dict[str, str]:
 
 def _maybe_text_sample(el) -> str:
     try:
-        txt = el.get_text(strip=True)
+        # BeautifulSoup's get_text is dynamically typed; cast for mypy.
+        txt = cast(str, el.get_text(strip=True))
         if txt:
             return txt[:200]
     except Exception:
@@ -183,14 +184,13 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
 
     # Fast path: global style patterns in raw HTML (ensures 'style_hidden' is surfaced)
     if _STYLE_HIDDEN_RE.search(html or ""):
-        # We keep reasons list in canonical keys — 'style_hidden' specifically.
         if "style_hidden" not in reasons:
             reasons.append("style_hidden")
 
     # Use BeautifulSoup if available for robust element-level checks.
     soup = None
     try:
-        from bs4 import BeautifulSoup 
+        from bs4 import BeautifulSoup  # type: ignore
 
         soup = BeautifulSoup(html or "", "html.parser")
     except Exception:
@@ -226,8 +226,7 @@ def detect_hidden_text(html: str) -> Dict[str, object]:
         ):
             _add_reason(reasons, samples, "white_on_white", "")
 
-    # If we still have no samples, try to produce something from raw matches so
-    # the caller can include a small excerpt in debug.
+    # If we still have no samples, try to produce something from raw matches.
     if not samples and reasons:
         samples.extend(_collect_matches(_STYLE_HIDDEN_RE, html or "")[:2])
 
