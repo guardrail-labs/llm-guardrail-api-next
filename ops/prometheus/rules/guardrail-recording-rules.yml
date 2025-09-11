@@ -1,0 +1,17 @@
+groups:
+  - name: guardrail
+    rules:
+      - record: guardrail:requests_rps
+        expr: sum(rate(guardrail_requests_total[5m]))
+      - record: guardrail:deny_ratio
+        expr: sum(rate(guardrail_decisions_total{family="deny"}[5m])) /
+          sum(rate(guardrail_decisions_total[5m]))
+      - record: guardrail:redactions_per_1k
+        expr: 1000 * sum(rate(guardrail_redactions_total[5m])) /
+          sum(rate(guardrail_requests_total[5m]))
+      - record: guardrail:verifier_fallback_ratio
+        expr: sum(rate(guardrail_verifier_mode_total{mode="fallback"}[5m])) /
+          sum(rate(guardrail_verifier_mode_total[5m]))
+      - record: guardrail:verifier_latency_p95
+        expr: histogram_quantile(0.95,
+          sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))

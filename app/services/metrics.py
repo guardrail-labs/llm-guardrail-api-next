@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast
 
+from app.telemetry import metrics as _tm
+
 # ---- Protocols (surface we rely on) ------------------------------------------
 
 
@@ -142,10 +144,8 @@ guardrail_decisions_family_bot_total: CounterLike = _mk_counter(
     ["tenant", "bot", "family"],
 )
 
-# Redactions
-guardrail_redactions_total: CounterLike = _mk_counter(
-    "guardrail_redactions_total", "Redactions by mask type.", ["mask"]
-)
+# Redactions (reuse telemetry collector)
+guardrail_redactions_total = _tm.guardrail_redactions_total
 
 # Verifier outcomes
 guardrail_verifier_outcome_total: CounterLike = _mk_counter(
@@ -238,8 +238,7 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
     inc_decision_family_tenant_bot("deny", tenant, bot)
 
 
-def inc_redaction(mask: str) -> None:
-    guardrail_redactions_total.labels(mask).inc()
+inc_redaction = _tm.inc_redaction
 
 
 # ---- Getters -----------------------------------------------------------------

@@ -433,6 +433,10 @@ def _audit(
         "rule_hits": rule_hits,
         "redaction_count": redaction_count,
     }
+    if direction == "ingress":
+        _maybe_metric("observe_ingress_payload_bytes", payload["payload_bytes"])
+    elif direction == "egress":
+        _maybe_metric("observe_egress_payload_bytes", payload["payload_bytes"])
     if debug_sources:
         payload["debug_sources"] = [s.model_dump() for s in debug_sources]
     if verifier:
@@ -451,7 +455,6 @@ def _bump_family(
     tenant: str,
     bot: str,
 ) -> None:
-    _maybe_metric("inc_requests_total", endpoint)
     fam = "allow" if action == "allow" else "deny"
     _maybe_metric("inc_decision_family_tenant_bot", fam, tenant, bot)
 
@@ -798,16 +801,13 @@ async def _maybe_hardened(
                 latency_budget_ms=timeout_ms,
             )
             provider = headers.get("X-Guardrail-Verifier", provider)
-            m.inc_verifier_attempt(provider)
             headers.setdefault("X-Guardrail-Mode", "live")
             if remaining is not None and timeout_ms is not None:
                 remaining = max(0, remaining - timeout_ms)
             return action, headers
         except asyncio.TimeoutError:
-            m.inc_verifier_attempt(provider)
             m.inc_verifier_error(provider, "timeout")
         except Exception as e:  # noqa: BLE001
-            m.inc_verifier_attempt(provider)
             kind = (
                 "status_5xx"
                 if 500 <= getattr(e, "status_code", 0) < 600
@@ -860,6 +860,8 @@ async def guardrail_legacy(
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
+    m.inc_requests_total("guardrail_legacy")
+    m.set_policy_version(current_rules_version())
     if not _has_api_key(x_api_key, authorization):
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
@@ -899,6 +901,9 @@ async def guardrail_legacy(
         redactions += tf_count
         for tag in fams.keys():
             redaction_hits.setdefault(tag, []).append("<threat_feed>")
+    for tag in redaction_hits.keys():
+        m.inc_redaction(tag)
+        m.guardrail_redactions_total.labels("ingress", tag).inc()
 
     rule_hits: Dict[str, List[str]] = {}
     for item in legacy_hits_list:
@@ -941,6 +946,8 @@ async def guardrail_evaluate(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
+    m.inc_requests_total("ingress_evaluate")
+    m.set_policy_version(current_rules_version())
 
     content_type = (headers.get("content-type") or "").lower()
     combined_text = ""
@@ -974,6 +981,9 @@ async def guardrail_evaluate(request: Request):
         redaction_count += tf_count
         for tag in fams.keys():
             redaction_hits.setdefault(tag, []).append("<threat_feed>")
+    for tag in redaction_hits.keys():
+        m.inc_redaction(tag)
+        m.guardrail_redactions_total.labels("ingress", tag).inc()
 
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
@@ -1040,17 +1050,29 @@ async def guardrail_evaluate(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    m.observe_verifier_latency(latency_ms)
     action = _apply_hardened_override(action, hv_action)
     if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
     if hv_headers:
+        provider = hv_headers.get("X-Guardrail-Verifier", "unknown")
         verifier_info = {
-            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "provider": provider,
             "decision": action,
             "latency_ms": latency_ms,
         }
+        m.inc_verifier_attempt(provider)
+        retries = 0
+        try:
+            retries = int(hv_headers.get("X-Guardrail-Verifier-Retries", "0"))
+        except Exception:
+            retries = 0
+        for _ in range(max(0, retries)):
+            m.inc_verifier_retry(provider)
+        mode = "fallback" if hv_headers.get("X-Guardrail-Mode") == "fallback" else "live"
+        m.inc_verifier_mode(mode)
 
     _audit(
         "ingress",
@@ -1086,6 +1108,8 @@ async def guardrail_evaluate_multipart(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
+    m.inc_requests_total("ingress_evaluate")
+    m.set_policy_version(current_rules_version())
 
     combined_text, mods, sources, docx_results = await _read_form_and_merge(
         request, decode_pdf=True
@@ -1110,6 +1134,9 @@ async def guardrail_evaluate_multipart(request: Request):
 
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
+    for tag in redaction_hits.keys():
+        m.inc_redaction(tag)
+        m.guardrail_redactions_total.labels("ingress", tag).inc()
     docx_hidden_reasons: List[str] = []
     docx_hidden_samples: List[str] = []
     for dres in docx_results:
@@ -1188,17 +1215,29 @@ async def guardrail_evaluate_multipart(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    m.observe_verifier_latency(latency_ms)
     action = _apply_hardened_override(action, hv_action)
     if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
     if hv_headers:
+        provider = hv_headers.get("X-Guardrail-Verifier", "unknown")
         verifier_info = {
-            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "provider": provider,
             "decision": action,
             "latency_ms": latency_ms,
         }
+        m.inc_verifier_attempt(provider)
+        retries = 0
+        try:
+            retries = int(hv_headers.get("X-Guardrail-Verifier-Retries", "0"))
+        except Exception:
+            retries = 0
+        for _ in range(max(0, retries)):
+            m.inc_verifier_retry(provider)
+        mode = "fallback" if hv_headers.get("X-Guardrail-Mode") == "fallback" else "live"
+        m.inc_verifier_mode(mode)
 
     _audit(
         "ingress",
@@ -1234,6 +1273,8 @@ async def guardrail_egress(request: Request):
     headers = request.headers
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
+    m.inc_requests_total("egress_evaluate")
+    m.set_policy_version(current_rules_version())
 
     payload = await request.json()
     text = str(payload.get("text") or "")
@@ -1255,6 +1296,9 @@ async def guardrail_egress(request: Request):
 
     for k, v in redaction_hits.items():
         rule_hits.setdefault(k, []).extend(v)
+    for tag in redaction_hits.keys():
+        m.inc_redaction(tag)
+        m.guardrail_redactions_total.labels("egress", tag).inc()
     _normalize_wildcards(rule_hits, is_deny=(action == "deny"))
 
     dbg_sources: List[SourceDebug] = []
@@ -1292,17 +1336,29 @@ async def guardrail_egress(request: Request):
         family=headers.get("X-Model-Family"),
     )
     latency_ms = int((time.perf_counter() - t_hv) * 1000)
+    m.observe_verifier_latency(latency_ms)
     action = _apply_hardened_override(action, hv_action)
     if hv_action is None and hv_headers.get("X-Guardrail-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
 
     verifier_info = None
     if hv_headers:
+        provider = hv_headers.get("X-Guardrail-Verifier", "unknown")
         verifier_info = {
-            "provider": hv_headers.get("X-Guardrail-Verifier", "unknown"),
+            "provider": provider,
             "decision": action,
             "latency_ms": latency_ms,
         }
+        m.inc_verifier_attempt(provider)
+        retries = 0
+        try:
+            retries = int(hv_headers.get("X-Guardrail-Verifier-Retries", "0"))
+        except Exception:
+            retries = 0
+        for _ in range(max(0, retries)):
+            m.inc_verifier_retry(provider)
+        mode = "fallback" if hv_headers.get("X-Guardrail-Mode") == "fallback" else "live"
+        m.inc_verifier_mode(mode)
 
     _audit(
         "egress",
