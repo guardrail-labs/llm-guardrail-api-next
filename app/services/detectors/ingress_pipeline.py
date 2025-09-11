@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
+from app.services import runtime_flags
 from app.services.detectors.docx_jb import (
     DocxExtractor,
     detect_and_sanitize_docx,
@@ -52,16 +53,23 @@ _pdf_sanitize: Optional[PdfSanitizer] = _load_pdf_sanitizer()
 # Feature flags (default ON) ---------------------------------------------------
 
 
+_FLAG_MAP = {
+    "PDF_DETECTOR_ENABLED": "pdf_detector_enabled",
+    "DOCX_DETECTOR_ENABLED": "docx_detector_enabled",
+    "IMAGE_SAFE_TRANSFORM_ENABLED": "image_safe_transform_enabled",
+}
+
+
 def _enabled(env: str, default: bool = True) -> bool:
+    name = _FLAG_MAP.get(env)
+    if name:
+        return bool(runtime_flags.get(name))
     raw = os.getenv(env)
     if raw is None:
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-_PDF_DETECTOR_ENABLED = _enabled("PDF_DETECTOR_ENABLED", True)
-_DOCX_DETECTOR_ENABLED = _enabled("DOCX_DETECTOR_ENABLED", True)
-_IMAGE_SAFE_TRANSFORM_ENABLED = _enabled("IMAGE_SAFE_TRANSFORM_ENABLED", True)
 
 
 # ---------------- PDF ---------------------------------------------------------
@@ -73,8 +81,9 @@ def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
     Includes debug.sources entry with detector availability/enabled flags.
     """
     sources: List[Dict[str, Any]] = []
+    enabled = _enabled("PDF_DETECTOR_ENABLED", True)
 
-    if _PDF_DETECTOR_ENABLED and _pdf_sanitize is not None:
+    if enabled and _pdf_sanitize is not None:
         text, rule_hits, debug = _pdf_sanitize(pdf_bytes)
         sources.append(
             {
@@ -95,7 +104,7 @@ def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
     sources.append(
         {
             "type": "pdf",
-            "enabled": _PDF_DETECTOR_ENABLED,
+            "enabled": enabled,
             "available": _pdf_sanitize is not None,
             "rule_hits": [],
             "meta": {"spans_count": 0},
@@ -107,7 +116,7 @@ def process_pdf_ingress(pdf_bytes: bytes) -> Dict[str, Any]:
         "debug": {
             "pdf_hidden": {
                 "spans_count": 0,
-                "detector_enabled": _PDF_DETECTOR_ENABLED,
+                "detector_enabled": enabled,
                 "available": _pdf_sanitize is not None,
             },
             "sources": sources,
@@ -126,7 +135,8 @@ def process_docx_ingress(
     Accepts an optional extractor (useful for tests); when disabled, returns empty text.
     """
     sources: List[Dict[str, Any]] = []
-    if _DOCX_DETECTOR_ENABLED:
+    enabled = _enabled("DOCX_DETECTOR_ENABLED", True)
+    if enabled:
         res = detect_and_sanitize_docx(docx_bytes, extractor=extractor)
         sources.append(
             {
@@ -163,7 +173,8 @@ def process_image_ingress(
     Returns the (possibly) re-encoded bytes so downstream can continue.
     """
     sources: List[Dict[str, Any]] = []
-    if _IMAGE_SAFE_TRANSFORM_ENABLED:
+    enabled = _enabled("IMAGE_SAFE_TRANSFORM_ENABLED", True)
+    if enabled:
         res = safe_transform(image_bytes, reencoder=reencoder)
         sources.append(
             {

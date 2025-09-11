@@ -35,9 +35,9 @@ class EvaluateResponse(BaseModel):
 
 
 class AdminReloadResponse(BaseModel):
-    reloaded: bool
+    ok: bool
     version: str
-    rules_loaded: int
+    rules_count: int
 
 
 __all__ = [

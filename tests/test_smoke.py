@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
+
 from fastapi.testclient import TestClient
 
 from app.main import app
 
+os.environ["ADMIN_TOKEN"] = "test-token"
 client = TestClient(app)
+ADMIN_H = {"Authorization": "Bearer test-token"}
 
 
 def test_health_ok():
@@ -54,9 +58,9 @@ def test_guardrail_evaluate_basic_and_redaction():
 
 
 def test_admin_policy_reload_contract():
-    r = client.post("/admin/policy/reload")
+    r = client.post("/admin/policy/reload", headers=ADMIN_H)
     assert r.status_code == 200
     body = r.json()
-    assert body.get("reloaded") is True
+    assert body.get("ok") is True
     assert isinstance(body.get("version"), str)
-    assert isinstance(body.get("rules_loaded"), int)
+    assert isinstance(body.get("rules_count"), int)

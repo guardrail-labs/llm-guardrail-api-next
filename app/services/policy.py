@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Pattern, Tuple
 
 from app.config import get_settings
 from app.models.verifier import VerifierInput
-from app.services import verifier_client as vcli
+from app.services import runtime_flags, verifier_client as vcli
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
@@ -64,11 +64,8 @@ def _coerce_action(val: str | None) -> Action | None:
 
 
 def resolve_injection_default_action() -> Action:
-    s = get_settings()
-    val = os.getenv("POLICY_DEFAULT_INJECTION_ACTION") or getattr(
-        s, "default_injection_action", None
-    )
-    coerced = _coerce_action(val)
+    val = runtime_flags.get("policy_default_injection_action")
+    coerced = _coerce_action(str(val))
     return coerced or Action.BLOCK
 
 

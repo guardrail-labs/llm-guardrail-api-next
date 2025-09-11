@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
+    os.environ["ADMIN_TOKEN"] = "test-token"
 
     import app.config as cfg
 
@@ -81,9 +82,11 @@ def test_manual_reload_endpoint_when_autoreload_off():
         assert r2.json()["policy_version"] == "1"
 
         # Force reload via admin endpoint -> now v2
-        r3 = client.post("/admin/policy/reload", headers={"X-API-Key": "unit-test-key"})
+        r3 = client.post(
+            "/admin/policy/reload", headers={"Authorization": "Bearer test-token"}
+        )
         assert r3.status_code == 200
-        assert r3.json()["reloaded"] is True
+        assert r3.json()["ok"] is True
         assert r3.json()["version"] == "2"
 
         r4 = client.post("/guardrail", json={"prompt": "z"}, headers={"X-API-Key": "unit-test-key"})
