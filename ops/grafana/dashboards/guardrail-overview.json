@@ -1,0 +1,88 @@
+{
+  "title": "Guardrail Overview",
+  "panels": [
+    {
+      "title": "Decisions by family",
+      "type": "graph",
+      "stack": true,
+      "targets": [
+        {"expr": "sum by (family) (rate(guardrail_decisions_total[5m]))"}
+      ]
+    },
+    {
+      "title": "Redactions per 1k req",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "1000 * sum(rate(guardrail_redactions_total[5m])) / sum(rate(guardrail_requests_total[5m]))"
+        }
+      ]
+    },
+    {
+      "title": "PDF hidden text reasons",
+      "type": "graph",
+      "targets": [
+        {"expr": "sum by (reason) (rate(guardrail_pdf_hidden_total[5m]))"}
+      ]
+    },
+    {
+      "title": "HTML hidden text reasons",
+      "type": "graph",
+      "targets": [
+        {"expr": "sum by (reason) (rate(guardrail_html_hidden_total[5m]))"}
+      ]
+    },
+    {
+      "title": "DOCX hidden text reasons",
+      "type": "graph",
+      "targets": [
+        {"expr": "sum by (reason) (rate(guardrail_docx_hidden_total[5m]))"}
+      ]
+    },
+    {
+      "title": "Verifier latency p95",
+      "type": "heatmap",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))"
+        }
+      ]
+    },
+    {
+      "title": "Verifier latency p50",
+      "type": "heatmap",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))"
+        }
+      ]
+    },
+    {
+      "title": "Verifier latency p99",
+      "type": "heatmap",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(guardrail_verifier_latency_ms_bucket[5m])) by (le))"
+        }
+      ]
+    },
+    {
+      "title": "Verifier fallback rate",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "sum(rate(guardrail_verifier_mode_total{mode=\"fallback\"}[5m])) / sum(rate(guardrail_verifier_mode_total[5m]))"
+        }
+      ]
+    },
+    {
+      "title": "Tenant/bot decisions",
+      "type": "table",
+      "targets": [
+        {
+          "expr": "sum by (tenant, bot, family) (rate(guardrail_decisions_family_bot_total[5m]))"
+        }
+      ]
+    }
+  ]
+}

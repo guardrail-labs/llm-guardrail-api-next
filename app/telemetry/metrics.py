@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Protocol, Tuple, TypeVar, cast, overload
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Protocol,
+    Tuple,
+    TypeVar,
+    cast,
+    overload,
+)
 
 # ---- Protocols (surface we rely on) ------------------------------------------
 
@@ -15,18 +26,30 @@ class HistogramLike(Protocol):
     def observe(self, value: float) -> None: ...
 
 
+class GaugeLike(Protocol):
+    def labels(self, *label_values: Any) -> "GaugeLike": ...
+    def set(self, value: float) -> None: ...
+
+
 # ---- Prometheus or shims -----------------------------------------------------
 
 PROM_REGISTRY: Any
 CounterClass: Any
 HistogramClass: Any
+GaugeClass: Any
 
 try:
-    from prometheus_client import REGISTRY as _PREG, Counter as _PCounter, Histogram as _PHistogram
+    from prometheus_client import (
+        REGISTRY as _PREG,
+        Counter as _PCounter,
+        Gauge as _PGauge,
+        Histogram as _PHistogram,
+    )
 
     PROM_REGISTRY = _PREG
     CounterClass = _PCounter
     HistogramClass = _PHistogram
+    GaugeClass = _PGauge
     _PROM_OK = True
 except Exception:  # pragma: no cover
     _PROM_OK = False
@@ -61,6 +84,20 @@ except Exception:  # pragma: no cover
             self._sum += float(value)
             self._count += 1
 
+    class _ShimGauge:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            self._value = 0.0
+            self._children: Dict[Tuple[Any, ...], "_ShimGauge"] = {}
+
+        def labels(self, *label_values: Any) -> "_ShimGauge":
+            key = tuple(label_values)
+            if key not in self._children:
+                self._children[key] = _ShimGauge()
+            return self._children[key]
+
+        def set(self, value: float) -> None:
+            self._value = float(value)
+
     class _DummyRegistry:
         def __init__(self) -> None:
             self._names_to_collectors: Dict[str, Any] = {}
@@ -68,6 +105,7 @@ except Exception:  # pragma: no cover
     PROM_REGISTRY = _DummyRegistry()
     CounterClass = _ShimCounter
     HistogramClass = _ShimHistogram
+    GaugeClass = _ShimGauge
 
 
 # ---- Minimal helpers for registry access -------------------------------------
@@ -112,13 +150,22 @@ def _mk_histogram(name: str, doc: str, labels: Iterable[str] | None = None) -> H
     return cast(HistogramLike, _get_or_create(name, _factory))
 
 
+def _mk_gauge(name: str, doc: str, labels: Iterable[str] | None = None) -> GaugeLike:
+    def _factory() -> Any:
+        if labels:
+            return GaugeClass(name, doc, list(labels))
+        return GaugeClass(name, doc)
+
+    return cast(GaugeLike, _get_or_create(name, _factory))
+
+
 # ---- Core collectors (names must match tests) --------------------------------
 
 guardrail_requests_total: CounterLike = _mk_counter(
     "guardrail_requests_total", "Total guardrail requests.", labels=["endpoint"]
 )
 guardrail_decisions_total: CounterLike = _mk_counter(
-    "guardrail_decisions_total", "Total guardrail decisions.", labels=["action"]
+    "guardrail_decisions_total", "Total guardrail decisions.", labels=["family"]
 )
 guardrail_latency_seconds: HistogramLike = _mk_histogram(
     "guardrail_latency_seconds", "Latency in seconds.", labels=["endpoint"]
@@ -145,17 +192,19 @@ guardrail_decisions_family_bot_total: CounterLike = _mk_counter(
     ["tenant", "bot", "family"],
 )
 
-# Directional redactions (direction, mask)
+# Directional redactions (direction, tag)
 guardrail_redactions_total: CounterLike = _mk_counter(
-    "guardrail_redactions_total", "Redactions by direction and mask.", ["direction", "mask"]
+    "guardrail_redactions_total",
+    "Redactions by direction and tag.",
+    ["direction", "tag"],
 )
 
 
-def _labels2_direction_mask(direction: object, mask: object) -> tuple[str, str]:
-    """Coerce to two string labels (direction, mask), never None/empty."""
+def _labels2_direction_tag(direction: object, tag: object) -> tuple[str, str]:
+    """Coerce to two string labels (direction, tag), never None/empty."""
     d = str(direction) if direction not in (None, "") else "unknown"
-    m = str(mask) if mask not in (None, "") else "unknown"
-    return d, m
+    t = str(tag) if tag not in (None, "") else "unknown"
+    return d, t
 
 
 # Direction-scoped decision families
@@ -177,6 +226,12 @@ guardrail_verifier_latency_seconds: HistogramLike = _mk_histogram(
     ["verifier"],
 )
 
+# Hardened verifier latency (ms)
+guardrail_verifier_latency_ms: HistogramLike = _mk_histogram(
+    "guardrail_verifier_latency_ms",
+    "Hardened verifier latency in milliseconds.",
+)
+
 # Attempts and retries by provider
 guardrail_verifier_attempt_total: CounterLike = _mk_counter(
     "guardrail_verifier_attempt_total",
@@ -191,11 +246,36 @@ guardrail_verifier_retry_total: CounterLike = _mk_counter(
 )
 
 # Errors by provider and kind (timeout/error/etc.)
-guardrail_verifier_provider_errors_total: CounterLike = _mk_counter(
-    "guardrail_verifier_provider_errors_total",
+guardrail_verifier_error_total: CounterLike = _mk_counter(
+    "guardrail_verifier_error_total",
     "Verifier provider errors by kind.",
-    ["verifier", "kind"],
+    ["provider", "kind"],
 )
+# Backwards compat name
+guardrail_verifier_provider_errors_total = guardrail_verifier_error_total
+
+# Mode (live vs fallback)
+guardrail_verifier_mode_total: CounterLike = _mk_counter(
+    "guardrail_verifier_mode_total",
+    "Hardened verifier mode totals.",
+    ["mode"],
+)
+
+# Optional payload size histograms
+guardrail_ingress_payload_bytes: HistogramLike = _mk_histogram(
+    "guardrail_ingress_payload_bytes",
+    "Ingress payload size in bytes.",
+)
+guardrail_egress_payload_bytes: HistogramLike = _mk_histogram(
+    "guardrail_egress_payload_bytes",
+    "Egress payload size in bytes.",
+)
+
+# Policy version info gauge
+guardrail_policy_version_info: GaugeLike = _mk_gauge(
+    "guardrail_policy_version_info", "Current policy version info.", ["version"]
+)
+guardrail_policy_version_info.labels("unknown").set(1.0)
 
 # Breaker opens by provider
 guardrail_verifier_breaker_opens_total: CounterLike = _mk_counter(
@@ -301,9 +381,9 @@ def inc_requests_total(endpoint: str = "unknown") -> None:
     guardrail_decisions_family_bot_total.labels("default", "default", "allow").inc(0.0)
 
 
-def inc_decisions_total(action: str = "unknown") -> None:
+def inc_decisions_total(family: str = "unknown") -> None:
     global _DEC_TOTAL
-    guardrail_decisions_total.labels(action).inc()
+    guardrail_decisions_total.labels(family).inc()
     _DEC_TOTAL += 1.0
 
 
@@ -344,8 +424,23 @@ def inc_verifier_outcome(verifier: str, outcome: str) -> None:
     guardrail_verifier_outcome_total.labels(verifier, outcome).inc()
 
 
-def observe_verifier_latency(verifier: str, seconds: float) -> None:
-    guardrail_verifier_latency_seconds.labels(str(verifier or "unknown")).observe(float(seconds))
+def observe_verifier_latency(*args: Any, **kwargs: Any) -> None:
+    """Observe verifier latency.
+
+    Usage:
+      observe_verifier_latency(ms)  -> hardened path latency in ms
+      observe_verifier_latency(provider, seconds)  -> provider latency seconds
+    """
+    if len(args) == 1 and not isinstance(args[0], str):
+        guardrail_verifier_latency_ms.observe(float(args[0]))
+        return
+    if len(args) >= 2:
+        verifier = str(args[0] or "unknown")
+        seconds = float(args[1])
+    else:
+        verifier = str(kwargs.get("verifier") or "unknown")
+        seconds = float(kwargs.get("seconds") or 0.0)
+    guardrail_verifier_latency_seconds.labels(verifier).observe(seconds)
 
 
 def inc_verifier_attempt(verifier: str) -> None:
@@ -357,14 +452,31 @@ def inc_verifier_retry(verifier: str) -> None:
 
 
 def inc_verifier_error(verifier: str, kind: str) -> None:
-    guardrail_verifier_provider_errors_total.labels(
-        str(verifier or "unknown"), str(kind or "error")
+    guardrail_verifier_error_total.labels(
+        str(verifier or "unknown"), str(kind or "other"),
     ).inc()
 
 
 # Backwards compatibility
 def inc_verifier_provider_error(verifier: str, kind: str) -> None:
     inc_verifier_error(verifier, kind)
+
+
+def inc_verifier_mode(mode: str) -> None:
+    guardrail_verifier_mode_total.labels(str(mode or "unknown")).inc()
+
+
+def observe_ingress_payload_bytes(nbytes: int | float) -> None:
+    guardrail_ingress_payload_bytes.observe(float(nbytes))
+
+
+def observe_egress_payload_bytes(nbytes: int | float) -> None:
+    guardrail_egress_payload_bytes.observe(float(nbytes))
+
+
+def set_policy_version(version: str) -> None:
+    set_rules_version(version)
+    guardrail_policy_version_info.labels(str(version or "unknown")).set(1.0)
 
 
 def inc_verifier_breaker_open(verifier: str) -> None:
@@ -417,16 +529,17 @@ def inc_quota_reject_tenant_bot(tenant: str, bot: str) -> None:
 
 
 @overload
-def inc_redaction(direction: str, mask: str, amount: float = 1.0) -> None: ...
+def inc_redaction(direction: str, tag: str, amount: float = 1.0) -> None: ...
 @overload
-def inc_redaction(mask: str, amount: float = 1.0) -> None: ...
-# NEW overload: allow positional mask + keyword direction (matches openai_compat usage)
+def inc_redaction(tag: str, amount: float = 1.0) -> None: ...
+# NEW overload: allow positional tag + keyword direction (matches openai_compat usage)
 @overload
-def inc_redaction(mask: str, *, direction: str | None = ..., amount: float = 1.0) -> None: ...
+def inc_redaction(tag: str, *, direction: str | None = ..., amount: float = 1.0) -> None: ...
 @overload
 def inc_redaction(
     *,
     direction: str | None = ...,
+    tag: str | None = ...,
     mask: str | None = ...,
     amount: float = 1.0,
 ) -> None: ...
@@ -435,21 +548,23 @@ def inc_redaction(
 def inc_redaction(*args: Any, **kwargs: Any) -> None:
     """
     Backward-compatible redaction counter:
-      - Accepts (direction, mask), or (mask) legacy single arg, or keyword forms.
-      - Always supplies TWO labels in order (direction, mask) with defaults.
+      - Accepts (direction, tag), or (tag) legacy single arg, or keyword forms.
+      - Always supplies TWO labels in order (direction, tag) with defaults.
     """
     amount = float(kwargs.get("amount", 1.0))
     direction = kwargs.get("direction")
-    mask = kwargs.get("mask")
+    tag = kwargs.get("tag")
+    if tag is None and "mask" in kwargs:
+        tag = kwargs.get("mask")
 
     if len(args) >= 2:
         direction = args[0] if direction is None else direction
-        mask = args[1] if mask is None else mask
+        tag = args[1] if tag is None else tag
     elif len(args) == 1:
-        mask = args[0] if mask is None else mask
+        tag = args[0] if tag is None else tag
 
-    d, m = _labels2_direction_mask(direction, mask)
-    guardrail_redactions_total.labels(d, m).inc(amount)
+    d, t = _labels2_direction_tag(direction, tag)
+    guardrail_redactions_total.labels(d, t).inc(amount)
 
 
 def inc_ocr_extraction(typ: str, outcome: str) -> None:
