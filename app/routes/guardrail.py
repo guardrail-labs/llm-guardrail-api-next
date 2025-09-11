@@ -896,16 +896,12 @@ async def _maybe_hardened(
     if _maybe_hardened_verify is None:
         return None, {}
 
-    # Total time budget (ms) — shared across attempts. Invalid/missing -> unset.
+    # Total time budget (ms) — shared across attempts. Invalid or missing -> unset.
     lb_raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
-    total_budget_ms: Optional[int] = None
-    if lb_raw is not None:
-        try:
-            ms_val = float(str(lb_raw).strip())
-            if ms_val > 0:
-                total_budget_ms = int(ms_val)
-        except Exception:
-            total_budget_ms = None
+    try:
+        total_budget_ms = int(lb_raw) if lb_raw else None
+    except Exception:
+        total_budget_ms = None
 
     # Retry budget: number of retries (attempts = retries + 1).
     try:
