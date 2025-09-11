@@ -890,15 +890,22 @@ async def _maybe_hardened(
 ) -> Tuple[Optional[str], Dict[str, str]]:
     """
     Call hardened verifier with a total latency budget and optional retry budget.
-    Returns (maybe_action_override, headers). On errors we return (None, fallback-headers).
-    Safe no-op if the integration is missing or VERIFIER_HARDENED_MODE disables it upstream.
+    Returns (maybe_action_override, headers). On errors we return (None, fallback).
+    Safe no-op if the integration is missing or VERIFIER_HARDENED_MODE disables it.
     """
     if _maybe_hardened_verify is None:
         return None, {}
 
-    # Total time budget (ms) — shared across attempts.
+    # Total time budget (ms) — shared across attempts. Invalid/missing -> unset.
     lb_raw = os.getenv("VERIFIER_LATENCY_BUDGET_MS")
-    total_budget_ms = int(lb_raw) if lb_raw else None
+    total_budget_ms: Optional[int] = None
+    if lb_raw is not None:
+        try:
+            ms_val = float(str(lb_raw).strip())
+            if ms_val > 0:
+                total_budget_ms = int(ms_val)
+        except Exception:
+            total_budget_ms = None
 
     # Retry budget: number of retries (attempts = retries + 1).
     try:
@@ -907,7 +914,11 @@ async def _maybe_hardened(
         retry_budget = 0
     attempts = max(1, retry_budget + 1)
 
-    deadline = (time.perf_counter() + (total_budget_ms / 1000.0)) if total_budget_ms else None
+    deadline = (
+        time.perf_counter() + (total_budget_ms / 1000.0)
+        if total_budget_ms is not None
+        else None
+    )
 
     last_fallback_headers: Dict[str, str] = {
         "X-Guardrail-Verifier": "unknown",
@@ -915,7 +926,7 @@ async def _maybe_hardened(
     }
 
     for _ in range(attempts):
-        # Respect the remaining budget per attempt
+        # Respect the remaining budget per attempt.
         remaining_ms: Optional[int] = None
         if deadline is not None:
             remaining = (deadline - time.perf_counter()) * 1000.0
@@ -932,18 +943,20 @@ async def _maybe_hardened(
                 family=family,
                 latency_budget_ms=remaining_ms,
             )
-            # Normalize headers and mark as live path
-            h: Dict[str, str] = {}
+            # Normalize headers and mark as live path.
+            norm_headers: Dict[str, str] = {}
             for k, v in (headers or {}).items():
                 try:
-                    h[str(k)] = str(v)
+                    norm_headers[str(k)] = str(v)
                 except Exception:
                     pass
-            h.setdefault("X-Guardrail-Verifier", h.get("X-Guardrail-Verifier", "unknown"))
-            h["X-Guardrail-Verifier-Mode"] = "live"
-            return action, h
+            norm_headers.setdefault(
+                "X-Guardrail-Verifier",
+                norm_headers.get("X-Guardrail-Verifier", "unknown"),
+            )
+            norm_headers["X-Guardrail-Verifier-Mode"] = "live"
+            return action, norm_headers
         except Exception:
-            # Swallow and try again (until budget exhausted)
             last_fallback_headers = {
                 "X-Guardrail-Verifier": "unknown",
                 "X-Guardrail-Verifier-Mode": "fallback",
@@ -1195,7 +1208,11 @@ async def guardrail_evaluate(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             m.inc_verifier_retry(provider)
-        mode = "fallback" if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback" else "live"
+        mode = (
+            "fallback"
+            if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
+            else "live"
+        )
         m.inc_verifier_mode(mode)
 
     _audit(
@@ -1259,7 +1276,7 @@ async def guardrail_evaluate_multipart(request: Request):
     for k, v in redaction_hits.items():
         policy_hits.setdefault(k, []).extend(v)
     for tag in redaction_hits.keys():
-        m.inc_redaction(tag)
+        _maybe_metric("inc_redaction", tag)
         m.guardrail_redactions_total.labels("ingress", tag).inc()
     docx_hidden_reasons: List[str] = []
     docx_hidden_samples: List[str] = []
@@ -1362,7 +1379,11 @@ async def guardrail_evaluate_multipart(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             m.inc_verifier_retry(provider)
-        mode = "fallback" if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback" else "live"
+        mode = (
+            "fallback"
+            if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
+            else "live"
+        )
         m.inc_verifier_mode(mode)
 
     _audit(
@@ -1485,7 +1506,11 @@ async def guardrail_egress(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             m.inc_verifier_retry(provider)
-        mode = "fallback" if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback" else "live"
+        mode = (
+            "fallback"
+            if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
+            else "live"
+        )
         m.inc_verifier_mode(mode)
 
     _audit(
