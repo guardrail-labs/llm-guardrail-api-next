@@ -26,3 +26,8 @@ from app.services.config_sanitizer import ConfigSnapshot
 snap = ConfigSnapshot.capture()
 print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 ```
+
+### Verifier Runtime Behavior
+- Latency budget is enforced around verifier calls using an asyncio timeout.
+- On timeout, the adapter returns an allowed outcome with reason
+  `verifier_timeout_budget_exceeded` (policy layer may change final action).
