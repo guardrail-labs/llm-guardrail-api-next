@@ -306,3 +306,7 @@ cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
 cors_mod.install_cors(app)
 # END PR-K include
 
+# BEGIN PR-K include (CORS fallback)
+cors_fb_mod = __import__("app.middleware.cors_fallback", fromlist=["install_cors_fallback"])
+cors_fb_mod.install_cors_fallback(app)
+# END PR-K include
