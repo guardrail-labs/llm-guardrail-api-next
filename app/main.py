@@ -5,10 +5,9 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -35,20 +34,6 @@ except Exception:  # pragma: no cover
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
-
-
-class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add basic security headers expected by tests."""
-
-    async def dispatch(self, request: StarletteRequest, call_next):
-        resp: StarletteResponse = await call_next(request)
-        h = resp.headers
-        h.setdefault("X-Content-Type-Options", "nosniff")
-        h.setdefault("X-Frame-Options", "DENY")
-        h.setdefault("Referrer-Policy", "no-referrer")
-        h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        h.setdefault("Permissions-Policy", "interest-cohort=()")
-        return resp
 
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
@@ -260,25 +245,9 @@ def create_app() -> FastAPI:
     # Global daily/monthly quota
     app.add_middleware(QuotaMiddleware)
 
-    # Security headers + latency histogram + normalize 401 body
-    app.add_middleware(_SecurityHeadersMiddleware)
+    # Latency histogram + normalize 401 body
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
-
-    # CORS
-    raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
-    origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
-    if origins:
-        allow_credentials = True
-        if origins == ["*"]:
-            allow_credentials = False
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=origins,
-            allow_credentials=allow_credentials,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
 
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
@@ -307,6 +276,16 @@ def create_app() -> FastAPI:
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
+
+# BEGIN PR-K include (CORS)
+cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
+cors_mod.install_cors(app)
+# END PR-K include
+
+# BEGIN PR-K include (Security headers)
+sec_headers_mod = __import__("app.middleware.security_headers", fromlist=["install_security_headers"])
+sec_headers_mod.install_security_headers(app)
+# END PR-K include
 
 # BEGIN PR-J security include
 security_mod = __import__("app.middleware.security", fromlist=["install_security"])
