@@ -1,23 +1,28 @@
 # app/middleware/security.py
 # Summary (PR-J: Auth + Rate Limit, opt-in):
-# - Adds optional API key auth and in-memory token-bucket rate limiting.
+# - Optional API key auth and in-memory token-bucket rate limiting.
 # - Disabled by default; enable via env: API_SECURITY_ENABLED=1
 # - Configure keys: GUARDRAIL_API_KEYS="key1,key2"
 # - Configure scope: SECURED_PATH_PREFIXES (e.g., "/v1,/admin")
 # - Rate limit: RATE_LIMIT_RPS (float), RATE_LIMIT_BURST (int)
-# - Install by calling install_security(app) (wired from app/main.py snippet).
+# - Install by calling install_security(app) (wire from app/main.py).
+#
+# Update (mypy fixes):
+# - Annotate call_next as RequestResponseEndpoint so returns are typed as Response.
+# - Guard request.client None case.
 
 from __future__ import annotations
 
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, RequestResponseEndpoint
+
 
 # ----------------------------- config helpers ---------------------------------
 
@@ -57,7 +62,6 @@ def _int_env(name: str, default: int) -> int:
 
 def _csv_env(name: str) -> List[str]:
     raw = os.getenv(name) or ""
-    # split by comma/semicolon/space/colon
     parts = [p.strip() for p in raw.replace(";", ",").replace(":", ",").split(",")]
     return [p for p in parts if p]
 
@@ -72,7 +76,6 @@ def api_keys() -> Tuple[str, ...]:
 
 
 def secured_prefixes() -> Tuple[str, ...]:
-    # If unset, default to '/v1' only.
     parts = tuple(_csv_env("SECURED_PATH_PREFIXES")) or ("/v1",)
     return parts
 
@@ -94,7 +97,6 @@ class _Bucket:
     last_ts: float
 
     def take(self, n: float, now: float) -> bool:
-        # replenish
         elapsed = max(0.0, now - self.last_ts)
         self.tokens = min(self.capacity, self.tokens + elapsed * self.rps)
         self.last_ts = now
@@ -132,11 +134,11 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._keys = set(keys)
         self._prefixes = prefixes
-        # If prefixes explicitly provided via env, we enforce strictly.
-        # Otherwise (default '/v1'), keep common admin/health/metrics paths out of scope.
         self._explicit = bool(_csv_env("SECURED_PATH_PREFIXES"))
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         path = request.url.path or "/"
         if not self._path_secured(path):
             return await call_next(request)
@@ -153,7 +155,6 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
             return False
         if self._explicit:
             return True
-        # default exemptions when using default '/v1' setting
         for ex in ("/admin", "/metrics", "/health", "/healthz", "/docs", "/openapi.json"):
             if path.startswith(ex):
                 return False
@@ -168,7 +169,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._prefixes = prefixes
         self._limiter = _Limiter(rps, burst)
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         if self._rps <= 0.0:
             return await call_next(request)
 
@@ -176,8 +179,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not any(path.startswith(p) for p in self._prefixes):
             return await call_next(request)
 
-        # Use api key as principal; fallback to client host if missing
-        principal = request.headers.get("x-api-key") or request.client.host or "anon"
+        principal = request.headers.get("x-api-key")
+        if not principal:
+            client = request.client
+            principal = client.host if client is not None and client.host else "anon"
+
         now = time.monotonic()
         if not self._limiter.allow(principal, path, now):
             return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
@@ -194,6 +200,5 @@ def install_security(app) -> None:
     keys = api_keys()
     prefixes = secured_prefixes()
     rps, burst = rate_limit_config()
-    # Auth first, then rate limit
     app.add_middleware(APIKeyAuthMiddleware, keys=keys, prefixes=prefixes)
     app.add_middleware(RateLimitMiddleware, rps=rps, burst=burst, prefixes=prefixes)
