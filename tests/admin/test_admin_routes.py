@@ -1,5 +1,5 @@
 # tests/admin/test_admin_routes.py
-# Summary (PR-H): route smoke tests for admin UI.
+# Summary (PR-H fix 2): adjust to /admin/bindings/ui to avoid route collision.
 
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ def test_bindings_apply_enabled(monkeypatch) -> None:
     assert data["applied"] is True
     assert data["apply_enabled"] is True
 
-    # Page renders with table
-    r2 = client.get("/admin/bindings")
+    # Page renders with table at the UI endpoint
+    r2 = client.get("/admin/bindings/ui")
     assert r2.status_code == 200
     assert "p1" in r2.text or "p2" in r2.text
 
