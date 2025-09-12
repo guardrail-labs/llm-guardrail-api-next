@@ -41,3 +41,26 @@ print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 | `SECURED_PATH_PREFIXES`| csv    | `/v1`   | —             | `/v1,/admin`             | Path prefixes guarded by security middlews |
 | `RATE_LIMIT_RPS`       | float  | `0.0`   | `>= 0`        | `2.5`                    | 0 disables rate limiting                    |
 | `RATE_LIMIT_BURST`     | int    | `0`     | `>= 0`        | `10`                     | Bucket capacity for bursts                  |
+
+## CORS (optional)
+
+| Name                  | Type  | Default            | Allowed Range | Examples                               | Notes                                 |
+|-----------------------|-------|--------------------|---------------|----------------------------------------|---------------------------------------|
+| `CORS_ENABLED`        | bool  | `false`            | —             | `1`, `true`                            | Enable CORS middleware                |
+| `CORS_ALLOW_ORIGINS`  | csv   | _(required if on)_ | —             | `https://app.example.com,https://x.io` | Origins allowed; **no wildcard by default** |
+| `CORS_ALLOW_METHODS`  | csv   | `GET,POST,OPTIONS` | —             | `GET,POST,PUT,DELETE,OPTIONS`          | HTTP methods                          |
+| `CORS_ALLOW_HEADERS`  | csv   | `*`                | —             | `Authorization,Content-Type`           | Request headers                       |
+| `CORS_ALLOW_CREDENTIALS` | bool | `false`          | —             | `1`, `true`                            | Access-Control-Allow-Credentials      |
+| `CORS_MAX_AGE`        | int   | `600`              | `>=0`         | `86400`                                | Preflight cache max-age (seconds)     |
+
+## Security Headers (optional)
+
+| Name                               | Type  | Default                         | Notes                                      |
+|------------------------------------|-------|---------------------------------|--------------------------------------------|
+| `SEC_HEADERS_ENABLED`              | bool  | `false`                         | Enable security headers middleware         |
+| `SEC_HEADERS_FRAME_DENY`           | bool  | `true`                          | `X-Frame-Options: DENY`                    |
+| `SEC_HEADERS_CONTENT_TYPE_NOSNIFF` | bool  | `true`                          | `X-Content-Type-Options: nosniff`          |
+| `SEC_HEADERS_REFERRER_POLICY`      | str   | `no-referrer`                   | `Referrer-Policy` value                    |
+| `SEC_HEADERS_PERMISSIONS_POLICY`   | str   | `geolocation=()`                | `Permissions-Policy` directives            |
+| `SEC_HEADERS_HSTS`                 | bool  | `false`                         | Add HSTS header (enable only behind HTTPS) |
+| `SEC_HEADERS_HSTS_VALUE`           | str   | `max-age=31536000; includeSubDomains` | HSTS value                      |

@@ -11,6 +11,7 @@ _UUID_RE = re.compile(
 
 def _make_client():
     os.environ["API_KEY"] = "unit-test-key"
+    os.environ["SEC_HEADERS_ENABLED"] = "1"
 
     import app.config as cfg
 

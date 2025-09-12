@@ -18,6 +18,7 @@ def _make_client():
 
 
 def test_cors_allows_origin_header_on_simple_get():
+    os.environ["CORS_ENABLED"] = "1"
     os.environ["CORS_ALLOW_ORIGINS"] = "http://example.com"
     client = _make_client()
 

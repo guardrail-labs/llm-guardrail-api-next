@@ -1,44 +1,70 @@
+# app/middleware/security_headers.py
+# Summary (PR-K fix):
+# - Enable security headers by default (tests expect 'nosniff' on /health).
+# - Still allow disabling via SEC_HEADERS_ENABLED=0.
+# - Typed request handler to keep mypy happy.
+
 from __future__ import annotations
 
-from starlette.types import ASGIApp, Receive, Scope, Send
+import os
+from typing import Awaitable, Callable
 
-from app.config import get_settings
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.types import ASGIApp
+
+RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
-class SecurityHeadersMiddleware:
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _str_env(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip()
+
+
+def sec_headers_enabled() -> bool:
+    # Default ON to satisfy baseline tests; allow opt-out with SEC_HEADERS_ENABLED=0.
+    return _bool_env("SEC_HEADERS_ENABLED", True)
+
+
+class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
-        self.app = app
+        super().__init__(app)
+        self._frame_deny = _bool_env("SEC_HEADERS_FRAME_DENY", True)
+        self._nosniff = _bool_env("SEC_HEADERS_CONTENT_TYPE_NOSNIFF", True)
+        self._referrer = _str_env("SEC_HEADERS_REFERRER_POLICY", "no-referrer")
+        self._perm = _str_env("SEC_HEADERS_PERMISSIONS_POLICY", "geolocation=()")
+        self._hsts = _bool_env("SEC_HEADERS_HSTS", False)
+        self._hsts_value = _str_env(
+            "SEC_HEADERS_HSTS_VALUE",
+            "max-age=31536000; includeSubDomains",
+        )
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") != "http":
-            await self.app(scope, receive, send)
-            return
+    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
+        resp = await call_next(request)
+        if self._frame_deny:
+            resp.headers.setdefault("X-Frame-Options", "DENY")
+        if self._nosniff:
+            resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if self._referrer:
+            resp.headers.setdefault("Referrer-Policy", self._referrer)
+        if self._perm:
+            resp.headers.setdefault("Permissions-Policy", self._perm)
+        if self._hsts:
+            resp.headers.setdefault("Strict-Transport-Security", self._hsts_value)
+        return resp
 
-        async def send_wrapped(message):
-            if message.get("type") == "http.response.start":
-                headers = message.setdefault("headers", [])
 
-                def set_header(key: str, value: str) -> None:
-                    headers.append((key.encode("latin-1"), value.encode("latin-1")))
-
-                s = get_settings()
-                if s.SECURITY_HEADERS_ENABLED:
-                    set_header("X-Content-Type-Options", "nosniff")
-                    set_header("X-Frame-Options", "DENY")
-                    set_header("X-XSS-Protection", "0")
-                    set_header("Referrer-Policy", "no-referrer")
-                    if s.ADD_PERMISSIONS_POLICY:
-                        set_header("Permissions-Policy", "interest-cohort=()")
-                    if s.ADD_COOP:
-                        set_header("Cross-Origin-Opener-Policy", "same-origin")
-                    if s.ADD_HSTS:
-                        # Always-on for simplicity; for strict setups you can gate
-                        # by X-Forwarded-Proto = https if desired.
-                        max_age = str(int(s.HSTS_MAX_AGE))
-                        set_header(
-                            "Strict-Transport-Security",
-                            f"max-age={max_age}; includeSubDomains",
-                        )
-            await send(message)
-
-        await self.app(scope, receive, send_wrapped)
+def install_security_headers(app) -> None:
+    if not sec_headers_enabled():
+        return
+    app.add_middleware(_SecurityHeadersMiddleware)

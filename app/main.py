@@ -1,3 +1,4 @@
+# app/main.py
 from __future__ import annotations
 
 import importlib
@@ -5,10 +6,9 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -35,20 +35,6 @@ except Exception:  # pragma: no cover
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
-
-
-class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add basic security headers expected by tests."""
-
-    async def dispatch(self, request: StarletteRequest, call_next):
-        resp: StarletteResponse = await call_next(request)
-        h = resp.headers
-        h.setdefault("X-Content-Type-Options", "nosniff")
-        h.setdefault("X-Frame-Options", "DENY")
-        h.setdefault("Referrer-Policy", "no-referrer")
-        h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        h.setdefault("Permissions-Policy", "interest-cohort=()")
-        return resp
 
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
@@ -183,8 +169,8 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             "request_id": get_request_id() or "",
         }
 
-        safe_headers = _safe_headers_copy(resp.headers)
-        return JSONResponse(payload, status_code=401, headers=safe_headers)
+        _ = _safe_headers_copy(resp.headers)  # keep defaults & request id fresh
+        return JSONResponse(payload, status_code=401, headers=_safe_headers_copy(resp.headers))
 
 
 # ---- Router auto-inclusion ---------------------------------------------------
@@ -260,28 +246,16 @@ def create_app() -> FastAPI:
     # Global daily/monthly quota
     app.add_middleware(QuotaMiddleware)
 
-    # Security headers + latency histogram + normalize 401 body
-    app.add_middleware(_SecurityHeadersMiddleware)
+    # Latency histogram + normalize 401 body
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
-    # CORS
-    raw_origins = (os.getenv("CORS_ALLOW_ORIGINS") or "*").split(",")
-    origins: List[str] = [o.strip() for o in raw_origins if o.strip()]
-    if origins:
-        allow_credentials = True
-        if origins == ["*"]:
-            allow_credentials = False
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=origins,
-            allow_credentials=allow_credentials,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
+
+    # Include admin router (outside app.routes.*)
+    admin_router = __import__("app.admin.router", fromlist=["router"]).router
+    app.include_router(admin_router)
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
@@ -301,19 +275,38 @@ def create_app() -> FastAPI:
         # Generic 500 with JSON body so tests can .json() it.
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
+    # ---- PR-J/K/H installs (inside factory so fresh apps get them) ----
+
+    # PR-J: API key + rate limit (opt-in; reads env at import time)
+    security_mod = __import__("app.middleware.security", fromlist=["install_security"])
+    security_mod.install_security(app)
+
+    # PR-K: security headers (default ON; env can disable)
+    sec_headers_mod = __import__(
+        "app.middleware.security_headers",
+        fromlist=["install_security_headers"],
+    )
+    sec_headers_mod.install_security_headers(app)
+
+    # PR-K: always-on nosniff (belt-and-suspenders)
+    nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
+    nosniff_mod.install_nosniff(app)
+
+    # PR-K: standard CORS (permissive defaults; narrowed by env if provided)
+    cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
+    cors_mod.install_cors(app)
+
+    # PR-K: CORS fallback (guarantees preflight + echo when CORS_ENABLED=1)
+    cors_fb_mod = __import__(
+        "app.middleware.cors_fallback",
+        fromlist=["install_cors_fallback"],
+    )
+    # Add fallback last so it’s outermost for OPTIONS and header echo
+    cors_fb_mod.install_cors_fallback(app)
+
     return app
 
 
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
-
-# BEGIN PR-J security include
-security_mod = __import__("app.middleware.security", fromlist=["install_security"])
-security_mod.install_security(app)
-# END PR-J security include
-
-# BEGIN PR-H include
-admin_router = __import__("app.admin.router", fromlist=["router"]).router
-app.include_router(admin_router)
-# END PR-H include
