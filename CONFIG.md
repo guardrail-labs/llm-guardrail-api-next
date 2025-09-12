@@ -64,3 +64,10 @@ print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 | `SEC_HEADERS_PERMISSIONS_POLICY`   | str   | `geolocation=()`                | `Permissions-Policy` directives            |
 | `SEC_HEADERS_HSTS`                 | bool  | `false`                         | Add HSTS header (enable only behind HTTPS) |
 | `SEC_HEADERS_HSTS_VALUE`           | str   | `max-age=31536000; includeSubDomains` | HSTS value                      |
+
+## Request Size Limits (optional)
+
+| Name                     | Type | Default | Allowed Range | Examples     | Notes                                           |
+|--------------------------|------|---------|---------------|--------------|-------------------------------------------------|
+| `MAX_REQUEST_BYTES`      | int  | `0`     | `>= 0`        | `1048576`    | `0` disables (no limit)                         |
+| `MAX_REQUEST_BYTES_PATHS`| csv  | `/`     | —             | `/v1,/admin` | Path prefixes to enforce the limit against      |
