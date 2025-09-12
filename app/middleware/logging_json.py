@@ -1,3 +1,24 @@
+# app/middleware/logging_json.py
+# Summary (PR-M: JSON request logging + startup config snapshot, opt-in):
+# - When LOG_JSON_ENABLED=1, emits:
+#     * one startup "config_snapshot" JSON line
+#     * per-request "http_access" JSON lines (method, path, status, ms, request_id)
+# - No external deps; uses stdlib logging + json.
+# - Safe defaults: logging disabled unless enabled via env.
+# - Plays nicely with existing RequestIDMiddleware (includes request_id).
+#
+# Env:
+#   LOG_JSON_ENABLED=1           -> enable JSON logging (default: off)
+#   LOG_REQUESTS_ENABLED=1/0     -> override per-request logging (default: follows above)
+#   LOG_REQUESTS_PATHS=/v1,/adm  -> restrict to path prefixes (default: "/")
+#   LOG_MIN_STATUS=0..999        -> only log responses with status >= this (default: 0)
+#   LOG_SNAPSHOT_ENABLED=1/0     -> enable the config snapshot (default: follows LOG_JSON)
+#
+# Notes:
+# - Snapshot pulls from existing config helpers when available; falls back to env.
+# - All lines are single-line JSON (no newlines) for log shipping.
+# - Mypy: removed unused type: ignore comments.
+
 from __future__ import annotations
 
 import json
@@ -11,8 +32,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
-from app.metrics.route_label import route_label
 from app.middleware.request_id import get_request_id
+from app.metrics.route_label import route_label
 
 RequestHandler = Callable[[Request], Awaitable[Response]]
 
@@ -68,7 +89,7 @@ def _snapshot_payload() -> Dict[str, Any]:
 
     # Verifier settings (optional helper module)
     try:
-        from app.services.config_sanitizer import (  # type: ignore
+        from app.services.config_sanitizer import (
             get_verifier_latency_budget_ms,
             get_verifier_sampling_pct,
         )
@@ -81,10 +102,10 @@ def _snapshot_payload() -> Dict[str, Any]:
 
     # API security (optional)
     try:
-        from app.middleware.security import (  # type: ignore
+        from app.middleware.security import (
+            security_enabled,
             rate_limit_config,
             secured_prefixes,
-            security_enabled,
         )
 
         payload["api_security_enabled"] = bool(security_enabled())
@@ -95,7 +116,7 @@ def _snapshot_payload() -> Dict[str, Any]:
     except Exception:
         payload["api_security_enabled"] = False
 
-    # CORS (read envs directly; middleware installs unconditionally with env shaping)
+    # CORS (read envs directly; middleware installs with env shaping)
     payload["cors_allow_origins"] = _csv_env("CORS_ALLOW_ORIGINS")
     payload["cors_allow_methods"] = _csv_env("CORS_ALLOW_METHODS") or [
         "GET",
@@ -106,7 +127,7 @@ def _snapshot_payload() -> Dict[str, Any]:
 
     # Security headers (default enabled in our build; allow opt-out)
     try:
-        from app.middleware.security_headers import sec_headers_enabled  # type: ignore
+        from app.middleware.security_headers import sec_headers_enabled
 
         payload["security_headers_enabled"] = bool(sec_headers_enabled())
     except Exception:
@@ -163,7 +184,7 @@ class _JSONAccessLogMiddleware(BaseHTTPMiddleware):
 
             rid = get_request_id() or ""
             client = request.client.host if request.client and request.client.host else ""
-            msg = {
+            msg: Dict[str, Any] = {
                 "event": "http_access",
                 "ts": int(time.time() * 1000),
                 "method": request.method,
@@ -198,4 +219,3 @@ def install_request_logging(app) -> None:
     if not (_bool_env("LOG_JSON_ENABLED", False) or _bool_env("LOG_REQUESTS_ENABLED", False)):
         return
     app.add_middleware(_JSONAccessLogMiddleware)
-
