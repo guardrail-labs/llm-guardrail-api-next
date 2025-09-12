@@ -1,5 +1,5 @@
 # app/services/verifier/router_adapter.py
-# Summary (PR-O final, import fallback fix):
+# Summary (PR-O final, import fallback fix - remove unused ignore):
 # - Probabilistic sampling with injectable RNG (defaults to random.random).
 # - Latency budget via within_budget() + VerifierTimedOut (with fallback import path).
 # - Metrics preserved (skipped/sample/timeout/duration).
@@ -26,7 +26,7 @@ try:
     # Preferred (newer) location
     from app.services.verifier.within_budget import VerifierTimedOut, within_budget
 except Exception:  # pragma: no cover - fallback for older layout
-    from app.services.verifier.budget import VerifierTimedOut, within_budget  # type: ignore
+    from app.services.verifier.budget import VerifierTimedOut, within_budget
 
 
 @runtime_checkable
