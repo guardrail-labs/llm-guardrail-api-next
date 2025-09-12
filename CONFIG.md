@@ -81,3 +81,12 @@ print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 | `LOG_REQUESTS_ENABLED`  | bool  | `—`     | Defaults to `LOG_JSON_ENABLED`. Per-request access logs.              |
 | `LOG_REQUESTS_PATHS`    | csv   | `/`     | Path prefixes to log (e.g., `/v1,/admin`).                            |
 | `LOG_MIN_STATUS`        | int   | `0`     | Only log responses with status >= this value.                         |
+
+## Circuit Breaker (optional)
+
+| Name                               | Type | Default | Allowed Range | Notes                                                |
+|------------------------------------|------|---------|---------------|------------------------------------------------------|
+| `VERIFIER_CB_ENABLED`              | bool | `false` | —             | Enable circuit breaker support for external calls.   |
+| `VERIFIER_CB_FAILURE_THRESHOLD`    | int  | `5`     | `>= 1`        | Failures before opening the breaker.                 |
+| `VERIFIER_CB_RECOVERY_SECONDS`     | int  | `30`    | `>= 1`        | Cooldown before trying half-open probes.             |
+| `VERIFIER_CB_HALF_OPEN_MAX_CALLS`  | int  | `1`     | `>= 1`        | Trial calls allowed in half-open before blocking.    |
