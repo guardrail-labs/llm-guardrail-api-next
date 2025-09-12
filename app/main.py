@@ -300,3 +300,8 @@ security_mod.install_security(app)
 admin_router = __import__("app.admin.router", fromlist=["router"]).router
 app.include_router(admin_router)
 # END PR-H include
+
+# BEGIN PR-K nosniff include
+nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
+nosniff_mod.install_nosniff(app)
+# END PR-K nosniff include
