@@ -308,6 +308,14 @@ def create_app() -> FastAPI:
     # Add fallback last so it’s outermost for OPTIONS and header echo
     cors_fb_mod.install_cors_fallback(app)
 
+    # PR-M: JSON request logging + config snapshot (opt-in)
+    log_mod = __import__(
+        "app.middleware.logging_json",
+        fromlist=["install_request_logging", "log_config_snapshot"],
+    )
+    log_mod.install_request_logging(app)
+    log_mod.log_config_snapshot()
+
     return app
 
 
