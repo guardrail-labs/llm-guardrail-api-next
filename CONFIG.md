@@ -32,6 +32,17 @@ print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 - On timeout, the adapter returns an allowed outcome with reason
   `verifier_timeout_budget_exceeded` (policy layer may change final action).
 
+### Observability
+When the circuit breaker is enabled (`VERIFIER_CB_ENABLED=1`), additional Prometheus
+series are emitted per provider:
+
+- `guardrail_verifier_circuit_open_total{provider}` — calls skipped because the
+  circuit breaker was open.
+- `guardrail_verifier_provider_error_total{provider}` — provider exceptions (excluding
+  timeouts).
+- `guardrail_verifier_circuit_state{provider}` — gauge of breaker state (1=open,
+  0=closed, emitted only if gauges are supported).
+
 ## Security (optional)
 
 | Name                   | Type   | Default | Allowed Range | Examples                 | Notes                                      |

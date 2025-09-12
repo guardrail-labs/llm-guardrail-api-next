@@ -4,6 +4,7 @@
 # - Latency budget via within_budget() + VerifierTimedOut (with fallback import path).
 # - Metrics preserved (skipped/sample/timeout/duration).
 # - Optional circuit breaker (env-gated) that skips when open and records success/failure.
+# - Circuit breaker metrics: circuit_open/error counters and optional state gauge.
 # - Defaults pull from config_sanitizer; ctor args can override without breaking callers.
 # - Imports VERIFIER_METRICS from app.observability.metrics.
 # - Sampling skip reason now starts with "sampling=skip ..." to satisfy tests.
@@ -12,14 +13,14 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any, Callable, Optional, Protocol, runtime_checkable, cast
+from typing import Any, Callable, Optional, Protocol, cast, runtime_checkable
 
+from app.observability.metrics import VERIFIER_METRICS
+from app.services.circuit_breaker import CircuitBreaker, breaker_from_env
 from app.services.config_sanitizer import (
     get_verifier_latency_budget_ms,
     get_verifier_sampling_pct,
 )
-from app.services.circuit_breaker import breaker_from_env, CircuitBreaker
-from app.observability.metrics import VERIFIER_METRICS
 from app.services.verifier.types import VerifierOutcome
 
 # Support both possible locations for the budget helper.
@@ -147,9 +148,12 @@ class VerifierAdapter:
 
         # Circuit breaker gate
         if self._cb_enabled and not self._cb.allow_call():
-            # Count as skipped; a dedicated "circuit_open" metric can be added later.
             self._metrics.skipped_total.labels(provider=self._prov_name).inc()
-            return VerifierOutcome(allowed=True, reason="circuit_open (skipped)")
+            self._metrics.circuit_open_total.labels(provider=self._prov_name).inc()
+            gauge = getattr(self._metrics, "circuit_state", None)
+            if gauge is not None:
+                gauge.labels(provider=self._prov_name).set(1.0)
+            return VerifierOutcome(allowed=True, reason="circuit_open")
 
         async def _call() -> VerifierOutcome:
             return await self._provider.evaluate(text)
@@ -161,6 +165,9 @@ class VerifierAdapter:
             self._metrics.duration_seconds.labels(provider=self._prov_name).observe(elapsed)
             if self._cb_enabled:
                 self._cb.record_success()
+                gauge = getattr(self._metrics, "circuit_state", None)
+                if gauge is not None:
+                    gauge.labels(provider=self._prov_name).set(0.0)
             return outcome
         except VerifierTimedOut:
             elapsed = time.perf_counter() - start
@@ -168,9 +175,16 @@ class VerifierAdapter:
             self._metrics.duration_seconds.labels(provider=self._prov_name).observe(elapsed)
             if self._cb_enabled:
                 self._cb.record_failure()
+                gauge = getattr(self._metrics, "circuit_state", None)
+                if gauge is not None:
+                    gauge.labels(provider=self._prov_name).set(1.0)
             # Preserve external behavior: allow, but mark reason for policy/audit.
             return VerifierOutcome(allowed=True, reason="verifier_timeout_budget_exceeded")
         except Exception as exc:
             if self._cb_enabled:
                 self._cb.record_failure()
+                gauge = getattr(self._metrics, "circuit_state", None)
+                if gauge is not None:
+                    gauge.labels(provider=self._prov_name).set(1.0)
+            self._metrics.error_total.labels(provider=self._prov_name).inc()
             return VerifierOutcome(allowed=True, reason=f"verifier_error: {type(exc).__name__}")
