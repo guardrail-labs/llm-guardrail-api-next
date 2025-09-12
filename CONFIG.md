@@ -151,4 +151,20 @@ GIT_SHA – git commit sha
 BUILD_TIME – build timestamp (ISO-8601 recommended)
 
 
+## Web Crawlers & Security.txt
+
+| Name                      | Type | Default | Example                            | Notes                                  |
+|---------------------------|------|---------|------------------------------------|----------------------------------------|
+| ROBOTS_ALLOW              | str  | —       | `/public,/health`                  | Comma-separated paths to allow.        |
+| ROBOTS_DISALLOW           | str  | `/admin`| `/private`                         | Comma-separated paths to disallow.     |
+| SECURITY_CONTACT          | str  | —       | `mailto:security@example.com`      | Enables `/.well-known/security.txt`.   |
+| SECURITY_POLICY           | str  | —       | `https://example.com/security`     | Optional link to policy.               |
+| SECURITY_ENCRYPTION       | str  | —       | `https://example.com/pgp.txt`      | Optional PGP key or location.          |
+| SECURITY_ACKNOWLEDGEMENTS | str  | —       | `https://example.com/hall-of-fame` | Optional acknowledgements page.        |
+| SECURITY_PREFERRED_LANG   | str  | —       | `en, fr`                           | Optional list of preferred languages.  |
+
+**Endpoints**
+- `GET /robots.txt` — text/plain. Defaults to disallow `/admin`.
+- `GET /.well-known/security.txt` — text/plain. Returned only if `SECURITY_CONTACT` is set.
+
 ## Runbook
