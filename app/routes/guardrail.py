@@ -42,6 +42,17 @@ VERIFIER_LATENCY_BUDGET_MS = get_verifier_latency_budget_ms()
 VERIFIER_SAMPLING_PCT = get_verifier_sampling_pct()
 # --- END PR-C wire-up block ---
 
+# --- BEGIN PR-D wire-up block ---
+# from app.services.verifier.router_adapter import VerifierAdapter
+# from app.services.verifier.providers.mock import MockProvider  # example
+# verifier = VerifierAdapter(MockProvider())
+#
+# async def evaluate_with_guardrail(text: str):
+#     outcome = await verifier.evaluate(text)
+#     # Map outcome to existing policy/action machinery as you already do.
+#     return outcome
+# --- END PR-D wire-up block ---
+
 # NEW: hardened verifier integration (safe, optional) with proper Optional typing
 HardenedVerifyFn = Callable[..., Awaitable[Tuple[Optional[str], Dict[str, str]]]]
 try:
