@@ -1,5 +1,13 @@
+# app/admin/router.py
+# Summary (PR-H fix):
+# - Fix JSON serialization in /admin/bindings/apply by converting dataclasses to dicts
+#   via dataclasses.asdict (BindingIssue contains nested Binding dataclasses).
+# - (No API surface changes.) Deprecation warnings about TemplateResponse signature
+#   are left as-is to avoid unrelated diffs.
+
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
@@ -65,11 +73,13 @@ async def admin_bindings_apply(payload: Dict[str, Any]) -> JSONResponse:
     if APPLY_ENABLED():
         set_bindings(new_bindings)
         applied = True
+    # Use asdict() to ensure nested dataclasses (BindingIssue.a/b -> Binding) are serializable
+    issues_json = [asdict(i) for i in issues]
     return JSONResponse(
         {
             "applied": applied,
             "apply_enabled": APPLY_ENABLED(),
-            "issues": [i.__dict__ for i in issues],
+            "issues": issues_json,
             "count": len(new_bindings),
         }
     )
