@@ -183,6 +183,18 @@ Behavior:
 - `GET /live`  → always `200 {"status":"ok","ok":true}`
 - `GET /ready` → `503` until startup delay elapses; `503` again during shutdown/drain.
 
+## Readiness Probes (Verifier prerequisites)
+
+| Name                       | Type | Default    | Range | Example                       | Notes                                                    |
+|----------------------------|------|------------|-------|-------------------------------|----------------------------------------------------------|
+| PROBE_VERIFIER_ENABLED     | bool | false      | —     | true                          | If true, `/ready` also requires probe to pass.           |
+| PROBE_VERIFIER_REQUIRED_ENVS | str | OPENAI_API_KEY | —   | OPENAI_API_KEY,OTHER_TOKEN    | Comma-separated envs that must be non-empty.             |
+| PROBE_VERIFIER_INTERVAL_MS | int  | 30000      | ≥ 0   | 10000                         | Periodic re-check; 0 = only at startup.                  |
+
+Behavior:
+- If disabled, `/ready` behaves exactly as before (delay/drain only).
+- If enabled, `/ready` is 503 until all required env vars are present.
+
 ## Response Compression
 
 | Name                       | Type | Default | Range | Example |
