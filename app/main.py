@@ -292,6 +292,10 @@ def create_app() -> FastAPI:
     nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
     nosniff_mod.install_nosniff(app)
 
+    # PR-Y: CSP & Referrer-Policy
+    csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
+    csp_mod.install_csp(app)
+
     # PR-K: standard CORS (permissive defaults; narrowed by env if provided)
     cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
     cors_mod.install_cors(app)

@@ -41,7 +41,6 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._frame_deny = _bool_env("SEC_HEADERS_FRAME_DENY", True)
         self._nosniff = _bool_env("SEC_HEADERS_CONTENT_TYPE_NOSNIFF", True)
-        self._referrer = _str_env("SEC_HEADERS_REFERRER_POLICY", "no-referrer")
         self._perm = _str_env("SEC_HEADERS_PERMISSIONS_POLICY", "geolocation=()")
         self._hsts = _bool_env("SEC_HEADERS_HSTS", False)
         self._hsts_value = _str_env(
@@ -55,8 +54,6 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             resp.headers.setdefault("X-Frame-Options", "DENY")
         if self._nosniff:
             resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        if self._referrer:
-            resp.headers.setdefault("Referrer-Policy", self._referrer)
         if self._perm:
             resp.headers.setdefault("Permissions-Policy", self._perm)
         if self._hsts:

@@ -71,7 +71,6 @@ series are emitted per provider:
 | `SEC_HEADERS_ENABLED`              | bool  | `false`                         | Enable security headers middleware         |
 | `SEC_HEADERS_FRAME_DENY`           | bool  | `true`                          | `X-Frame-Options: DENY`                    |
 | `SEC_HEADERS_CONTENT_TYPE_NOSNIFF` | bool  | `true`                          | `X-Content-Type-Options: nosniff`          |
-| `SEC_HEADERS_REFERRER_POLICY`      | str   | `no-referrer`                   | `Referrer-Policy` value                    |
 | `SEC_HEADERS_PERMISSIONS_POLICY`   | str   | `geolocation=()`                | `Permissions-Policy` directives            |
 | `SEC_HEADERS_HSTS`                 | bool  | `false`                         | Add HSTS header (enable only behind HTTPS) |
 | `SEC_HEADERS_HSTS_VALUE`           | str   | `max-age=31536000; includeSubDomains` | HSTS value                      |
@@ -216,3 +215,16 @@ Notes:
 - Content type: `text/plain; version=0.0.4; charset=utf-8`
 - The route is hidden (404) unless both enabled **and** `prometheus_client` is installed.
 
+
+## Browser Security Headers (CSP & Referrer-Policy)
+
+| Name                     | Type | Default                                                             | Example                       | Notes                                          |
+|--------------------------|------|---------------------------------------------------------------------|-------------------------------|-----------------------------------------------|
+| CSP_ENABLED              | bool | false                                                               | true                          | If true, adds `Content-Security-Policy`.      |
+| CSP_VALUE                | str  | default-src 'none'; frame-ancestors 'none'; base-uri 'none'         | default-src 'self'            | Exact CSP string to emit.                     |
+| REFERRER_POLICY_ENABLED  | bool | false                                                               | true                          | If true, adds `Referrer-Policy`.              |
+| REFERRER_POLICY_VALUE    | str  | no-referrer                                                         | strict-origin-when-cross-origin | Exact Referrer-Policy header value.         |
+
+Behavior:
+- Headers are added only when enabled.
+- If an upstream already set the header, it is preserved (not overridden).
