@@ -65,10 +65,14 @@ class _CORSFallback(BaseHTTPMiddleware):
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
 
         # Add ACAO for simple/actual requests if origin allowed and header not already set
-        if origin and "access-control-allow-origin" not in {k.lower(): v for k, v in resp.headers.items()}:
-            allow = self._is_origin_allowed(origin)
-            if allow:
-                resp.headers["Access-Control-Allow-Origin"] = origin if allow == "echo" else "*"
+        if origin:
+            lower_keys = {k.lower() for k in resp.headers.keys()}
+            if "access-control-allow-origin" not in lower_keys:
+                allow = self._is_origin_allowed(origin)
+                if allow:
+                    resp.headers["Access-Control-Allow-Origin"] = (
+                        origin if allow == "echo" else "*"
+                    )
         return resp
 
     def _preflight_response(self, request: Request, origin: str) -> Response:
@@ -77,7 +81,9 @@ class _CORSFallback(BaseHTTPMiddleware):
         resp = Response(status_code=204)
         allow = self._is_origin_allowed(origin)
         if allow:
-            resp.headers["Access-Control-Allow-Origin"] = origin if allow == "echo" else "*"
+            resp.headers["Access-Control-Allow-Origin"] = (
+                origin if allow == "echo" else "*"
+            )
         resp.headers["Access-Control-Allow-Methods"] = methods
         resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "*"
         resp.headers["Access-Control-Max-Age"] = str(_max_age())
