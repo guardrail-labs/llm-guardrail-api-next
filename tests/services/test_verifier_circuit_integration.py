@@ -1,12 +1,13 @@
 # tests/services/test_verifier_circuit_integration.py
-# Summary (PR-O): Ensure adapter respects circuit breaker gating and recovery.
+# Summary: Circuit-breaker integration tests without pytest-asyncio.
+# - Uses asyncio.run(...) inside plain sync tests.
+# - Enables CB via env and forces full sampling for determinism.
 
 from __future__ import annotations
 
 import asyncio
 import importlib
-
-import pytest
+import time
 
 from app.services.verifier.types import VerifierOutcome
 
@@ -26,50 +27,57 @@ class _FlippyProvider:
         return VerifierOutcome(allowed=True, reason="ok")
 
 
-@pytest.mark.asyncio
-async def test_adapter_skips_when_circuit_open(monkeypatch) -> None:
-    # Enable breaker with threshold=1 so the first failure opens it
+def _reload_adapter():
+    import app.services.verifier.router_adapter as adapter_mod
+
+    importlib.reload(adapter_mod)
+    return adapter_mod
+
+
+def test_adapter_skips_when_circuit_open(monkeypatch) -> None:
+    # Enable breaker: 1 failure opens the circuit; no immediate recovery
     monkeypatch.setenv("VERIFIER_CB_ENABLED", "1")
     monkeypatch.setenv("VERIFIER_CB_FAILURE_THRESHOLD", "1")
     monkeypatch.setenv("VERIFIER_CB_RECOVERY_SECONDS", "30")
-    # Make sure adapter picks up env on import/init
-    import app.services.verifier.router_adapter as adapter_mod
-    importlib.reload(adapter_mod)
+    # Ensure verifier is always sampled
+    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "1.0")
 
-    adapter = adapter_mod.VerifierAdapter(_FailingProvider(), 1.0, None)
+    adapter_mod = _reload_adapter()
+    adapter = adapter_mod.VerifierAdapter(_FailingProvider())
 
-    # First call fails -> breaker records failure and opens
-    out1 = await adapter.evaluate("x")
+    # First call should fail the provider and open the circuit
+    out1 = asyncio.run(adapter.evaluate("x"))
     assert out1.allowed is True
     assert "verifier_error" in out1.reason
 
-    # Next call should be skipped by the open breaker
-    out2 = await adapter.evaluate("y")
+    # Second call should be short-circuited by the open circuit
+    out2 = asyncio.run(adapter.evaluate("y"))
     assert out2.allowed is True
     assert "circuit_open" in out2.reason
 
 
-@pytest.mark.asyncio
-async def test_adapter_half_open_recovers_after_cooldown(monkeypatch) -> None:
+def test_adapter_half_open_recovers_after_cooldown(monkeypatch) -> None:
+    # Short cooldown to reach half-open quickly
     monkeypatch.setenv("VERIFIER_CB_ENABLED", "1")
     monkeypatch.setenv("VERIFIER_CB_FAILURE_THRESHOLD", "1")
     monkeypatch.setenv("VERIFIER_CB_RECOVERY_SECONDS", "1")
-    import app.services.verifier.router_adapter as adapter_mod
-    importlib.reload(adapter_mod)
+    # Ensure verifier is always sampled
+    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "1.0")
+
+    adapter_mod = _reload_adapter()
 
     prov = _FlippyProvider()
-    adapter = adapter_mod.VerifierAdapter(prov, 1.0, None)
+    adapter = adapter_mod.VerifierAdapter(prov)
 
-    # Trip the breaker
-    out1 = await adapter.evaluate("x")
+    # Trip the circuit
+    out1 = asyncio.run(adapter.evaluate("x"))
     assert out1.allowed is True and "verifier_error" in out1.reason
 
-    # Wait for cooldown -> half-open
-    await asyncio.sleep(1.1)
+    # After cooldown, breaker should allow a trial call (half-open)
+    time.sleep(1.1)
 
-    # Now succeed to close the breaker
+    # Make provider succeed and confirm breaker closes on success
     prov.fail = False
-    out2 = await adapter.evaluate("y")
+    out2 = asyncio.run(adapter.evaluate("y"))
     assert out2.allowed is True
-    assert "circuit_open" not in out2.reason
     assert out2.reason == "ok"
