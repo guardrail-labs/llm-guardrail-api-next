@@ -1,51 +1,31 @@
 # tests/middleware/test_max_body.py
-# Summary (PR-L): Validates 413 on oversized body and allows small payloads.
+# Summary: Ensures 413 is returned for bodies exceeding MAX_REQUEST_BYTES.
 
 from __future__ import annotations
 
-import importlib
-import os
+from importlib import reload
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
-
-def _client_with_env(env: dict[str, str]) -> TestClient:
-    for k, v in env.items():
-        os.environ[k] = v
-    import app.main as main
-    importlib.reload(main)
-    return TestClient(main.app)
+import app.main as main
 
 
-def test_blocks_large_post_to_admin_apply() -> None:
-    client = _client_with_env(
-        {
-            "MAX_REQUEST_BYTES": "50",
-            "MAX_REQUEST_BYTES_PATHS": "/admin",
-            # ensure route available; apply may still be disabled but middleware fires first
-            "ADMIN_ENABLE_APPLY": "0",
-        }
-    )
-
-    # Body larger than 50 bytes
-    payload = {"x": "a" * 200}
-    r = client.post("/admin/bindings/apply", json=payload)
+def test_over_limit_returns_413(monkeypatch) -> None:
+    # 64-byte limit; send 128 bytes to a simple path
+    monkeypatch.setenv("MAX_REQUEST_BYTES", "64")
+    reload(main)
+    client = TestClient(main.app)
+    r = client.post("/health", content="x" * 128)
     assert r.status_code == 413
     data = r.json()
-    assert data["code"] == "payload_too_large"
-    assert "too large" in data["detail"].lower()
+    assert data.get("code") == "payload_too_large"
 
 
-def test_small_body_allowed_passes_through() -> None:
-    client = _client_with_env(
-        {
-            "MAX_REQUEST_BYTES": "1000",
-            "MAX_REQUEST_BYTES_PATHS": "/admin",
-            "ADMIN_ENABLE_APPLY": "0",
-        }
-    )
-    # Small body below the limit
-    payload = {"x": "ok"}
-    r = client.post("/admin/bindings/apply", json=payload)
-    # We only assert NOT 413; route may 401/200/302 depending on env/other middlewares
+def test_under_limit_passes_through(monkeypatch) -> None:
+    monkeypatch.setenv("MAX_REQUEST_BYTES", "64")
+    reload(main)
+    client = TestClient(main.app)
+    # This path is GET-only; posting will be 405 if it reaches routing,
+    # which proves we didn't stop it with 413.
+    r = client.post("/health", content="ok")
     assert r.status_code != 413

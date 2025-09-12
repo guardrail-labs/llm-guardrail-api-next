@@ -250,10 +250,6 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
-    # PR-L: request size limit (opt-in)
-    maxbody_mod = __import__("app.middleware.max_body", fromlist=["install_max_body_limit"])
-    maxbody_mod.install_max_body_limit(app)
-
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
 
@@ -322,3 +318,8 @@ def create_app() -> FastAPI:
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
+
+# BEGIN PR-T include (Max request body size limiter)
+maxb_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
+maxb_mod.install_max_body(app)
+# END PR-T include
