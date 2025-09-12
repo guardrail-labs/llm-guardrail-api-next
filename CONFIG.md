@@ -101,3 +101,13 @@ series are emitted per provider:
 | `VERIFIER_CB_FAILURE_THRESHOLD`    | int  | `5`     | `>= 1`        | Failures before opening the breaker.                 |
 | `VERIFIER_CB_RECOVERY_SECONDS`     | int  | `30`    | `>= 1`        | Cooldown before trying half-open probes.             |
 | `VERIFIER_CB_HALF_OPEN_MAX_CALLS`  | int  | `1`     | `>= 1`        | Trial calls allowed in half-open before blocking.    |
+
+## Health / Probes
+
+| Name                   | Type | Default | Range     | Example | Notes                                  |
+|------------------------|------|---------|-----------|---------|----------------------------------------|
+| HEALTH_READY_DELAY_MS  | int  | 0       | ≥ 0 ms    | 1500    | Delay before `/ready` returns 200.     |
+
+Endpoints:
+- `GET /live`  → always returns 200 with `{"status":"ok","ok":true}`
+- `GET /ready` → returns 503 during startup delay, then 200 with same payload as `/live`.
