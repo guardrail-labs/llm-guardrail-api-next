@@ -1,12 +1,11 @@
-from __future__ import annotations
+# tests/admin/test_admin_routes.py
+# Summary (PR-H): route smoke tests for admin UI.
 
-import os
-from typing import List
+from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
 from app.main import app  # existing FastAPI app
-from app.services.bindings.models import Binding
 from app.services.bindings.repository import get_bindings
 
 
@@ -102,6 +101,6 @@ def test_active_policy_view(monkeypatch) -> None:
 
 
 def test_admin_metrics_redirect() -> None:
-    r = client.get("/admin/metrics", allow_redirects=False)
+    r = client.get("/admin/metrics", follow_redirects=False)
     assert r.status_code in (302, 307)
     assert r.headers.get("location") == "/metrics"
