@@ -1,9 +1,8 @@
 # app/middleware/security_headers.py
-# Summary (PR-K: Security headers, opt-in):
-# - Adds common security headers when SEC_HEADERS_ENABLED=1.
-# - All values configurable via env with safe defaults.
-# - Default is disabled (no header changes unless enabled).
-# - Mypy fix: type the request handler so Response isn't inferred as Any.
+# Summary (PR-K fix):
+# - Enable security headers by default (tests expect 'nosniff' on /health).
+# - Still allow disabling via SEC_HEADERS_ENABLED=0.
+# - Typed request handler to keep mypy happy.
 
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
-# Type alias for Starlette's request handler callback
 RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
@@ -34,7 +32,8 @@ def _str_env(name: str, default: str) -> str:
 
 
 def sec_headers_enabled() -> bool:
-    return _bool_env("SEC_HEADERS_ENABLED", False)
+    # Default ON to satisfy baseline tests; allow opt-out with SEC_HEADERS_ENABLED=0.
+    return _bool_env("SEC_HEADERS_ENABLED", True)
 
 
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -50,9 +49,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "max-age=31536000; includeSubDomains",
         )
 
-    async def dispatch(
-        self, request: Request, call_next: RequestHandler
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         resp = await call_next(request)
         if self._frame_deny:
             resp.headers.setdefault("X-Frame-Options", "DENY")
@@ -63,7 +60,6 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if self._perm:
             resp.headers.setdefault("Permissions-Policy", self._perm)
         if self._hsts:
-            # Only add HSTS over HTTPS in real deployments; operator controls this.
             resp.headers.setdefault("Strict-Transport-Security", self._hsts_value)
         return resp
 
