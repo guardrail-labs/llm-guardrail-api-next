@@ -31,3 +31,13 @@ print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 - Latency budget is enforced around verifier calls using an asyncio timeout.
 - On timeout, the adapter returns an allowed outcome with reason
   `verifier_timeout_budget_exceeded` (policy layer may change final action).
+
+## Security (optional)
+
+| Name                   | Type   | Default | Allowed Range | Examples                 | Notes                                      |
+|------------------------|--------|---------|---------------|--------------------------|--------------------------------------------|
+| `API_SECURITY_ENABLED` | bool   | `false` | —             | `1`, `true`, `yes`       | When enabled, attaches auth + rate limiting |
+| `GUARDRAIL_API_KEYS`   | csv    | —       | —             | `abc123,def456`          | Comma/colon/semicolon-separated API keys   |
+| `SECURED_PATH_PREFIXES`| csv    | `/v1`   | —             | `/v1,/admin`             | Path prefixes guarded by security middlews |
+| `RATE_LIMIT_RPS`       | float  | `0.0`   | `>= 0`        | `2.5`                    | 0 disables rate limiting                    |
+| `RATE_LIMIT_BURST`     | int    | `0`     | `>= 0`        | `10`                     | Bucket capacity for bursts                  |
