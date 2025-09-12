@@ -111,3 +111,44 @@ series are emitted per provider:
 Endpoints:
 - `GET /live`  → always returns 200 with `{"status":"ok","ok":true}`
 - `GET /ready` → returns 503 during startup delay, then 200 with same payload as `/live`.
+
+## Version & Build Info
+
+| Endpoint  | Description                                    |
+|-----------|------------------------------------------------|
+| `/version`| Returns build metadata and a sanitized config snapshot.
+
+**Payload**
+```json
+{
+  "info": {
+    "version": "<APP_VERSION>",
+    "commit": "<GIT_SHA>",
+    "build_time": "<BUILD_TIME>",
+    "python": "3.11.x",
+    "platform": "...",
+    "fastapi": "...",
+    "starlette": "..."
+  },
+  "config": {
+    "verifier_sampling_pct": 0.0..1.0,
+    "verifier_latency_budget_ms": null | int,
+    "circuit_breaker_enabled": true|false,
+    "rate_limit_rps": int,
+    "rate_limit_burst": int,
+    "cors_enabled": true|false,
+    "api_security_enabled": true|false
+  }
+}
+```
+
+Environment variables used (optional)
+
+APP_VERSION – arbitrary app version string
+
+GIT_SHA – git commit sha
+
+BUILD_TIME – build timestamp (ISO-8601 recommended)
+
+
+## Runbook
