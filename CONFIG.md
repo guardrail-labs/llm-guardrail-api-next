@@ -76,12 +76,15 @@ series are emitted per provider:
 | `SEC_HEADERS_HSTS`                 | bool  | `false`                         | Add HSTS header (enable only behind HTTPS) |
 | `SEC_HEADERS_HSTS_VALUE`           | str   | `max-age=31536000; includeSubDomains` | HSTS value                      |
 
-## Request Size Limits (optional)
+## Request Size Limits
 
-| Name                     | Type | Default | Allowed Range | Examples     | Notes                                           |
-|--------------------------|------|---------|---------------|--------------|-------------------------------------------------|
-| `MAX_REQUEST_BYTES`      | int  | `0`     | `>= 0`        | `1048576`    | `0` disables (no limit)                         |
-| `MAX_REQUEST_BYTES_PATHS`| csv  | `/`     | —             | `/v1,/admin` | Path prefixes to enforce the limit against      |
+| Name               | Type | Default | Range | Example |
+|--------------------|------|---------|-------|---------|
+| MAX_REQUEST_BYTES  | int  | 0       | ≥ 0   | 1048576 |
+
+Notes:
+- `0` disables the limiter.
+- If `Content-Length` exceeds the limit, the request is rejected with HTTP 413.
 
 ## JSON Logging (optional)
 

@@ -1,100 +1,61 @@
 # app/middleware/max_body.py
-# Summary (PR-L: Request size limit, opt-in):
-# - Rejects oversized request bodies early with 413 JSON error.
-# - Enabled when MAX_REQUEST_BYTES > 0.
-# - Scope can be narrowed with MAX_REQUEST_BYTES_PATHS (csv of path prefixes).
-# - Methods enforced: POST, PUT, PATCH.
-#
-# Response (413):
-#   {"code": "payload_too_large", "detail": "...", "request_id": "<id>"}
-#
-# Notes:
-# - Uses Content-Length when available (does not buffer the entire body).
-# - Safe default is disabled (MAX_REQUEST_BYTES unset or <= 0).
-# - Plays nice with existing JSON error shape used in tests.
+# Summary (PR-T): Install an optional max request body size limiter.
+# - Reads MAX_REQUEST_BYTES (default 0 => disabled).
+# - If Content-Length > limit => respond 413 early.
+# - Minimal, dependency-free, and mypy/ruff clean.
 
 from __future__ import annotations
 
-import os
-from typing import Awaitable, Callable, List
+from typing import Awaitable, Callable, Optional
 
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 from starlette.types import ASGIApp
 
-from app.middleware.request_id import get_request_id
-
-RequestHandler = Callable[[Request], Awaitable[Response]]
+from app.services.config_sanitizer import get_int
 
 
-def _int_env(name: str, default: int = 0) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        val = int(float(raw.strip()))
-        return val if val > 0 else 0
-    except Exception:
-        return 0
-
-
-def _csv_env(name: str) -> List[str]:
-    raw = os.getenv(name) or ""
-    parts = [p.strip() for p in raw.replace(";", ",").replace(":", ",").split(",")]
-    return [p for p in parts if p]
-
-
-def _enabled() -> bool:
-    return _int_env("MAX_REQUEST_BYTES", 0) > 0
-
-
-def _limit_bytes() -> int:
-    return _int_env("MAX_REQUEST_BYTES", 0)
-
-
-def _path_prefixes() -> List[str]:
-    # Default to "/" (apply everywhere) if not provided
-    return _csv_env("MAX_REQUEST_BYTES_PATHS") or ["/"]
+def _read_limit_bytes() -> int:
+    # Accept ints/float strings; clamp to >= 0
+    return get_int("MAX_REQUEST_BYTES", default=0, min_value=0)
 
 
 class _MaxBodyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, limit_bytes: int) -> None:
         super().__init__(app)
-        self._limit = _limit_bytes()
-        self._prefixes = _path_prefixes()
-        self._methods = {"POST", "PUT", "PATCH"}
+        self._limit = max(0, int(limit_bytes))
 
-    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
-        if (
-            self._limit > 0
-            and request.method in self._methods
-            and any(request.url.path.startswith(p) for p in self._prefixes)
-        ):
-            raw_len = request.headers.get("content-length")
-            if raw_len:
-                try:
-                    n = int(raw_len)
-                except Exception:
-                    n = 0
-                if n > self._limit:
-                    return self._reject(n)
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if self._limit <= 0:
+            return await call_next(request)
+
+        # Use Content-Length if present; for unknown/chunked bodies, we allow
+        # to keep this middleware cheap and non-invasive.
+        cl_header: Optional[str] = request.headers.get("content-length")
+        if cl_header is not None:
+            try:
+                content_len = int(float(cl_header.strip()))
+            except Exception:
+                content_len = 0
+            if content_len > self._limit:
+                # Return a simple, consistent JSON payload.
+                # (main.py has its own error shaper for some statuses; 413 here is sufficient.)
+                return JSONResponse(
+                    {"code": "payload_too_large", "detail": "request body too large"},
+                    status_code=413,
+                )
+
         return await call_next(request)
 
-    def _reject(self, size: int) -> JSONResponse:
-        rid = get_request_id() or ""
-        detail = f"Request body too large ({size} bytes > {self._limit} bytes)."
-        payload = {
-            "code": "payload_too_large",
-            "detail": detail,
-            "request_id": rid,
-        }
-        # Minimal, consistent headers — X-Request-ID is asserted by tests elsewhere.
-        headers = {"X-Request-ID": rid}
-        return JSONResponse(payload, status_code=413, headers=headers)
 
-
-def install_max_body_limit(app) -> None:
-    if not _enabled():
-        return
-    app.add_middleware(_MaxBodyMiddleware)
+def install_max_body(app: FastAPI) -> None:
+    limit = _read_limit_bytes()
+    if limit > 0:
+        app.add_middleware(_MaxBodyMiddleware, limit_bytes=limit)
