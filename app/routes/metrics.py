@@ -1,7 +1,7 @@
 # app/routes/metrics.py
-# Summary (PR-X fix): Optional /metrics endpoint (Prometheus exposition).
-# - Removes unused type: ignore comments; adds precise typing and narrowing.
-# - Still disabled by default; enable via METRICS_ROUTE_ENABLED=1.
+# Summary (PR-X fix 2): Optional /metrics endpoint (Prometheus exposition).
+# - Removes all unused type: ignore comments.
+# - Keeps endpoint disabled by default; enable via METRICS_ROUTE_ENABLED=1.
 # - Optional API key via METRICS_API_KEY (X-API-KEY or Bearer).
 
 from __future__ import annotations
@@ -16,15 +16,15 @@ router = APIRouter()
 
 # Prometheus is optional; gracefully degrade to 404 if unavailable or disabled.
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY as _REGISTRY  # type: ignore[assignment]
+    from prometheus_client import REGISTRY as PROM_REGISTRY
     from prometheus_client.exposition import (
-        CONTENT_TYPE_LATEST as _CONTENT_TYPE_LATEST,  # type: ignore[assignment]
-        generate_latest as _generate_latest,  # type: ignore[assignment]
+        CONTENT_TYPE_LATEST as PROM_CONTENT_TYPE_LATEST,
+        generate_latest as prom_generate_latest,
     )
 
-    REGISTRY: Any | None = _REGISTRY
-    CONTENT_TYPE_LATEST: str = _CONTENT_TYPE_LATEST
-    generate_latest: Optional[Callable[[Any], bytes]] = _generate_latest
+    REGISTRY: Any | None = PROM_REGISTRY
+    CONTENT_TYPE_LATEST: str = PROM_CONTENT_TYPE_LATEST
+    generate_latest: Optional[Callable[[Any], bytes]] = prom_generate_latest
 except Exception:  # pragma: no cover
     REGISTRY = None
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
@@ -69,7 +69,7 @@ async def metrics(request: Request) -> Response:
     if required is not None and not _auth_ok(request, required):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # Narrow types for mypy
+    # Narrow types for static analysis
     assert generate_latest is not None
     assert REGISTRY is not None
 
