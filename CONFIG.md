@@ -71,3 +71,13 @@ print("CONFIG:", ", ".join(f"{k}={v}" for k, v in snap.as_kv()))
 |--------------------------|------|---------|---------------|--------------|-------------------------------------------------|
 | `MAX_REQUEST_BYTES`      | int  | `0`     | `>= 0`        | `1048576`    | `0` disables (no limit)                         |
 | `MAX_REQUEST_BYTES_PATHS`| csv  | `/`     | —             | `/v1,/admin` | Path prefixes to enforce the limit against      |
+
+## JSON Logging (optional)
+
+| Name                    | Type  | Default | Notes                                                                 |
+|-------------------------|-------|---------|-----------------------------------------------------------------------|
+| `LOG_JSON_ENABLED`      | bool  | `false` | Enable JSON logs (both snapshot and per-request, unless overridden).  |
+| `LOG_SNAPSHOT_ENABLED`  | bool  | `—`     | Defaults to `LOG_JSON_ENABLED`. Emit a single startup config snapshot.|
+| `LOG_REQUESTS_ENABLED`  | bool  | `—`     | Defaults to `LOG_JSON_ENABLED`. Per-request access logs.              |
+| `LOG_REQUESTS_PATHS`    | csv   | `/`     | Path prefixes to log (e.g., `/v1,/admin`).                            |
+| `LOG_MIN_STATUS`        | int   | `0`     | Only log responses with status >= this value.                         |
