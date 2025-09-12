@@ -8,16 +8,19 @@
 # - OPTIONS with Origin -> 204 + ACAO/ACAM/ACAH/ACMA headers.
 # - Non-OPTIONS with Origin -> adds ACAO when origin is allowed (or "*" if no list given).
 # - Safe to coexist with CORSMiddleware; we only add headers if missing.
+# - Mypy fix: type the request handler so Response isn't inferred as Any.
 
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import Awaitable, Callable, List
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
+
+RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -54,7 +57,7 @@ def cors_fallback_enabled() -> bool:
 
 
 class _CORSFallback(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         origin = request.headers.get("origin")
         if origin and request.method == "OPTIONS":
             return self._preflight_response(request, origin)
