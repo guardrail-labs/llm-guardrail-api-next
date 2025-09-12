@@ -277,11 +277,6 @@ def create_app() -> FastAPI:
 build_app = create_app
 app = create_app()
 
-# BEGIN PR-K include (CORS)
-cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
-cors_mod.install_cors(app)
-# END PR-K include
-
 # BEGIN PR-K include (Security headers)
 sec_headers_mod = __import__(
     "app.middleware.security_headers",
@@ -305,3 +300,9 @@ app.include_router(admin_router)
 nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
 nosniff_mod.install_nosniff(app)
 # END PR-K nosniff include
+
+# BEGIN PR-K include (CORS - outermost)
+cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
+cors_mod.install_cors(app)
+# END PR-K include
+
