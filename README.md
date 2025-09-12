@@ -61,6 +61,9 @@ The service now includes stdlib-only detectors for **HTML** and **DOCX** hidden 
 (parallel to our PDF checks). See `app/services/detect/hidden_text.py` and tests under
 `tests/detect/` for examples (display:none, visibility:hidden, font-size:0, w:vanish).
 
+## Admin / Bindings
+See [BINDINGS.md](./BINDINGS.md) for conflict detection rules and examples.
+
 ---
 
 ## Feature checklist
