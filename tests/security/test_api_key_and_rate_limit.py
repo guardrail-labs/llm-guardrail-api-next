@@ -1,7 +1,7 @@
 # tests/security/test_api_key_and_rate_limit.py
-# Summary (PR-J test fix):
-# - Avoid adding middleware after startup. We now set env vars, reload app.main
-#   (which calls install_security at import), and then create TestClient.
+# Summary (PR-J test fix 2):
+# - Remove unused type: ignore comments to satisfy mypy.
+# - Reload app.main after setting env so install_security runs with fresh config.
 
 from __future__ import annotations
 
@@ -13,10 +13,9 @@ from fastapi.testclient import TestClient
 def _client_with_env(monkeypatch, env: dict[str, str]) -> TestClient:
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    # Reload app.main so the install_security(app) hook runs with fresh env
-    import app.main as main  # type: ignore
-    importlib.reload(main)  # re-creates `app` and re-runs install_security
-    return TestClient(main.app)  # type: ignore[attr-defined]
+    import app.main as main
+    importlib.reload(main)
+    return TestClient(main.app)
 
 
 def test_api_key_required_on_secured_path(monkeypatch) -> None:
