@@ -3,21 +3,12 @@
 # - When LOG_JSON_ENABLED=1, emits:
 #     * one startup "config_snapshot" JSON line
 #     * per-request "http_access" JSON lines (method, path, status, ms, request_id)
-# - No external deps; uses stdlib logging + json.
-# - Safe defaults: logging disabled unless enabled via env.
-# - Plays nicely with existing RequestIDMiddleware (includes request_id).
+# - Safe defaults: disabled unless enabled via env.
+# - Plays nicely with RequestIDMiddleware.
 #
-# Env:
-#   LOG_JSON_ENABLED=1           -> enable JSON logging (default: off)
-#   LOG_REQUESTS_ENABLED=1/0     -> override per-request logging (default: follows above)
-#   LOG_REQUESTS_PATHS=/v1,/adm  -> restrict to path prefixes (default: "/")
-#   LOG_MIN_STATUS=0..999        -> only log responses with status >= this (default: 0)
-#   LOG_SNAPSHOT_ENABLED=1/0     -> enable the config snapshot (default: follows LOG_JSON)
-#
-# Notes:
-# - Snapshot pulls from existing config helpers when available; falls back to env.
-# - All lines are single-line JSON (no newlines) for log shipping.
-# - Mypy: removed unused type: ignore comments.
+# Update: capture request_id before calling downstream. RequestIDMiddleware clears its
+# contextvar in a finally block, so reading it after `call_next` can yield empty IDs.
+# We now read `request_id` upfront and, if still empty, fall back to the response header.
 
 from __future__ import annotations
 
@@ -125,7 +116,7 @@ def _snapshot_payload() -> Dict[str, Any]:
     ]
     payload["cors_credentials"] = _bool_env("CORS_ALLOW_CREDENTIALS", False)
 
-    # Security headers (default enabled in our build; allow opt-out)
+    # Security headers (default enabled; allow opt-out)
     try:
         from app.middleware.security_headers import sec_headers_enabled
 
@@ -175,14 +166,26 @@ class _JSONAccessLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         start = time.perf_counter()
+
+        # Capture request_id *before* downstream clears the context.
+        req_id: str = (
+            get_request_id()
+            or request.headers.get("x-request-id")
+            or ""
+        )
+
         resp = await call_next(request)
+
+        # If we didn't have it, try the response header.
+        if not req_id:
+            req_id = resp.headers.get("X-Request-ID", "")
+
         try:
             dur_ms = int((time.perf_counter() - start) * 1000.0)
             path = request.url.path or "/"
             if not self._should_log(path, resp.status_code):
                 return resp
 
-            rid = get_request_id() or ""
             client = request.client.host if request.client and request.client.host else ""
             msg: Dict[str, Any] = {
                 "event": "http_access",
@@ -192,7 +195,7 @@ class _JSONAccessLogMiddleware(BaseHTTPMiddleware):
                 "route": route_label(path),
                 "status": resp.status_code,
                 "duration_ms": dur_ms,
-                "request_id": rid,
+                "request_id": req_id,
                 "client_ip": client,
             }
             try:
