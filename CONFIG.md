@@ -182,3 +182,14 @@ BUILD_TIME – build timestamp (ISO-8601 recommended)
 Behavior:
 - `GET /live`  → always `200 {"status":"ok","ok":true}`
 - `GET /ready` → `503` until startup delay elapses; `503` again during shutdown/drain.
+
+## Response Compression
+
+| Name                       | Type | Default | Range | Example |
+|----------------------------|------|---------|-------|---------|
+| COMPRESSION_ENABLED        | bool | false   | —     | true    |
+| COMPRESSION_MIN_SIZE_BYTES | int  | 500     | ≥ 0   | 128     |
+
+Notes:
+- When enabled and the client sends `Accept-Encoding: gzip`, responses larger than
+  `COMPRESSION_MIN_SIZE_BYTES` are gzipped.

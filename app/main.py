@@ -323,3 +323,8 @@ app = create_app()
 maxb_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
 maxb_mod.install_max_body(app)
 # END PR-T include
+
+# BEGIN PR-V include (GZip compression - should be near-outermost)
+comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
+comp_mod.install_compression(app)
+# END PR-V include
