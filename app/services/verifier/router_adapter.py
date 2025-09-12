@@ -1,11 +1,11 @@
 # app/services/verifier/router_adapter.py
-# Summary (PR-O final, import fix):
+# Summary (PR-O final, import fallback fix):
 # - Probabilistic sampling with injectable RNG (defaults to random.random).
-# - Latency budget via within_budget() + VerifierTimedOut.
+# - Latency budget via within_budget() + VerifierTimedOut (with fallback import path).
 # - Metrics preserved (skipped/sample/timeout/duration).
 # - Optional circuit breaker (env-gated) that skips when open and records success/failure.
 # - Defaults pull from config_sanitizer; ctor args can override without breaking callers.
-# - Imports VERIFIER_METRICS from app.observability.metrics (as tests expect).
+# - Imports VERIFIER_METRICS from app.observability.metrics.
 
 from __future__ import annotations
 
@@ -20,7 +20,13 @@ from app.services.config_sanitizer import (
 from app.services.circuit_breaker import breaker_from_env, CircuitBreaker
 from app.observability.metrics import VERIFIER_METRICS
 from app.services.verifier.types import VerifierOutcome
-from app.services.verifier.within_budget import VerifierTimedOut, within_budget
+
+# Support both possible locations for the budget helper.
+try:
+    # Preferred (newer) location
+    from app.services.verifier.within_budget import VerifierTimedOut, within_budget
+except Exception:  # pragma: no cover - fallback for older layout
+    from app.services.verifier.budget import VerifierTimedOut, within_budget  # type: ignore
 
 
 @runtime_checkable
