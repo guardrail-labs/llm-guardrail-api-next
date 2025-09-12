@@ -171,3 +171,14 @@ BUILD_TIME – build timestamp (ISO-8601 recommended)
 - `GET /.well-known/security.txt` — text/plain. Returned only if `SECURITY_CONTACT` is set.
 
 ## Runbook
+
+## Graceful Shutdown / Probes
+
+| Name                  | Type | Default | Range | Example | Notes                                    |
+|-----------------------|------|---------|-------|---------|------------------------------------------|
+| HEALTH_READY_DELAY_MS | int  | 0       | ≥ 0   | 1500    | Delay before `/ready` returns 200.       |
+| HEALTH_DRAIN_DELAY_MS | int  | 0       | ≥ 0   | 2000    | Extra delay during shutdown after `/ready` flips to 503. |
+
+Behavior:
+- `GET /live`  → always `200 {"status":"ok","ok":true}`
+- `GET /ready` → `503` until startup delay elapses; `503` again during shutdown/drain.
