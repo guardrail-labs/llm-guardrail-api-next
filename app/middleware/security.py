@@ -8,7 +8,9 @@
 # - Install by calling install_security(app) (wire from app/main.py).
 #
 # Update (mypy fixes):
-# - Annotate call_next as RequestResponseEndpoint so returns are typed as Response.
+# - Define our own RequestHandler type alias instead of importing
+#   RequestResponseEndpoint (not present in older Starlette stubs).
+# - Annotate call_next with RequestHandler so returns are typed as Response.
 # - Guard request.client None case.
 
 from __future__ import annotations
@@ -16,12 +18,15 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.types import ASGIApp, RequestResponseEndpoint
+from starlette.types import ASGIApp
+
+# Type alias for Starlette's request handler callback
+RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
 # ----------------------------- config helpers ---------------------------------
@@ -136,9 +141,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
         self._prefixes = prefixes
         self._explicit = bool(_csv_env("SECURED_PATH_PREFIXES"))
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         path = request.url.path or "/"
         if not self._path_secured(path):
             return await call_next(request)
@@ -155,6 +158,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
             return False
         if self._explicit:
             return True
+        # Default exemptions when using default '/v1' only
         for ex in ("/admin", "/metrics", "/health", "/healthz", "/docs", "/openapi.json"):
             if path.startswith(ex):
                 return False
@@ -169,9 +173,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._prefixes = prefixes
         self._limiter = _Limiter(rps, burst)
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         if self._rps <= 0.0:
             return await call_next(request)
 
@@ -182,7 +184,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         principal = request.headers.get("x-api-key")
         if not principal:
             client = request.client
-            principal = client.host if client is not None and client.host else "anon"
+            principal = client.host if (client is not None and client.host) else "anon"
 
         now = time.monotonic()
         if not self._limiter.allow(principal, path, now):
