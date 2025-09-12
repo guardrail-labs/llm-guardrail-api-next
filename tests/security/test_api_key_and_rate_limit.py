@@ -1,27 +1,35 @@
 # tests/security/test_api_key_and_rate_limit.py
-# Summary (PR-J): Opt-in auth + rate limit tests using existing /admin UI as target path.
-# - We explicitly secure "/admin" via SECURED_PATH_PREFIXES for these tests only.
+# Summary (PR-J test fix):
+# - Avoid adding middleware after startup. We now set env vars, reload app.main
+#   (which calls install_security at import), and then create TestClient.
 
 from __future__ import annotations
 
+import importlib
+
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.middleware.security import install_security
 
-client = TestClient(app)
+def _client_with_env(monkeypatch, env: dict[str, str]) -> TestClient:
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    # Reload app.main so the install_security(app) hook runs with fresh env
+    import app.main as main  # type: ignore
+    importlib.reload(main)  # re-creates `app` and re-runs install_security
+    return TestClient(main.app)  # type: ignore[attr-defined]
 
 
 def test_api_key_required_on_secured_path(monkeypatch) -> None:
-    # Enable security and secure /admin paths for this test only
-    monkeypatch.setenv("API_SECURITY_ENABLED", "1")
-    monkeypatch.setenv("GUARDRAIL_API_KEYS", "k1")
-    monkeypatch.setenv("SECURED_PATH_PREFIXES", "/admin")
-    # Ensure generous rate limits so this test focuses on auth
-    monkeypatch.setenv("RATE_LIMIT_RPS", "100")
-    monkeypatch.setenv("RATE_LIMIT_BURST", "100")
-    # (Re)install middlewares with current env
-    install_security(app)
+    client = _client_with_env(
+        monkeypatch,
+        {
+            "API_SECURITY_ENABLED": "1",
+            "GUARDRAIL_API_KEYS": "k1",
+            "SECURED_PATH_PREFIXES": "/admin",
+            "RATE_LIMIT_RPS": "100",
+            "RATE_LIMIT_BURST": "100",
+        },
+    )
 
     # Missing key -> 401
     r = client.get("/admin")
@@ -37,13 +45,16 @@ def test_api_key_required_on_secured_path(monkeypatch) -> None:
 
 
 def test_rate_limit_applies_per_key(monkeypatch) -> None:
-    monkeypatch.setenv("API_SECURITY_ENABLED", "1")
-    monkeypatch.setenv("GUARDRAIL_API_KEYS", "k1,k2")
-    monkeypatch.setenv("SECURED_PATH_PREFIXES", "/admin")
-    # Tight limit: 2 req/s with burst 2, so third immediate call should 429
-    monkeypatch.setenv("RATE_LIMIT_RPS", "2")
-    monkeypatch.setenv("RATE_LIMIT_BURST", "2")
-    install_security(app)
+    client = _client_with_env(
+        monkeypatch,
+        {
+            "API_SECURITY_ENABLED": "1",
+            "GUARDRAIL_API_KEYS": "k1,k2",
+            "SECURED_PATH_PREFIXES": "/admin",
+            "RATE_LIMIT_RPS": "2",
+            "RATE_LIMIT_BURST": "2",
+        },
+    )
 
     h1 = {"x-api-key": "k1"}
     # First two pass (use burst capacity)
