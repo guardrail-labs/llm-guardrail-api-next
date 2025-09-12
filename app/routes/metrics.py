@@ -1,15 +1,13 @@
 # app/routes/metrics.py
-# Summary (PR-X): Adds optional /metrics endpoint for Prometheus scrapes.
-# - Disabled by default; enable with METRICS_ROUTE_ENABLED=1.
-# - Optional protection via METRICS_API_KEY:
-#     * Provide "X-API-KEY: <key>" or "Authorization: Bearer <key>".
-# - Returns text/plain; version=0.0.4 (Prometheus exposition format).
-# - Auto-included by main.py's dynamic route loader; no other wiring needed.
+# Summary (PR-X fix): Optional /metrics endpoint (Prometheus exposition).
+# - Removes unused type: ignore comments; adds precise typing and narrowing.
+# - Still disabled by default; enable via METRICS_ROUTE_ENABLED=1.
+# - Optional API key via METRICS_API_KEY (X-API-KEY or Bearer).
 
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -18,15 +16,19 @@ router = APIRouter()
 
 # Prometheus is optional; gracefully degrade to 404 if unavailable or disabled.
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY  # type: ignore
-    from prometheus_client.exposition import (  # type: ignore
-        CONTENT_TYPE_LATEST,
-        generate_latest,
+    from prometheus_client import REGISTRY as _REGISTRY  # type: ignore[assignment]
+    from prometheus_client.exposition import (
+        CONTENT_TYPE_LATEST as _CONTENT_TYPE_LATEST,  # type: ignore[assignment]
+        generate_latest as _generate_latest,  # type: ignore[assignment]
     )
+
+    REGISTRY: Any | None = _REGISTRY
+    CONTENT_TYPE_LATEST: str = _CONTENT_TYPE_LATEST
+    generate_latest: Optional[Callable[[Any], bytes]] = _generate_latest
 except Exception:  # pragma: no cover
-    REGISTRY = None  # type: ignore[assignment]
-    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"  # fallback
-    generate_latest = None  # type: ignore[assignment]
+    REGISTRY = None
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+    generate_latest = None
 
 
 def _enabled() -> bool:
@@ -65,9 +67,11 @@ async def metrics(request: Request) -> Response:
     # Optional API key protection
     required = _expected_key()
     if required is not None and not _auth_ok(request, required):
-        # Let main.py handlers normalize this into JSON if needed elsewhere.
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    payload: bytes = generate_latest(REGISTRY)  # type: ignore[call-arg]
-    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
+    # Narrow types for mypy
+    assert generate_latest is not None
+    assert REGISTRY is not None
 
+    payload: bytes = generate_latest(REGISTRY)
+    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
