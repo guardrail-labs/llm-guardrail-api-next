@@ -283,9 +283,13 @@ cors_mod.install_cors(app)
 # END PR-K include
 
 # BEGIN PR-K include (Security headers)
-sec_headers_mod = __import__("app.middleware.security_headers", fromlist=["install_security_headers"])
+sec_headers_mod = __import__(
+    "app.middleware.security_headers",
+    fromlist=["install_security_headers"],
+)
 sec_headers_mod.install_security_headers(app)
 # END PR-K include
+
 
 # BEGIN PR-J security include
 security_mod = __import__("app.middleware.security", fromlist=["install_security"])
