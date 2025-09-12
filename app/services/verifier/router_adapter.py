@@ -1,11 +1,12 @@
 # app/services/verifier/router_adapter.py
-# Summary (PR-O final, import fallback fix - remove unused ignore):
+# Summary (PR-O final, import fallback + test message compatibility):
 # - Probabilistic sampling with injectable RNG (defaults to random.random).
 # - Latency budget via within_budget() + VerifierTimedOut (with fallback import path).
 # - Metrics preserved (skipped/sample/timeout/duration).
 # - Optional circuit breaker (env-gated) that skips when open and records success/failure.
 # - Defaults pull from config_sanitizer; ctor args can override without breaking callers.
 # - Imports VERIFIER_METRICS from app.observability.metrics.
+# - Sampling skip reason now starts with "sampling=skip ..." to satisfy tests.
 
 from __future__ import annotations
 
@@ -135,9 +136,10 @@ class VerifierAdapter:
         draw = self._rng()
         if not (0.0 <= draw < sp):
             self._metrics.skipped_total.labels(provider=self._prov_name).inc()
+            # Begin reason with "sampling=skip" for test compatibility.
             return VerifierOutcome(
                 allowed=True,
-                reason=f"sampling_draw={draw:.3f}>=pct={sp:.3f} (skipped)",
+                reason=f"sampling=skip p={sp:.3f} r={draw:.3f}",
             )
 
         # Sampled path
