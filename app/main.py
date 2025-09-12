@@ -307,3 +307,8 @@ def create_app() -> FastAPI:
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
+
+# BEGIN PR-H include
+from app.admin.router import router as admin_router
+app.include_router(admin_router)
+# END PR-H include

@@ -1,0 +1,49 @@
+{% extends "admin/layout.html" %}
+{% block content %}
+<div class="card">
+  <div class="row">
+    <h2 style="margin:0">Bindings</h2>
+    <span class="muted">Apply enabled: <strong>{{ 'yes' if apply_enabled else 'no' }}</strong></span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Tenant</th><th>Bot</th><th>Policy</th><th>Model</th><th>Priority</th><th>Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in bindings %}
+      <tr>
+        <td>{{ b.tenant_id }}</td>
+        <td>{{ b.bot_id }}</td>
+        <td>{{ b.policy_version }}</td>
+        <td>{{ b.model or '' }}</td>
+        <td>{{ b.priority }}</td>
+        <td>{{ b.source or '' }}</td>
+      </tr>
+      {% endfor %}
+      {% if bindings|length == 0 %}
+      <tr><td colspan="6" class="muted">No bindings.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Validation</h3>
+  <div class="badges">
+    {% for i in issues %}
+      {% set cls = 'info' if i.severity == 'info' else 'warning' if i.severity == 'warning' else 'error' %}
+      <span class="badge {{ cls }}">{{ i.severity }}/{{ i.kind }}</span>
+    {% endfor %}
+    {% if issues|length == 0 %}
+      <span class="muted">No issues found.</span>
+    {% endif %}
+  </div>
+  <ul>
+    {% for i in issues %}
+      <li class="muted">{{ i.message }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

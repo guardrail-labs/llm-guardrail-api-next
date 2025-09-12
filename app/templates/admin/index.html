@@ -1,0 +1,12 @@
+{% extends "admin/layout.html" %}
+{% block content %}
+<div class="card">
+  <p class="muted">Demo UI for bindings & active policy view.</p>
+  <ul>
+    <li><a href="/admin/bindings">Bindings (conflict badges)</a></li>
+    <li><a href="/admin/active-policy">Active Policy (tenant/bot)</a></li>
+    <li><a href="/admin/metrics">Metrics (Prometheus)</a></li>
+  </ul>
+  <p class="muted">Apply enabled: <strong>{{ 'yes' if apply_enabled else 'no' }}</strong></p>
+</div>
+{% endblock %}

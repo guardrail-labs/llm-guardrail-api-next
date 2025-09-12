@@ -1,0 +1,47 @@
+{% extends "admin/layout.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin:0 0 12px 0">Active Policy</h2>
+  <form class="row" method="get">
+    <label>Tenant <input name="tenant" value="{{ tenant or '' }}" /></label>
+    <label>Bot <input name="bot" value="{{ bot or '' }}" /></label>
+    <button type="submit">Lookup</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Selected</h3>
+  {% if selected %}
+    <p><strong>{{ selected.policy_version }}</strong> (tenant={{ selected.tenant_id }},
+       bot={{ selected.bot_id }}, p={{ selected.priority }})</p>
+  {% else %}
+    <p class="muted">No matching binding.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0">Candidates</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Tenant</th><th>Bot</th><th>Policy</th><th>Model</th><th>Priority</th><th>Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in candidates %}
+      <tr>
+        <td>{{ b.tenant_id }}</td>
+        <td>{{ b.bot_id }}</td>
+        <td>{{ b.policy_version }}</td>
+        <td>{{ b.model or '' }}</td>
+        <td>{{ b.priority }}</td>
+        <td>{{ b.source or '' }}</td>
+      </tr>
+      {% endfor %}
+      {% if candidates|length == 0 %}
+      <tr><td colspan="6" class="muted">None.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

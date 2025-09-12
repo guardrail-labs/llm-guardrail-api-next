@@ -91,3 +91,7 @@ Copy-paste demos that hit deny/redaction and show metrics:
 ## License
 
 Apache-2.0 (see `LICENSE`).
+
+## Admin / Demo UI
+A minimal admin panel is available at `/admin` to explore bindings, validation,
+active policy resolution, and metrics. See [ADMIN_UI.md](./ADMIN_UI.md).

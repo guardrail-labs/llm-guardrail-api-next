@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Guardrail Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#101418; --card:#121820; --fg:#e7eef7; --muted:#9fb0c3;
+            --ok:#1db954; --warn:#e6a700; --err:#ff4d4f; --info:#3ea6ff; }
+    body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui, sans-serif; }
+    header, main { max-width:1000px; margin:0 auto; padding:16px; }
+    a { color:#9bd2ff; text-decoration:none; }
+    .nav a { margin-right:12px; }
+    .card { background:var(--card); border-radius:12px; padding:16px; margin:12px 0; box-shadow:0 2px 8px rgba(0,0,0,.3); }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid rgba(255,255,255,.06); }
+    th { text-align:left; color:var(--muted); font-weight:600; }
+    .badges { display:flex; gap:6px; flex-wrap:wrap; }
+    .badge { padding:2px 8px; border-radius:999px; font-size:12px; }
+    .badge.info { background:rgba(62,166,255,.15); color:var(--info); }
+    .badge.warning { background:rgba(230,167,0,.15); color:var(--warn); }
+    .badge.error { background:rgba(255,77,79,.15); color:var(--err); }
+    .muted { color:var(--muted); }
+    input, button { background:#0f141a; color:var(--fg); border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:6px 10px; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+<header class="card">
+  <div class="row">
+    <h1 style="margin:0">Guardrail Admin</h1>
+    <nav class="nav">
+      <a href="/admin">Home</a>
+      <a href="/admin/bindings">Bindings</a>
+      <a href="/admin/active-policy">Active Policy</a>
+      <a href="/admin/metrics">Metrics</a>
+    </nav>
+  </div>
+</header>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>
