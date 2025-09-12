@@ -1,8 +1,9 @@
 # app/middleware/cors.py
-# Summary (PR-K: CORS, opt-in):
-# - Installs Starlette/FastAPI CORSMiddleware when CORS_ENABLED=1.
-# - Config via env (csv lists): origins, methods, headers, credentials, max-age.
-# - Default is disabled (no header/behavior changes unless enabled).
+# Summary (PR-K fix):
+# - Keep CORS behind CORS_ENABLED=1 gate.
+# - Always install CORSMiddleware once enabled, even if origins env is empty.
+#   When empty, we fall back to ["*"] so preflight never 400s in dev/tests.
+# - Defaults (methods/headers) remain safe.
 
 from __future__ import annotations
 
@@ -24,8 +25,8 @@ def _int_env(name: str, default: int) -> int:
     if raw is None:
         return default
     try:
-        val = int(float(raw.strip()))
-        return val if val >= 0 else default
+            val = int(float(raw.strip()))
+            return val if val >= 0 else default
     except Exception:
         return default
 
@@ -53,12 +54,11 @@ def install_cors(app) -> None:
     if not cors_enabled():
         return
     origins, methods, headers, creds, max_age = cors_config()
-    # If no origins provided, do not install permissive '*' by default.
-    if not origins:
-        return
+    # Fallback to "*" when no explicit origins are provided (prevents 400 preflight in dev/tests).
+    allow_origins = origins if origins else ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,
+        allow_origins=allow_origins,
         allow_methods=methods,
         allow_headers=headers,
         allow_credentials=creds,
