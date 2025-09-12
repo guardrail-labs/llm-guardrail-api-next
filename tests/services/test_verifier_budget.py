@@ -1,18 +1,26 @@
+# tests/services/test_verifier_budget.py
+# Summary (PR-D update):
+# - Adds deterministic probabilistic sampling tests by injecting RNG into adapter.
+# - Ensures budget timeout path remains stable.
+
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
-from app.services.verifier.budget import VerifierTimedOut, within_budget
+from app.services.verifier.budget import within_budget, VerifierTimedOut
 from app.services.verifier.result_types import VerifierOutcome
 from app.services.verifier.router_adapter import VerifierAdapter
 
 
-@pytest.mark.anyio
+# --- Budget utility tests ----------------------------------------------------
+
+
+@pytest.mark.asyncio
 async def test_within_budget_no_budget_runs() -> None:
-    async def work() -> int:
+    async def work():
         await asyncio.sleep(0.01)
         return 42
 
@@ -20,9 +28,9 @@ async def test_within_budget_no_budget_runs() -> None:
     assert val == 42
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_within_budget_times_out() -> None:
-    async def slow() -> str:
+    async def slow():
         await asyncio.sleep(0.05)
         return "done"
 
@@ -30,48 +38,79 @@ async def test_within_budget_times_out() -> None:
         await within_budget(lambda: slow(), budget_ms=1)
 
 
+# --- Adapter tests -----------------------------------------------------------
+
+
 @dataclass
-class _EchoAllowProvider:
+class _ProbeProvider:
     delay_ms: int = 0
+    calls: int = field(default=0, init=False)
 
     async def evaluate(self, text: str) -> VerifierOutcome:
+        self.calls += 1
         if self.delay_ms:
             await asyncio.sleep(self.delay_ms / 1000.0)
-        return VerifierOutcome(allowed=True, reason="ok", provider="echo")
+        return VerifierOutcome(allowed=True, reason="ok", provider="probe")
 
 
-@pytest.mark.anyio
-async def test_adapter_respects_sampling_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_adapter_respects_sampling_zero(monkeypatch) -> None:
     monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "0")
     monkeypatch.delenv("VERIFIER_LATENCY_BUDGET_MS", raising=False)
-    adapter = VerifierAdapter(_EchoAllowProvider())
+    provider = _ProbeProvider()
+    adapter = VerifierAdapter(provider, rng=lambda: 0.0)
     out = await adapter.evaluate("hello")
     assert out.allowed is True
     assert "sampling=0.0" in out.reason
+    assert provider.calls == 0
 
 
-@pytest.mark.anyio
-async def test_adapter_enforces_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "1.0")
-    monkeypatch.setenv("VERIFIER_LATENCY_BUDGET_MS", "1")
-    adapter = VerifierAdapter(_EchoAllowProvider(delay_ms=10))
-    out = await adapter.evaluate("hello")
-    assert out.allowed is True
-    assert out.reason == "verifier_timeout_budget_exceeded"
-
-
-@pytest.mark.anyio
-async def test_adapter_normal_call_within_budget(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.asyncio
+async def test_adapter_probabilistic_sampling_skips_when_draw_ge_pct(
+    monkeypatch,
 ) -> None:
-    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "1.0")
-    monkeypatch.setenv("VERIFIER_LATENCY_BUDGET_MS", "50")
-    adapter = VerifierAdapter(_EchoAllowProvider(delay_ms=5))
+    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "0.25")
+    monkeypatch.delenv("VERIFIER_LATENCY_BUDGET_MS", raising=False)
+    provider = _ProbeProvider()
+    adapter = VerifierAdapter(provider, rng=lambda: 0.99)
     out = await adapter.evaluate("x")
     assert out.allowed is True
+    assert out.reason.startswith("sampling=skip")
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_adapter_probabilistic_sampling_calls_when_draw_lt_pct(monkeypatch) -> None:
+    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "0.25")
+    monkeypatch.delenv("VERIFIER_LATENCY_BUDGET_MS", raising=False)
+    provider = _ProbeProvider()
+    adapter = VerifierAdapter(provider, rng=lambda: 0.10)
+    out = await adapter.evaluate("y")
+    assert out.allowed is True
     assert out.reason == "ok"
+    assert provider.calls == 1
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
+@pytest.mark.asyncio
+async def test_adapter_enforces_budget_on_sampled(monkeypatch) -> None:
+    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "1.0")
+    monkeypatch.setenv("VERIFIER_LATENCY_BUDGET_MS", "1")
+    provider = _ProbeProvider(delay_ms=10)
+    adapter = VerifierAdapter(provider, rng=lambda: 0.0)
+    out = await adapter.evaluate("hello")
+    # On timeout we default to allowed=True to avoid changing external behavior
+    assert out.allowed is True
+    assert out.reason == "verifier_timeout_budget_exceeded"
+    # Provider call count depends on exact timing; no assertion here.
+
+
+@pytest.mark.asyncio
+async def test_adapter_normal_call_within_budget(monkeypatch) -> None:
+    monkeypatch.setenv("VERIFIER_SAMPLING_PCT", "1.0")
+    monkeypatch.setenv("VERIFIER_LATENCY_BUDGET_MS", "50")
+    provider = _ProbeProvider(delay_ms=5)
+    adapter = VerifierAdapter(provider, rng=lambda: 0.0)
+    out = await adapter.evaluate("z")
+    assert out.allowed is True
+    assert out.reason == "ok"
+    assert provider.calls == 1
