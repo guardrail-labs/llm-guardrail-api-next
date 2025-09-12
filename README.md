@@ -56,6 +56,11 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 See [CONFIG.md](./CONFIG.md) for all tunables and defaults. Values are normalized by
 `app/services/config_sanitizer.py` to ensure safe, predictable behavior.
 
+### Hidden-text detection
+The service now includes stdlib-only detectors for **HTML** and **DOCX** hidden text
+(parallel to our PDF checks). See `app/services/detect/hidden_text.py` and tests under
+`tests/detect/` for examples (display:none, visibility:hidden, font-size:0, w:vanish).
+
 ---
 
 ## Feature checklist
