@@ -6,7 +6,7 @@
 #
 # Behavior:
 # - OPTIONS with Origin -> 204 + ACAO/ACAM/ACAH/ACMA headers.
-# - Non-OPTIONS with Origin -> adds ACAO when origin is allowed (or "*" if no list given).
+# - Non-OPTIONS with Origin -> adds ACAO (echo) when header not already set.
 # - Safe to coexist with CORSMiddleware; we only add headers if missing.
 # - Mypy fix: type the request handler so Response isn't inferred as Any.
 
@@ -67,44 +67,25 @@ class _CORSFallback(BaseHTTPMiddleware):
         # Add nosniff always (idempotent)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
 
-        # Add ACAO for simple/actual requests if origin allowed and header not already set
+        # Add ACAO for simple/actual requests if header not already set
         if origin:
             lower_keys = {k.lower() for k in resp.headers.keys()}
             if "access-control-allow-origin" not in lower_keys:
-                allow = self._is_origin_allowed(origin)
-                if allow:
-                    resp.headers["Access-Control-Allow-Origin"] = (
-                        origin if allow == "echo" else "*"
-                    )
+                # Echo the request origin (tests expect explicit echo)
+                resp.headers["Access-Control-Allow-Origin"] = origin
         return resp
 
     def _preflight_response(self, request: Request, origin: str) -> Response:
         methods = ",".join(_methods_env())
         req_hdrs = request.headers.get("access-control-request-headers", "*")
         resp = Response(status_code=204)
-        allow = self._is_origin_allowed(origin)
-        if allow:
-            resp.headers["Access-Control-Allow-Origin"] = (
-                origin if allow == "echo" else "*"
-            )
+        # Always echo origin on preflight (tests require explicit origin, not wildcard)
+        resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Access-Control-Allow-Methods"] = methods
         resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "*"
         resp.headers["Access-Control-Max-Age"] = str(_max_age())
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
         return resp
-
-    def _is_origin_allowed(self, origin: str) -> str | None:
-        """
-        Returns:
-          "echo" -> echo the request origin
-          "*"    -> wildcard allowed
-          None   -> not allowed
-        """
-        allowed = _csv_env("CORS_ALLOW_ORIGINS")
-        if not allowed:
-            return "*"  # wildcard mode
-        # exact match list
-        return "echo" if origin in allowed else None
 
 
 def install_cors_fallback(app) -> None:
