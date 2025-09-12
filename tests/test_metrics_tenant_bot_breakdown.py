@@ -44,15 +44,25 @@ def test_metrics_include_tenant_bot_breakdowns():
     m = c.get("/metrics").text
 
     # tenant-level
-    metric_tenant_allow = "guardrail_decisions_family_tenant_total" '{tenant="acme",family="allow"}'
+    metric_tenant_allow = (
+        "guardrail_decisions_family_tenant_total" '{family="allow",tenant="acme"}'
+    )
     assert metric_tenant_allow in m
 
     # Globex may be block/verify; only check that any family label is present.
-    assert 'guardrail_decisions_family_tenant_total{tenant="globex",family=' in m
+    assert (
+        'guardrail_decisions_family_tenant_total{family=' in m
+        and 'tenant="globex"' in m
+    )
 
     # bot-level
-    metric_bot_any = "guardrail_decisions_family_bot_total" '{tenant="acme",bot="bot-a",family='
-    assert metric_bot_any in m
+    metric_bot_a = (
+        "guardrail_decisions_family_bot_total"
+        '{bot="bot-a",family="allow",tenant="acme"}'
+    )
+    assert metric_bot_a in m
 
-    metric_bot_any_2 = "guardrail_decisions_family_bot_total" '{tenant="globex",bot="bot-z",family='
+    metric_bot_any_2 = (
+        "guardrail_decisions_family_bot_total" '{bot="bot-z",family='
+    )
     assert metric_bot_any_2 in m

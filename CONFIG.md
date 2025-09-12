@@ -205,3 +205,14 @@ Behavior:
 Notes:
 - When enabled and the client sends `Accept-Encoding: gzip`, responses larger than
   `COMPRESSION_MIN_SIZE_BYTES` are gzipped.
+
+## Metrics Endpoint
+
+| Name                 | Type | Default | Example | Notes                                              |
+|----------------------|------|---------|---------|----------------------------------------------------|
+| METRICS_ROUTE_ENABLED| bool | false   | true    | Enables `GET /metrics` (Prometheus exposition).    |
+| METRICS_API_KEY      | str  | —       | secret  | If set, requires `X-API-KEY` or `Bearer` token.    |
+
+- Content type: `text/plain; version=0.0.4; charset=utf-8`
+- The route is hidden (404) unless both enabled **and** `prometheus_client` is installed.
+
