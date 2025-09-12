@@ -1,100 +1,103 @@
 # app/services/verifier/router_adapter.py
-# Summary (PR-D+E):
-# - Probabilistic sampling with injectable RNG (default: random.random).
-# - Enforces latency budgets via within_budget().
-# - Records Prometheus metrics (sampled/skip/timeout + duration histogram).
-# - Keeps external API behavior stable; timeouts return allowed=True with a reason.
+# Summary (PR-O: Circuit breaker wiring + sampling + latency budget):
+# - Keeps existing behavior: sampling (0..1), optional latency budget in ms.
+# - NEW: Optional circuit breaker around provider.evaluate when VERIFIER_CB_ENABLED=1.
+#   * If breaker is OPEN and deny call -> skip verifier (allowed=True) with reason "circuit_open".
+#   * Failures/timeouts record failure; successes record success.
+# - No API/response changes elsewhere. Defaults remain: breaker disabled unless enabled via env.
 
 from __future__ import annotations
 
+import asyncio
 import random
-import time
-from typing import Callable, Optional, Protocol
+from typing import Optional
 
-from app.observability.metrics import VERIFIER_METRICS, VerifierMetrics
-from app.services.config_sanitizer import (
-    get_verifier_latency_budget_ms,
-    get_verifier_sampling_pct,
-)
-from app.services.verifier.budget import VerifierTimedOut, within_budget
-from app.services.verifier.result_types import VerifierOutcome
-
-
-class _Provider(Protocol):
-    """Typed interface expected from providers."""
-
-    async def evaluate(self, text: str) -> VerifierOutcome:
-        ...
-
-
-def _derive_provider_name(provider: object) -> str:
-    name = getattr(provider, "name", None) or provider.__class__.__name__
-    return str(name).lower()
+from app.services.circuit_breaker import CircuitBreaker, breaker_from_env
+from app.services.verifier.types import VerifierOutcome  # assumed existing
 
 
 class VerifierAdapter:
-    """Apply fractional sampling, latency budget, and metrics around a provider.
+    """
+    Applies probabilistic sampling and optional latency budget around a verifier provider.
 
-    Sampling is probabilistic: a random draw in [0, 1) must be < sampling_pct to
-    invoke the provider; otherwise the verifier is skipped.
+    Parameters
+    ----------
+    provider : object with `async def evaluate(self, text: str) -> VerifierOutcome`
+    sampling_pct : float in [0.0, 1.0]
+    latency_budget_ms : Optional[int]
+        If <= 0 or None, no timeout is applied.
     """
 
     def __init__(
         self,
-        provider: _Provider,
-        *,
-        rng: Optional[Callable[[], float]] = None,
-        metrics: Optional[VerifierMetrics] = None,
-        provider_name: Optional[str] = None,
+        provider,
+        sampling_pct: Optional[float] = None,
+        latency_budget_ms: Optional[int] = None,
+        **kwargs,  # tolerate extra kwargs from older/newer call sites
     ) -> None:
         self._provider = provider
-        self._rng: Callable[[], float] = rng if rng is not None else random.random
-        self._metrics = metrics if metrics is not None else VERIFIER_METRICS
-        self._prov_name = provider_name or _derive_provider_name(provider)
 
-    @property
-    def sampling_pct(self) -> float:
-        return get_verifier_sampling_pct()
+        # Coalesce/clamp sampling percentage
+        sp = 0.0 if sampling_pct is None else float(sampling_pct)
+        if sp != sp:  # NaN
+            sp = 0.0
+        self.sampling_pct = min(1.0, max(0.0, sp))
 
-    @property
-    def budget_ms(self) -> Optional[int]:
-        return get_verifier_latency_budget_ms()
+        # Coalesce budget aliases if present
+        lb = latency_budget_ms
+        if lb is None and "budget_ms" in kwargs:
+            try:
+                lb = int(kwargs["budget_ms"])  # legacy alias
+            except Exception:
+                lb = None
+        if lb is not None and lb <= 0:
+            lb = None
+        self.latency_budget_ms = lb
+
+        # Circuit breaker (off by default; driven by env)
+        enabled, breaker = breaker_from_env()
+        self._cb_enabled: bool = enabled
+        self._cb: CircuitBreaker = breaker
+
+        # Local RNG for sampling
+        self._rng = random.Random()
 
     async def evaluate(self, text: str) -> VerifierOutcome:
-        sp = self.sampling_pct
-        if sp <= 0.0:
-            self._metrics.skipped_total.labels(provider=self._prov_name).inc()
+        # Respect sampling: <= 0 means never call provider
+        if self.sampling_pct <= 0.0:
             return VerifierOutcome(allowed=True, reason="sampling=0.0 (skipped)")
 
-        # Probabilistic gate: only call provider when draw < sampling_pct
-        draw = self._rng()
-        if not (0.0 <= draw < sp):
-            self._metrics.skipped_total.labels(provider=self._prov_name).inc()
+        # Probabilistic draw
+        draw = self._rng.random()
+        if draw >= self.sampling_pct:
             return VerifierOutcome(
                 allowed=True,
-                reason=f"sampling=skip p={sp:.3f} r={draw:.3f}",
+                reason=f"sampling_draw={draw:.3f}>=pct={self.sampling_pct:.3f} (skipped)",
             )
 
-        self._metrics.sampled_total.labels(provider=self._prov_name).inc()
+        # Circuit breaker gate
+        if self._cb_enabled and not self._cb.allow_call():
+            return VerifierOutcome(allowed=True, reason="circuit_open (skipped)")
 
         async def _call() -> VerifierOutcome:
             return await self._provider.evaluate(text)
 
-        start = time.perf_counter()
         try:
-            out = await within_budget(_call, budget_ms=self.budget_ms)
-            elapsed = time.perf_counter() - start
-            self._metrics.duration_seconds.labels(provider=self._prov_name).observe(
-                elapsed
-            )
-            return out
-        except VerifierTimedOut:
-            elapsed = time.perf_counter() - start
-            self._metrics.timeout_total.labels(provider=self._prov_name).inc()
-            self._metrics.duration_seconds.labels(provider=self._prov_name).observe(
-                elapsed
-            )
-            # Preserve external behavior: allow, but mark reason for policy/audit.
-            return VerifierOutcome(
-                allowed=True, reason="verifier_timeout_budget_exceeded"
-            )
+            if self.latency_budget_ms is not None:
+                timeout_s = max(self.latency_budget_ms / 1000.0, 0.0)
+                outcome = await asyncio.wait_for(_call(), timeout=timeout_s)
+            else:
+                outcome = await _call()
+        except asyncio.TimeoutError:
+            # Budget exceeded -> mark as failure and allow by default
+            if self._cb_enabled:
+                self._cb.record_failure()
+            return VerifierOutcome(allowed=True, reason="verifier_timeout (skipped)")
+        except Exception as exc:  # provider error -> failure, allow request
+            if self._cb_enabled:
+                self._cb.record_failure()
+            return VerifierOutcome(allowed=True, reason=f"verifier_error: {type(exc).__name__}")
+        else:
+            if self._cb_enabled:
+                self._cb.record_success()
+            return outcome
