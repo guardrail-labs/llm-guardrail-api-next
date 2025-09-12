@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from prometheus_client import REGISTRY, CollectorRegistry, Counter, Histogram
+from prometheus_client import (
+    REGISTRY,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+)
 
 
 @dataclass(frozen=True)
@@ -11,6 +17,9 @@ class VerifierMetrics:
     skipped_total: Counter
     timeout_total: Counter
     duration_seconds: Histogram  # labeled by provider
+    circuit_open_total: Counter
+    error_total: Counter
+    circuit_state: Gauge | None
 
 
 def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
@@ -29,6 +38,18 @@ def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
     timeout = Counter(
         "guardrail_verifier_timeout_total",
         "Count of verifier calls that exceeded the latency budget.",
+        labelnames=("provider",),
+        registry=registry,
+    )
+    circuit_open = Counter(
+        "guardrail_verifier_circuit_open_total",
+        "Count of calls skipped because the circuit breaker was open.",
+        labelnames=("provider",),
+        registry=registry,
+    )
+    errors = Counter(
+        "guardrail_verifier_provider_error_total",
+        "Count of verifier provider exceptions (excluding timeouts).",
         labelnames=("provider",),
         registry=registry,
     )
@@ -52,11 +73,24 @@ def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
             10.0,
         ),
     )
+    try:
+        circuit_state = Gauge(
+            "guardrail_verifier_circuit_state",
+            "State of verifier circuit breaker (1=open, 0=closed).",
+            labelnames=("provider",),
+            registry=registry,
+        )
+    except Exception:  # pragma: no cover - Gauge may be unavailable
+        circuit_state = None
+
     return VerifierMetrics(
         sampled_total=sampled,
         skipped_total=skipped,
         timeout_total=timeout,
         duration_seconds=duration,
+        circuit_open_total=circuit_open,
+        error_total=errors,
+        circuit_state=circuit_state,
     )
 
 
