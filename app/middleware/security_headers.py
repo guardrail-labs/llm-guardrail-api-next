@@ -3,15 +3,20 @@
 # - Adds common security headers when SEC_HEADERS_ENABLED=1.
 # - All values configurable via env with safe defaults.
 # - Default is disabled (no header changes unless enabled).
+# - Mypy fix: type the request handler so Response isn't inferred as Any.
 
 from __future__ import annotations
 
 import os
+from typing import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
+
+# Type alias for Starlette's request handler callback
+RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -40,9 +45,14 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         self._referrer = _str_env("SEC_HEADERS_REFERRER_POLICY", "no-referrer")
         self._perm = _str_env("SEC_HEADERS_PERMISSIONS_POLICY", "geolocation=()")
         self._hsts = _bool_env("SEC_HEADERS_HSTS", False)
-        self._hsts_value = _str_env("SEC_HEADERS_HSTS_VALUE", "max-age=31536000; includeSubDomains")
+        self._hsts_value = _str_env(
+            "SEC_HEADERS_HSTS_VALUE",
+            "max-age=31536000; includeSubDomains",
+        )
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestHandler
+    ) -> Response:
         resp = await call_next(request)
         if self._frame_deny:
             resp.headers.setdefault("X-Frame-Options", "DENY")
@@ -53,7 +63,7 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if self._perm:
             resp.headers.setdefault("Permissions-Policy", self._perm)
         if self._hsts:
-            # Only add HSTS over HTTPS in real deployments; here we leave it to operator.
+            # Only add HSTS over HTTPS in real deployments; operator controls this.
             resp.headers.setdefault("Strict-Transport-Security", self._hsts_value)
         return resp
 
