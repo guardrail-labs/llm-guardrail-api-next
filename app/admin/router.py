@@ -1,9 +1,9 @@
 # app/admin/router.py
-# Summary (PR-H fix):
-# - Fix JSON serialization in /admin/bindings/apply by converting dataclasses to dicts
-#   via dataclasses.asdict (BindingIssue contains nested Binding dataclasses).
-# - (No API surface changes.) Deprecation warnings about TemplateResponse signature
-#   are left as-is to avoid unrelated diffs.
+# Summary (PR-H fix 2):
+# - Move HTML bindings view to /admin/bindings/ui to avoid path collision with
+#   an existing JSON route at /admin/bindings.
+# - Keeps POST /admin/bindings/apply unchanged.
+# - JSON serialization fix retained for issues payload.
 
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ async def admin_index(request: Request) -> HTMLResponse:
     )
 
 
-@router.get("/bindings", response_class=HTMLResponse)
-async def admin_bindings(request: Request) -> HTMLResponse:
+@router.get("/bindings/ui", response_class=HTMLResponse)
+async def admin_bindings_ui(request: Request) -> HTMLResponse:
     bindings = get_bindings()
     issues = validate_bindings(bindings)
     return templates.TemplateResponse(
@@ -73,7 +73,6 @@ async def admin_bindings_apply(payload: Dict[str, Any]) -> JSONResponse:
     if APPLY_ENABLED():
         set_bindings(new_bindings)
         applied = True
-    # Use asdict() to ensure nested dataclasses (BindingIssue.a/b -> Binding) are serializable
     issues_json = [asdict(i) for i in issues]
     return JSONResponse(
         {
