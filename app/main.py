@@ -308,6 +308,11 @@ def create_app() -> FastAPI:
 build_app = create_app
 app = create_app()
 
+# BEGIN PR-J security include
+security_mod = __import__("app.middleware.security", fromlist=["install_security"])
+security_mod.install_security(app)
+# END PR-J security include
+
 # BEGIN PR-H include
 admin_router = __import__("app.admin.router", fromlist=["router"]).router
 app.include_router(admin_router)
