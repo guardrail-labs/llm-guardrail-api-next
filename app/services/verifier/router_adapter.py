@@ -1,11 +1,11 @@
 # app/services/verifier/router_adapter.py
-# Summary (PR-O final):
+# Summary (PR-O final, import fix):
 # - Probabilistic sampling with injectable RNG (defaults to random.random).
 # - Latency budget via within_budget() + VerifierTimedOut.
 # - Metrics preserved (skipped/sample/timeout/duration).
 # - Optional circuit breaker (env-gated) that skips when open and records success/failure.
 # - Defaults pull from config_sanitizer; ctor args can override without breaking callers.
-# - mypy clean (no unused ignores; casts where needed).
+# - Imports VERIFIER_METRICS from app.observability.metrics (as tests expect).
 
 from __future__ import annotations
 
@@ -18,12 +18,9 @@ from app.services.config_sanitizer import (
     get_verifier_sampling_pct,
 )
 from app.services.circuit_breaker import breaker_from_env, CircuitBreaker
-from app.services.verifier.metrics import VERIFIER_METRICS
+from app.observability.metrics import VERIFIER_METRICS
 from app.services.verifier.types import VerifierOutcome
 from app.services.verifier.within_budget import VerifierTimedOut, within_budget
-
-
-# --------------------------- typing helpers -----------------------------------
 
 
 @runtime_checkable
@@ -41,9 +38,6 @@ def _derive_provider_name(provider: object) -> str:
 
 def _clamp_pct(x: float) -> float:
     return 0.0 if x != x else min(1.0, max(0.0, x))  # handles NaN
-
-
-# ------------------------------ adapter ---------------------------------------
 
 
 class VerifierAdapter:
@@ -111,8 +105,6 @@ class VerifierAdapter:
         self._cb_enabled: bool = enabled
         self._cb: CircuitBreaker = breaker
 
-    # ----- dynamic config views (override -> config fallback) -----
-
     @property
     def sampling_pct(self) -> float:
         if self._sampling_override is not None:
@@ -124,8 +116,6 @@ class VerifierAdapter:
         if self._budget_override is not None:
             return self._budget_override
         return get_verifier_latency_budget_ms()
-
-    # ------------------------------- core --------------------------------------
 
     async def evaluate(self, text: str) -> VerifierOutcome:
         sp = self.sampling_pct
