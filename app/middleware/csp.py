@@ -1,88 +1,44 @@
-# app/middleware/csp.py
-# Summary (PR-Y fix): Add optional CSP and Referrer-Policy headers.
-# - Disabled by default; enable via env toggles.
-# - Does not override headers if an upstream already set them.
-# - Env:
-#     CSP_ENABLED                 (default: 0)
-#     CSP_VALUE                   (default: "default-src 'none'; frame-ancestors 'none';"
-#                                  " base-uri 'none'")
-#     REFERRER_POLICY_ENABLED     (default: 0)
-#     REFERRER_POLICY_VALUE       (default: "no-referrer")
+"""
+Content Security Policy middleware.
+
+Env (evaluated at request time):
+- CSP_ENABLED: 1/true/on to emit header
+- CSP_VALUE: policy string; default is a restrictive baseline
+- REFERRER_POLICY_ENABLED: if truthy, also emit 'referrer-policy'
+- REFERRER_POLICY_VALUE: defaults to 'no-referrer'
+"""
 
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Callable
 
-from fastapi import FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request as StarletteRequest
-from starlette.responses import Response as StarletteResponse
-from starlette.types import ASGIApp  # for mypy-accurate __init__ typing
+from starlette.requests import Request
+from starlette.responses import Response
 
 
-def _get_bool_env(name: str, default: bool) -> bool:
-    val = os.getenv(name)
-    if val is None or val.strip() == "":
-        return default
-    s = val.strip().lower()
-    return s in {"1", "true", "yes", "on"}
+def _truthy(val: object) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _get_str(name: str, default: str) -> str:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    v = val.strip()
-    return v if v else default
+_DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
 
 
 class _CSPMiddleware(BaseHTTPMiddleware):
-    def __init__(
-        self,
-        app: ASGIApp,
-        *,
-        csp: Optional[str],
-        referrer_policy: Optional[str],
-    ) -> None:
-        super().__init__(app)
-        self._csp = csp
-        self._rp = referrer_policy
+    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
+        resp = await call_next(request)
 
-    async def dispatch(
-        self, request: StarletteRequest, call_next
-    ) -> StarletteResponse:
-        resp: StarletteResponse = await call_next(request)
+        if _truthy(os.getenv("CSP_ENABLED", "0")):
+            csp_val = os.getenv("CSP_VALUE", _DEFAULT_CSP)
+            resp.headers.setdefault("content-security-policy", csp_val)
 
-        # Do not override if already present
-        if self._csp and "content-security-policy" not in {
-            k.lower(): v for k, v in resp.headers.items()
-        }:
-            resp.headers["Content-Security-Policy"] = self._csp
-
-        if self._rp and "referrer-policy" not in {
-            k.lower(): v for k, v in resp.headers.items()
-        }:
-            resp.headers["Referrer-Policy"] = self._rp
+        if _truthy(os.getenv("REFERRER_POLICY_ENABLED", "0")):
+            rp_val = os.getenv("REFERRER_POLICY_VALUE", "no-referrer")
+            resp.headers.setdefault("referrer-policy", rp_val)
 
         return resp
 
 
-def install_csp(app: FastAPI) -> None:
-    csp_enabled = _get_bool_env("CSP_ENABLED", False)
-    rp_enabled = _get_bool_env("REFERRER_POLICY_ENABLED", False)
-
-    if not (csp_enabled or rp_enabled):
-        return
-
-    csp_val = (
-        _get_str(
-            "CSP_VALUE",
-            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-        )
-        if csp_enabled
-        else None
-    )
-    rp_val = _get_str("REFERRER_POLICY_VALUE", "no-referrer") if rp_enabled else None
-
-    app.add_middleware(_CSPMiddleware, csp=csp_val, referrer_policy=rp_val)
+def install_csp(app) -> None:
+    app.add_middleware(_CSPMiddleware)
