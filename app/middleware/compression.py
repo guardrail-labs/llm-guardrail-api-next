@@ -1,28 +1,90 @@
-# app/middleware/compression.py
-# Summary (PR-V): Optional gzip compression via Starlette's GZipMiddleware.
-# - Controlled by env:
-#     COMPRESSION_ENABLED          (default: 0 -> disabled)
-#     COMPRESSION_MIN_SIZE_BYTES   (default: 500)
-# - No behavior change unless explicitly enabled.
+"""
+Simple gzip compression middleware controlled by env.
+
+Env (read per request):
+- COMPRESSION_ENABLED: toggle (default off)
+- COMPRESSION_MIN_SIZE_BYTES: minimum size to compress (default 500)
+"""
 
 from __future__ import annotations
 
-from fastapi import FastAPI
-from starlette.middleware.gzip import GZipMiddleware
+import gzip
+import io
+import os
+from typing import Callable
 
-from app.services.config_sanitizer import get_bool, get_int
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 
-def _enabled() -> bool:
-    return get_bool("COMPRESSION_ENABLED", default=False)
+def _truthy(v: object) -> bool:
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _min_size() -> int:
-    # Clamp to >= 0; very small sizes can be wasteful but allowed for tests.
-    return get_int("COMPRESSION_MIN_SIZE_BYTES", default=500, min_value=0)
+    try:
+        return max(int(os.getenv("COMPRESSION_MIN_SIZE_BYTES", "500")), 0)
+    except Exception:
+        return 500
 
 
-def install_compression(app: FastAPI) -> None:
-    if not _enabled():
-        return
-    app.add_middleware(GZipMiddleware, minimum_size=_min_size())
+class _CompressionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
+        resp = await call_next(request)
+
+        if not _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
+            return resp
+
+        if "gzip" not in (request.headers.get("accept-encoding") or ""):
+            return resp
+
+        if resp.headers.get("content-encoding"):
+            return resp  # already encoded
+
+        # Materialize body
+        body: bytes = b""
+        if hasattr(resp, "body_iterator") and resp.body_iterator is not None:
+            chunks = []
+            async for chunk in resp.body_iterator:
+                chunks.append(chunk)
+            body = b"".join(chunks)
+        else:
+            # Starlette Response has .body attribute
+            body = getattr(resp, "body", b"")
+
+        if len(body) < _min_size():
+            # Rebuild original response if we consumed iterator
+            if hasattr(resp, "body_iterator"):
+                new_resp = Response(
+                    content=body,
+                    status_code=resp.status_code,
+                    headers=dict(resp.headers),
+                    media_type=resp.media_type,
+                )
+                return new_resp
+            return resp
+
+        # Compress
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(body)
+        gz_bytes = buf.getvalue()
+
+        new_headers = dict(resp.headers)
+        new_headers["Content-Encoding"] = "gzip"
+        # Vary to avoid caches mixing compressed/uncompressed
+        vary = new_headers.get("Vary")
+        new_headers["Vary"] = "Accept-Encoding" if not vary else f"{vary}, Accept-Encoding"
+        new_headers["Content-Length"] = str(len(gz_bytes))
+
+        return Response(
+            content=gz_bytes,
+            status_code=resp.status_code,
+            headers=new_headers,
+            media_type=resp.media_type,
+        )
+
+
+def install_compression(app) -> None:
+    app.add_middleware(_CompressionMiddleware)
