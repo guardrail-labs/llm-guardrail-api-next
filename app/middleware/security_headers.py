@@ -13,7 +13,7 @@ Security headers middleware (always-on defaults + env overrides).
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -26,8 +26,12 @@ def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
 
 
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
-        resp = await call_next(request)
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        resp: Response = await call_next(request)
 
         # Always-on headers
         resp.headers.setdefault("X-Frame-Options", "DENY")
@@ -50,6 +54,5 @@ def install_security_headers(app) -> None:
     app.add_middleware(_SecurityHeadersMiddleware)
 
 
-# Small helper used by logging to report status
 def sec_headers_enabled() -> bool:
     return True
