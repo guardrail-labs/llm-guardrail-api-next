@@ -27,10 +27,12 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         # Read env-driven toggles dynamically so tests can flip them per test.
-        enabled = (os.getenv("EGRESS_FILTER_ENABLED", "1") == "1")
-        streaming_redact_enabled = (os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1")
+        enabled = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
+        streaming_redact_enabled = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
         overlap_chars = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048") or "2048")
-        sse_min_window = int(os.getenv("EGRESS_SSE_MIN_WINDOW", str(_DEFAULT_SSE_MIN_WINDOW)) or "128")
+        sse_min_window = int(
+            os.getenv("EGRESS_SSE_MIN_WINDOW", str(_DEFAULT_SSE_MIN_WINDOW)) or "128"
+        )
 
         response = await call_next(request)
         if not enabled:
