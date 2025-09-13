@@ -1,4 +1,3 @@
-# app/main.py
 from __future__ import annotations
 
 import importlib
@@ -24,7 +23,10 @@ from app.telemetry.tracing import TracingMiddleware
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
+    from prometheus_client import (
+        REGISTRY as _PromRegistryObj,
+        Histogram as _PromHistogramCls,
+    )
 
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
@@ -169,7 +171,7 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             "request_id": get_request_id() or "",
         }
 
-        _ = _safe_headers_copy(resp.headers)  # keep defaults & request id fresh
+        _ = _safe_headers_copy(resp.headers)  # for parity with other errors
         return JSONResponse(payload, status_code=401, headers=_safe_headers_copy(resp.headers))
 
 
@@ -253,10 +255,6 @@ def create_app() -> FastAPI:
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
 
-    # Include admin router (outside app.routes.*)
-    admin_router = __import__("app.admin.router", fromlist=["router"]).router
-    app.include_router(admin_router)
-
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
     async def _health_fallback():
@@ -275,64 +273,67 @@ def create_app() -> FastAPI:
         # Generic 500 with JSON body so tests can .json() it.
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
-    # ---- PR-J/K/H installs (inside factory so fresh apps get them) ----
-
-    # PR-J: API key + rate limit (opt-in; reads env at import time)
-    security_mod = __import__("app.middleware.security", fromlist=["install_security"])
-    security_mod.install_security(app)
-
-    # PR-K: security headers (default ON; env can disable)
-    sec_headers_mod = __import__(
-        "app.middleware.security_headers",
-        fromlist=["install_security_headers"],
-    )
-    sec_headers_mod.install_security_headers(app)
-
-    # PR-K: always-on nosniff (belt-and-suspenders)
-    nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
-    nosniff_mod.install_nosniff(app)
-
-    # PR-K: standard CORS (permissive defaults; narrowed by env if provided)
-    cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
-    cors_mod.install_cors(app)
-
-    # PR-K: CORS fallback (guarantees preflight + echo when CORS_ENABLED=1)
-    cors_fb_mod = __import__(
-        "app.middleware.cors_fallback",
-        fromlist=["install_cors_fallback"],
-    )
-    # Add fallback before outer middlewares
-    cors_fb_mod.install_cors_fallback(app)
-
-    # Max body
-    mb_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
-    mb_mod.install_max_body(app)
-
-    # CSP
-    csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
-    csp_mod.install_csp(app)
-
-    # PR-M: JSON request logging
-    log_mod = __import__(
-        "app.middleware.logging_json",
-        fromlist=["install_request_logging"],
-    )
-    log_mod.install_request_logging(app)
-
-    # Compression
-    comp_mod = __import__(
-        "app.middleware.compression", fromlist=["install_compression"]
-    )
-    comp_mod.install_compression(app)
-
-    # BEGIN PR-K include (Compression)
-    comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
-    comp_mod.install_compression(app)
-    # END PR-K include
-
     return app
 
 
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
+
+# BEGIN PR-K include (Security headers)
+sec_headers_mod = __import__(
+    "app.middleware.security_headers",
+    fromlist=["install_security_headers"],
+)
+sec_headers_mod.install_security_headers(app)
+# END PR-K include
+
+# BEGIN PR-J security include
+security_mod = __import__("app.middleware.security", fromlist=["install_security"])
+security_mod.install_security(app)
+# END PR-J security include
+
+# BEGIN PR-H include
+admin_router = __import__("app.admin.router", fromlist=["router"]).router
+app.include_router(admin_router)
+# END PR-H include
+
+# BEGIN PR-K nosniff include
+nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
+nosniff_mod.install_nosniff(app)
+# END PR-K nosniff include
+
+# BEGIN PR-K include (CORS - primary)
+cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
+cors_mod.install_cors(app)
+# END PR-K include
+
+# BEGIN PR-K include (CORS fallback)
+cors_fb_mod = __import__(
+    "app.middleware.cors_fallback",
+    fromlist=["install_cors_fallback"],
+)
+cors_fb_mod.install_cors_fallback(app)
+# END PR-K include
+
+# BEGIN PR-K include (CSP / Referrer-Policy)
+csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
+csp_mod.install_csp(app)
+# END PR-K include
+
+# BEGIN PR-K include (JSON access logging)
+logjson_mod = __import__(
+    "app.middleware.logging_json",
+    fromlist=["install_json_logging"],
+)
+logjson_mod.install_json_logging(app)
+# END PR-K include
+
+# BEGIN PR-K include (Compression - outermost)
+# Add last so responses are fully formed before gzip is applied.
+comp_mod = __import__(
+    "app.middleware.compression",
+    fromlist=["install_compression"],
+)
+comp_mod.install_compression(app)
+# END PR-K include
