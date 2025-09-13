@@ -3,30 +3,19 @@
 
 from __future__ import annotations
 
-import importlib
-
 from starlette.testclient import TestClient
 
-
-def _client_with_env(monkeypatch, env: dict[str, str]) -> TestClient:
-    for k, v in env.items():
-        if v is None:
-            monkeypatch.delenv(k, raising=False)
-        else:
-            monkeypatch.setenv(k, v)
-    import app.main as main
-    importlib.reload(main)
-    return TestClient(main.app)
+import app.main as main
 
 
 def test_csp_headers_disabled_by_default(monkeypatch) -> None:
-    client = _client_with_env(
-        monkeypatch,
-        {
-            "CSP_ENABLED": None,
-            "REFERRER_POLICY_ENABLED": None,
-        },
-    )
+    # Ensure env is unset (use delenv; avoid dict with None to satisfy mypy)
+    monkeypatch.delenv("CSP_ENABLED", raising=False)
+    monkeypatch.delenv("REFERRER_POLICY_ENABLED", raising=False)
+    monkeypatch.delenv("CSP_VALUE", raising=False)
+    monkeypatch.delenv("REFERRER_POLICY_VALUE", raising=False)
+
+    client = TestClient(main.app)
     r = client.get("/health")
     assert r.status_code == 200
     h = r.headers
@@ -35,13 +24,13 @@ def test_csp_headers_disabled_by_default(monkeypatch) -> None:
 
 
 def test_csp_and_referrer_enabled_with_defaults(monkeypatch) -> None:
-    client = _client_with_env(
-        monkeypatch,
-        {
-            "CSP_ENABLED": "1",
-            "REFERRER_POLICY_ENABLED": "1",
-        },
-    )
+    monkeypatch.setenv("CSP_ENABLED", "1")
+    monkeypatch.setenv("REFERRER_POLICY_ENABLED", "1")
+    # Clear custom values to use defaults
+    monkeypatch.delenv("CSP_VALUE", raising=False)
+    monkeypatch.delenv("REFERRER_POLICY_VALUE", raising=False)
+
+    client = TestClient(main.app)
     r = client.get("/health")
     assert r.status_code == 200
     h = r.headers
@@ -52,13 +41,12 @@ def test_csp_and_referrer_enabled_with_defaults(monkeypatch) -> None:
 
 
 def test_csp_custom_values(monkeypatch) -> None:
-    client = _client_with_env(
-        monkeypatch,
-        {
-            "CSP_ENABLED": "1",
-            "CSP_VALUE": "default-src 'self'",
-        },
-    )
+    monkeypatch.setenv("CSP_ENABLED", "1")
+    monkeypatch.setenv("CSP_VALUE", "default-src 'self'")
+    # Referrer remains disabled unless toggled
+    monkeypatch.delenv("REFERRER_POLICY_ENABLED", raising=False)
+
+    client = TestClient(main.app)
     r = client.get("/health")
     assert r.status_code == 200
     assert r.headers.get("content-security-policy") == "default-src 'self'"
