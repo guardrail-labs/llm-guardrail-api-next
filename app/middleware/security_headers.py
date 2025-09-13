@@ -1,9 +1,10 @@
 # app/middleware/security_headers.py
-# Summary (PR-Y compat/fix): Security headers middleware with legacy env support.
-# - Restores Referrer-Policy via SEC_HEADERS_REFERRER_POLICY for back-compat.
-# - Defaults keep X-Frame-Options and X-Content-Type-Options enabled.
-# - Adds helper sec_headers_enabled() for other modules (e.g., logging) to query.
-# - Removes dependency on get_bool to avoid mypy "too many args" issues.
+# Summary (PR-Y compat/fix v2): Security headers middleware with sane defaults.
+# - Defaults: X-Frame-Options=DENY, X-Content-Type-Options=nosniff,
+#             Referrer-Policy=no-referrer, Permissions-Policy=geolocation=()
+# - Legacy env SEC_HEADERS_REFERRER_POLICY still supported (overrides default).
+# - Uses .setdefault so upstream headers aren't overwritten.
+# - Exposes sec_headers_enabled() for other modules (e.g., JSON logging).
 
 from __future__ import annotations
 
@@ -70,20 +71,23 @@ def install_security_headers(app: FastAPI) -> None:
     """
     Install a lightweight security-headers middleware.
 
-    Back-compat:
-    - If SEC_HEADERS_REFERRER_POLICY is set (e.g., "no-referrer"), we emit
-      Referrer-Policy with that exact value.
+    Defaults:
+    - X-Frame-Options, X-Content-Type-Options are enabled by default.
+    - Referrer-Policy defaults to "no-referrer" (legacy behavior).
+    - Permissions-Policy defaults to "geolocation=()" (safe baseline).
+    Overrides:
+    - SEC_HEADERS_REFERRER_POLICY overrides the default referrer policy if set.
+    - SEC_HEADERS_PERMISSIONS_POLICY overrides the default permissions policy if set.
+    - SEC_HEADERS_XFO_ENABLED / SEC_HEADERS_NOSNIFF_ENABLED can disable those headers.
     """
     xfo_enabled = _get_bool_env("SEC_HEADERS_XFO_ENABLED", True)
     nosniff_enabled = _get_bool_env("SEC_HEADERS_NOSNIFF_ENABLED", True)
 
-    # Backward-compat alias: preserve previous deployments/tests
-    referrer_policy = _get_str("SEC_HEADERS_REFERRER_POLICY")
+    # Defaults with legacy override capability
+    referrer_policy = _get_str("SEC_HEADERS_REFERRER_POLICY") or "no-referrer"
+    permissions_policy = _get_str("SEC_HEADERS_PERMISSIONS_POLICY") or "geolocation=()"
 
-    # Optional permissions policy (legacy name retained if already used)
-    permissions_policy = _get_str("SEC_HEADERS_PERMISSIONS_POLICY")
-
-    # If nothing is enabled or configured, skip installing.
+    # If everything disabled AND both optional strings empty, skip.
     if not (xfo_enabled or nosniff_enabled or referrer_policy or permissions_policy):
         return
 
@@ -98,14 +102,14 @@ def install_security_headers(app: FastAPI) -> None:
 
 def sec_headers_enabled() -> bool:
     """
-    Public helper used by other modules (e.g., JSON logging) to know if the
-    security-headers middleware would be active given current env.
+    Helper used by other modules to check if this middleware would emit headers
+    given current env (defaults count as enabled).
     """
     return any(
         [
             _get_bool_env("SEC_HEADERS_XFO_ENABLED", True),
             _get_bool_env("SEC_HEADERS_NOSNIFF_ENABLED", True),
-            _get_str("SEC_HEADERS_REFERRER_POLICY") is not None,
-            _get_str("SEC_HEADERS_PERMISSIONS_POLICY") is not None,
+            True,  # Referrer-Policy defaults on
+            True,  # Permissions-Policy defaults on
         ]
     )
