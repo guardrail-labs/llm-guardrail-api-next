@@ -325,6 +325,11 @@ def create_app() -> FastAPI:
     )
     comp_mod.install_compression(app)
 
+    # BEGIN PR-K include (Compression)
+    comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
+    comp_mod.install_compression(app)
+    # END PR-K include
+
     return app
 
 
