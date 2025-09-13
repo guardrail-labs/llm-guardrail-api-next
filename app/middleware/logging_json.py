@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import time
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -54,13 +54,18 @@ def _emit_snapshot_once(response: Response) -> None:
 
 
 class _JSONLoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         enabled = _truthy(os.getenv("LOG_JSON_ENABLED", "0"))
         if not enabled:
-            return await call_next(request)
+            resp: Response = await call_next(request)
+            return resp
 
         t0 = time.perf_counter()
-        resp = await call_next(request)
+        resp: Response = await call_next(request)
 
         # Emit snapshot once (after we have headers, including X-Request-ID)
         _emit_snapshot_once(resp)
@@ -68,7 +73,6 @@ class _JSONLoggingMiddleware(BaseHTTPMiddleware):
         if _truthy(os.getenv("LOG_REQUESTS_ENABLED", "0")):
             allow = _paths()
             if allow is None or request.url.path in allow:
-                # Prefer response header X-Request-ID then context
                 rid = resp.headers.get("X-Request-ID") or (get_request_id() or "")
                 evt = {
                     "event": "access",
