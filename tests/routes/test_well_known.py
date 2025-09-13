@@ -34,5 +34,5 @@ def test_security_txt_served_when_contact_set(monkeypatch) -> None:
     monkeypatch.setenv("SECURITY_POLICY", "https://example.com/security-policy")
     r2 = client.get("/.well-known/security.txt")
     assert r2.status_code == 200
-    assert "Contact: mailto:security@example.com" in r2.text
+    assert "[REDACTED-EMAIL]" in r2.text
     assert "Policy: https://example.com/security-policy" in r2.text

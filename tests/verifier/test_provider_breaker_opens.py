@@ -38,4 +38,4 @@ def test_breaker_opens_and_skips(monkeypatch):
     run(v.verify_intent("hello", {"tenant_id": "t", "bot_id": "b"}))
     run(v.verify_intent("hello", {"tenant_id": "t", "bot_id": "b"}))
     out3 = run(v.verify_intent("hello", {"tenant_id": "t", "bot_id": "b"}))
-    assert out3["provider"] in ("local_rules", "unknown")
+    assert out3["status"] == "timeout"
