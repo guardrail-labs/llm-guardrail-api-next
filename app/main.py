@@ -301,16 +301,29 @@ def create_app() -> FastAPI:
         "app.middleware.cors_fallback",
         fromlist=["install_cors_fallback"],
     )
-    # Add fallback last so it’s outermost for OPTIONS and header echo
+    # Add fallback before outer middlewares
     cors_fb_mod.install_cors_fallback(app)
 
-    # PR-M: JSON request logging + config snapshot (opt-in)
+    # Max body
+    mb_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
+    mb_mod.install_max_body(app)
+
+    # CSP
+    csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
+    csp_mod.install_csp(app)
+
+    # PR-M: JSON request logging
     log_mod = __import__(
         "app.middleware.logging_json",
-        fromlist=["install_request_logging", "log_config_snapshot"],
+        fromlist=["install_request_logging"],
     )
     log_mod.install_request_logging(app)
-    log_mod.log_config_snapshot()
+
+    # Compression
+    comp_mod = __import__(
+        "app.middleware.compression", fromlist=["install_compression"]
+    )
+    comp_mod.install_compression(app)
 
     return app
 
@@ -318,13 +331,3 @@ def create_app() -> FastAPI:
 # Back-compat for tests/scripts
 build_app = create_app
 app = create_app()
-
-# BEGIN PR-T include (Max request body size limiter)
-maxb_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
-maxb_mod.install_max_body(app)
-# END PR-T include
-
-# BEGIN PR-V include (GZip compression - should be near-outermost)
-comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
-comp_mod.install_compression(app)
-# END PR-V include

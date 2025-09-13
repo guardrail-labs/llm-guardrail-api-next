@@ -5,7 +5,7 @@ from typing import AsyncIterator, List
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
-from app.middleware.stream_guard import wrap_stream, PatTriplet
+from app.middleware.stream_guard import PatTriplet, wrap_stream
 from app.services import runtime_flags as rf
 
 router = APIRouter()

@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from app.main import app  # existing FastAPI app
 from app.services.bindings.repository import get_bindings
 
-
 client = TestClient(app)
 
 

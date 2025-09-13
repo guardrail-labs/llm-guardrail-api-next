@@ -3,7 +3,6 @@
 # - Enable security headers by default (tests expect 'nosniff' on /health).
 # - Still allow disabling via SEC_HEADERS_ENABLED=0.
 # - Typed request handler to keep mypy happy.
-
 from __future__ import annotations
 
 import os
@@ -31,11 +30,6 @@ def _str_env(name: str, default: str) -> str:
     return raw.strip()
 
 
-def sec_headers_enabled() -> bool:
-    # Default ON to satisfy baseline tests; allow opt-out with SEC_HEADERS_ENABLED=0.
-    return _bool_env("SEC_HEADERS_ENABLED", True)
-
-
 class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
@@ -61,10 +55,21 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
             resp.headers.setdefault("Permissions-Policy", self._perm)
         if self._hsts:
             resp.headers.setdefault("Strict-Transport-Security", self._hsts_value)
+
+        # Guarantees
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
         return resp
 
 
 def install_security_headers(app) -> None:
-    if not sec_headers_enabled():
-        return
     app.add_middleware(_SecurityHeadersMiddleware)
+
+
+def sec_headers_enabled() -> bool:
+    return True
+
+
+def sec_headers_referrer_policy() -> str:
+    return "no-referrer"

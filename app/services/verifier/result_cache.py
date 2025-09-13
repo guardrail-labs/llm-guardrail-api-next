@@ -6,8 +6,8 @@ from typing import Dict, Optional
 
 from app.settings import (
     VERIFIER_RESULT_CACHE_ENABLED,
-    VERIFIER_RESULT_CACHE_URL,
     VERIFIER_RESULT_CACHE_TTL_SECONDS,
+    VERIFIER_RESULT_CACHE_URL,
 )
 
 Outcome = str  # "safe" | "unsafe"
