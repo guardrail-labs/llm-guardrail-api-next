@@ -55,6 +55,11 @@ def _collect_active_policy(overrides: Optional[Dict[str, str]] = None) -> Dict[s
         "RULEPACKS_ACTIVE": os.getenv("RULEPACKS_ACTIVE", ""),
         "RULEPACKS_INGRESS_MODE": ingress_mode(),
         "RULEPACKS_EGRESS_MODE": egress_mode(),
+        "ESCALATION_ENABLED": os.getenv("ESCALATION_ENABLED", "0"),
+        "ESCALATION_WINDOW_SEC": os.getenv("ESCALATION_WINDOW_SEC", "300"),
+        "ESCALATION_TIER1_THRESHOLD": os.getenv("ESCALATION_TIER1_THRESHOLD", "3"),
+        "ESCALATION_TIER2_THRESHOLD": os.getenv("ESCALATION_TIER2_THRESHOLD", "10"),
+        "ESCALATION_COOLDOWN_SEC": os.getenv("ESCALATION_COOLDOWN_SEC", "300"),
     })
     decision_map = {
         "classifier.allow": map_classifier_outcome_to_action("allow"),

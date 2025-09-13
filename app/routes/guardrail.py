@@ -6,6 +6,7 @@ import random
 import re
 import uuid
 import time
+import os
 from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple, cast
 
 from fastapi import APIRouter, Header, Request, UploadFile
@@ -29,7 +30,11 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.services import runtime_flags
-from app.services.clarify import respond_with_clarify
+from app.services.clarify import respond_with_clarify, INCIDENT_HEADER
+from app.services.rulepacks_engine import ingress_should_block, ingress_mode
+from app.services.fingerprint import get_fingerprint
+from app.services.escalation import record_unsafe, current_mode
+from app.shared.headers import attach_guardrail_headers
 # --- BEGIN PR-C wire-up block ---
 from app.services.config_sanitizer import (
     get_verifier_latency_budget_ms,
@@ -1122,6 +1127,132 @@ async def guardrail_evaluate(request: Request):
             request, decode_pdf=False
         )
 
+    # Ingress rulepack enforcement (opt-in)
+    should_block, hits = ingress_should_block(combined_text or "")
+    if should_block:
+        # Record incident for escalation
+        try:
+            fp = get_fingerprint(request)
+            record_unsafe(fp)
+        except Exception:
+            fp = ""
+
+        mode = current_mode(fp)
+        # Tier-2: full quarantine
+        if mode == "full_quarantine":
+            retry = int(os.getenv("ESCALATION_RETRY_AFTER_SEC", "60") or "60")
+            resp = JSONResponse(
+                status_code=int(
+                    os.getenv("ESCALATION_QUARANTINE_HTTP", "429") or "429"
+                ),
+                content={
+                    "action": "full_quarantine",
+                    "reason": "ingress_rulepack",
+                    "matches": hits,
+                },
+            )
+            resp.headers["Retry-After"] = str(retry)
+            resp.headers[INCIDENT_HEADER] = f"fq-{fp[:8]}" if fp else "fq"
+            attach_guardrail_headers(
+                resp,
+                decision="block",
+                ingress_action="full_quarantine",
+                egress_action="allow",
+            )
+            try:
+                from app.services.audit_forwarder import emit_audit_event
+                emit_audit_event(
+                    {
+                        "event": "escalation",
+                        "data": {"mode": "full_quarantine", "matches": hits},
+                    }
+                )
+            except Exception:
+                pass
+            return resp
+
+        # Tier-1: execute_locked
+        if mode == "execute_locked":
+            resp = JSONResponse(
+                status_code=200,
+                content={
+                    "action": "execute_locked",
+                    "reason": "ingress_rulepack",
+                    "matches": hits,
+                },
+            )
+            resp.headers[INCIDENT_HEADER] = f"xl-{fp[:8]}" if fp else "xl"
+            attach_guardrail_headers(
+                resp,
+                decision="block",
+                ingress_action="execute_locked",
+                egress_action="allow",
+            )
+            try:
+                from app.services.audit_forwarder import emit_audit_event
+                emit_audit_event(
+                    {
+                        "event": "escalation",
+                        "data": {"mode": "execute_locked", "matches": hits},
+                    }
+                )
+            except Exception:
+                pass
+            return resp
+
+        # Non-escalated path: honor configured RULEPACKS_INGRESS_MODE
+        mode_cfg = ingress_mode()
+        if mode_cfg == "block":
+            resp = JSONResponse(
+                status_code=200,
+                content={
+                    "action": "block_input_only",
+                    "reason": "ingress_rulepack",
+                    "matches": hits,
+                },
+            )
+            resp.headers[INCIDENT_HEADER] = "rpb"
+            attach_guardrail_headers(
+                resp,
+                decision="block",
+                ingress_action="block_input_only",
+                egress_action="allow",
+            )
+            try:
+                from app.services.audit_forwarder import emit_audit_event
+                emit_audit_event(
+                    {
+                        "event": "decision",
+                        "data": {
+                            "decision": "block_input_only",
+                            "reason": "ingress_rulepack",
+                        },
+                    }
+                )
+            except Exception:
+                pass
+            return resp
+        elif mode_cfg == "clarify":
+            try:
+                from app.services.audit_forwarder import emit_audit_event
+                emit_audit_event(
+                    {
+                        "event": "decision",
+                        "data": {
+                            "decision": "clarify",
+                            "reason": "ingress_rulepack",
+                        },
+                    }
+                )
+            except Exception:
+                pass
+            return respond_with_clarify(
+                extra={"rulepack": "ingress_block", "matches": ",".join(hits)}
+            )
+        else:
+            # annotate only → continue
+            pass
+
     request_id = _req_id(explicit_request_id)
 
     classifier_outcome, policy_hits, policy_dbg = _evaluate_ingress_policy(
@@ -1284,12 +1415,12 @@ async def guardrail_evaluate(request: Request):
             retries = 0
         for _ in range(max(0, retries)):
             _maybe_metric("inc_verifier_retry", provider)
-        mode = (
+        hv_mode = (
             "fallback"
             if hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
             else "live"
         )
-        _maybe_metric("inc_verifier_mode", mode)
+        _maybe_metric("inc_verifier_mode", hv_mode)
 
     _audit(
         "ingress",
