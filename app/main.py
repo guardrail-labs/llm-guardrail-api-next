@@ -34,6 +34,9 @@ except Exception:  # pragma: no cover
     PromHistogram = None
     PromRegistry = None
 
+# Short alias to keep lines under Ruff's 100-char limit.
+RequestHandler = Callable[[StarletteRequest], Awaitable[StarletteResponse]]
+
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
@@ -81,7 +84,11 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._hist = _get_or_create_latency_histogram()
 
-    async def dispatch(self, request: StarletteRequest, call_next: Callable[[StarletteRequest], Awaitable[StarletteResponse]]):
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
         start = time.perf_counter()
         try:
             return await call_next(request)
@@ -90,7 +97,10 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
-                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
+                    self._hist.labels(
+                        route=safe_route,
+                        method=request.method,
+                    ).observe(dur)
                 except Exception:
                     # Never break requests due to metrics errors
                     pass
@@ -145,7 +155,11 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     even if an upstream middleware returned a minimal {"detail": "..."} response.
     """
 
-    async def dispatch(self, request: StarletteRequest, call_next: Callable[[StarletteRequest], Awaitable[StarletteResponse]]):
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
@@ -342,7 +356,7 @@ try:
                 if (
                     isinstance(_obj, type)
                     and issubclass(_obj, BaseHTTPMiddleware)
-                    and _obj is not BaseHTTPMiddleware  # <-- CRITICAL: don't add the base class
+                    and _obj is not BaseHTTPMiddleware  # don't add the abstract base
                     and getattr(_obj, "__module__", "").startswith("app.")
                 ):
                     app.add_middleware(_obj)
