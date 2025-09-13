@@ -15,11 +15,11 @@ Env (read per request):
 from __future__ import annotations
 
 import os
-from typing import Callable, Iterable, Optional
+from typing import Awaitable, Callable, Iterable, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, PlainTextResponse
+from starlette.responses import Response
 
 
 def _truthy(v: object) -> bool:
@@ -40,9 +40,14 @@ def _is_allowed(origin: str, allowed: Iterable[str]) -> bool:
 
 
 class _CORSMiddlewareFallback(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         if not _truthy(os.getenv("CORS_ENABLED", "0")):
-            return await call_next(request)
+            resp: Response = await call_next(request)
+            return resp
 
         origin = request.headers.get("origin")
         allow_origins = _split_csv(os.getenv("CORS_ALLOW_ORIGINS", ""))
@@ -66,9 +71,8 @@ class _CORSMiddlewareFallback(BaseHTTPMiddleware):
             return resp
 
         # Simple/actual requests
-        resp = await call_next(request)
+        resp: Response = await call_next(request)
         if origin and _is_allowed(origin, allow_origins):
-            # Do not overwrite if upstream CORS already set it
             if "access-control-allow-origin" not in {k.lower(): v for k, v in resp.headers.items()}:
                 resp.headers["access-control-allow-origin"] = origin
         return resp
