@@ -3,7 +3,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -27,10 +27,9 @@ def _wants_gzip(request: Request) -> bool:
 
 
 def _is_streaming_response(resp: Response) -> bool:
-    # StreamingResponse (incl. SSE) or anything that exposes a body iterator.
-    if isinstance(resp, StreamingResponse):
-        return True
-    return getattr(resp, "body_iterator", None) is not None
+    # Only treat *true* streaming responses as streaming.
+    # Many non-streaming responses also expose a body_iterator; don't use that.
+    return isinstance(resp, StreamingResponse)
 
 
 def _is_sse(resp: Response) -> bool:
@@ -68,7 +67,7 @@ class GZipMiddleware(BaseHTTPMiddleware):
         if (
             resp.status_code in (204, 304)  # no-body statuses
             or resp.headers.get("content-encoding")  # already encoded (e.g., upstream)
-            or _is_streaming_response(resp)          # streaming bodies (SSE, etc.)
+            or _is_streaming_response(resp)          # true streaming bodies
             or _is_sse(resp)                          # explicit SSE content-type
         ):
             return resp
