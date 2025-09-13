@@ -11,7 +11,7 @@ from __future__ import annotations
 import gzip
 import io
 import os
-from typing import Callable
+from typing import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -30,8 +30,12 @@ def _min_size() -> int:
 
 
 class _CompressionMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
-        resp = await call_next(request)
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        resp: Response = await call_next(request)
 
         if not _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
             return resp
@@ -50,11 +54,9 @@ class _CompressionMiddleware(BaseHTTPMiddleware):
                 chunks.append(chunk)
             body = b"".join(chunks)
         else:
-            # Starlette Response has .body attribute
             body = getattr(resp, "body", b"")
 
         if len(body) < _min_size():
-            # Rebuild original response if we consumed iterator
             if hasattr(resp, "body_iterator"):
                 new_resp = Response(
                     content=body,
@@ -73,7 +75,6 @@ class _CompressionMiddleware(BaseHTTPMiddleware):
 
         new_headers = dict(resp.headers)
         new_headers["Content-Encoding"] = "gzip"
-        # Vary to avoid caches mixing compressed/uncompressed
         vary = new_headers.get("Vary")
         new_headers["Vary"] = "Accept-Encoding" if not vary else f"{vary}, Accept-Encoding"
         new_headers["Content-Length"] = str(len(gz_bytes))
