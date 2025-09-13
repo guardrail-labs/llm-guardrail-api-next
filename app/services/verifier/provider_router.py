@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
+__all__ = [
+    "ProviderSpec",
+    "RouterConfig",
+    "ProviderState",
+    "VerifierRouter",
+    "ProviderRouter",  # compatibility alias
+]
 
 # ----------------------------- Public Interfaces -----------------------------
 
@@ -62,8 +69,11 @@ class VerifierRouter:
         self,
         spec: ProviderSpec,
         payload: Dict[str, Any],
+        *,
+        timeout_override: Optional[float] = None,
     ) -> Dict[str, Any]:
-        return await asyncio.wait_for(spec.fn(payload), timeout=spec.timeout_sec)
+        timeout = timeout_override if timeout_override is not None else spec.timeout_sec
+        return await asyncio.wait_for(spec.fn(payload), timeout=timeout)
 
     def _is_open(self, name: str, now: float) -> bool:
         st = self._state[name]
@@ -117,12 +127,20 @@ class VerifierRouter:
         attempt_log: List[Dict[str, Any]] = []
         budget = self.config.total_budget_sec
         start_all = time.time()
+        exhausted = False
+
+        def remaining_budget() -> float:
+            if budget <= 0:
+                return float("inf")
+            return max(0.0, budget - (time.time() - start_all))
 
         for spec in self.providers:
-            now = time.time()
-            if budget > 0 and (now - start_all) >= budget:
+            # Check budget before attempting this provider.
+            if budget > 0 and remaining_budget() <= 0.0:
+                exhausted = True
                 break
 
+            now = time.time()
             st = self._state[spec.name]
 
             # Circuit breaker: skip if still open.
@@ -144,11 +162,35 @@ class VerifierRouter:
 
             attempts = spec.max_retries + 1
             for i in range(1, attempts + 1):
+                # Enforce budget inside retry loop.
+                rem = remaining_budget()
+                if budget > 0 and rem <= 0.0:
+                    exhausted = True
+                    attempt_log.append(
+                        {
+                            "provider": spec.name,
+                            "attempt": i,
+                            "ok": False,
+                            "err": "budget_exhausted",
+                            "duration_ms": 0,
+                        }
+                    )
+                    break
+
+                # Optionally cap this attempt’s timeout to remaining budget.
+                timeout_override = None
+                if budget > 0 and rem < float("inf"):
+                    timeout_override = min(spec.timeout_sec, rem)
+
                 t0 = time.time()
                 ok = False
                 err_s: Optional[str] = None
                 try:
-                    res = await self._call_with_timeout(spec, payload)
+                    res = await self._call_with_timeout(
+                        spec,
+                        payload,
+                        timeout_override=timeout_override,
+                    )
                     ok = isinstance(res, dict) and "decision" in res
                     if ok:
                         self._record_success(spec.name)
@@ -192,8 +234,17 @@ class VerifierRouter:
                     break
 
             # exhausted retries for this provider → try next provider
+            if exhausted:
+                break
             continue
 
         # budget exhausted or all providers failed
         self._emit_metric("exhausted", {})
         return None, attempt_log
+
+
+# ---------------------------------------------------------------------------
+# Back-compat alias expected by existing imports/tests:
+# from app.services.verifier.provider_router import ProviderRouter
+# ---------------------------------------------------------------------------
+ProviderRouter = VerifierRouter
