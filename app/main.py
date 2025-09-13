@@ -5,7 +5,7 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Awaitable, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -42,6 +42,7 @@ def _truthy(val: object) -> bool:
 def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
+
     If it's already registered in the default REGISTRY, return the existing collector
     to avoid 'Duplicated timeseries' errors.
     """
@@ -80,7 +81,7 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._hist = _get_or_create_latency_histogram()
 
-    async def dispatch(self, request: StarletteRequest, call_next):
+    async def dispatch(self, request: StarletteRequest, call_next: Callable[[StarletteRequest], Awaitable[StarletteResponse]]):
         start = time.perf_counter()
         try:
             return await call_next(request)
@@ -144,7 +145,7 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     even if an upstream middleware returned a minimal {"detail": "..."} response.
     """
 
-    async def dispatch(self, request: StarletteRequest, call_next):
+    async def dispatch(self, request: StarletteRequest, call_next: Callable[[StarletteRequest], Awaitable[StarletteResponse]]):
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
@@ -212,8 +213,6 @@ def _status_code_to_code(status: int) -> str:
         return "payload_too_large"
     if status == 429:
         return "rate_limited"
-    if status == 501:
-        return "not_implemented"
     return "internal_error"
 
 
@@ -255,27 +254,19 @@ def create_app() -> FastAPI:
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
 
-    # Fallback /health (allow GET + POST so max-body tests can POST here)
-    @app.api_route("/health", methods=["GET", "POST"])
+    # Fallback /health (routers may also provide a richer one)
+    @app.get("/health")
     async def _health_fallback():
-        # Minimal shape; some tests only check .status == "ok"
         return {"status": "ok", "ok": True}
 
     # ---- JSON error handlers with request_id & headers ----
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
-        # Preserve original detail text (e.g., "Unauthorized", "Not Found")
         return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
-
-    @app.exception_handler(NotImplementedError)
-    async def _not_impl_handler(request: Request, exc: NotImplementedError):
-        # Convert placeholders into a clean JSON 501 so tests don't explode.
-        return _json_error("Not implemented", 501, base_headers=request.headers)
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
-        # Generic 500 with JSON body so tests can .json() it.
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
     return app
@@ -326,7 +317,7 @@ csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
 # END PR-K include
 
-# BEGIN PR-K include (JSON access logging) — be liberal with installer names
+# BEGIN PR-K include (JSON access logging) — safe fallback
 try:
     logjson_mod = __import__("app.middleware.logging_json", fromlist=["*"])
     _installed = False
@@ -343,12 +334,17 @@ try:
             _fn(app)
             _installed = True
             break
-    # Fallback: attach any BaseHTTPMiddleware subclass exported by the module
+    # Fallback: attach a *real* middleware subclass if exported by the module.
     if not _installed:
         for _attr in dir(logjson_mod):
             _obj = getattr(logjson_mod, _attr)
             try:
-                if isinstance(_obj, type) and issubclass(_obj, BaseHTTPMiddleware):
+                if (
+                    isinstance(_obj, type)
+                    and issubclass(_obj, BaseHTTPMiddleware)
+                    and _obj is not BaseHTTPMiddleware  # <-- CRITICAL: don't add the base class
+                    and getattr(_obj, "__module__", "").startswith("app.")
+                ):
                     app.add_middleware(_obj)
                     _installed = True
                     break
