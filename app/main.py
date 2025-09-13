@@ -201,7 +201,7 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
     are changed at runtime without rebuilding the app.
     - Always set X-Content-Type-Options: nosniff
     - Always set X-Frame-Options: DENY
-    - If SEC_HEADERS_REFERRER_POLICY is set, set Referrer-Policy accordingly
+    - Always set Referrer-Policy: no-referrer (unless explicitly provided)
     - If SEC_HEADERS_PERMISSIONS_POLICY is set, set Permissions-Policy accordingly
     - If CORS_ENABLED and CORS_ALLOW_ORIGINS is set, echo Access-Control-Allow-Origin
       on simple requests when Origin matches.
@@ -218,16 +218,16 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
         if not resp.headers.get("X-Content-Type-Options"):
             resp.headers["X-Content-Type-Options"] = "nosniff"
 
-        # frame deny always (tests expect it on /health)
+        # frame deny always
         if not resp.headers.get("X-Frame-Options"):
             resp.headers["X-Frame-Options"] = "DENY"
 
-        # Referrer-Policy
-        rp = os.getenv("SEC_HEADERS_REFERRER_POLICY")
-        if rp:
-            resp.headers["Referrer-Policy"] = rp
+        # Referrer-Policy: explicit env wins; otherwise default to no-referrer.
+        rp_env = os.getenv("SEC_HEADERS_REFERRER_POLICY")
+        if not resp.headers.get("Referrer-Policy"):
+            resp.headers["Referrer-Policy"] = rp_env if rp_env else "no-referrer"
 
-        # Permissions-Policy
+        # Permissions-Policy (only if provided)
         pp = os.getenv("SEC_HEADERS_PERMISSIONS_POLICY")
         if pp:
             resp.headers["Permissions-Policy"] = pp
@@ -243,7 +243,6 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
                 ]
                 if "*" in allowed or origin in allowed:
                     resp.headers["Access-Control-Allow-Origin"] = origin
-                    # help caches vary properly
                     vary = resp.headers.get("Vary", "")
                     if "Origin" not in [v.strip() for v in vary.split(",") if v]:
                         resp.headers["Vary"] = f"{vary}, Origin" if vary else "Origin"
@@ -300,7 +299,6 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
         "request_id": get_request_id() or "",
     }
     headers = _safe_headers_copy(base_headers or {})
-    # Ensure X-Request-ID is *always* present, even if empty
     headers["X-Request-ID"] = payload["request_id"]
     return JSONResponse(payload, status_code=status, headers=headers)
 
@@ -444,7 +442,6 @@ except Exception:
 comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
 comp_mod.install_compression(app)
 
-# Make sure gzip header appears for small JSON bodies (e.g., /health) when enabled.
 try:
     from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
 
@@ -454,6 +451,5 @@ try:
             minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
         )
 except Exception:
-    # If the built-in gzip can't be added, we still have the custom one above.
     pass
 # END PR-K include
