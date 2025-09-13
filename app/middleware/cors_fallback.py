@@ -46,8 +46,7 @@ class _CORSMiddlewareFallback(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         if not _truthy(os.getenv("CORS_ENABLED", "0")):
-            resp: Response = await call_next(request)
-            return resp
+            return await call_next(request)
 
         origin = request.headers.get("origin")
         allow_origins = _split_csv(os.getenv("CORS_ALLOW_ORIGINS", ""))
@@ -63,12 +62,12 @@ class _CORSMiddlewareFallback(BaseHTTPMiddleware):
             hdrs = os.getenv("CORS_ALLOW_HEADERS", "*")
             max_age = os.getenv("CORS_MAX_AGE", "600")
 
-            resp = Response(status_code=204)
-            resp.headers["access-control-allow-origin"] = origin
-            resp.headers["access-control-allow-methods"] = methods
-            resp.headers["access-control-allow-headers"] = hdrs
-            resp.headers["access-control-max-age"] = max_age
-            return resp
+            preflight_resp = Response(status_code=204)
+            preflight_resp.headers["access-control-allow-origin"] = origin
+            preflight_resp.headers["access-control-allow-methods"] = methods
+            preflight_resp.headers["access-control-allow-headers"] = hdrs
+            preflight_resp.headers["access-control-max-age"] = max_age
+            return preflight_resp
 
         # Simple/actual requests
         resp: Response = await call_next(request)
