@@ -61,8 +61,7 @@ class _JSONLoggingMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         enabled = _truthy(os.getenv("LOG_JSON_ENABLED", "0"))
         if not enabled:
-            resp: Response = await call_next(request)
-            return resp
+            return await call_next(request)
 
         t0 = time.perf_counter()
         resp: Response = await call_next(request)
