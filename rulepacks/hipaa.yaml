@@ -1,14 +1,18 @@
 name: HIPAA
-version: 0.1.0
-description: >
-  HIPAA-oriented egress/ingress policy scaffolding (placeholder).
-scopes:
-  - egress
-  - ingress
+version: 0.2.0
+description: HIPAA-oriented egress/ingress policy scaffolding (enforcement-ready).
+scopes: [egress, ingress]
 controls:
-  - id: hipaa-pii-redaction
+  - id: hipaa-email-redact
     phase: egress
-    match: "pii"
-    action: "redact"
-    status: "placeholder"
-notes: "Rulepack scaffold only; no enforcement in this PR."
+    type: regex
+    pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    action: redact
+    replacement: "[REDACTED-EMAIL]"
+
+  - id: hipaa-ssn-redact
+    phase: egress
+    type: regex
+    pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+    action: redact
+    replacement: "[REDACTED-SSN]"

@@ -106,9 +106,15 @@ Pipeline: redaction → optional summarize → optional policy-check (annotative
   - `env_toggles` (CORS, EGRESS_*, CLARIFY_*)
   - `decision_map` (classifier/verifier → action)
 
-### Rulepacks
-- Scaffolds in `rulepacks/hipaa.yaml`, `rulepacks/gdpr.yaml`.
-- Loader in `app/services/rulepacks.py` (no enforcement yet).
+### Rulepacks (Enforcement)
+- `RULEPACKS_ENFORCE=0|1`
+- `RULEPACKS_ACTIVE=hipaa,gdpr`
+- `RULEPACKS_DIR=rulepacks`
+- `RULEPACKS_INGRESS_MODE=clarify|block|annotate`
+- `RULEPACKS_EGRESS_MODE=enforce|annotate`
+
+When enabled, egress redactions from rulepacks are merged with the built-in patterns.
+Ingress controls can optionally clarify or block before execution.
 
 ### Admin Auth (optional)
 - `GUARDRAIL_DISABLE_AUTH=1` — bypass auth (default in CI/tests)
