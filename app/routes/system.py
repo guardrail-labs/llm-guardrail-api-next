@@ -132,9 +132,9 @@ async def live() -> JSONResponse:
 
 @router.get("/ready")
 async def ready() -> JSONResponse:
-    # Short-circuit: if no startup delay is configured and we are not draining,
-    # consider the app ready even if startup hooks haven't flipped the event yet.
-    if not _draining and _read_ms("HEALTH_READY_DELAY_MS", 0) == 0:
+    # If no startup delay and not draining, only short-circuit to 200
+    # when the probe is NOT enabled. If probe is enabled, honor its status.
+    if not _draining and _read_ms("HEALTH_READY_DELAY_MS", 0) == 0 and not _probe_enabled():
         return JSONResponse({"status": "ok", "ok": True})
 
     if not _is_ready():
