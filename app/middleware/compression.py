@@ -3,11 +3,11 @@ from __future__ import annotations
 import gzip
 import io
 import os
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 from app.middleware.env import get_bool
 
@@ -21,8 +21,36 @@ def _parse_min_size() -> int:
         return 0
 
 
+def _wants_gzip(request: Request) -> bool:
+    ae = (request.headers.get("accept-encoding") or "").lower()
+    return "gzip" in ae
+
+
+def _is_streaming_response(resp: Response) -> bool:
+    # StreamingResponse (incl. SSE) or anything that exposes a body iterator.
+    if isinstance(resp, StreamingResponse):
+        return True
+    return getattr(resp, "body_iterator", None) is not None
+
+
+def _is_sse(resp: Response) -> bool:
+    ctype = (resp.headers.get("content-type") or "").lower()
+    return "text/event-stream" in ctype
+
+
+def _add_vary_accept_encoding(headers: dict[str, str]) -> None:
+    existing = headers.get("Vary")
+    if not existing:
+        headers["Vary"] = "Accept-Encoding"
+        return
+    # Append if not already present (case-insensitive)
+    tokens = [t.strip().lower() for t in existing.split(",")]
+    if "accept-encoding" not in tokens:
+        headers["Vary"] = f"{existing}, Accept-Encoding"
+
+
 class GZipMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app):
+    def __init__(self, app) -> None:
         super().__init__(app)
         self._enabled = get_bool("COMPRESSION_ENABLED")
         self._min_size = _parse_min_size()
@@ -30,56 +58,57 @@ class GZipMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        if not self._enabled:
+        # Fast-path: off or client doesn't accept gzip -> do nothing.
+        if not self._enabled or not _wants_gzip(request):
             return await call_next(request)
 
-        ae = (request.headers.get("accept-encoding") or "").lower()
-        wants_gzip = "gzip" in ae
         resp = await call_next(request)
 
-        if not wants_gzip:
-            return resp
-        if resp.headers.get("content-encoding"):
+        # Never compress these cases.
+        if (
+            resp.status_code in (204, 304)  # no-body statuses
+            or resp.headers.get("content-encoding")  # already encoded (e.g., upstream)
+            or _is_streaming_response(resp)          # streaming bodies (SSE, etc.)
+            or _is_sse(resp)                          # explicit SSE content-type
+        ):
             return resp
 
-        # Extract body (iterator-safe)
-        body = b""
+        # Try to read the in-memory body. If it's not there, skip (don't buffer).
+        body: bytes = b""
         try:
-            body = getattr(resp, "body", None) or b""
+            maybe = getattr(resp, "body", None)
+            if isinstance(maybe, (bytes, bytearray)):
+                body = bytes(maybe)
         except Exception:
             body = b""
-        if not body:
-            if getattr(resp, "body_iterator", None) is not None:
-                chunks = [chunk async for chunk in resp.body_iterator]  # type: ignore[attr-defined]
-                body = b"".join(chunks)
 
-        if len(body) < self._min_size:
-            # rebuild response since we might have consumed the iterator
-            return Response(
-                content=body,
-                status_code=resp.status_code,
-                headers=dict(resp.headers),
-                media_type=resp.media_type,
-            )
+        # If we couldn't get a concrete body (or it's too small), skip compression.
+        if not body or len(body) < self._min_size:
+            return resp
 
+        # Compress the body.
         buf = io.BytesIO()
         with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
             gz.write(body)
         gz_body = buf.getvalue()
 
-        headers = dict(resp.headers)
-        headers.pop("content-length", None)
-        headers["content-encoding"] = "gzip"
-        headers["vary"] = headers.get("vary", "Accept-Encoding")
+        # Prepare headers for the compressed response.
+        headers: dict[str, str] = dict(resp.headers)
+        # Remove any length; Starlette will set it from the new body.
+        for k in ("content-length", "Content-Length"):
+            headers.pop(k, None)
+        headers["Content-Encoding"] = "gzip"
+        _add_vary_accept_encoding(headers)
+
         return Response(
             content=gz_body,
             status_code=resp.status_code,
             headers=headers,
             media_type=resp.media_type,
+            background=resp.background,
         )
 
 
 def install_compression(app) -> None:
     if get_bool("COMPRESSION_ENABLED"):
         app.add_middleware(GZipMiddleware)
-
