@@ -46,8 +46,14 @@ sum by (route) (rate(guardrail_latency_seconds_count[5m]))
 Import `dashboards/grafana_guardrail.json` → set your Prometheus datasource.
 
 ### Streaming Redactions
-The streaming redactor does not buffer the full response and preserves incremental delivery.
-Counters for streaming are not incremented per window to avoid expensive hooks; consider using log sampling or gateway-level counters for live SSE streams.
+
+Incremental redactions performed during SSE/chunked responses increment:
+
+- `guardrail_egress_redactions_total{content_type="text/stream"}`
+
+**PromQL (rate over 5m):**
+
+sum(rate(guardrail_egress_redactions_total{content_type="text/stream"}[5m]))
 
 ### Rulepack Enforcement
 - Egress redactions from rulepacks are merged with built-ins when `RULEPACKS_ENFORCE=1` and `RULEPACKS_EGRESS_MODE=enforce`.

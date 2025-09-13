@@ -1,7 +1,6 @@
 # app/routes/metrics.py
-# Summary (PR-X fix 2): Optional /metrics endpoint (Prometheus exposition).
-# - Removes all unused type: ignore comments.
-# - Keeps endpoint disabled by default; enable via METRICS_ROUTE_ENABLED=1.
+# Summary: Prometheus /metrics exposition (enabled by default).
+# - Enabled unless METRICS_ROUTE_ENABLED is an explicit "off" value.
 # - Optional API key via METRICS_API_KEY (X-API-KEY or Bearer).
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from fastapi.responses import Response
 
 router = APIRouter()
 
-# Prometheus is optional; gracefully degrade to 404 if unavailable or disabled.
+# Prometheus is optional; degrade gracefully if unavailable.
 try:  # pragma: no cover
     from prometheus_client import REGISTRY as PROM_REGISTRY
     from prometheus_client.exposition import (
@@ -31,13 +30,13 @@ except Exception:  # pragma: no cover
     generate_latest = None
 
 
+_OFF_VALUES = {"0", "false", "no", "off"}
+
+
 def _enabled() -> bool:
-    return (os.getenv("METRICS_ROUTE_ENABLED", "") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    raw = (os.getenv("METRICS_ROUTE_ENABLED", "") or "").strip().lower()
+    # Default ON unless explicitly disabled.
+    return raw == "" or raw not in _OFF_VALUES
 
 
 def _expected_key() -> Optional[str]:
@@ -61,7 +60,7 @@ def _auth_ok(request: Request, required: str) -> bool:
 @router.get("/metrics")
 async def metrics(request: Request) -> Response:
     if not _enabled() or generate_latest is None or REGISTRY is None:
-        # Hidden unless explicitly enabled *and* prometheus_client is present.
+        # Hidden unless enabled *and* prometheus_client is present.
         raise HTTPException(status_code=404, detail="Not Found")
 
     # Optional API key protection
