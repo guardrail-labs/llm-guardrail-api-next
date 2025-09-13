@@ -116,6 +116,21 @@ Pipeline: redaction → optional summarize → optional policy-check (annotative
 When enabled, egress redactions from rulepacks are merged with the built-in patterns.
 Ingress controls can optionally clarify or block before execution.
 
+### Ingress Enforcement & Escalation
+When enabled, rulepacks can block or clarify unsafe prompts **before** tool/LLM execution.
+
+- `RULEPACKS_ENFORCE=1` with `RULEPACKS_ACTIVE=...`
+- `RULEPACKS_INGRESS_MODE=clarify|block|annotate`
+- Optional escalation:
+  - `ESCALATION_ENABLED=1`
+  - `ESCALATION_TIER1_THRESHOLD` → `execute_locked`
+  - `ESCALATION_TIER2_THRESHOLD` → `full_quarantine` (HTTP 429 by default)
+  - `ESCALATION_WINDOW_SEC`, `ESCALATION_COOLDOWN_SEC`
+  - `ESCALATION_RETRY_AFTER_SEC`, `ESCALATION_QUARANTINE_HTTP`
+
+Headers:
+- `X-Guardrail-Decision`, `X-Guardrail-Ingress-Action`, `X-Guardrail-Incident-ID`
+
 ### Admin Auth (optional)
 - `GUARDRAIL_DISABLE_AUTH=1` — bypass auth (default in CI/tests)
 - `ADMIN_UI_AUTH=1` — enable auth for admin JSON endpoints
