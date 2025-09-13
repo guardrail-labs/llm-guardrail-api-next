@@ -42,7 +42,6 @@ def _truthy(val: object) -> bool:
 def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
-
     If it's already registered in the default REGISTRY, return the existing collector
     to avoid 'Duplicated timeseries' errors.
     """
@@ -213,6 +212,8 @@ def _status_code_to_code(status: int) -> str:
         return "payload_too_large"
     if status == 429:
         return "rate_limited"
+    if status == 501:
+        return "not_implemented"
     return "internal_error"
 
 
@@ -254,8 +255,8 @@ def create_app() -> FastAPI:
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
 
-    # Fallback /health (routers may also provide a richer one)
-    @app.get("/health")
+    # Fallback /health (allow GET + POST so max-body tests can POST here)
+    @app.api_route("/health", methods=["GET", "POST"])
     async def _health_fallback():
         # Minimal shape; some tests only check .status == "ok"
         return {"status": "ok", "ok": True}
@@ -266,6 +267,11 @@ def create_app() -> FastAPI:
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
         # Preserve original detail text (e.g., "Unauthorized", "Not Found")
         return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
+
+    @app.exception_handler(NotImplementedError)
+    async def _not_impl_handler(request: Request, exc: NotImplementedError):
+        # Convert placeholders into a clean JSON 501 so tests don't explode.
+        return _json_error("Not implemented", 501, base_headers=request.headers)
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
