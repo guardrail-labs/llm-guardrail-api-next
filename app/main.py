@@ -192,7 +192,9 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             "request_id": get_request_id() or "",
         }
 
-        return JSONResponse(payload, status_code=401, headers=_safe_headers_copy(resp.headers))
+        headers = _safe_headers_copy(resp.headers)
+        headers.setdefault("WWW-Authenticate", "Bearer")
+        return JSONResponse(payload, status_code=401, headers=headers)
 
 
 class _CompatHeadersMiddleware(BaseHTTPMiddleware):
@@ -335,8 +337,9 @@ def create_app() -> FastAPI:
 
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
-    from app.routes import admin_policies, admin_ui
+    from app.routes import admin_policies, admin_rulepacks, admin_ui
     app.include_router(admin_policies.router)
+    app.include_router(admin_rulepacks.router)
     app.include_router(admin_ui.router)
 
     # Fallback /health (routers may also provide a richer one)
