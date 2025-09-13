@@ -257,7 +257,7 @@ class ProviderRouter:
     """
 
     def __init__(self) -> None:
-        # List of snapshots: each {"tenant","bot","order","ts"}
+        # List of snapshots: each {"tenant","bot","order","last_ranked_at",...}
         self._order_snapshots: List[Dict[str, Any]] = []
         # Simple counters by (tenant, bot, provider)
         self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
@@ -265,12 +265,16 @@ class ProviderRouter:
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         # Deterministic pass-through: preserve input order.
         ordered = list(providers)
+        now = time.time()
         self._order_snapshots.append(
             {
                 "tenant": tenant,
                 "bot": bot,
                 "order": ordered,
-                "ts": int(time.time() * 1000),
+                # Tests expect a float timestamp under this key:
+                "last_ranked_at": float(now),
+                # Keep a millisecond field for any incidental consumers:
+                "ts_ms": int(now * 1000),
             }
         )
         return ordered
@@ -306,4 +310,3 @@ class ProviderRouter:
         k = (tenant, bot, provider)
         bucket = self._stats.setdefault(k, {})
         bucket["success"] = bucket.get("success", 0) + 1
-        bucket["last_duration_ms"] = int(duration_ms)
