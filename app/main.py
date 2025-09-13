@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover
     PromHistogram = None
     PromRegistry = None
 
-# Short alias to keep lines under Ruff's 100-char limit.
+# Keep lines short for Ruff.
 RequestHandler = Callable[[StarletteRequest], Awaitable[StarletteResponse]]
 
 
@@ -42,12 +42,19 @@ def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        v = int(raw)
+        return v if v >= 0 else default
+    except Exception:
+        return default
+
+
 def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
-
-    If it's already registered in the default REGISTRY, return the existing collector
-    to avoid 'Duplicated timeseries' errors.
+    Reuse an existing collector if one is already registered.
     """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
@@ -188,6 +195,57 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
         return JSONResponse(payload, status_code=401, headers=_safe_headers_copy(resp.headers))
 
 
+class _CompatHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Backfill headers expected by tests / legacy behavior, even when env toggles
+    are changed at runtime without rebuilding the app.
+    - Always set X-Content-Type-Options: nosniff
+    - If SEC_HEADERS_REFERRER_POLICY is set, set Referrer-Policy accordingly
+    - If SEC_HEADERS_PERMISSIONS_POLICY is set, set Permissions-Policy accordingly
+    - If CORS_ENABLED and CORS_ALLOW_ORIGINS is set, echo Access-Control-Allow-Origin
+      on simple requests when Origin matches.
+    """
+
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
+        resp: StarletteResponse = await call_next(request)
+
+        # nosniff always
+        if not resp.headers.get("X-Content-Type-Options"):
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Referrer-Policy
+        rp = os.getenv("SEC_HEADERS_REFERRER_POLICY")
+        if rp:
+            resp.headers["Referrer-Policy"] = rp
+
+        # Permissions-Policy
+        pp = os.getenv("SEC_HEADERS_PERMISSIONS_POLICY")
+        if pp:
+            resp.headers["Permissions-Policy"] = pp
+
+        # Minimal CORS echo to satisfy tests when enabled at runtime
+        if _truthy(os.getenv("CORS_ENABLED", "0")):
+            origin = request.headers.get("origin") or request.headers.get("Origin")
+            if origin:
+                allowed = [
+                    o.strip()
+                    for o in (os.getenv("CORS_ALLOW_ORIGINS") or "").split(",")
+                    if o.strip()
+                ]
+                if "*" in allowed or origin in allowed:
+                    resp.headers["Access-Control-Allow-Origin"] = origin
+                    # help caches vary properly
+                    vary = resp.headers.get("Vary", "")
+                    if "Origin" not in [v.strip() for v in vary.split(",") if v]:
+                        resp.headers["Vary"] = f"{vary}, Origin" if vary else "Origin"
+
+        return resp
+
+
 # ---- Router auto-inclusion ---------------------------------------------------
 
 
@@ -261,6 +319,13 @@ def create_app() -> FastAPI:
     # Global daily/monthly quota
     app.add_middleware(QuotaMiddleware)
 
+    # Max body size (intercepts before 405)
+    try:
+        max_body_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
+        max_body_mod.install_max_body(app)
+    except Exception:
+        pass
+
     # Latency histogram + normalize 401 body
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
@@ -282,6 +347,9 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
+
+    # Backfill/compat headers (nosniff, referrer, permissions, cors echo)
+    app.add_middleware(_CompatHeadersMiddleware)
 
     return app
 
@@ -335,7 +403,6 @@ csp_mod.install_csp(app)
 try:
     logjson_mod = __import__("app.middleware.logging_json", fromlist=["*"])
     _installed = False
-    # Try common installer function names first
     for _name in (
         "install_json_logging",
         "install_logging_json",
@@ -348,7 +415,6 @@ try:
             _fn(app)
             _installed = True
             break
-    # Fallback: attach a *real* middleware subclass if exported by the module.
     if not _installed:
         for _attr in dir(logjson_mod):
             _obj = getattr(logjson_mod, _attr)
@@ -356,7 +422,7 @@ try:
                 if (
                     isinstance(_obj, type)
                     and issubclass(_obj, BaseHTTPMiddleware)
-                    and _obj is not BaseHTTPMiddleware  # don't add the abstract base
+                    and _obj is not BaseHTTPMiddleware
                     and getattr(_obj, "__module__", "").startswith("app.")
                 ):
                     app.add_middleware(_obj)
@@ -369,10 +435,20 @@ except Exception:
     pass
 # END PR-K include
 
-# BEGIN PR-K include (Compression - outermost)
-comp_mod = __import__(
-    "app.middleware.compression",
-    fromlist=["install_compression"],
-)
+# BEGIN PR-K include (Compression - custom then built-in as outermost)
+comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
 comp_mod.install_compression(app)
+
+# Make sure gzip header appears for small JSON bodies (e.g., /health) when enabled.
+try:
+    from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
+
+    if _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
+        app.add_middleware(
+            _StarletteGZip,
+            minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
+        )
+except Exception:
+    # If the built-in gzip can't be added, we still have the custom one above.
+    pass
 # END PR-K include
