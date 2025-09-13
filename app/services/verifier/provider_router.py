@@ -10,7 +10,7 @@ __all__ = [
     "RouterConfig",
     "ProviderState",
     "VerifierRouter",
-    "ProviderRouter",  # legacy compatibility alias/class
+    "ProviderRouter",  # legacy compatibility class
 ]
 
 # ----------------------------- Public Interfaces -----------------------------
@@ -227,18 +227,17 @@ class VerifierRouter:
                     }
                 )
 
-                # If half-open probing, any failure re-opens immediately; stop here.
+                # If half-open probing, any failure re-opens immediately; stop.
                 if half_open_probe:
                     st.open_until = time.time() + self.config.breaker_cooldown_sec
                     st.half_open = False
                     break
 
-            # exhausted retries for this provider → try next provider
             if exhausted:
                 break
             continue
 
-        # budget exhausted or all providers failed
+        # Budget exhausted or all providers failed
         self._emit_metric("exhausted", {})
         return None, attempt_log
 
@@ -253,35 +252,32 @@ class ProviderRouter:
 
     Surface:
       - rank(tenant, bot, providers) -> ordered list (deterministic)
-      - get_last_order_snapshot() -> dict with snapshot data
+      - get_last_order_snapshot() -> List[Dict[str, Any]]
       - record_timeout / record_rate_limited / record_error / record_success
-
-    This shim intentionally stays simple and deterministic: it preserves the
-    original inputs’ order for rank(), but still records a snapshot so tests
-    that assert on shape/stability continue to pass. The richer, budgeted
-    execution is implemented by VerifierRouter above and can be adopted
-    incrementally by callers that need it.
     """
 
     def __init__(self) -> None:
-        self._last_order_snapshot: Dict[str, Any] = {}
-        # simple counters by (tenant, bot, provider)
+        # List of snapshots: each {"tenant","bot","order","ts"}
+        self._order_snapshots: List[Dict[str, Any]] = []
+        # Simple counters by (tenant, bot, provider)
         self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         # Deterministic pass-through: preserve input order.
         ordered = list(providers)
-        self._last_order_snapshot = {
-            "tenant": tenant,
-            "bot": bot,
-            "ordered": ordered,
-            "ts": int(time.time() * 1000),
-        }
+        self._order_snapshots.append(
+            {
+                "tenant": tenant,
+                "bot": bot,
+                "order": ordered,
+                "ts": int(time.time() * 1000),
+            }
+        )
         return ordered
 
-    def get_last_order_snapshot(self) -> Dict[str, Any]:
-        # Return last computed ordering snapshot (or empty dict).
-        return dict(self._last_order_snapshot)
+    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
+        # Return a shallow copy of all snapshots as a list of dicts.
+        return list(self._order_snapshots)
 
     # --- outcome recording hooks (no-op counters, for compatibility) ---
 
@@ -304,9 +300,9 @@ class ProviderRouter:
         tenant: str,
         bot: str,
         provider: str,
-        duration_ms: int,
+        duration_ms: float | int,
     ) -> None:
-        # Store duration as a rolling last value; increment success count.
+        # Store duration as an int; tolerate float input from perf counters.
         k = (tenant, bot, provider)
         bucket = self._stats.setdefault(k, {})
         bucket["success"] = bucket.get("success", 0) + 1
