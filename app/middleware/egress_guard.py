@@ -60,11 +60,11 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                     on_complete=_on_complete,
                 )
 
-                # Informational: stream is being filtered (counts reported via metrics only)
+                # Informational: stream is being filtered (counts via metrics)
                 response.headers.setdefault("X-Guardrail-Streaming-Redactor", "enabled")
 
                 attach_guardrail_headers(
-                    response,  # type: ignore[arg-type]
+                    response,
                     decision="allow",
                     ingress_action="allow",
                     egress_action="allow",
@@ -101,7 +101,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
             await _set_body(new_body)
             attach_guardrail_headers(
-                response,  # type: ignore[arg-type]
+                response,
                 decision="allow",
                 ingress_action="allow",
                 egress_action="allow",
@@ -122,7 +122,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
             await _set_body(new_body)
             attach_guardrail_headers(
-                response,  # type: ignore[arg-type]
+                response,
                 decision="allow",
                 ingress_action="allow",
                 egress_action="allow",
