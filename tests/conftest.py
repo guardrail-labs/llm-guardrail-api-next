@@ -1,13 +1,22 @@
-import os
-import sys
-from pathlib import Path
+# tests/conftest.py
+from __future__ import annotations
 
-# Test env toggles (set before importing app)
-os.environ.setdefault("GUARDRAIL_DISABLE_AUTH", "1")
-os.environ.setdefault("GUARDRAIL_API_KEY", "test-key")
-os.environ.setdefault("METRICS_ROUTE_ENABLED", "1")
+import pytest
+from starlette.testclient import TestClient
 
-# Ensures "import app" works regardless of runner quirks
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+try:
+    # Prefer project app factory
+    from app.main import create_app  # type: ignore
+except Exception as e:  # pragma: no cover
+    raise RuntimeError(
+        "Could not import app.main.create_app; ensure the app factory exists."
+    ) from e
+
+@pytest.fixture(scope="session")
+def app():
+    return create_app()
+
+@pytest.fixture()
+def client(app):
+    with TestClient(app) as c:
+        yield c
