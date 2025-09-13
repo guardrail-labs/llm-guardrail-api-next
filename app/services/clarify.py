@@ -7,8 +7,8 @@ from typing import Dict, List, Optional
 from fastapi.responses import JSONResponse
 from typing_extensions import NotRequired, TypedDict
 
-from app.shared.headers import attach_guardrail_headers
 from app.observability.metrics import inc_clarify
+from app.shared.headers import attach_guardrail_headers
 
 DEFAULT_STATUS = int(os.getenv("CLARIFY_HTTP_STATUS", "422"))
 DEFAULT_MESSAGE = os.getenv(

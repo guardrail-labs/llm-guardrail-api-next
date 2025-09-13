@@ -8,10 +8,14 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response, StreamingResponse
 
 from app.observability.metrics import inc_egress_redactions
+from app.services.egress.filter import DEFAULT_REDACTIONS
 from app.services.egress.modes import apply_egress_pipeline
+from app.services.egress.stream_redactor import wrap_streaming_iterator
 from app.shared.headers import attach_guardrail_headers
 
 ENABLED = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
+STREAMING_REDACT_ENABLED = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
+STREAMING_OVERLAP_CHARS = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048"))
 
 
 class EgressGuardMiddleware(BaseHTTPMiddleware):
@@ -23,14 +27,42 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
         ctype = (response.headers.get("content-type") or "").lower()
         transfer_enc = (response.headers.get("transfer-encoding") or "").lower()
 
-        # Never buffer/transform streaming responses
+        # --- Streaming path ---
         if (
             isinstance(response, StreamingResponse)
             or "text/event-stream" in ctype
             or "chunked" in transfer_enc
         ):
+            # If streaming redaction is enabled and content is text-like, wrap iterator.
+            if STREAMING_REDACT_ENABLED and ("text/" in ctype or "event-stream" in ctype):
+                # Do NOT set content-length for streaming
+                original_iter = response.body_iterator  # type: ignore[attr-defined]
+
+                # Wrap with streaming redactor
+                response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
+                    original_iter, DEFAULT_REDACTIONS, overlap_chars=STREAMING_OVERLAP_CHARS
+                )
+
+                # Guardrail headers (non-blocking)
+                attach_guardrail_headers(
+                    response,
+                    decision="allow",
+                    ingress_action="allow",
+                    egress_action="allow",
+                )
+
+                # We cannot know changes until iteration finishes; so we don't
+                # increment here. Metrics will be approximated by adding +1
+                # when the stream completes at the ASGI layer is non-trivial;
+                # as a pragmatic approach, we skip per-stream increment in
+                # middleware. (Optional future: custom StreamingResponse
+                # subclass to hook on_complete.)
+                return response
+
+            # Otherwise pass streaming through untouched
             return response
 
+        # --- Non-streaming path (buffer, transform, set content-length) ---
         async def _set_body(b: bytes) -> None:
             async def _aiter():
                 yield b
@@ -51,7 +83,6 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             processed, meta = apply_egress_pipeline(data)
             new_body = json.dumps(processed, ensure_ascii=False).encode("utf-8")
 
-            # Coarse redaction count: 1 if body changed, else 0
             if new_body != body:
                 inc_egress_redactions("application/json", 1)
 
@@ -90,7 +121,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 )
             return response
 
-        # Other content types passthrough
+        # Other content: passthrough
         await _set_body(body)
         return response
 
