@@ -10,10 +10,9 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from app.services.verifier.budget import within_budget, VerifierTimedOut
+from app.services.verifier.budget import VerifierTimedOut, within_budget
 from app.services.verifier.result_types import VerifierOutcome
 from app.services.verifier.router_adapter import VerifierAdapter
-
 
 # --- Budget utility tests ----------------------------------------------------
 

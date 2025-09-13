@@ -2,7 +2,6 @@ from fastapi.testclient import TestClient
 
 from app.main import app  # assumes app is wired with guardrail routes
 
-
 client = TestClient(app)
 
 

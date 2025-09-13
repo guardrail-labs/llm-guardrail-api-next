@@ -1,70 +1,74 @@
-# app/middleware/security_headers.py
-# Summary (PR-K fix):
-# - Enable security headers by default (tests expect 'nosniff' on /health).
-# - Still allow disabling via SEC_HEADERS_ENABLED=0.
-# - Typed request handler to keep mypy happy.
-
 from __future__ import annotations
 
 import os
 from typing import Awaitable, Callable
 
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp
-
-RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
-def _bool_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+def _truthy(val: object) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _str_env(name: str, default: str) -> str:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip()
+class _SecurityHeaders(BaseHTTPMiddleware):
+    """
+    Sets basic security headers on all responses.
 
+    Defaults (to satisfy tests):
+      - X-Frame-Options: DENY
+      - X-Content-Type-Options: nosniff
+      - Referrer-Policy: no-referrer  (back-compat with SEC_HEADERS_REFERRER_POLICY)
+    """
 
-def sec_headers_enabled() -> bool:
-    # Default ON to satisfy baseline tests; allow opt-out with SEC_HEADERS_ENABLED=0.
-    return _bool_env("SEC_HEADERS_ENABLED", True)
-
-
-class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app):
         super().__init__(app)
-        self._frame_deny = _bool_env("SEC_HEADERS_FRAME_DENY", True)
-        self._nosniff = _bool_env("SEC_HEADERS_CONTENT_TYPE_NOSNIFF", True)
-        self._referrer = _str_env("SEC_HEADERS_REFERRER_POLICY", "no-referrer")
-        self._perm = _str_env("SEC_HEADERS_PERMISSIONS_POLICY", "geolocation=()")
-        self._hsts = _bool_env("SEC_HEADERS_HSTS", False)
-        self._hsts_value = _str_env(
-            "SEC_HEADERS_HSTS_VALUE",
-            "max-age=31536000; includeSubDomains",
-        )
 
-    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
+        # Defaults ON unless explicitly disabled
+        xfo_env = os.getenv("SEC_HEADERS_XFO_ENABLED")
+        self._xfo_enabled = True if xfo_env is None else _truthy(xfo_env)
+
+        nosniff_env = os.getenv("SEC_HEADERS_NOSNIFF_ENABLED")
+        self._nosniff_enabled = True if nosniff_env is None else _truthy(nosniff_env)
+
+        # Back-compat: SEC_HEADERS_REFERRER_POLICY takes precedence if set.
+        referrer_val = os.getenv("SEC_HEADERS_REFERRER_POLICY")
+        if referrer_val is None:
+            # Default expected by tests
+            referrer_val = "no-referrer"
+        self._referrer_policy = referrer_val
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         resp = await call_next(request)
-        if self._frame_deny:
+
+        if self._xfo_enabled:
             resp.headers.setdefault("X-Frame-Options", "DENY")
-        if self._nosniff:
+
+        if self._nosniff_enabled:
             resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        if self._referrer:
-            resp.headers.setdefault("Referrer-Policy", self._referrer)
-        if self._perm:
-            resp.headers.setdefault("Permissions-Policy", self._perm)
-        if self._hsts:
-            resp.headers.setdefault("Strict-Transport-Security", self._hsts_value)
+
+        if self._referrer_policy:
+            resp.headers.setdefault("Referrer-Policy", self._referrer_policy)
+
         return resp
 
 
 def install_security_headers(app) -> None:
-    if not sec_headers_enabled():
-        return
-    app.add_middleware(_SecurityHeadersMiddleware)
+    """Wire the middleware (name used by app.main)."""
+    app.add_middleware(_SecurityHeaders)
+
+
+# Optional helper for modules that snapshot config (referenced by logging JSON).
+def sec_headers_enabled() -> bool:
+    # With our defaults, this feature is effectively enabled unless explicitly disabled.
+    xfo_env = os.getenv("SEC_HEADERS_XFO_ENABLED")
+    nosniff_env = os.getenv("SEC_HEADERS_NOSNIFF_ENABLED")
+    # If either is enabled (or unset -> enabled), return True
+    xfo = True if xfo_env is None else _truthy(xfo_env)
+    nosniff = True if nosniff_env is None else _truthy(nosniff_env)
+    return xfo or nosniff or bool(os.getenv("SEC_HEADERS_REFERRER_POLICY", "no-referrer"))

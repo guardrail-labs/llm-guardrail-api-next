@@ -1,94 +1,68 @@
-# app/middleware/cors_fallback.py
-# Summary (PR-K fallback):
-# - Lightweight CORS fallback to guarantee preflight success and ACAO echo.
-# - Active only when CORS_ENABLED=1 (matches test toggles).
-# - Also ensures X-Content-Type-Options: nosniff is present on all responses.
-#
-# Behavior:
-# - OPTIONS with Origin -> 204 + ACAO/ACAM/ACAH/ACMA headers.
-# - Non-OPTIONS with Origin -> adds ACAO (echo) when header not already set.
-# - Safe to coexist with CORSMiddleware; we only add headers if missing.
-# - Mypy fix: type the request handler so Response isn't inferred as Any.
-
 from __future__ import annotations
 
 import os
-from typing import Awaitable, Callable, List
+from typing import Awaitable, Callable
 
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import ASGIApp
 
-RequestHandler = Callable[[Request], Awaitable[Response]]
-
-
-def _bool_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _csv_env(name: str) -> List[str]:
-    raw = os.getenv(name) or ""
-    parts = [p.strip() for p in raw.replace(";", ",").replace(":", ",").split(",")]
-    return [p for p in parts if p]
-
-
-def _methods_env() -> List[str]:
-    vals = _csv_env("CORS_ALLOW_METHODS")
-    return [m.upper() for m in vals] if vals else ["GET", "POST", "OPTIONS"]
-
-
-def _max_age() -> int:
-    raw = os.getenv("CORS_MAX_AGE")
-    if not raw:
-        return 600
-    try:
-        v = int(float(raw.strip()))
-        return v if v >= 0 else 600
-    except Exception:
-        return 600
-
-
-def cors_fallback_enabled() -> bool:
-    return _bool_env("CORS_ENABLED", False)
+from app.middleware.env import get_bool
 
 
 class _CORSFallback(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
+    def __init__(self, app):
+        super().__init__(app)
+        origins_raw = (os.getenv("CORS_ALLOW_ORIGINS") or "").split(",")
+        self._origins = {o.strip() for o in origins_raw if o.strip()}
+        self._allow_methods = os.getenv("CORS_ALLOW_METHODS", "GET,POST,OPTIONS").strip()
+        self._allow_headers = os.getenv("CORS_ALLOW_HEADERS", "").strip()
+        try:
+            self._max_age = int(os.getenv("CORS_MAX_AGE", "600").strip())
+        except Exception:
+            self._max_age = 600
+
+    def _is_origin_allowed(self, origin: str) -> bool:
+        if not get_bool("CORS_ENABLED"):
+            return False
+        if not self._origins or "*" in self._origins:
+            return True
+        return origin in self._origins
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         origin = request.headers.get("origin")
-        if origin and request.method == "OPTIONS":
-            return self._preflight_response(request, origin)
+        method = request.method.upper()
 
-        resp = await call_next(request)
+        # Handle preflight
+        if (
+            method == "OPTIONS"
+            and origin
+            and request.headers.get("access-control-request-method")
+        ):
+            if self._is_origin_allowed(origin):
+                h = {
+                    "access-control-allow-origin": origin,
+                    "access-control-allow-methods": self._allow_methods,
+                    "access-control-allow-headers": self._allow_headers or "*",
+                    "access-control-max-age": str(self._max_age),
+                    "x-content-type-options": "nosniff",
+                }
+                return Response(status_code=204, headers=h)
+            return Response(status_code=400)
 
-        # Add nosniff always (idempotent)
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-
-        # Add ACAO for simple/actual requests if header not already set
-        if origin:
-            lower_keys = {k.lower() for k in resp.headers.keys()}
-            if "access-control-allow-origin" not in lower_keys:
-                # Echo the request origin (tests expect explicit echo)
-                resp.headers["Access-Control-Allow-Origin"] = origin
-        return resp
-
-    def _preflight_response(self, request: Request, origin: str) -> Response:
-        methods = ",".join(_methods_env())
-        req_hdrs = request.headers.get("access-control-request-headers", "*")
-        resp = Response(status_code=204)
-        # Always echo origin on preflight (tests require explicit origin, not wildcard)
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Access-Control-Allow-Methods"] = methods
-        resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "*"
-        resp.headers["Access-Control-Max-Age"] = str(_max_age())
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        # Normal request
+        resp: Response = await call_next(request)
+        if origin and "access-control-allow-origin" not in {
+            k.lower(): v for k, v in resp.headers.items()
+        }:
+            if self._is_origin_allowed(origin):
+                resp.headers.setdefault("access-control-allow-origin", origin)
         return resp
 
 
 def install_cors_fallback(app) -> None:
-    if not cors_fallback_enabled():
-        return
-    app.add_middleware(_CORSFallback)
+    if get_bool("CORS_ENABLED"):
+        app.add_middleware(_CORSFallback)
+

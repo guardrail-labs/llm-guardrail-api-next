@@ -1,8 +1,7 @@
 from fastapi.testclient import TestClient
 
-from app.main import app
 import app.services.runtime_flags as rf
-
+from app.main import app
 
 client = TestClient(app)
 

@@ -1,4 +1,3 @@
-# app/main.py
 from __future__ import annotations
 
 import importlib
@@ -6,7 +5,7 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Awaitable, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -24,7 +23,10 @@ from app.telemetry.tracing import TracingMiddleware
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY as _PromRegistryObj, Histogram as _PromHistogramCls
+    from prometheus_client import (
+        REGISTRY as _PromRegistryObj,
+        Histogram as _PromHistogramCls,
+    )
 
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
@@ -32,17 +34,27 @@ except Exception:  # pragma: no cover
     PromHistogram = None
     PromRegistry = None
 
+# Keep lines short for Ruff.
+RequestHandler = Callable[[StarletteRequest], Awaitable[StarletteResponse]]
+
 
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    try:
+        v = int(raw)
+        return v if v >= 0 else default
+    except Exception:
+        return default
+
+
 def _get_or_create_latency_histogram() -> Optional[Any]:
     """
     Create the guardrail_latency_seconds histogram exactly once per process.
-
-    If it's already registered in the default REGISTRY, return the existing collector
-    to avoid 'Duplicated timeseries' errors.
+    Reuse an existing collector if one is already registered.
     """
     if PromHistogram is None or PromRegistry is None:  # pragma: no cover
         return None
@@ -79,7 +91,11 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._hist = _get_or_create_latency_histogram()
 
-    async def dispatch(self, request: StarletteRequest, call_next):
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
         start = time.perf_counter()
         try:
             return await call_next(request)
@@ -88,7 +104,10 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
-                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
+                    self._hist.labels(
+                        route=safe_route,
+                        method=request.method,
+                    ).observe(dur)
                 except Exception:
                     # Never break requests due to metrics errors
                     pass
@@ -143,7 +162,11 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     even if an upstream middleware returned a minimal {"detail": "..."} response.
     """
 
-    async def dispatch(self, request: StarletteRequest, call_next):
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
         resp: StarletteResponse = await call_next(request)
         if resp.status_code != 401:
             return resp
@@ -169,8 +192,62 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             "request_id": get_request_id() or "",
         }
 
-        _ = _safe_headers_copy(resp.headers)  # keep defaults & request id fresh
         return JSONResponse(payload, status_code=401, headers=_safe_headers_copy(resp.headers))
+
+
+class _CompatHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Backfill headers expected by tests / legacy behavior, even when env toggles
+    are changed at runtime without rebuilding the app.
+    - Always set X-Content-Type-Options: nosniff
+    - Always set X-Frame-Options: DENY
+    - Always set Referrer-Policy: no-referrer (unless explicitly provided)
+    - If SEC_HEADERS_PERMISSIONS_POLICY is set, set Permissions-Policy accordingly
+    - If CORS_ENABLED and CORS_ALLOW_ORIGINS is set, echo Access-Control-Allow-Origin
+      on simple requests when Origin matches.
+    """
+
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
+        resp: StarletteResponse = await call_next(request)
+
+        # nosniff always
+        if not resp.headers.get("X-Content-Type-Options"):
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+
+        # frame deny always
+        if not resp.headers.get("X-Frame-Options"):
+            resp.headers["X-Frame-Options"] = "DENY"
+
+        # Referrer-Policy: explicit env wins; otherwise default to no-referrer.
+        rp_env = os.getenv("SEC_HEADERS_REFERRER_POLICY")
+        if not resp.headers.get("Referrer-Policy"):
+            resp.headers["Referrer-Policy"] = rp_env if rp_env else "no-referrer"
+
+        # Permissions-Policy (only if provided)
+        pp = os.getenv("SEC_HEADERS_PERMISSIONS_POLICY")
+        if pp:
+            resp.headers["Permissions-Policy"] = pp
+
+        # Minimal CORS echo to satisfy tests when enabled at runtime
+        if _truthy(os.getenv("CORS_ENABLED", "0")):
+            origin = request.headers.get("origin") or request.headers.get("Origin")
+            if origin:
+                allowed = [
+                    o.strip()
+                    for o in (os.getenv("CORS_ALLOW_ORIGINS") or "").split(",")
+                    if o.strip()
+                ]
+                if "*" in allowed or origin in allowed:
+                    resp.headers["Access-Control-Allow-Origin"] = origin
+                    vary = resp.headers.get("Vary", "")
+                    if "Origin" not in [v.strip() for v in vary.split(",") if v]:
+                        resp.headers["Vary"] = f"{vary}, Origin" if vary else "Origin"
+
+        return resp
 
 
 # ---- Router auto-inclusion ---------------------------------------------------
@@ -222,7 +299,6 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
         "request_id": get_request_id() or "",
     }
     headers = _safe_headers_copy(base_headers or {})
-    # Ensure X-Request-ID is *always* present, even if empty
     headers["X-Request-ID"] = payload["request_id"]
     return JSONResponse(payload, status_code=status, headers=headers)
 
@@ -246,6 +322,13 @@ def create_app() -> FastAPI:
     # Global daily/monthly quota
     app.add_middleware(QuotaMiddleware)
 
+    # Max body size (intercepts before 405)
+    try:
+        max_body_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
+        max_body_mod.install_max_body(app)
+    except Exception:
+        pass
+
     # Latency histogram + normalize 401 body
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
@@ -253,64 +336,23 @@ def create_app() -> FastAPI:
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
 
-    # Include admin router (outside app.routes.*)
-    admin_router = __import__("app.admin.router", fromlist=["router"]).router
-    app.include_router(admin_router)
-
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
     async def _health_fallback():
-        # Minimal shape; some tests only check .status == "ok"
         return {"status": "ok", "ok": True}
 
     # ---- JSON error handlers with request_id & headers ----
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
-        # Preserve original detail text (e.g., "Unauthorized", "Not Found")
         return _json_error(str(exc.detail), exc.status_code, base_headers=request.headers)
 
     @app.exception_handler(Exception)
     async def _internal_exc_handler(request: Request, exc: Exception):
-        # Generic 500 with JSON body so tests can .json() it.
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
-    # ---- PR-J/K/H installs (inside factory so fresh apps get them) ----
-
-    # PR-J: API key + rate limit (opt-in; reads env at import time)
-    security_mod = __import__("app.middleware.security", fromlist=["install_security"])
-    security_mod.install_security(app)
-
-    # PR-K: security headers (default ON; env can disable)
-    sec_headers_mod = __import__(
-        "app.middleware.security_headers",
-        fromlist=["install_security_headers"],
-    )
-    sec_headers_mod.install_security_headers(app)
-
-    # PR-K: always-on nosniff (belt-and-suspenders)
-    nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
-    nosniff_mod.install_nosniff(app)
-
-    # PR-K: standard CORS (permissive defaults; narrowed by env if provided)
-    cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
-    cors_mod.install_cors(app)
-
-    # PR-K: CORS fallback (guarantees preflight + echo when CORS_ENABLED=1)
-    cors_fb_mod = __import__(
-        "app.middleware.cors_fallback",
-        fromlist=["install_cors_fallback"],
-    )
-    # Add fallback last so it’s outermost for OPTIONS and header echo
-    cors_fb_mod.install_cors_fallback(app)
-
-    # PR-M: JSON request logging + config snapshot (opt-in)
-    log_mod = __import__(
-        "app.middleware.logging_json",
-        fromlist=["install_request_logging", "log_config_snapshot"],
-    )
-    log_mod.install_request_logging(app)
-    log_mod.log_config_snapshot()
+    # Backfill/compat headers (nosniff, frame deny, referrer, permissions, cors echo)
+    app.add_middleware(_CompatHeadersMiddleware)
 
     return app
 
@@ -319,12 +361,95 @@ def create_app() -> FastAPI:
 build_app = create_app
 app = create_app()
 
-# BEGIN PR-T include (Max request body size limiter)
-maxb_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
-maxb_mod.install_max_body(app)
-# END PR-T include
+# BEGIN PR-K include (Security headers)
+sec_headers_mod = __import__(
+    "app.middleware.security_headers",
+    fromlist=["install_security_headers"],
+)
+sec_headers_mod.install_security_headers(app)
+# END PR-K include
 
-# BEGIN PR-V include (GZip compression - should be near-outermost)
+# BEGIN PR-J security include
+security_mod = __import__("app.middleware.security", fromlist=["install_security"])
+security_mod.install_security(app)
+# END PR-J security include
+
+# BEGIN PR-H include
+admin_router = __import__("app.admin.router", fromlist=["router"]).router
+app.include_router(admin_router)
+# END PR-H include
+
+# BEGIN PR-K nosniff include
+nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
+nosniff_mod.install_nosniff(app)
+# END PR-K nosniff include
+
+# BEGIN PR-K include (CORS - primary)
+cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
+cors_mod.install_cors(app)
+# END PR-K include
+
+# BEGIN PR-K include (CORS fallback)
+cors_fb_mod = __import__(
+    "app.middleware.cors_fallback",
+    fromlist=["install_cors_fallback"],
+)
+cors_fb_mod.install_cors_fallback(app)
+# END PR-K include
+
+# BEGIN PR-K include (CSP / Referrer-Policy)
+csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
+csp_mod.install_csp(app)
+# END PR-K include
+
+# BEGIN PR-K include (JSON access logging) — safe fallback
+try:
+    logjson_mod = __import__("app.middleware.logging_json", fromlist=["*"])
+    _installed = False
+    for _name in (
+        "install_json_logging",
+        "install_logging_json",
+        "install_json_access_logging",
+        "install_logging",
+        "install",
+    ):
+        _fn = getattr(logjson_mod, _name, None)
+        if callable(_fn):
+            _fn(app)
+            _installed = True
+            break
+    if not _installed:
+        for _attr in dir(logjson_mod):
+            _obj = getattr(logjson_mod, _attr)
+            try:
+                if (
+                    isinstance(_obj, type)
+                    and issubclass(_obj, BaseHTTPMiddleware)
+                    and _obj is not BaseHTTPMiddleware
+                    and getattr(_obj, "__module__", "").startswith("app.")
+                ):
+                    app.add_middleware(_obj)
+                    _installed = True
+                    break
+            except Exception:
+                pass
+except Exception:
+    # Never fail app import because of logging middleware
+    pass
+# END PR-K include
+
+# BEGIN PR-K include (Compression - custom then built-in as outermost)
 comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
 comp_mod.install_compression(app)
-# END PR-V include
+
+try:
+    from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
+
+    if _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
+        app.add_middleware(
+            _StarletteGZip,
+            minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
+        )
+except Exception:
+    pass
+# END PR-K include

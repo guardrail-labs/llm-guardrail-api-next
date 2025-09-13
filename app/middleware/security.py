@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Tuple
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request

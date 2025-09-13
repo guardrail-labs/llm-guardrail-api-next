@@ -11,16 +11,16 @@ from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.services.bindings.models import Binding
+from app.services.bindings.repository import APPLY_ENABLED, get_bindings, set_bindings
 from app.services.bindings.validator import (
     BindingIssue,
     choose_binding_for,
     validate_bindings,
 )
-from app.services.bindings.repository import get_bindings, set_bindings, APPLY_ENABLED
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")

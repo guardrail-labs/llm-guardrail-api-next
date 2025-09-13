@@ -1,74 +1,54 @@
-# app/middleware/cors.py
-# Summary (PR-K final CORS fix):
-# - Always install CORSMiddleware at app startup with safe, permissive defaults.
-# - This avoids timing issues where env vars are set after the app module is imported.
-# - Explicit env can still narrow the policy when present.
-#
-# Behavior:
-# - If CORS_ALLOW_ORIGINS is set -> allow only those origins.
-# - Else -> allow any origin via allow_origin_regex=".*" (echoes request Origin).
-# - Methods default to GET/POST/OPTIONS; headers default to "*"; creds default False.
-
 from __future__ import annotations
 
 import os
 from typing import List
 
+from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 
-def _csv_env(name: str) -> List[str]:
-    raw = os.getenv(name) or ""
-    parts = [p.strip() for p in raw.replace(";", ",").replace(":", ",").split(",")]
-    return [p for p in parts if p]
+def _truthy(v: object) -> bool:
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _methods_env() -> List[str]:
-    vals = _csv_env("CORS_ALLOW_METHODS")
-    return [m.upper() for m in vals] if vals else ["GET", "POST", "OPTIONS"]
+def _split_csv(env_name: str, default: str = "") -> List[str]:
+    raw = os.getenv(env_name, default)
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def _bool_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+def install_cors(app: FastAPI) -> None:
+    """
+    Enable Starlette's CORS middleware when CORS_ENABLED is truthy.
+    Env:
+      CORS_ENABLED=1
+      CORS_ALLOW_ORIGINS=http://example.com,http://localhost:3000
+      CORS_ALLOW_METHODS=GET,POST,OPTIONS
+      CORS_ALLOW_HEADERS=Content-Type,Authorization
+      CORS_ALLOW_CREDENTIALS=1
+      CORS_MAX_AGE=600
+    """
+    if not _truthy(os.getenv("CORS_ENABLED", "0")):
+        return
 
+    allow_origins = _split_csv("CORS_ALLOW_ORIGINS")
+    allow_methods = _split_csv("CORS_ALLOW_METHODS") or ["*"]
+    allow_headers = _split_csv("CORS_ALLOW_HEADERS") or ["*"]
 
-def _int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
+    allow_credentials = _truthy(os.getenv("CORS_ALLOW_CREDENTIALS", "0"))
     try:
-        v = int(float(raw.strip()))
-        return v if v >= 0 else default
+        max_age = int(os.getenv("CORS_MAX_AGE", "600"))
+        if max_age < 0:
+            max_age = 0
     except Exception:
-        return default
+        max_age = 600
 
-
-def install_cors(app) -> None:
-    origins = _csv_env("CORS_ALLOW_ORIGINS")
-    methods = _methods_env()
-    allow_headers = ["*"]  # prevent 400 preflights when client omits ACRH
-    allow_credentials = _bool_env("CORS_ALLOW_CREDENTIALS", False)
-    max_age = _int_env("CORS_MAX_AGE", 600)
-
-    if origins:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=origins,
-            allow_methods=methods,
-            allow_headers=allow_headers,
-            allow_credentials=allow_credentials,
-            max_age=max_age,
-        )
-    else:
-        # No explicit origins -> accept any origin (echo) via regex.
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origin_regex=".*",
-            allow_methods=methods,
-            allow_headers=allow_headers,
-            allow_credentials=allow_credentials,
-            max_age=max_age,
-        )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins or ["*"],
+        allow_credentials=allow_credentials,
+        allow_methods=allow_methods,
+        allow_headers=allow_headers,
+        max_age=max_age,
+    )
