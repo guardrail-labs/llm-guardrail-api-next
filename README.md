@@ -91,6 +91,8 @@ Behavior: classifier/verifier ambiguous/timeout → standardized clarify respons
 - `EGRESS_FILTER_ENABLED=1` (default on)
 - `EGRESS_SUMMARIZE_ENABLED=0` (optional)
 - `EGRESS_POLICY_CHECK_ENABLED=0` (optional)
+- `EGRESS_STREAMING_REDACT_ENABLED=0` — enable streaming redaction for text/event-stream & text/*
+- `EGRESS_STREAMING_OVERLAP_CHARS=2048` — overlap window to catch cross-chunk matches
 Pipeline: redaction → optional summarize → optional policy-check (annotative; does
 **not** block). Streaming (SSE/chunked) is **never** buffered or transformed.
 

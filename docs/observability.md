@@ -45,3 +45,7 @@ sum by (route) (rate(guardrail_latency_seconds_count[5m]))
 ## Grafana
 Import `dashboards/grafana_guardrail.json` → set your Prometheus datasource.
 
+### Streaming Redactions
+The streaming redactor does not buffer the full response and preserves incremental delivery.
+Counters for streaming are not incremented per window to avoid expensive hooks; consider using log sampling or gateway-level counters for live SSE streams.
+
