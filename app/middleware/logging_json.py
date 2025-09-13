@@ -74,7 +74,7 @@ class _JSONLoggingMiddleware(BaseHTTPMiddleware):
             if allow is None or request.url.path in allow:
                 rid = resp.headers.get("X-Request-ID") or (get_request_id() or "")
                 evt = {
-                    "event": "access",
+                    "event": "http_access",  # <- required by tests
                     "path": request.url.path,
                     "method": request.method,
                     "status": resp.status_code,
