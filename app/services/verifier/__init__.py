@@ -10,7 +10,7 @@ from threading import RLock
 from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
-from app.services.policy import current_rules_version, map_verifier_outcome_to_action
+from app.services.policy import current_rules_version, map_verifier_outcome_to_headers
 from app.services.verifier.config import get_verifier_latency_budget_ms
 from app.services.verifier.provider_breaker import ProviderBreakerRegistry
 from app.services.verifier.provider_quota import QuotaSkipRegistry
@@ -602,7 +602,7 @@ def _map_headers_for_outcome(
     outcome: Dict[str, Any],
     incident_id: Optional[str],
 ) -> Dict[str, str]:
-    decision, mode = map_verifier_outcome_to_action(outcome)
+    decision, mode = map_verifier_outcome_to_headers(outcome)
     headers: Dict[str, str] = {
         "X-Guardrail-Decision": decision,
         "X-Guardrail-Mode": mode,

@@ -5,7 +5,7 @@ import re
 import threading
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Pattern, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Pattern, Tuple
 
 from app.config import get_settings
 from app.models.verifier import VerifierInput
@@ -37,6 +37,30 @@ class Action(str, Enum):
     ALLOW = "allow"
     BLOCK = "block"
     CLARIFY = "clarify"
+
+
+ClassifierOutcome = Literal["allow", "block", "ambiguous", "unknown"]
+VerifierOutcome = Literal["allow", "block", "timeout", "error", "uncertain"]
+
+
+def map_classifier_outcome_to_action(o: ClassifierOutcome) -> str:
+    if o == "allow":
+        return "allow"
+    if o == "block":
+        return "block_input_only"
+    if o in ("ambiguous", "unknown"):
+        return "clarify"
+    return "clarify"
+
+
+def map_verifier_outcome_to_action(o: VerifierOutcome) -> str:
+    if o == "allow":
+        return "allow"
+    if o == "block":
+        return "block_input_only"
+    if o in ("timeout", "error", "uncertain"):
+        return "clarify"
+    return "clarify"
 
 
 _INJECTION_FAMILIES = {"injection", "jailbreak"}
@@ -620,7 +644,7 @@ def sanitize_text(
 # - Call sanitize_text() from the evaluate route to apply ingress redactions.
 
 
-def map_verifier_outcome_to_action(outcome: Dict[str, Any]) -> tuple[str, str]:
+def map_verifier_outcome_to_headers(outcome: Dict[str, Any]) -> tuple[str, str]:
     """Map a verifier outcome dict to (decision, mode) headers."""
 
     status = str(outcome.get("status", "")).lower()
@@ -628,10 +652,6 @@ def map_verifier_outcome_to_action(outcome: Dict[str, Any]) -> tuple[str, str]:
         return "deny", "live"
     if status == "safe":
         return "allow", "live"
-    if status == "error":
-        return "allow", "fallback"
-    if status == "timeout":
-        return "deny", "live"
-    if status == "ambiguous":
+    if status in {"error", "timeout", "ambiguous"}:
         return "clarify", "live"
     return "clarify", "live"
