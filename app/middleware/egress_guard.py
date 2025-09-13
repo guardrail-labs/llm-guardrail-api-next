@@ -18,6 +18,14 @@ from app.services.egress.stream_redactor import wrap_streaming_iterator
 from app.shared.headers import attach_guardrail_headers
 from app.observability.metrics import inc_egress_redactions
 
+# ---------------------------------------------------------------------------
+# Backward-compat test hooks (pytest monkeypatch targets)
+# Tests expect these names to exist and be patchable.
+# The middleware still reads env per-request, but falls back to these values.
+# ---------------------------------------------------------------------------
+STREAMING_REDACT_ENABLED = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
+STREAMING_OVERLAP_CHARS = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048") or "2048")
+
 # Keep a conservative floor for SSE windows to catch tokens crossing chunks.
 _DEFAULT_SSE_MIN_WINDOW = int(os.getenv("EGRESS_SSE_MIN_WINDOW", "128") or "128")
 
@@ -28,8 +36,22 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         # Read env-driven toggles dynamically so tests can flip them per test.
         enabled = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
-        streaming_redact_enabled = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
-        overlap_chars = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048") or "2048")
+
+        # Respect env first, then fall back to module-level attributes
+        streaming_redact_enabled = (
+            os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "")
+        )
+        if streaming_redact_enabled == "":
+            sr_enabled = STREAMING_REDACT_ENABLED
+        else:
+            sr_enabled = streaming_redact_enabled == "1"
+
+        overlap_env = os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "")
+        if overlap_env == "":
+            overlap_chars = int(STREAMING_OVERLAP_CHARS)
+        else:
+            overlap_chars = int(overlap_env or "2048")
+
         sse_min_window = int(
             os.getenv("EGRESS_SSE_MIN_WINDOW", str(_DEFAULT_SSE_MIN_WINDOW)) or "128"
         )
@@ -47,7 +69,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             or "text/event-stream" in ctype
             or "chunked" in transfer_enc
         ):
-            if streaming_redact_enabled and ("text/" in ctype or "event-stream" in ctype):
+            if sr_enabled and ("text/" in ctype or "event-stream" in ctype):
                 redactions = DEFAULT_REDACTIONS
                 if rulepacks_enabled() and egress_mode() == "enforce":
                     rp = egress_redactions()
@@ -72,7 +94,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                     on_complete=_on_complete,
                 )
 
-                # Informational header: active stream filtering (counts exposed via metrics)
+                # Informational header: active stream filtering (counts via metrics)
                 response.headers.setdefault("X-Guardrail-Streaming-Redactor", "enabled")
 
                 attach_guardrail_headers(
