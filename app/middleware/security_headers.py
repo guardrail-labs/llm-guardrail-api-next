@@ -1,11 +1,9 @@
 # app/middleware/security_headers.py
-# Summary (PR-Y compat): Restore Referrer-Policy via legacy env.
-# - Keeps existing security headers behavior.
-# - Honors legacy env var SEC_HEADERS_REFERRER_POLICY to preserve backward
-#   compatibility (sets Referrer-Policy when present).
-# - Uses .setdefault() so it never overwrites headers set upstream or by other
-#   middlewares (e.g., CSP/referrer module).
-# - Mypy/ruff clean: typed BaseHTTPMiddleware and ASGIApp signatures.
+# Summary (PR-Y compat/fix): Security headers middleware with legacy env support.
+# - Restores Referrer-Policy via SEC_HEADERS_REFERRER_POLICY for back-compat.
+# - Defaults keep X-Frame-Options and X-Content-Type-Options enabled.
+# - Adds helper sec_headers_enabled() for other modules (e.g., logging) to query.
+# - Removes dependency on get_bool to avoid mypy "too many args" issues.
 
 from __future__ import annotations
 
@@ -18,7 +16,13 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from starlette.types import ASGIApp
 
-from app.services.config_sanitizer import get_bool
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None or val.strip() == "":
+        return default
+    s = val.strip().lower()
+    return s in {"1", "true", "yes", "on"}
 
 
 def _get_str(name: str) -> Optional[str]:
@@ -70,8 +74,8 @@ def install_security_headers(app: FastAPI) -> None:
     - If SEC_HEADERS_REFERRER_POLICY is set (e.g., "no-referrer"), we emit
       Referrer-Policy with that exact value.
     """
-    xfo_enabled = get_bool("SEC_HEADERS_XFO_ENABLED", True)
-    nosniff_enabled = get_bool("SEC_HEADERS_NOSNIFF_ENABLED", True)
+    xfo_enabled = _get_bool_env("SEC_HEADERS_XFO_ENABLED", True)
+    nosniff_enabled = _get_bool_env("SEC_HEADERS_NOSNIFF_ENABLED", True)
 
     # Backward-compat alias: preserve previous deployments/tests
     referrer_policy = _get_str("SEC_HEADERS_REFERRER_POLICY")
@@ -89,4 +93,19 @@ def install_security_headers(app: FastAPI) -> None:
         nosniff_enabled=nosniff_enabled,
         referrer_policy=referrer_policy,
         permissions_policy=permissions_policy,
+    )
+
+
+def sec_headers_enabled() -> bool:
+    """
+    Public helper used by other modules (e.g., JSON logging) to know if the
+    security-headers middleware would be active given current env.
+    """
+    return any(
+        [
+            _get_bool_env("SEC_HEADERS_XFO_ENABLED", True),
+            _get_bool_env("SEC_HEADERS_NOSNIFF_ENABLED", True),
+            _get_str("SEC_HEADERS_REFERRER_POLICY") is not None,
+            _get_str("SEC_HEADERS_PERMISSIONS_POLICY") is not None,
+        ]
     )
