@@ -96,6 +96,10 @@ async def _probe_loop() -> None:
 
 @router.on_event("startup")
 async def _mark_ready_after_delay() -> None:
+    # Ensure draining is reset for each new app lifecycle (important for tests).
+    global _draining, _probe_task
+    _draining = False
+
     delay_ms = _read_ms("HEALTH_READY_DELAY_MS", 0)
     if delay_ms > 0:
         await asyncio.sleep(delay_ms / 1000.0)
@@ -103,7 +107,6 @@ async def _mark_ready_after_delay() -> None:
     # Initialize probe status and optionally start background loop
     await _run_probe_once()
     if _probe_enabled() and _probe_interval_ms() > 0:
-        global _probe_task
         _probe_task = asyncio.create_task(_probe_loop())
 
     _ready_event.set()
