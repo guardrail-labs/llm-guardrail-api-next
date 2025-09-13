@@ -5,7 +5,7 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, Optional, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -354,6 +354,12 @@ def create_app() -> FastAPI:
     # Backfill/compat headers (nosniff, frame deny, referrer, permissions, cors echo)
     app.add_middleware(_CompatHeadersMiddleware)
 
+    from app.middleware.egress_guard import EgressGuardMiddleware
+    from app.middleware.json_logging import install_json_logging
+
+    app.add_middleware(EgressGuardMiddleware)
+    install_json_logging(app)
+
     return app
 
 
@@ -402,41 +408,6 @@ csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
 # END PR-K include
 
-# BEGIN PR-K include (JSON access logging) — safe fallback
-try:
-    logjson_mod = __import__("app.middleware.logging_json", fromlist=["*"])
-    _installed = False
-    for _name in (
-        "install_json_logging",
-        "install_logging_json",
-        "install_json_access_logging",
-        "install_logging",
-        "install",
-    ):
-        _fn = getattr(logjson_mod, _name, None)
-        if callable(_fn):
-            _fn(app)
-            _installed = True
-            break
-    if not _installed:
-        for _attr in dir(logjson_mod):
-            _obj = getattr(logjson_mod, _attr)
-            try:
-                if (
-                    isinstance(_obj, type)
-                    and issubclass(_obj, BaseHTTPMiddleware)
-                    and _obj is not BaseHTTPMiddleware
-                    and getattr(_obj, "__module__", "").startswith("app.")
-                ):
-                    app.add_middleware(_obj)
-                    _installed = True
-                    break
-            except Exception:
-                pass
-except Exception:
-    # Never fail app import because of logging middleware
-    pass
-# END PR-K include
 
 # BEGIN PR-K include (Compression - custom then built-in as outermost)
 comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])

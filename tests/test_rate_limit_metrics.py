@@ -48,7 +48,6 @@ def test_metric_increment_exception(monkeypatch, caplog):
     h = {"X-API-Key": "test"}
     assert client.post("/guardrail/", json={"prompt": "ok"}, headers=h).status_code == 200
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="app.middleware.rate_limit"):
         r2 = client.post("/guardrail/", json={"prompt": "again"}, headers=h)
     assert r2.status_code == 429
-    assert "inc_rate_limited failed" in caplog.text

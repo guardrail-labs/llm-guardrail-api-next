@@ -64,6 +64,27 @@ The service now includes stdlib-only detectors for **HTML** and **DOCX** hidden 
 ## Admin / Bindings
 See [BINDINGS.md](./BINDINGS.md) for conflict detection rules and examples.
 
+## Logging
+Use `install_json_logging(app)` to enable structured JSON logs. The installer
+clears duplicate handlers on reload and emits one access log per request.
+
+## Compression
+Outbound compression uses a custom streaming-safe `GZipMiddleware` placed ahead
+of Starlette's builtin GZip. This avoids double-encoding and preserves
+`text/event-stream` responses. Toggled via:
+
+- `COMPRESSION_ENABLED=1`
+- `COMPRESSION_MIN_SIZE_BYTES=1024`
+
+## Egress filter
+`EgressGuardMiddleware` redacts SSNs and email addresses from JSON or plaintext
+responses. Disable with `EGRESS_FILTER_ENABLED=0`. Future toggles (placeholders):
+`EGRESS_SUMMARIZE_ENABLED`, `EGRESS_POLICY_CHECK_ENABLED`.
+
+## Verifier latency budgets
+Set `VERIFIER_LATENCY_BUDGET_MS` to bound verifier calls. Exceeding the budget
+returns a `timeout` outcome that policy maps to a deny decision.
+
 ---
 
 ## Feature checklist

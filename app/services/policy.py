@@ -630,4 +630,8 @@ def map_verifier_outcome_to_action(outcome: Dict[str, Any]) -> tuple[str, str]:
         return "allow", "live"
     if status == "error":
         return "allow", "fallback"
+    if status == "timeout":
+        return "deny", "live"
+    if status == "ambiguous":
+        return "clarify", "live"
     return "clarify", "live"

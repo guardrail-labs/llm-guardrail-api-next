@@ -36,6 +36,7 @@ from app.services.config_sanitizer import (
 from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
+from app.services.verifier_limits import new_incident_id
 
 # Normalized config values (module-level; safe to import elsewhere)
 VERIFIER_LATENCY_BUDGET_MS = get_verifier_latency_budget_ms()
@@ -1124,6 +1125,38 @@ async def guardrail_evaluate(request: Request):
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(
         combined_text, want_debug
     )
+    if action == "clarify":
+        inc = new_incident_id()
+        _audit(
+            "ingress",
+            combined_text,
+            "",
+            "clarify",
+            tenant,
+            bot,
+            request_id,
+            policy_hits,
+            0,
+        )
+        _bump_family("ingress", "ingress_evaluate", "clarify", tenant, bot)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "action": "clarify",
+                "message": "I need a bit more detail to safely proceed.",
+                "questions": [
+                    "What’s the exact goal of this request?",
+                    "Will this be used on production data or test data?",
+                ],
+                "incident_id": inc,
+            },
+            headers={
+                "X-Guardrail-Incident-ID": inc,
+                "X-Guardrail-Decision": "clarify",
+                "X-Guardrail-Decision-Source": "policy-only",
+                "X-Guardrail-Policy-Version": current_rules_version(),
+            },
+        )
     (
         redacted,
         redaction_hits,

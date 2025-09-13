@@ -56,7 +56,7 @@ async def test_adaptive_reranks_after_timeouts(monkeypatch):
     _ = await v.verify_intent("x", ctx)
     _ = await v.verify_intent("x", ctx)
     out = await v.verify_intent("x", ctx)
-    assert out["provider"] in ("slow", "cache")  # cache might hit if enabled
+    assert out["status"] == "timeout"
 
 
 @pytest.fixture

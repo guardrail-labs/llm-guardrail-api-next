@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from app.services.audit_forwarder import emit_audit_event
 from app.services.policy import current_rules_version, map_verifier_outcome_to_action
+from app.services.verifier.config import get_verifier_latency_budget_ms
 from app.services.verifier.provider_breaker import ProviderBreakerRegistry
 from app.services.verifier.provider_quota import QuotaSkipRegistry
 from app.services.verifier.provider_router import ProviderRouter
@@ -399,6 +400,8 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     provider_names = ordered
     est_tokens = max(1, len(text) // 4)
     timeout_s = max(0.05, float(VERIFIER_PROVIDER_TIMEOUT_MS) / 1000.0)
+    budget_ms = get_verifier_latency_budget_ms()
+    budget_s = (budget_ms / 1000.0) if budget_ms is not None else None
 
     last_provider: Optional[str] = None
 
@@ -429,7 +432,10 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
                 return await prov.assess(text, meta=ctx_meta)
 
             t0 = time.perf_counter()
-            res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=timeout_s)
+            eff_timeout = (
+                min(timeout_s, budget_s) if budget_s is not None else timeout_s
+            )
+            res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=eff_timeout)
 
             try:
                 observe_verifier_latency(pname, time.perf_counter() - t0)
@@ -455,12 +461,16 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
                     inc_verifier_breaker_open(pname)
                 except Exception:
                     pass
-            # record into adaptive router
             try:
                 _ROUTER.record_timeout(tenant, bot, pname)
             except Exception:
                 pass
-            continue
+            return {
+                "status": "timeout",
+                "reason": "latency_budget_exceeded",
+                "tokens_used": est_tokens,
+                "provider": pname,
+            }
         except ProviderRateLimited as e:
             try:
                 _ = _QUOTA.on_rate_limited(pname, getattr(e, "retry_after_s", None))
