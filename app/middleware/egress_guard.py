@@ -22,6 +22,10 @@ ENABLED = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
 STREAMING_REDACT_ENABLED = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
 STREAMING_OVERLAP_CHARS = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048"))
 
+# For SSE, enforce a safer minimum window to avoid splitting common secrets/tokens.
+# Tests may set STREAMING_OVERLAP_CHARS to small values; this guard preserves correctness.
+SSE_MIN_WINDOW = int(os.getenv("EGRESS_SSE_MIN_WINDOW", "128"))
+
 
 class EgressGuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(
@@ -49,6 +53,11 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
                 original_iter = response.body_iterator  # type: ignore[attr-defined]
 
+                # Pick overlap; enforce a higher floor for SSE to capture tokens within one window.
+                overlap = STREAMING_OVERLAP_CHARS
+                if "event-stream" in ctype:
+                    overlap = max(overlap, SSE_MIN_WINDOW)
+
                 async def _on_complete(changed: int) -> None:
                     if changed > 0:
                         inc_egress_redactions("text/stream", changed)
@@ -56,7 +65,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
                     original_iter,
                     redactions,
-                    overlap_chars=STREAMING_OVERLAP_CHARS,
+                    overlap_chars=overlap,
                     on_complete=_on_complete,
                 )
 
