@@ -3,10 +3,11 @@
 # - Disabled by default; enable via env toggles.
 # - Does not override headers if an upstream already set them.
 # - Env:
-#     CSP_ENABLED                (default: 0)
-#     CSP_VALUE                  (default: "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
-#     REFERRER_POLICY_ENABLED    (default: 0)
-#     REFERRER_POLICY_VALUE      (default: "no-referrer")
+#     CSP_ENABLED                 (default: 0)
+#     CSP_VALUE                   (default: "default-src 'none'; frame-ancestors 'none';"
+#                                  " base-uri 'none'")
+#     REFERRER_POLICY_ENABLED     (default: 0)
+#     REFERRER_POLICY_VALUE       (default: "no-referrer")
 
 from __future__ import annotations
 
