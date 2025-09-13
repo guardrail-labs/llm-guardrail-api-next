@@ -78,8 +78,21 @@ of Starlette's builtin GZip. This avoids double-encoding and preserves
 
 ## Egress filter
 `EgressGuardMiddleware` redacts SSNs and email addresses from JSON or plaintext
-responses. Disable with `EGRESS_FILTER_ENABLED=0`. Future toggles (placeholders):
-`EGRESS_SUMMARIZE_ENABLED`, `EGRESS_POLICY_CHECK_ENABLED`.
+responses. Disable with `EGRESS_FILTER_ENABLED=0`.
+
+### Clarify-first (ingress)
+- `CLARIFY_HTTP_STATUS` (default `422`)
+- `CLARIFY_MESSAGE`
+- `CLARIFY_QUESTIONS` (semicolon-separated)
+Behavior: classifier/verifier ambiguous/timeout → standardized clarify response with
+`incident_id`, headers set to `decision=clarify`, no tool/LLM execution.
+
+### Egress modes
+- `EGRESS_FILTER_ENABLED=1` (default on)
+- `EGRESS_SUMMARIZE_ENABLED=0` (optional)
+- `EGRESS_POLICY_CHECK_ENABLED=0` (optional)
+Pipeline: redaction → optional summarize → optional policy-check (annotative; does
+**not** block). Streaming (SSE/chunked) is **never** buffered or transformed.
 
 ## Verifier latency budgets
 Set `VERIFIER_LATENCY_BUDGET_MS` to bound verifier calls. Exceeding the budget

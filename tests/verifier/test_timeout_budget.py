@@ -28,5 +28,5 @@ def test_timeout_budget(monkeypatch):
 
     out = run(verifier.verify_intent("hi", {"tenant_id": "t", "bot_id": "b"}))
     assert out["status"] == "timeout"
-    decision, mode = policy.map_verifier_outcome_to_action(out)
-    assert decision == "deny"
+    decision, mode = policy.map_verifier_outcome_to_headers(out)
+    assert decision == "clarify"

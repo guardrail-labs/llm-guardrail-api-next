@@ -17,6 +17,8 @@ from app.services.policy import (
     apply_injection_default,
     maybe_route_to_verifier,
     current_rules_version,
+    map_classifier_outcome_to_action,
+    map_verifier_outcome_to_action,
 )
 from app.services.policy_loader import (
     get_policy as _get_policy,
@@ -27,6 +29,7 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.services import runtime_flags
+from app.services.clarify import respond_with_clarify
 # --- BEGIN PR-C wire-up block ---
 from app.services.config_sanitizer import (
     get_verifier_latency_budget_ms,
@@ -36,7 +39,6 @@ from app.services.config_sanitizer import (
 from app.telemetry import metrics as m
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
-from app.services.verifier_limits import new_incident_id
 
 # Normalized config values (module-level; safe to import elsewhere)
 VERIFIER_LATENCY_BUDGET_MS = get_verifier_latency_budget_ms()
@@ -1122,11 +1124,15 @@ async def guardrail_evaluate(request: Request):
 
     request_id = _req_id(explicit_request_id)
 
-    action, policy_hits, policy_dbg = _evaluate_ingress_policy(
+    classifier_outcome, policy_hits, policy_dbg = _evaluate_ingress_policy(
         combined_text, want_debug
     )
+    if classifier_outcome in {"allow", "block", "ambiguous", "unknown"}:
+        action = map_classifier_outcome_to_action(classifier_outcome)  # type: ignore[arg-type]
+    else:
+        action = classifier_outcome
+
     if action == "clarify":
-        inc = new_incident_id()
         _audit(
             "ingress",
             combined_text,
@@ -1139,24 +1145,21 @@ async def guardrail_evaluate(request: Request):
             0,
         )
         _bump_family("ingress", "ingress_evaluate", "clarify", tenant, bot)
-        return JSONResponse(
-            status_code=422,
-            content={
-                "action": "clarify",
-                "message": "I need a bit more detail to safely proceed.",
-                "questions": [
-                    "What’s the exact goal of this request?",
-                    "Will this be used on production data or test data?",
-                ],
-                "incident_id": inc,
-            },
-            headers={
-                "X-Guardrail-Incident-ID": inc,
-                "X-Guardrail-Decision": "clarify",
-                "X-Guardrail-Decision-Source": "policy-only",
-                "X-Guardrail-Policy-Version": current_rules_version(),
-            },
+        try:
+            from app.services.audit_forwarder import emit_audit_event
+        except Exception:  # pragma: no cover
+            def emit_audit_event(*args, **kwargs):  # type: ignore
+                return None
+
+        emit_audit_event(
+            {
+                "event": "decision",
+                "phase": "ingress",
+                "decision": "clarify",
+                "reason": f"classifier_outcome={classifier_outcome}",
+            }
         )
+        return respond_with_clarify()
     (
         redacted,
         redaction_hits,
@@ -1241,6 +1244,26 @@ async def guardrail_evaluate(request: Request):
     hv_headers = dict(hv_headers or {})
     hv_headers.setdefault("X-Guardrail-Verifier-Latency", str(latency_ms))
     m.observe_verifier_latency(latency_ms)
+    v_action: Optional[str] = None
+    if hv_action in {"timeout", "error", "uncertain"}:
+        v_action = map_verifier_outcome_to_action(hv_action)  # type: ignore[arg-type]
+    if v_action == "clarify":
+        try:
+            from app.services.audit_forwarder import emit_audit_event
+        except Exception:  # pragma: no cover
+            def emit_audit_event(*args, **kwargs):  # type: ignore
+                return None
+
+        emit_audit_event(
+            {
+                "event": "decision",
+                "phase": "ingress",
+                "decision": "clarify",
+                "reason": f"verifier_outcome={hv_action}",
+            }
+        )
+        return respond_with_clarify()
+
     action = _apply_hardened_override(action, hv_action)
     if hv_action is None and hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
         action = _apply_hardened_error_fallback(action)
