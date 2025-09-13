@@ -5,6 +5,7 @@ import uuid
 from typing import Dict, List, Optional
 
 from fastapi.responses import JSONResponse
+from typing_extensions import NotRequired, TypedDict
 
 from app.shared.headers import attach_guardrail_headers
 from app.observability.metrics import inc_clarify
@@ -24,6 +25,14 @@ DEFAULT_QUESTIONS = tuple(
 INCIDENT_HEADER = "X-Guardrail-Incident-ID"
 
 
+class ClarifyPayload(TypedDict, total=False):
+    action: str
+    message: str
+    questions: List[str]
+    incident_id: str
+    meta: NotRequired[Dict[str, str]]
+
+
 def make_incident_id() -> str:
     return f"clarify-{uuid.uuid4()}"
 
@@ -37,25 +46,25 @@ def respond_with_clarify(
 ) -> JSONResponse:
     """
     Standard clarify-first response:
-    - Sets JSON payload with action/message/questions/incident_id
-    - Sets X-Guardrail-Incident-ID header for correlation
-    - Attaches guardrail decision headers (decision=clarify)
-    - Increments clarify metric
+    - JSON payload with action/message/questions/incident_id
+    - X-Guardrail-Incident-ID header for correlation
+    - Guardrail decision headers (decision=clarify)
+    - Clarify metric increment
     """
     incident_id = make_incident_id()
 
-    payload = {
+    payload: ClarifyPayload = {
         "action": "clarify",
         "message": message or DEFAULT_MESSAGE,
         "questions": questions or list(DEFAULT_QUESTIONS),
         "incident_id": incident_id,
     }
-    if extra:
-        payload["meta"] = extra
+    if extra is not None:
+        payload["meta"] = extra  # precise type: Dict[str, str]
 
     resp = JSONResponse(status_code=http_status or DEFAULT_STATUS, content=payload)
 
-    # Restore explicit incident header for clients that correlate by header.
+    # Keep explicit incident header for clients correlating by header.
     resp.headers[INCIDENT_HEADER] = incident_id
 
     attach_guardrail_headers(
