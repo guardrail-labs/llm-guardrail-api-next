@@ -200,6 +200,7 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
     Backfill headers expected by tests / legacy behavior, even when env toggles
     are changed at runtime without rebuilding the app.
     - Always set X-Content-Type-Options: nosniff
+    - Always set X-Frame-Options: DENY
     - If SEC_HEADERS_REFERRER_POLICY is set, set Referrer-Policy accordingly
     - If SEC_HEADERS_PERMISSIONS_POLICY is set, set Permissions-Policy accordingly
     - If CORS_ENABLED and CORS_ALLOW_ORIGINS is set, echo Access-Control-Allow-Origin
@@ -216,6 +217,10 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
         # nosniff always
         if not resp.headers.get("X-Content-Type-Options"):
             resp.headers["X-Content-Type-Options"] = "nosniff"
+
+        # frame deny always (tests expect it on /health)
+        if not resp.headers.get("X-Frame-Options"):
+            resp.headers["X-Frame-Options"] = "DENY"
 
         # Referrer-Policy
         rp = os.getenv("SEC_HEADERS_REFERRER_POLICY")
@@ -348,7 +353,7 @@ def create_app() -> FastAPI:
     async def _internal_exc_handler(request: Request, exc: Exception):
         return _json_error("Internal Server Error", 500, base_headers=request.headers)
 
-    # Backfill/compat headers (nosniff, referrer, permissions, cors echo)
+    # Backfill/compat headers (nosniff, frame deny, referrer, permissions, cors echo)
     app.add_middleware(_CompatHeadersMiddleware)
 
     return app
