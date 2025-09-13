@@ -1,14 +1,17 @@
 name: GDPR
-version: 0.1.0
-description: >
-  GDPR-oriented egress/ingress policy scaffolding (placeholder).
-scopes:
-  - egress
-  - ingress
+version: 0.2.0
+description: GDPR-oriented egress/ingress policy scaffolding (enforcement-ready).
+scopes: [egress, ingress]
 controls:
-  - id: gdpr-data-minimization
+  - id: gdpr-email-redact
     phase: egress
-    match: "personal_data"
-    action: "minimize"
-    status: "placeholder"
-notes: "Rulepack scaffold only; no enforcement in this PR."
+    type: regex
+    pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    action: redact
+    replacement: "[REDACTED-EMAIL]"
+
+  - id: gdpr-sql-block
+    phase: ingress
+    type: regex
+    pattern: "\\bDROP\\s+TABLE\\b"
+    action: block

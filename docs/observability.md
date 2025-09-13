@@ -49,3 +49,8 @@ Import `dashboards/grafana_guardrail.json` → set your Prometheus datasource.
 The streaming redactor does not buffer the full response and preserves incremental delivery.
 Counters for streaming are not incremented per window to avoid expensive hooks; consider using log sampling or gateway-level counters for live SSE streams.
 
+### Rulepack Enforcement
+- Egress redactions from rulepacks are merged with built-ins when `RULEPACKS_ENFORCE=1` and `RULEPACKS_EGRESS_MODE=enforce`.
+- Ingress rulepacks can trigger clarify/block if `RULEPACKS_INGRESS_MODE` is set.
+- See README for env toggles.
+

@@ -11,6 +11,7 @@ from app.observability.metrics import inc_egress_redactions
 from app.services.egress.filter import DEFAULT_REDACTIONS
 from app.services.egress.modes import apply_egress_pipeline
 from app.services.egress.stream_redactor import wrap_streaming_iterator
+from app.services.rulepacks_engine import egress_mode, egress_redactions, rulepacks_enabled
 from app.shared.headers import attach_guardrail_headers
 
 ENABLED = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
@@ -33,33 +34,21 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             or "text/event-stream" in ctype
             or "chunked" in transfer_enc
         ):
-            # If streaming redaction is enabled and content is text-like, wrap iterator.
             if STREAMING_REDACT_ENABLED and ("text/" in ctype or "event-stream" in ctype):
-                # Do NOT set content-length for streaming
+                redactions = DEFAULT_REDACTIONS
+                if rulepacks_enabled() and egress_mode() == "enforce":
+                    rp = egress_redactions()
+                    if rp:
+                        redactions = redactions + rp
+
                 original_iter = response.body_iterator  # type: ignore[attr-defined]
-
-                # Wrap with streaming redactor
                 response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
-                    original_iter, DEFAULT_REDACTIONS, overlap_chars=STREAMING_OVERLAP_CHARS
+                    original_iter, redactions, overlap_chars=STREAMING_OVERLAP_CHARS
                 )
-
-                # Guardrail headers (non-blocking)
                 attach_guardrail_headers(
-                    response,
-                    decision="allow",
-                    ingress_action="allow",
-                    egress_action="allow",
+                    response, decision="allow", ingress_action="allow", egress_action="allow"
                 )
-
-                # We cannot know changes until iteration finishes; so we don't
-                # increment here. Metrics will be approximated by adding +1
-                # when the stream completes at the ASGI layer is non-trivial;
-                # as a pragmatic approach, we skip per-stream increment in
-                # middleware. (Optional future: custom StreamingResponse
-                # subclass to hook on_complete.)
                 return response
-
-            # Otherwise pass streaming through untouched
             return response
 
         # --- Non-streaming path (buffer, transform, set content-length) ---

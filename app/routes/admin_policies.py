@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from app.security.admin_auth import require_admin
+from app.services.rulepacks_engine import egress_mode, ingress_mode, rulepacks_enabled
 
 try:
     from app.services.policy import (
@@ -49,6 +50,12 @@ def _collect_active_policy(overrides: Optional[Dict[str, str]] = None) -> Dict[s
         "EGRESS_POLICY_CHECK_ENABLED": _env_flag("EGRESS_POLICY_CHECK_ENABLED", "0", overrides),
         "CLARIFY_HTTP_STATUS": _env_flag("CLARIFY_HTTP_STATUS", "422", overrides),
     }
+    env_toggles.update({
+        "RULEPACKS_ENFORCE": "1" if rulepacks_enabled() else "0",
+        "RULEPACKS_ACTIVE": os.getenv("RULEPACKS_ACTIVE", ""),
+        "RULEPACKS_INGRESS_MODE": ingress_mode(),
+        "RULEPACKS_EGRESS_MODE": egress_mode(),
+    })
     decision_map = {
         "classifier.allow": map_classifier_outcome_to_action("allow"),
         "classifier.block": map_classifier_outcome_to_action("block"),
