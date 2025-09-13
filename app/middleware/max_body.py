@@ -8,7 +8,7 @@ Env (read per request):
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -29,7 +29,11 @@ def _limit() -> Optional[int]:
 
 
 class _MaxBodyMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         lim = _limit()
         if lim is not None:
             try:
@@ -37,7 +41,6 @@ class _MaxBodyMiddleware(BaseHTTPMiddleware):
             except Exception:
                 clen = 0
             if clen > lim:
-                # Minimal JSON consistent with API style
                 payload = {
                     "code": "payload_too_large",
                     "detail": "Payload too large",
@@ -45,7 +48,8 @@ class _MaxBodyMiddleware(BaseHTTPMiddleware):
                 }
                 return JSONResponse(payload, status_code=413)
 
-        return await call_next(request)
+        resp: Response = await call_next(request)
+        return resp
 
 
 def install_max_body(app) -> None:
