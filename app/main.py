@@ -171,7 +171,6 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             "request_id": get_request_id() or "",
         }
 
-        _ = _safe_headers_copy(resp.headers)  # for parity with other errors
         return JSONResponse(payload, status_code=401, headers=_safe_headers_copy(resp.headers))
 
 
@@ -321,16 +320,40 @@ csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
 # END PR-K include
 
-# BEGIN PR-K include (JSON access logging)
-logjson_mod = __import__(
-    "app.middleware.logging_json",
-    fromlist=["install_json_logging"],
-)
-logjson_mod.install_json_logging(app)
+# BEGIN PR-K include (JSON access logging) — be liberal with installer names
+try:
+    logjson_mod = __import__("app.middleware.logging_json", fromlist=["*"])
+    _installed = False
+    # Try common installer function names first
+    for _name in (
+        "install_json_logging",
+        "install_logging_json",
+        "install_json_access_logging",
+        "install_logging",
+        "install",
+    ):
+        _fn = getattr(logjson_mod, _name, None)
+        if callable(_fn):
+            _fn(app)
+            _installed = True
+            break
+    # Fallback: attach any BaseHTTPMiddleware subclass exported by the module
+    if not _installed:
+        for _attr in dir(logjson_mod):
+            _obj = getattr(logjson_mod, _attr)
+            try:
+                if isinstance(_obj, type) and issubclass(_obj, BaseHTTPMiddleware):
+                    app.add_middleware(_obj)
+                    _installed = True
+                    break
+            except Exception:
+                pass
+except Exception:
+    # Never fail app import because of logging middleware
+    pass
 # END PR-K include
 
 # BEGIN PR-K include (Compression - outermost)
-# Add last so responses are fully formed before gzip is applied.
 comp_mod = __import__(
     "app.middleware.compression",
     fromlist=["install_compression"],
