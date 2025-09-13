@@ -1,67 +1,47 @@
-# Observability: Audit Forwarder / Receiver & Guardrails
+# Observability
 
-This document explains how to monitor the audit pipeline and guardrail decisions, run nightly smokes, and interpret alerts/SLOs.
+## Endpoints
+- **Prometheus**: `/metrics` (exposed by existing Prom integration)
+- **Health**: `GET /health`
 
-## What’s instrumented
+## Key Metrics (emitted by app)
+- `guardrail_latency_seconds{route,method}` — existing histogram
+- `guardrail_clarify_total{phase}` — total clarify-first decisions (phase: ingress)
+- `guardrail_egress_redactions_total{content_type}` — redactions applied (json/text)
 
-- **Forwarder health:** `audit_forwarder_requests_total{result="success|failure"}`
-- **Guardrail decisions:** `guardrail_decisions_family_total{family=allow|sanitize|block|verify}`
-- **Tenant breakdown:** `guardrail_decisions_family_tenant_total{tenant, family}`
-- (Receiver exposes app metrics if configured; not required for this dashboard)
+> Counters are monotonic; use `rate()` or `increase()` over a window.
 
-## Dashboard
+## PromQL Recipes
 
-Import `monitoring/grafana/dashboards/audit_forwarder.json` into Grafana.
-It presents:
-- **Forwarder Failure Rate (5m)** — % of failed posts in the last 5 minutes
-- **Requests by Result** — success/failure over time
-- **Guardrail Decisions by Family (1h)** — volume by allow/sanitize/block/verify
-- **Top Tenants (1h)** — which tenants drive decisions
-
-## Nightly smoke
-
-A scheduled workflow exercises the receiver with a signed, idempotent request:
-- File: `.github/workflows/audit-smoke-nightly.yml`
-- It calls `scripts/audit/prod_smoke.sh`.
-
-### Required GitHub repo secrets
-
-| Secret                | Description                                |
-|-----------------------|--------------------------------------------|
-| `AUDIT_SMOKE_ENABLED` | Set to `1` to enable nightly smoke         |
-| `AUDIT_FORWARD_URL`   | e.g., `https://receiver.example.com/audit` |
-| `AUDIT_FORWARD_KEY`   | Receiver’s API key                         |
-| `AUDIT_HMAC_SECRET`   | Shared HMAC secret                         |
-
-## SLOs and Alerts
-
-**SLO (forwarder):** failure rate **< 1%** over 30 days.  
-**Page** if failure rate **> 5%** for 5 minutes.  
-**Ticket** if failure rate **> 1%** for 1 hour.
-
-PromQL reference used by dashboard:
-```promql
-100 * sum(rate(audit_forwarder_requests_total{result="failure"}[5m]))
-  / clamp_min(sum(rate(audit_forwarder_requests_total[5m])), 1e-9)
-```
-
-If you manage alert rules in Prometheus/Alertmanager, wire the above into:
-
-Critical: >5% for 5m
-
-Warning: >1% for 60m
-
-Runbook
-
-Operational steps (setup, smoke testing, alerting, secret rotation, troubleshooting) are covered in the repo’s runbook (see docs/operations/*). If a forwarder outage occurs:
-
-Check the failure rate panel.
-
-Validate nightly smoke logs in Actions.
-
-Confirm receiver is healthy and secrets (API key + HMAC) are correct.
-
-Rotate the HMAC secret if compromise is suspected; update both forwarder and receiver.
+### 1) P95 latency by route (5m window)
 
 
----
+histogram_quantile(
+0.95,
+sum(rate(guardrail_latency_seconds_bucket[5m])) by (le, route)
+)
+
+
+### 2) Clarify rate (per minute)
+
+
+sum(rate(guardrail_clarify_total[1m]))
+
+
+### 3) Redactions rate by content type (5m)
+
+
+sum(rate(guardrail_egress_redactions_total[5m])) by (content_type)
+
+
+### 4) Clarify % of total requests (approx)
+
+
+sum(rate(guardrail_clarify_total[5m]))
+/
+sum by (route) (rate(guardrail_latency_seconds_count[5m]))
+
+
+## Grafana
+Import `dashboards/grafana_guardrail.json` → set your Prometheus datasource.
+

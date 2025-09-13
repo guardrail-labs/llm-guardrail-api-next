@@ -7,6 +7,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response, StreamingResponse
 
+from app.observability.metrics import inc_egress_redactions
 from app.services.egress.modes import apply_egress_pipeline
 from app.shared.headers import attach_guardrail_headers
 
@@ -22,6 +23,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
         ctype = (response.headers.get("content-type") or "").lower()
         transfer_enc = (response.headers.get("transfer-encoding") or "").lower()
 
+        # Never buffer/transform streaming responses
         if (
             isinstance(response, StreamingResponse)
             or "text/event-stream" in ctype
@@ -36,6 +38,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             response.headers["content-length"] = str(len(b))
             response.body_iterator = _aiter()  # type: ignore[attr-defined]
 
+        # Buffer non-streaming response body
         body = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore[attr-defined]
 
         if "application/json" in ctype:
@@ -45,8 +48,13 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 await _set_body(body)
                 return response
 
-            new_data, meta = apply_egress_pipeline(data)
-            new_body = json.dumps(new_data, ensure_ascii=False).encode("utf-8")
+            processed, meta = apply_egress_pipeline(data)
+            new_body = json.dumps(processed, ensure_ascii=False).encode("utf-8")
+
+            # Coarse redaction count: 1 if body changed, else 0
+            if new_body != body:
+                inc_egress_redactions("application/json", 1)
+
             await _set_body(new_body)
             attach_guardrail_headers(
                 response,
@@ -62,10 +70,13 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
         if "text/plain" in ctype:
             text = body.decode("utf-8")
-            new_text, meta = apply_egress_pipeline(text)
-            new_body = (
-                new_text if isinstance(new_text, str) else str(new_text)
-            ).encode("utf-8")
+            processed, meta = apply_egress_pipeline(text)
+            new_text = processed if isinstance(processed, str) else str(processed)
+            new_body = new_text.encode("utf-8")
+
+            if new_body != body:
+                inc_egress_redactions("text/plain", 1)
+
             await _set_body(new_body)
             attach_guardrail_headers(
                 response,
@@ -79,6 +90,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 )
             return response
 
+        # Other content types passthrough
         await _set_body(body)
         return response
 

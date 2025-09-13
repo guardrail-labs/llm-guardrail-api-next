@@ -1,0 +1,14 @@
+name: GDPR
+version: 0.1.0
+description: >
+  GDPR-oriented egress/ingress policy scaffolding (placeholder).
+scopes:
+  - egress
+  - ingress
+controls:
+  - id: gdpr-data-minimization
+    phase: egress
+    match: "personal_data"
+    action: "minimize"
+    status: "placeholder"
+notes: "Rulepack scaffold only; no enforcement in this PR."

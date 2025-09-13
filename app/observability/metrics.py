@@ -96,3 +96,29 @@ def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
 
 # Default metrics used by the app
 VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)
+
+
+# ---- Clarify / egress counters ----------------------------------------------
+
+# Counters are safe to import multiple times; prometheus_client caches by name.
+GUARDRAIL_CLARIFY_TOTAL = Counter(
+    "guardrail_clarify_total",
+    "Total clarify-first decisions",
+    ["phase"],
+)
+
+GUARDRAIL_EGRESS_REDACTIONS_TOTAL = Counter(
+    "guardrail_egress_redactions_total",
+    "Total egress redactions applied",
+    ["content_type"],
+)
+
+
+def inc_clarify(phase: str = "ingress") -> None:
+    GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
+
+
+def inc_egress_redactions(content_type: str, n: int = 1) -> None:
+    if n > 0:
+        GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
+

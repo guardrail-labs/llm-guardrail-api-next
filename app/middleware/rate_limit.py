@@ -57,7 +57,7 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _parse_limits_from_env() -> Tuple[bool, int, int, int, int, bool]:
+def _parse_limits_from_env() -> Tuple[bool, int, Optional[int], int, int, bool]:
     """
     Return (enabled, generic_per_min, burst, per_key_min, per_ip_min, legacy_unified).
 
@@ -79,7 +79,7 @@ def _parse_limits_from_env() -> Tuple[bool, int, int, int, int, bool]:
     per_key = int(os.getenv("RATE_LIMIT_PER_API_KEY_PER_MIN", "60"))
     per_ip = int(os.getenv("RATE_LIMIT_PER_IP_PER_MIN", "120"))
     # Generic header limit uses the "per_key" value for compatibility
-    return enabled, per_key, per_key, per_key, per_ip, False
+    return enabled, per_key, None, per_key, per_ip, False
 
 
 # ------------------------------------------------------------------------------
@@ -108,7 +108,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         (
             env_enabled,
             env_per_min,
-            _env_burst,  # kept for compatibility; we compute capacities below
+            env_burst,
             env_key_min,
             env_ip_min,
             legacy_unified,
@@ -122,12 +122,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         per_key = env_key_min if per_api_key_per_min is None else per_api_key_per_min
         per_ip = env_ip_min if per_ip_per_min is None else per_ip_per_min
 
-        # IMPORTANT: If no explicit burst is given, default capacity to each dimension's limit.
-        key_capacity = burst if burst is not None else per_key
-        ip_capacity = burst if burst is not None else per_ip
+        burst_val = env_burst if burst is None else burst
 
-        key_refill = per_key / 60.0 if burst is None else per_key / 3600.0
-        ip_refill = per_ip / 60.0 if burst is None else per_ip / 3600.0
+        # IMPORTANT: If no explicit burst is given, default capacity to each dimension's limit.
+        key_capacity = burst_val if burst_val is not None else per_key
+        ip_capacity = burst_val if burst_val is not None else per_ip
+
+        key_refill = per_key / 60.0 if burst_val is None else per_key / 3600.0
+        ip_refill = per_ip / 60.0 if burst_val is None else per_ip / 3600.0
 
         # Buckets: capacity = per-dimension capacity,
         # refill = per-minute / 60 (or slower if burst specified)

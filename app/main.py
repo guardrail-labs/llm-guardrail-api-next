@@ -335,6 +335,8 @@ def create_app() -> FastAPI:
 
     # Include every APIRouter found under app.routes.*
     _include_all_route_modules(app)
+    from app.routes import admin_policies
+    app.include_router(admin_policies.router)
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")

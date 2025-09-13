@@ -1,0 +1,37 @@
+{
+  "title": "Guardrail API — Overview",
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "P95 Latency by Route",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(guardrail_latency_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Clarify / min",
+      "targets": [
+        { "expr": "sum(rate(guardrail_clarify_total[1m]))", "refId": "A" }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 9 }
+    },
+    {
+      "type": "piechart",
+      "title": "Redactions by Content Type (5m)",
+      "targets": [
+        { "expr": "sum(rate(guardrail_egress_redactions_total[5m])) by (content_type)", "refId": "A" }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 9 }
+    }
+  ],
+  "time": { "from": "now-6h", "to": "now" }
+}
