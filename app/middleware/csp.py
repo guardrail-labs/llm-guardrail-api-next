@@ -1,11 +1,10 @@
 # app/middleware/csp.py
-# Summary (PR-Y): Add optional CSP and Referrer-Policy headers.
+# Summary (PR-Y fix): Add optional CSP and Referrer-Policy headers.
 # - Disabled by default; enable via env toggles.
 # - Does not override headers if an upstream already set them.
 # - Env:
 #     CSP_ENABLED                (default: 0)
-#     CSP_VALUE                  (default: "default-src 'none'; frame-ancestors 'none';
-#                                base-uri 'none'")
+#     CSP_VALUE                  (default: "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
 #     REFERRER_POLICY_ENABLED    (default: 0)
 #     REFERRER_POLICY_VALUE      (default: "no-referrer")
 
@@ -18,6 +17,7 @@ from fastapi import FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
+from starlette.types import ASGIApp  # for mypy-accurate __init__ typing
 
 from app.services.config_sanitizer import get_bool
 
@@ -33,7 +33,7 @@ def _get_str(name: str, default: str) -> str:
 class _CSPMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
-        app: FastAPI,
+        app: ASGIApp,
         *,
         csp: Optional[str],
         referrer_policy: Optional[str],
@@ -62,8 +62,8 @@ class _CSPMiddleware(BaseHTTPMiddleware):
 
 
 def install_csp(app: FastAPI) -> None:
-    csp_enabled = get_bool("CSP_ENABLED", default=False)
-    rp_enabled = get_bool("REFERRER_POLICY_ENABLED", default=False)
+    csp_enabled = get_bool("CSP_ENABLED", False)
+    rp_enabled = get_bool("REFERRER_POLICY_ENABLED", False)
 
     if not (csp_enabled or rp_enabled):
         return
@@ -76,8 +76,6 @@ def install_csp(app: FastAPI) -> None:
         if csp_enabled
         else None
     )
-    rp_val = (
-        _get_str("REFERRER_POLICY_VALUE", "no-referrer") if rp_enabled else None
-    )
+    rp_val = _get_str("REFERRER_POLICY_VALUE", "no-referrer") if rp_enabled else None
 
     app.add_middleware(_CSPMiddleware, csp=csp_val, referrer_policy=rp_val)
