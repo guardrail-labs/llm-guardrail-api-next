@@ -129,6 +129,11 @@ async def live() -> JSONResponse:
 
 @router.get("/ready")
 async def ready() -> JSONResponse:
+    # Short-circuit: if no startup delay is configured and we are not draining,
+    # consider the app ready even if startup hooks haven't flipped the event yet.
+    if not _draining and _read_ms("HEALTH_READY_DELAY_MS", 0) == 0:
+        return JSONResponse({"status": "ok", "ok": True})
+
     if not _is_ready():
         return JSONResponse({"status": "starting", "ok": False}, status_code=503)
     return JSONResponse({"status": "ok", "ok": True})
@@ -150,4 +155,3 @@ def _reset_readiness_for_tests() -> None:  # pragma: no cover
 
 async def _run_probe_once_for_tests() -> None:  # pragma: no cover
     await _run_probe_once()
-
