@@ -7,8 +7,9 @@ from starlette.testclient import TestClient
 from app.main import create_app
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def app():
+    # Function scope: new app for each test to pick up monkeypatched env.
     return create_app()
 
 
