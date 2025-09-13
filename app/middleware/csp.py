@@ -11,7 +11,7 @@ Env (evaluated at request time):
 from __future__ import annotations
 
 import os
-from typing import Callable
+from typing import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -26,8 +26,12 @@ _DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
 
 
 class _CSPMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable[..., Response]) -> Response:
-        resp = await call_next(request)
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        resp: Response = await call_next(request)
 
         if _truthy(os.getenv("CSP_ENABLED", "0")):
             csp_val = os.getenv("CSP_VALUE", _DEFAULT_CSP)
