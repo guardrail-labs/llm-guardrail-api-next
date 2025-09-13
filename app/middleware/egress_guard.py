@@ -7,12 +7,12 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response, StreamingResponse
 
-from app.observability.metrics import inc_egress_redactions
-from app.services.egress.filter import DEFAULT_REDACTIONS
 from app.services.egress.modes import apply_egress_pipeline
+from app.services.egress.filter import DEFAULT_REDACTIONS
+from app.services.rulepacks_engine import egress_redactions, egress_mode, rulepacks_enabled
 from app.services.egress.stream_redactor import wrap_streaming_iterator
-from app.services.rulepacks_engine import egress_mode, egress_redactions, rulepacks_enabled
 from app.shared.headers import attach_guardrail_headers
+from app.observability.metrics import inc_egress_redactions
 
 ENABLED = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
 STREAMING_REDACT_ENABLED = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
@@ -42,24 +42,34 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                         redactions = redactions + rp
 
                 original_iter = response.body_iterator  # type: ignore[attr-defined]
+
+                # Count redactions on completion; update Prom counter for streaming.
+                async def _on_complete(changed: int) -> None:
+                    if changed > 0:
+                        inc_egress_redactions("text/stream", changed)
+
                 response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
-                    original_iter, redactions, overlap_chars=STREAMING_OVERLAP_CHARS
+                    original_iter,
+                    redactions,
+                    overlap_chars=STREAMING_OVERLAP_CHARS,
+                    on_complete=_on_complete,
                 )
-                attach_guardrail_headers(
-                    response, decision="allow", ingress_action="allow", egress_action="allow"
-                )
+
+                # Informational header: streaming redactor is active (cannot include counts).
+                response.headers.setdefault("X-Guardrail-Streaming-Redactor", "enabled")
+
+                attach_guardrail_headers(response, decision="allow", egress_action="allow")  # type: ignore[arg-type]
                 return response
+
             return response
 
-        # --- Non-streaming path (buffer, transform, set content-length) ---
+        # --- Non-streaming path (buffer, transform) ---
         async def _set_body(b: bytes) -> None:
             async def _aiter():
                 yield b
-
             response.headers["content-length"] = str(len(b))
             response.body_iterator = _aiter()  # type: ignore[attr-defined]
 
-        # Buffer non-streaming response body
         body = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore[attr-defined]
 
         if "application/json" in ctype:
@@ -76,16 +86,9 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 inc_egress_redactions("application/json", 1)
 
             await _set_body(new_body)
-            attach_guardrail_headers(
-                response,
-                decision="allow",
-                ingress_action="allow",
-                egress_action="allow",
-            )
+            attach_guardrail_headers(response, decision="allow", egress_action="allow")  # type: ignore[arg-type]
             if meta.get("egress_policy_status"):
-                response.headers.setdefault(
-                    "X-Guardrail-Egress-Policy-Status", meta["egress_policy_status"]
-                )
+                response.headers.setdefault("X-Guardrail-Egress-Policy-Status", meta["egress_policy_status"])
             return response
 
         if "text/plain" in ctype:
@@ -98,19 +101,10 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 inc_egress_redactions("text/plain", 1)
 
             await _set_body(new_body)
-            attach_guardrail_headers(
-                response,
-                decision="allow",
-                ingress_action="allow",
-                egress_action="allow",
-            )
+            attach_guardrail_headers(response, decision="allow", egress_action="allow")  # type: ignore[arg-type]
             if meta.get("egress_policy_status"):
-                response.headers.setdefault(
-                    "X-Guardrail-Egress-Policy-Status", meta["egress_policy_status"]
-                )
+                response.headers.setdefault("X-Guardrail-Egress-Policy-Status", meta["egress_policy_status"])
             return response
 
-        # Other content: passthrough
         await _set_body(body)
         return response
-

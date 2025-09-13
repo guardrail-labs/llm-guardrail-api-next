@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import codecs
 import re
-from typing import AsyncIterator, Tuple
+from typing import AsyncIterator, Callable, Optional, Tuple
 
 # Redaction = (compiled_pattern, replacement)
 Redaction = Tuple[re.Pattern[str], str]
@@ -17,13 +18,11 @@ class StreamingRedactor:
       - Maintain an incremental UTF-8 decoder and a tail buffer of the last
         `overlap_chars` characters.
       - For each incoming bytes chunk, decode incrementally, append to tail,
-      and if buffer > overlap, emit `buffer[:-overlap]` after applying
+        and if buffer > overlap, emit `buffer[:-overlap]` after applying
         redactions; keep the last `overlap` chars as new tail.
       - On flush, decode any remaining bytes and emit the final tail (redacted).
 
-    Notes:
-      - Overlap ensures a pattern split across chunks eventually appears fully
-        in a redaction window. Choose overlap >= longest sensitive token length.
+    'changed' counts how many emitted windows (including final tail) were altered.
     """
 
     def __init__(self, redactions: Tuple[Redaction, ...], overlap_chars: int = 2048) -> None:
@@ -31,7 +30,7 @@ class StreamingRedactor:
         self._overlap = max(0, int(overlap_chars))
         self._decoder = codecs.getincrementaldecoder("utf-8")()
         self._tail: str = ""
-        self._changed: int = 0  # number of windows that were altered
+        self._changed: int = 0
 
     def _apply(self, s: str) -> str:
         out = s
@@ -41,26 +40,24 @@ class StreamingRedactor:
         return out
 
     def feed(self, chunk: bytes) -> str:
-        # Decode next piece; incremental decoder handles UTF-8 boundaries safely.
         text = self._decoder.decode(chunk)
         buf = self._tail + text
 
         if len(buf) <= self._overlap:
-            # Not enough to emit; keep accumulating.
             self._tail = buf
             return ""
 
-        redacted = self._apply(buf)
-        emit = redacted[:-self._overlap]
-        self._tail = redacted[-self._overlap:]
+        emit = buf[:-self._overlap]
+        kept = buf[-self._overlap:]
 
-        if emit != buf[:-self._overlap]:
+        redacted = self._apply(emit)
+        if redacted != emit:
             self._changed += 1
 
-        return emit
+        self._tail = kept
+        return redacted
 
     def flush(self) -> str:
-        # Flush decoder residuals and final tail
         tail_text = self._decoder.decode(b"", final=True)
         buf = self._tail + tail_text
         self._tail = ""
@@ -73,7 +70,6 @@ class StreamingRedactor:
 
     @property
     def changed(self) -> int:
-        """Number of emitted windows that were altered (approx redaction count)."""
         return self._changed
 
 
@@ -82,16 +78,19 @@ async def wrap_streaming_iterator(
     redactions: Tuple[Redaction, ...],
     *,
     overlap_chars: int = 2048,
+    on_complete: Optional[Callable[[int], object]] = None,
 ) -> AsyncIterator[bytes]:
     """
     Wrap an async bytes iterator with streaming redaction.
     Yields bytes progressively; never sets content-length.
+
+    on_complete(changed: int) is called exactly once after the final chunk is yielded.
+    It may be synchronous or an async callable (coroutine function).
     """
     sr = StreamingRedactor(redactions, overlap_chars=overlap_chars)
 
     async for chunk in it:
         if not isinstance(chunk, (bytes, bytearray)):
-            # Safety: coerce to bytes via UTF-8
             chunk = str(chunk).encode("utf-8")
         out = sr.feed(bytes(chunk))
         if out:
@@ -101,7 +100,7 @@ async def wrap_streaming_iterator(
     if final:
         yield final.encode("utf-8")
 
-    # Expose a changed count by attaching attribute (optional pattern).
-    # Callers may inspect with getattr(iterator, "_stream_redactor_changed", 0)
-    # but in our middleware we just use sr.changed synchronously.
-    wrap_streaming_iterator._last_changed = sr.changed  # type: ignore[attr-defined]
+    if on_complete:
+        res = on_complete(sr.changed)
+        if asyncio.iscoroutine(res):
+            await res
