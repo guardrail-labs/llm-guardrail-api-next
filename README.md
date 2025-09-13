@@ -108,6 +108,26 @@ Pipeline: redaction → optional summarize → optional policy-check (annotative
 - Scaffolds in `rulepacks/hipaa.yaml`, `rulepacks/gdpr.yaml`.
 - Loader in `app/services/rulepacks.py` (no enforcement yet).
 
+### Admin Auth (optional)
+- `GUARDRAIL_DISABLE_AUTH=1` — bypass auth (default in CI/tests)
+- `ADMIN_UI_AUTH=1` — enable auth for admin JSON endpoints
+- `ADMIN_UI_TOKEN=<string>` — Bearer token required when auth is enabled
+
+**Behavior:**
+- `/admin/ui` (HTML) is public; it uses a token (if provided) when fetching JSON from:
+  - `/admin/policies/active`, `/admin/policies/preview`
+  - `/admin/rulepacks`, `/admin/rulepacks/{name}`
+
+Store the token in the Admin UI using the “Admin token” field; the UI saves it to `localStorage` and includes it as `Authorization: Bearer <token>` on API calls.
+
+### Policy Preview (dry-run)
+- `POST /admin/policies/preview` with:
+  ```json
+  { "env_overrides": { "EGRESS_SUMMARIZE_ENABLED": "1", "CLARIFY_HTTP_STATUS": "400" } }
+  ```
+
+Returns preview (as active would look) + changed diff. No changes are applied.
+
 ## Verifier latency budgets
 Set `VERIFIER_LATENCY_BUDGET_MS` to bound verifier calls. Exceeding the budget
 returns a `timeout` outcome that policy maps to a deny decision.
