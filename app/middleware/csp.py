@@ -20,7 +20,13 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 from starlette.types import ASGIApp  # for mypy-accurate __init__ typing
 
-from app.services.config_sanitizer import get_bool
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None or val.strip() == "":
+        return default
+    s = val.strip().lower()
+    return s in {"1", "true", "yes", "on"}
 
 
 def _get_str(name: str, default: str) -> str:
@@ -63,8 +69,8 @@ class _CSPMiddleware(BaseHTTPMiddleware):
 
 
 def install_csp(app: FastAPI) -> None:
-    csp_enabled = get_bool("CSP_ENABLED", False)
-    rp_enabled = get_bool("REFERRER_POLICY_ENABLED", False)
+    csp_enabled = _get_bool_env("CSP_ENABLED", False)
+    rp_enabled = _get_bool_env("REFERRER_POLICY_ENABLED", False)
 
     if not (csp_enabled or rp_enabled):
         return
