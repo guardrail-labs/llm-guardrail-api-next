@@ -94,6 +94,20 @@ Behavior: classifier/verifier ambiguous/timeout → standardized clarify respons
 Pipeline: redaction → optional summarize → optional policy-check (annotative; does
 **not** block). Streaming (SSE/chunked) is **never** buffered or transformed.
 
+### Observability
+- New docs: `docs/observability.md`
+- Grafana: import `dashboards/grafana_guardrail.json`
+
+### Admin — Active Policy View
+- `GET /admin/policies/active` returns:
+  - `policy_version`
+  - `env_toggles` (CORS, EGRESS_*, CLARIFY_*)
+  - `decision_map` (classifier/verifier → action)
+
+### Rulepacks
+- Scaffolds in `rulepacks/hipaa.yaml`, `rulepacks/gdpr.yaml`.
+- Loader in `app/services/rulepacks.py` (no enforcement yet).
+
 ## Verifier latency budgets
 Set `VERIFIER_LATENCY_BUDGET_MS` to bound verifier calls. Exceeding the budget
 returns a `timeout` outcome that policy maps to a deny decision.

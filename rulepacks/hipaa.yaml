@@ -1,0 +1,14 @@
+name: HIPAA
+version: 0.1.0
+description: >
+  HIPAA-oriented egress/ingress policy scaffolding (placeholder).
+scopes:
+  - egress
+  - ingress
+controls:
+  - id: hipaa-pii-redaction
+    phase: egress
+    match: "pii"
+    action: "redact"
+    status: "placeholder"
+notes: "Rulepack scaffold only; no enforcement in this PR."

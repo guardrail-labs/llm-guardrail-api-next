@@ -6,12 +6,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi.responses import JSONResponse
 
+from app.observability.metrics import inc_clarify
 from app.shared.headers import attach_guardrail_headers
 
 DEFAULT_STATUS = int(os.getenv("CLARIFY_HTTP_STATUS", "422"))
 DEFAULT_MESSAGE = os.getenv(
-    "CLARIFY_MESSAGE",
-    "I need a bit more detail to safely proceed.",
+    "CLARIFY_MESSAGE", "I need a bit more detail to safely proceed."
 )
 DEFAULT_QUESTIONS = tuple(
     q.strip()
@@ -45,13 +45,13 @@ def respond_with_clarify(
         payload["meta"] = extra
 
     resp = JSONResponse(status_code=http_status or DEFAULT_STATUS, content=payload)
-    resp.headers["X-Guardrail-Incident-ID"] = incident_id
-
     attach_guardrail_headers(
         resp,
         decision="clarify",
         ingress_action="clarify",
         egress_action="allow",
     )
+    # Metric
+    inc_clarify("ingress")
     return resp
 
