@@ -18,21 +18,22 @@ from app.services.egress.stream_redactor import wrap_streaming_iterator
 from app.shared.headers import attach_guardrail_headers
 from app.observability.metrics import inc_egress_redactions
 
-ENABLED = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
-STREAMING_REDACT_ENABLED = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1"
-STREAMING_OVERLAP_CHARS = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048"))
-
-# For SSE, enforce a safer minimum window to avoid splitting common secrets/tokens.
-# Tests may set STREAMING_OVERLAP_CHARS to small values; this guard preserves correctness.
-SSE_MIN_WINDOW = int(os.getenv("EGRESS_SSE_MIN_WINDOW", "128"))
+# Keep a conservative floor for SSE windows to catch tokens crossing chunks.
+_DEFAULT_SSE_MIN_WINDOW = int(os.getenv("EGRESS_SSE_MIN_WINDOW", "128") or "128")
 
 
 class EgressGuardMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
+        # Read env-driven toggles dynamically so tests can flip them per test.
+        enabled = (os.getenv("EGRESS_FILTER_ENABLED", "1") == "1")
+        streaming_redact_enabled = (os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "0") == "1")
+        overlap_chars = int(os.getenv("EGRESS_STREAMING_OVERLAP_CHARS", "2048") or "2048")
+        sse_min_window = int(os.getenv("EGRESS_SSE_MIN_WINDOW", str(_DEFAULT_SSE_MIN_WINDOW)) or "128")
+
         response = await call_next(request)
-        if not ENABLED:
+        if not enabled:
             return response
 
         ctype = (response.headers.get("content-type") or "").lower()
@@ -44,7 +45,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             or "text/event-stream" in ctype
             or "chunked" in transfer_enc
         ):
-            if STREAMING_REDACT_ENABLED and ("text/" in ctype or "event-stream" in ctype):
+            if streaming_redact_enabled and ("text/" in ctype or "event-stream" in ctype):
                 redactions = DEFAULT_REDACTIONS
                 if rulepacks_enabled() and egress_mode() == "enforce":
                     rp = egress_redactions()
@@ -53,10 +54,10 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
                 original_iter = response.body_iterator  # type: ignore[attr-defined]
 
-                # Pick overlap; enforce a higher floor for SSE to capture tokens within one window.
-                overlap = STREAMING_OVERLAP_CHARS
+                # Enforce a safer minimum for SSE so common tokens get captured.
+                chosen_overlap = overlap_chars
                 if "event-stream" in ctype:
-                    overlap = max(overlap, SSE_MIN_WINDOW)
+                    chosen_overlap = max(overlap_chars, sse_min_window)
 
                 async def _on_complete(changed: int) -> None:
                     if changed > 0:
@@ -65,11 +66,11 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
                     original_iter,
                     redactions,
-                    overlap_chars=overlap,
+                    overlap_chars=chosen_overlap,
                     on_complete=_on_complete,
                 )
 
-                # Informational: stream is being filtered (counts via metrics)
+                # Informational header: active stream filtering (counts exposed via metrics)
                 response.headers.setdefault("X-Guardrail-Streaming-Redactor", "enabled")
 
                 attach_guardrail_headers(
