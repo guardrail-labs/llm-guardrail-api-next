@@ -277,43 +277,53 @@ def create_app() -> FastAPI:
 build_app = create_app
 app = create_app()
 
-# BEGIN PR-K include (Security headers)
+# Security headers (always-on defaults)
 sec_headers_mod = __import__(
     "app.middleware.security_headers",
     fromlist=["install_security_headers"],
 )
 sec_headers_mod.install_security_headers(app)
-# END PR-K include
 
-# BEGIN PR-J security include
+# API key + rate-limit security add-ons
 security_mod = __import__("app.middleware.security", fromlist=["install_security"])
 security_mod.install_security(app)
-# END PR-J security include
 
-# BEGIN PR-H include
+# Admin routes
 admin_router = __import__("app.admin.router", fromlist=["router"]).router
 app.include_router(admin_router)
-# END PR-H include
 
-# BEGIN PR-K nosniff include
+# Nosniff (kept separate for clarity/tests)
 nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
 nosniff_mod.install_nosniff(app)
-# END PR-K nosniff include
 
-# BEGIN PR-K include (CORS - outermost)
+# CORS (Starlette) and fallback
 cors_mod = __import__("app.middleware.cors", fromlist=["install_cors"])
 cors_mod.install_cors(app)
-# END PR-K include
 
-# BEGIN PR-K include (CORS fallback)
 cors_fb_mod = __import__(
     "app.middleware.cors_fallback",
     fromlist=["install_cors_fallback"],
 )
 cors_fb_mod.install_cors_fallback(app)
-# END PR-K include
 
-# BEGIN PR-Y include (CSP)
+# CSP (reads env at request time)
 csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
-# END PR-Y include
+
+# Max body guard (returns 413 before routing)
+max_body_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
+max_body_mod.install_max_body(app)
+
+# Response compression (gzip) controlled by env per request
+compress_mod = __import__(
+    "app.middleware.compression",
+    fromlist=["install_compression"],
+)
+compress_mod.install_compression(app)
+
+# JSON access logging + one-time config snapshot
+log_json_mod = __import__(
+    "app.middleware.logging_json",
+    fromlist=["install_logging_json"],
+)
+log_json_mod.install_logging_json(app)
