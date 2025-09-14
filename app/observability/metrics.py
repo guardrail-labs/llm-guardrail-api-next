@@ -1,137 +1,164 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Optional, Tuple
 
-# Prometheus optional; keep callers safe if not installed.
-try:  # pragma: no cover
-    from prometheus_client import (
-        REGISTRY,
-        CollectorRegistry,
-        Counter,
-        Gauge,
-        Histogram,
-    )
-    _HAVE_PROM = True
-except Exception:  # pragma: no cover
-    REGISTRY = None  # type: ignore[assignment]
-    _HAVE_PROM = False
-
-    class CollectorRegistry:  # type: ignore[no-redef]
-        ...
-
-    class _BaseMetric:
-        def labels(self, **_kw: str) -> "_BaseMetric":
-            return self
-
-    class Counter(_BaseMetric):  # type: ignore[no-redef]
-        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-        def inc(self, *_a: Any, **_kw: Any) -> None: ...
-
-    class Gauge(_BaseMetric):  # type: ignore[no-redef]
-        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-        def set(self, *_a: Any, **_kw: Any) -> None: ...
-
-    class Histogram(_BaseMetric):  # type: ignore[no-redef]
-        def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-        def observe(self, *_a: Any, **_kw: Any) -> None: ...
+from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 
 
-# -------- Verifier provider metrics (existing/compatible) ---------------------
+# ---- Helpers to avoid duplicate registration ---------------------------------
+
+
+def _get_or_create_counter(
+    name: str,
+    doc: str,
+    labelnames: Tuple[str, ...] = (),
+    registry: Optional[CollectorRegistry] = None,
+) -> Counter:
+    reg = registry or REGISTRY
+    # Try to reuse an existing collector if already registered.
+    try:
+        names_map = getattr(reg, "_names_to_collectors", None)
+        if isinstance(names_map, dict):
+            existing = names_map.get(name)
+            if isinstance(existing, Counter):
+                return existing  # type: ignore[return-value]
+    except Exception:
+        pass
+
+    try:
+        return Counter(name, doc, labelnames=labelnames, registry=reg)
+    except ValueError:
+        # Another module created it first; fetch and reuse.
+        try:
+            names_map = getattr(reg, "_names_to_collectors", None)
+            if isinstance(names_map, dict):
+                found = names_map.get(name)
+                if isinstance(found, Counter):
+                    return found  # type: ignore[return-value]
+        except Exception:
+            pass
+        # Final fallback: create an unregistered counter (won't be exposed).
+        return Counter(name, doc, labelnames=labelnames)
+
+
+def _get_or_create_histogram(
+    name: str,
+    doc: str,
+    labelnames: Tuple[str, ...] = (),
+    registry: Optional[CollectorRegistry] = None,
+    buckets: Tuple[float, ...] = (),
+) -> Histogram:
+    reg = registry or REGISTRY
+    try:
+        names_map = getattr(reg, "_names_to_collectors", None)
+        if isinstance(names_map, dict):
+            existing = names_map.get(name)
+            if isinstance(existing, Histogram):
+                return existing  # type: ignore[return-value]
+    except Exception:
+        pass
+
+    try:
+        return Histogram(
+            name,
+            doc,
+            labelnames=labelnames,
+            registry=reg,
+            buckets=buckets or Histogram.DEFAULT_BUCKETS,
+        )
+    except ValueError:
+        try:
+            names_map = getattr(reg, "_names_to_collectors", None)
+            if isinstance(names_map, dict):
+                found = names_map.get(name)
+                if isinstance(found, Histogram):
+                    return found  # type: ignore[return-value]
+        except Exception:
+            pass
+        return Histogram(name, doc, labelnames=labelnames)
+
+
+def _get_or_create_gauge(
+    name: str,
+    doc: str,
+    labelnames: Tuple[str, ...] = (),
+    registry: Optional[CollectorRegistry] = None,
+) -> Gauge:
+    reg = registry or REGISTRY
+    try:
+        names_map = getattr(reg, "_names_to_collectors", None)
+        if isinstance(names_map, dict):
+            existing = names_map.get(name)
+            if isinstance(existing, Gauge):
+                return existing  # type: ignore[return-value]
+    except Exception:
+        pass
+
+    try:
+        return Gauge(name, doc, labelnames=labelnames, registry=reg)
+    except ValueError:
+        try:
+            names_map = getattr(reg, "_names_to_collectors", None)
+            if isinstance(names_map, dict):
+                found = names_map.get(name)
+                if isinstance(found, Gauge):
+                    return found  # type: ignore[return-value]
+        except Exception:
+            pass
+        return Gauge(name, doc, labelnames=labelnames)
+
+
+# ---- Verifier provider metrics (existing set) --------------------------------
+
 
 @dataclass(frozen=True)
 class VerifierMetrics:
-    sampled_total: Any
-    skipped_total: Any
-    timeout_total: Any
-    duration_seconds: Any
-    circuit_open_total: Any
-    error_total: Any
-    circuit_state: Any | None
+    sampled_total: Counter
+    skipped_total: Counter
+    timeout_total: Counter
+    duration_seconds: Histogram  # labeled by provider
+    circuit_open_total: Counter
+    error_total: Counter
+    circuit_state: Optional[Gauge]
 
 
-def _get_from_registry(name: str) -> Optional[Any]:
-    try:
-        reg = REGISTRY
-        names_map = getattr(reg, "_names_to_collectors", None)
-        if isinstance(names_map, dict):
-            return names_map.get(name)
-    except Exception:
-        return None
-    return None
-
-
-def make_verifier_metrics(registry: Any) -> VerifierMetrics:
-    if not _HAVE_PROM or registry is None:  # pragma: no cover
-        return VerifierMetrics(None, None, None, None, None, None, None)
-
-    def _counter(name: str, help_: str, labels: Sequence[str]) -> Any:
-        try:
-            return Counter(name, help_, labelnames=tuple(labels), registry=registry)
-        except Exception:
-            existing = _get_from_registry(name)
-            if existing is not None:
-                return existing
-            raise
-
-    def _hist(
-        name: str,
-        help_: str,
-        labels: Sequence[str],
-        buckets: Tuple[float, ...],
-    ) -> Any:
-        try:
-            return Histogram(
-                name,
-                help_,
-                labelnames=tuple(labels),
-                registry=registry,
-                buckets=buckets,
-            )
-        except Exception:
-            existing = _get_from_registry(name)
-            if existing is not None:
-                return existing
-            raise
-
-    def _gauge(name: str, help_: str, labels: Sequence[str]) -> Any:
-        try:
-            return Gauge(name, help_, labelnames=tuple(labels), registry=registry)
-        except Exception:
-            existing = _get_from_registry(name)
-            if existing is not None:
-                return existing
-            return None
-
-    sampled = _counter(
+def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
+    sampled = _get_or_create_counter(
         "guardrail_verifier_sampled_total",
         "Count of requests for which the verifier was invoked (sampled).",
-        ("provider",),
+        labelnames=("provider",),
+        registry=registry,
     )
-    skipped = _counter(
+    skipped = _get_or_create_counter(
         "guardrail_verifier_skipped_total",
         "Count of requests skipped by sampling gate (not verified).",
-        ("provider",),
+        labelnames=("provider",),
+        registry=registry,
     )
-    timeout = _counter(
+    timeout = _get_or_create_counter(
         "guardrail_verifier_timeout_total",
         "Count of verifier calls that exceeded the latency budget.",
-        ("provider",),
+        labelnames=("provider",),
+        registry=registry,
     )
-    circuit_open = _counter(
+    circuit_open = _get_or_create_counter(
         "guardrail_verifier_circuit_open_total",
         "Count of calls skipped because the circuit breaker was open.",
-        ("provider",),
+        labelnames=("provider",),
+        registry=registry,
     )
-    errors = _counter(
+    errors = _get_or_create_counter(
         "guardrail_verifier_provider_error_total",
         "Count of verifier provider exceptions (excluding timeouts).",
-        ("provider",),
+        labelnames=("provider",),
+        registry=registry,
     )
-    duration = _hist(
+    duration = _get_or_create_histogram(
         "guardrail_verifier_duration_seconds",
         "Time spent in provider evaluation (successful or timed out).",
-        ("provider",),
+        labelnames=("provider",),
+        registry=registry,
         buckets=(
             0.001,
             0.005,
@@ -147,11 +174,16 @@ def make_verifier_metrics(registry: Any) -> VerifierMetrics:
             10.0,
         ),
     )
-    circuit_state = _gauge(
-        "guardrail_verifier_circuit_state",
-        "State of verifier circuit breaker (1=open, 0=closed).",
-        ("provider",),
-    )
+
+    try:
+        circuit_state = _get_or_create_gauge(
+            "guardrail_verifier_circuit_state",
+            "State of verifier circuit breaker (1=open, 0=closed).",
+            labelnames=("provider",),
+            registry=registry,
+        )
+    except Exception:  # pragma: no cover
+        circuit_state = None
 
     return VerifierMetrics(
         sampled_total=sampled,
@@ -164,86 +196,47 @@ def make_verifier_metrics(registry: Any) -> VerifierMetrics:
     )
 
 
+# Singleton (safe due to get_or_create semantics)
 VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)
 
 
-# -------- Clarify / egress counters (existing) --------------------------------
+# ---- Clarify / egress counters (existing) ------------------------------------
 
-if _HAVE_PROM:
-    GUARDRAIL_CLARIFY_TOTAL: Optional[Any] = Counter(
-        "guardrail_clarify_total",
-        "Total clarify-first decisions",
-        ["phase"],
-        registry=REGISTRY,
-    )
-    GUARDRAIL_EGRESS_REDACTIONS_TOTAL: Optional[Any] = Counter(
-        "guardrail_egress_redactions_total",
-        "Total egress redactions applied",
-        ["content_type"],
-        registry=REGISTRY,
-    )
-else:  # pragma: no cover
-    GUARDRAIL_CLARIFY_TOTAL = None
-    GUARDRAIL_EGRESS_REDACTIONS_TOTAL = None
+GUARDRAIL_CLARIFY_TOTAL = _get_or_create_counter(
+    "guardrail_clarify_total",
+    "Total clarify-first decisions",
+    ("phase",),
+)
+
+GUARDRAIL_EGRESS_REDACTIONS_TOTAL = _get_or_create_counter(
+    "guardrail_egress_redactions_total",
+    "Total egress redactions applied",
+    ("content_type",),
+)
 
 
 def inc_clarify(phase: str = "ingress") -> None:
-    try:
-        if GUARDRAIL_CLARIFY_TOTAL is not None:
-            GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
-    except Exception:
-        pass
+    GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
 
 
 def inc_egress_redactions(content_type: str, n: int = 1) -> None:
-    if n <= 0:
-        return
-    try:
-        if GUARDRAIL_EGRESS_REDACTIONS_TOTAL is not None:
-            GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
-    except Exception:
-        pass
+    if n > 0:
+        GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
 
 
-# -------- Soft counter helper + router rank counter ---------------------------
+# ---- Verifier router rank metric (Hybrid-12) ---------------------------------
 
-_COUNTER_LABELS: Dict[str, Tuple[str, ...]] = {}
-_COUNTERS: Dict[str, Any] = {}
-
-
-def inc_counter(name: str, labels: Dict[str, str]) -> None:
-    """
-    Soft-hook counter increment that registers on the same REGISTRY
-    as /metrics. Creates the counter on first use; subsequent calls reuse it.
-    """
-    if not _HAVE_PROM or REGISTRY is None:  # pragma: no cover
-        return
-
-    try:
-        lbls = tuple(sorted(labels.keys()))
-        existing = _COUNTERS.get(name)
-        if existing is None:
-            schema = _COUNTER_LABELS.setdefault(name, lbls)
-            ctr = _get_from_registry(name)
-            if ctr is None:
-                ctr = Counter(
-                    name,
-                    name.replace("_", " "),
-                    labelnames=schema,
-                    registry=REGISTRY,
-                )
-            _COUNTERS[name] = ctr
-        else:
-            schema = _COUNTER_LABELS.get(name, lbls)
-            if lbls != schema:
-                return
-            ctr = existing
-
-        ctr.labels(**labels).inc()
-    except Exception:
-        # Never fail the request path due to metrics.
-        pass
+VERIFIER_ROUTER_RANK_TOTAL = _get_or_create_counter(
+    "verifier_router_rank_total",
+    "Count of provider rank computations by tenant and bot.",
+    ("tenant", "bot"),
+    registry=REGISTRY,
+)
 
 
 def inc_verifier_router_rank(tenant: str, bot: str) -> None:
-    inc_counter("verifier_router_rank_total", {"tenant": tenant, "bot": bot})
+    """
+    Increment the rank counter with canonical label set. Registered on REGISTRY,
+    which your /metrics route exports.
+    """
+    VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant, bot=bot).inc()
