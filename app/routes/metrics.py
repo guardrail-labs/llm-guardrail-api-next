@@ -68,6 +68,13 @@ async def metrics(request: Request) -> Response:
     if required is not None and not _auth_ok(request, required):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    # Ensure app-level metrics are imported so their collectors are registered.
+    try:  # pragma: no cover
+        import app.observability.metrics as _  # noqa: F401
+    except Exception:
+        # Do not fail exposition if metrics import has issues.
+        pass
+
     # Narrow types for static analysis
     assert generate_latest is not None
     assert REGISTRY is not None
