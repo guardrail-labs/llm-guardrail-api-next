@@ -18,7 +18,6 @@ __all__ = [
 # Metrics: define rank counter once, on the same REGISTRY that /metrics exports
 # -----------------------------------------------------------------------------
 try:
-    # Importing here ensures we register on the default process-wide REGISTRY.
     from prometheus_client import REGISTRY as _PROM_REGISTRY
     from prometheus_client import Counter as _PromCounter
 
@@ -34,8 +33,6 @@ except Exception:  # pragma: no cover
 
 # ----------------------------- Public Interfaces -----------------------------
 
-# Any async callable returning a mapping with a "decision" key is treated
-# as a successful verifier result.
 ProviderFn = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
 
 
@@ -49,12 +46,9 @@ class ProviderSpec:
 
 @dataclass
 class RouterConfig:
-    # Overall routing budget across all providers (seconds). 0 → unlimited.
     total_budget_sec: float = 5.0
-    # Circuit breaker: open after N consecutive failures; cool down for X sec.
     breaker_fail_threshold: int = 3
     breaker_cooldown_sec: int = 30
-    # Half-open allows a single probation call when cooldown elapses.
     enable_half_open: bool = True
 
 
@@ -68,11 +62,6 @@ class ProviderState:
 # ------------------------------- Utilities -----------------------------------
 
 def _read_int_env(name: str, default: int, *, minimum: int | None = None) -> int:
-    """
-    Parse an int env var safely. On missing/invalid/empty value, fall back
-    to default. If `minimum` is set and the parsed value is below it, fall
-    back to default.
-    """
     raw = (os.getenv(name) or "").strip()
     try:
         val = int(raw) if raw else default
@@ -123,7 +112,6 @@ class VerifierRouter:
         if not self.config.enable_half_open:
             return False
         if st.open_until <= now and st.failures >= self.config.breaker_fail_threshold:
-            # Cooldown elapsed → allow one probation request.
             st.half_open = True
             return True
         return False
@@ -141,20 +129,14 @@ class VerifierRouter:
             st.open_until = time.time() + self.config.breaker_cooldown_sec
             st.half_open = False
 
-    def _emit_metric(self, kind: str, labels: Dict[str, str]) -> None:
-        """
-        Soft hook (currently a no-op to avoid hard deps in this module).
-        """
+    def _emit_metric(self, _kind: str, _labels: Dict[str, str]) -> None:
+        # Soft hook (no-op). Kept for future use.
         return None
 
     async def route(
         self,
         payload: Dict[str, Any],
     ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Returns (best_result_or_none, attempt_log).
-        attempt_log is a list of {provider, attempt, ok, err?, duration_ms}.
-        """
         attempt_log: List[Dict[str, Any]] = []
         budget = self.config.total_budget_sec
         start_all = time.time()
@@ -166,14 +148,12 @@ class VerifierRouter:
             return max(0.0, budget - (time.time() - start_all))
 
         for spec in self.providers:
-            # Check budget before attempting this provider.
             if budget > 0 and remaining_budget() <= 0.0:
                 exhausted = True
                 break
 
             now = time.time()
 
-            # Circuit breaker: skip if still open.
             if self._is_open(spec.name, now):
                 attempt_log.append(
                     {
@@ -187,12 +167,10 @@ class VerifierRouter:
                 self._emit_metric("skip_open", {"provider": spec.name})
                 continue
 
-            # Half-open probe allowed?
             half_open_probe = self._should_probe_half_open(spec.name, now)
 
             attempts = spec.max_retries + 1
             for i in range(1, attempts + 1):
-                # Enforce budget inside retry loop.
                 rem = remaining_budget()
                 if budget > 0 and rem <= 0.0:
                     exhausted = True
@@ -207,7 +185,6 @@ class VerifierRouter:
                     )
                     break
 
-                # Optionally cap this attempt’s timeout to remaining budget.
                 timeout_override = None
                 if budget > 0 and rem < float("inf"):
                     timeout_override = min(spec.timeout_sec, rem)
@@ -241,7 +218,6 @@ class VerifierRouter:
                 except Exception as e:
                     err_s = getattr(e, "code", None) or type(e).__name__
 
-                # Record failure and decide next step.
                 self._record_failure(spec.name)
                 self._emit_metric("failure", {"provider": spec.name, "reason": err_s})
                 duration_ms = int((time.time() - t0) * 1000)
@@ -255,7 +231,6 @@ class VerifierRouter:
                     }
                 )
 
-                # If half-open probing, any failure re-opens immediately; stop.
                 if half_open_probe:
                     st = self._state[spec.name]
                     st.open_until = time.time() + self.config.breaker_cooldown_sec
@@ -265,7 +240,6 @@ class VerifierRouter:
             if exhausted:
                 break
 
-        # Budget exhausted or all providers failed
         self._emit_metric("exhausted", {})
         return None, attempt_log
 
@@ -286,11 +260,8 @@ class ProviderRouter:
     """
 
     def __init__(self) -> None:
-        # List of snapshots: {"tenant","bot","order","last_ranked_at","ts_ms"}
         self._order_snapshots: List[Dict[str, Any]] = []
-        # Simple counters by (tenant, bot, provider)
         self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
-        # Safe parse with default and minimum bound.
         self._snapshot_max = _read_int_env(
             "VERIFIER_ROUTER_SNAPSHOT_MAX",
             default=200,
@@ -298,7 +269,19 @@ class ProviderRouter:
         )
 
     def _emit_rank_metric(self, tenant: str, bot: str) -> None:
-        # Use the pre-registered counter if available; ignore errors.
+        """
+        First, eagerly import the app-level helper so the counter is
+        registered on the same REGISTRY that /metrics scrapes. If that
+        import fails for any reason, fall back to the module-local counter.
+        """
+        try:
+            from app.observability.metrics import inc_verifier_router_rank
+
+            inc_verifier_router_rank(tenant, bot)
+            return
+        except Exception:
+            pass
+
         if _RANK_COUNTER is not None:
             try:
                 _RANK_COUNTER.labels(tenant=tenant, bot=bot).inc()
@@ -306,7 +289,6 @@ class ProviderRouter:
                 pass
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
-        # Deterministic pass-through: preserve input order.
         ordered = list(providers)
         now = time.time()
         self._order_snapshots.append(
@@ -318,7 +300,6 @@ class ProviderRouter:
                 "ts_ms": int(now * 1000),
             }
         )
-        # Cap memory: keep only the most recent N snapshots.
         if len(self._order_snapshots) > self._snapshot_max:
             drop = len(self._order_snapshots) - self._snapshot_max
             if drop > 0:
@@ -328,10 +309,9 @@ class ProviderRouter:
         return ordered
 
     def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
-        # Return a shallow copy of all snapshots as a list of dicts.
         return list(self._order_snapshots)
 
-    # --- outcome recording hooks (no-op counters, for compatibility) ---
+    # --- outcome recording hooks (compat no-ops with counters kept in memory) ---
 
     def _bump(self, tenant: str, bot: str, provider: str, key: str) -> None:
         k = (tenant, bot, provider)
@@ -354,7 +334,6 @@ class ProviderRouter:
         provider: str,
         duration_ms: float | int,
     ) -> None:
-        # Store duration as an int; tolerate float input from perf counters.
         k = (tenant, bot, provider)
         bucket = self._stats.setdefault(k, {})
         bucket["success"] = bucket.get("success", 0) + 1
