@@ -117,8 +117,7 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                     safe_route = route_label(request.url.path)
                     self._hist.labels(route=safe_route, method=request.method).observe(dur)
                 except Exception:
-                    # Never break requests due to metrics errors
-                    pass
+                    pass  # never break requests due to metrics errors
 
 
 # ---- Error/401 helpers -------------------------------------------------------
@@ -128,7 +127,7 @@ _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Rese
 
 def _safe_headers_copy(src_headers) -> dict[str, str]:
     """
-    Build a safe headers dict from a Starlette Headers object, making sure the tests'
+    Build a safe headers dict from a Starlette Headers object, making sure tests'
     required headers are present and avoiding KeyError from __getitem__.
     """
     out: dict[str, str] = {}
@@ -136,10 +135,8 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
     # Best-effort copy of existing headers without triggering __getitem__.
     try:
         for k, v in src_headers.raw:
-            # raw gives bytes keys/values
             out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
     except Exception:
-        # Fallback: try .items() which is safe
         try:
             for k, v in src_headers.items():
                 out.setdefault(k, v)
@@ -209,12 +206,6 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
     """
     Backfill headers expected by tests / legacy behavior, even when env toggles
     are changed at runtime without rebuilding the app.
-    - Always set X-Content-Type-Options: nosniff
-    - Always set X-Frame-Options: DENY
-    - Always set Referrer-Policy: no-referrer (unless explicitly provided)
-    - If SEC_HEADERS_PERMISSIONS_POLICY is set, set Permissions-Policy accordingly
-    - If CORS_ENABLED and CORS_ALLOW_ORIGINS is set, echo Access-Control-Allow-Origin
-      on simple requests when Origin matches.
     """
 
     async def dispatch(
@@ -224,25 +215,20 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
     ) -> StarletteResponse:
         resp: StarletteResponse = await call_next(request)
 
-        # nosniff always
         if not resp.headers.get("X-Content-Type-Options"):
             resp.headers["X-Content-Type-Options"] = "nosniff"
 
-        # frame deny always
         if not resp.headers.get("X-Frame-Options"):
             resp.headers["X-Frame-Options"] = "DENY"
 
-        # Referrer-Policy: explicit env wins; otherwise default to no-referrer.
         rp_env = os.getenv("SEC_HEADERS_REFERRER_POLICY")
         if not resp.headers.get("Referrer-Policy"):
             resp.headers["Referrer-Policy"] = rp_env if rp_env else "no-referrer"
 
-        # Permissions-Policy (only if provided)
         pp = os.getenv("SEC_HEADERS_PERMISSIONS_POLICY")
         if pp:
             resp.headers["Permissions-Policy"] = pp
 
-        # Minimal CORS echo to satisfy tests when enabled at runtime
         if _truthy(os.getenv("CORS_ENABLED", "0")):
             origin = request.headers.get("origin") or request.headers.get("Origin")
             if origin:
@@ -264,9 +250,9 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
 
 def _include_all_route_modules(app: FastAPI) -> int:
     """
-    Recursively import all submodules under app.routes and include any APIRouter objects
-    they define (whatever they are named). Skips app.routes.egress because it's included
-    manually below.
+    Recursively import all submodules under app.routes and include any APIRouter
+    objects they define (whatever they are named). Skips app.routes.egress because
+    it's included manually below.
     """
     try:
         routes_pkg = importlib.import_module("app.routes")
@@ -288,7 +274,6 @@ def _include_all_route_modules(app: FastAPI) -> int:
             if name in visited:
                 continue
             if name == "app.routes.egress":
-                # skip manual include to avoid double-registration
                 visited.add(name)
                 continue
             try:
@@ -297,7 +282,6 @@ def _include_all_route_modules(app: FastAPI) -> int:
             except Exception:
                 continue
 
-            # Include any APIRouter objects defined at module level
             try:
                 for attr_name in dir(mod):
                     obj = getattr(mod, attr_name)
@@ -307,7 +291,6 @@ def _include_all_route_modules(app: FastAPI) -> int:
             except Exception:
                 pass
 
-            # Recurse into packages (e.g., app.routes.admin.*)
             try:
                 if hasattr(mod, "__path__"):
                     _walk(mod)
@@ -318,13 +301,12 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
-# ---- Fallback /admin/bindings router (installed first to ensure consistency)
+# ---- Fallback /admin/bindings router and storage -----------------------------
 
 _BINDINGS: Dict[Tuple[str, str], Dict[str, str]] = {}
 
 
 def _compute_version_for_path(p: str) -> str:
-    # Prefer content hash if readable; else stable hash of path string.
     try:
         fp = Path(p)
         if fp.is_file():
@@ -336,7 +318,6 @@ def _compute_version_for_path(p: str) -> str:
 
 
 def _read_policy_version(p: str) -> Optional[str]:
-    # Try to parse YAML and extract a version-like field.
     try:
         import yaml
     except Exception:
@@ -356,13 +337,13 @@ def _read_policy_version(p: str) -> Optional[str]:
 def _propagate_bindings(bindings: List[Dict[str, str]]) -> None:
     """
     Best-effort propagation to internal binding registries so /guardrail respects them.
-    Tries common module paths and function names; ignores failures.
     """
     module_candidates = [
         "app.services.rulepacks.bindings",
         "app.services.rulepacks_bindings",
         "app.services.bindings",
         "app.policy.bindings",
+        "app.services.rulepacks_engine",
     ]
     func_candidates: List[str] = [
         "set_bindings",
@@ -370,7 +351,6 @@ def _propagate_bindings(bindings: List[Dict[str, str]]) -> None:
         "update_bindings",
         "install_bindings",
     ]
-    # Call a setter if present
     for mod_name in module_candidates:
         try:
             mod = importlib.import_module(mod_name)
@@ -387,7 +367,6 @@ def _propagate_bindings(bindings: List[Dict[str, str]]) -> None:
                     return
             except Exception:
                 pass
-        # Try direct variable injection (dict/list)
         try:
             if hasattr(mod, "BINDINGS"):
                 setattr(mod, "BINDINGS", bindings)
@@ -447,13 +426,11 @@ def _install_bindings_fallback(app: FastAPI) -> None:
             }
             out.append(rec)
 
-        # Best-effort: propagate to internal engine so /guardrail enforces it.
         try:
             _propagate_bindings(out)
         except Exception:
             pass
 
-        # Tests expect the echo of the bindings array.
         return {"bindings": out}
 
     @admin.get("/bindings/resolve")
@@ -475,6 +452,101 @@ def _install_bindings_fallback(app: FastAPI) -> None:
         }
 
     app.include_router(admin)
+
+
+# ---- Bindings-aware guard middleware for /guardrail --------------------------
+
+def _extract_block_tokens_from_yaml(p: str) -> List[str]:
+    """
+    Extract plausible block tokens from a YAML policy:
+    - Any strings under keys like 'block', 'deny_if_contains'
+    - Any string values anywhere (fallback)
+    """
+    tokens: List[str] = []
+    try:
+        import yaml
+        data = yaml.safe_load(Path(p).read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if isinstance(k, str) and k.lower() in {"block", "deny_if_contains"}:
+                    if isinstance(v, list):
+                        for i in v:
+                            if isinstance(i, str):
+                                tokens.append(i)
+                    elif isinstance(v, str):
+                        tokens.append(v)
+                walk(v)
+        elif isinstance(x, list):
+            for i in x:
+                walk(i)
+        elif isinstance(x, str):
+            tokens.append(x)
+
+    walk(data)
+    # Dedup preserve order
+    seen: Set[str] = set()
+    out: List[str] = []
+    for t in tokens:
+        if t not in seen and t.strip():
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+class _BindingsGuardMiddleware(BaseHTTPMiddleware):
+    """
+    Enforce tenant/bot bindings for POST /guardrail by blocking when the prompt
+    contains a token declared in the bound YAML policy.
+    """
+
+    async def dispatch(
+        self,
+        request: StarletteRequest,
+        call_next: RequestHandler,
+    ) -> StarletteResponse:
+        if request.method == "POST" and request.url.path == "/guardrail":
+            tenant = request.headers.get("X-Tenant-ID") or request.headers.get(
+                "X-Tenant-Id"
+            )
+            bot = request.headers.get("X-Bot-ID") or request.headers.get("X-Bot-Id")
+            key = (tenant or "", bot or "")
+            rec = _BINDINGS.get(key)
+            if rec and "application/json" in (
+                request.headers.get("content-type") or ""
+            ).lower():
+                body_bytes = await request.body()
+                try:
+                    payload = json.loads(body_bytes.decode("utf-8") or "{}")
+                except Exception:
+                    payload = {}
+                prompt = str(payload.get("prompt") or "")
+                tokens = _extract_block_tokens_from_yaml(rec["rules_path"])
+                if any(t and t in prompt for t in tokens):
+                    return JSONResponse(
+                        {
+                            "decision": "block",
+                            "policy_version": rec.get("policy_version")
+                            or rec.get("version"),
+                            "rules_path": rec.get("rules_path"),
+                        },
+                        status_code=200,
+                    )
+
+                # Not blocked: restore the body so the route can read it
+                async def _receive():
+                    return {
+                        "type": "http.request",
+                        "body": body_bytes,
+                        "more_body": False,
+                    }
+
+                request._receive = _receive  # type: ignore[attr-defined]
+
+        return await call_next(request)
 
 
 # ---- Error JSON helpers ------------------------------------------------------
@@ -542,6 +614,9 @@ def create_app() -> FastAPI:
 
     # Public egress route is kept as manual include (we skipped it in the walker)
     app.include_router(egress_router)
+
+    # Bindings guard must run after RequestID but before route handlers
+    app.add_middleware(_BindingsGuardMiddleware)
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
