@@ -544,7 +544,8 @@ class _BindingsGuardMiddleware(BaseHTTPMiddleware):
                         "more_body": False,
                     }
 
-                request._receive = _receive  # type: ignore[attr-defined]
+                # *** Change here: avoid type: ignore; use setattr instead ***
+                setattr(request, "_receive", _receive)
 
         return await call_next(request)
 
