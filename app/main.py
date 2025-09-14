@@ -341,6 +341,7 @@ def _try_include_bindings_router(app: FastAPI) -> bool:
 # Fallback in-memory bindings store (only used if no real router is found)
 _BINDINGS: Dict[Tuple[str, str], Dict[str, str]] = {}
 
+
 def _compute_version_for_path(p: str) -> str:
     # Prefer content hash if readable; else stable hash of path string.
     try:
@@ -363,7 +364,10 @@ def _install_bindings_fallback(app: FastAPI) -> None:
                 raise HTTPException(status_code=401, detail="Unauthorized")
 
     @admin.put("/bindings")
-    async def put_bindings(payload: dict, x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    async def put_bindings(
+        payload: dict,
+        x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    ) -> dict:
         _require_admin_key(x_admin_key)
         bindings = payload.get("bindings") or []
         if not isinstance(bindings, list):
@@ -373,18 +377,30 @@ def _install_bindings_fallback(app: FastAPI) -> None:
             bot = str(item.get("bot") or "").strip()
             rules_path = str(item.get("rules_path") or "").strip()
             if not tenant or not bot or not rules_path:
-                raise HTTPException(status_code=400, detail="Missing tenant/bot/rules_path")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing tenant/bot/rules_path",
+                )
             version = _compute_version_for_path(rules_path)
             _BINDINGS[(tenant, bot)] = {"rules_path": rules_path, "version": version}
         return {"ok": True, "count": len(bindings)}
 
     @admin.get("/bindings/resolve")
-    async def get_binding(tenant: str = Query(...), bot: str = Query(...), x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    async def get_binding(
+        tenant: str = Query(...),
+        bot: str = Query(...),
+        x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    ) -> dict:
         _require_admin_key(x_admin_key)
         rec = _BINDINGS.get((tenant, bot))
         if not rec:
             raise HTTPException(status_code=404, detail="Not Found")
-        return {"tenant": tenant, "bot": bot, "rules_path": rec["rules_path"], "version": rec["version"]}
+        return {
+            "tenant": tenant,
+            "bot": bot,
+            "rules_path": rec["rules_path"],
+            "version": rec["version"],
+        }
 
     app.include_router(admin)
 
