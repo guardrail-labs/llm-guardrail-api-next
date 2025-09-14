@@ -16,8 +16,8 @@ __all__ = [
 
 # ----------------------------- Public Interfaces -----------------------------
 
-# Minimal provider interface: any async callable returning a mapping with a
-# "decision" key is considered a successful verifier result.
+# Any async callable returning a mapping with a "decision" key is treated
+# as a successful verifier result.
 ProviderFn = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
 
 
@@ -129,7 +129,7 @@ class VerifierRouter:
         Optional to avoid hard deps in this module.
         """
         try:
-            from app.observability.metrics import inc_counter  # type: ignore
+            from app.observability.metrics import inc_counter
             inc_counter(f"verifier_router_{kind}_total", labels)
         except Exception:
             pass
@@ -287,25 +287,22 @@ class ProviderRouter:
     # --- rank metric emission with robust fallback ---
 
     def _emit_rank_metric(self, tenant: str, bot: str) -> None:
-        # Preferred path: use app helper registered on the same REGISTRY
+        # Preferred path: use app helper registered on the same REGISTRY.
         try:
-            from app.observability.metrics import (  # type: ignore
-                inc_verifier_router_rank,
-            )
+            from app.observability.metrics import inc_verifier_router_rank
 
             inc_verifier_router_rank(tenant, bot)
             return
         except Exception:
             pass
 
-        # Fallback: register/increment directly on REGISTRY without crashing
+        # Fallback: register/increment directly on REGISTRY without crashing.
         try:
-            from prometheus_client import REGISTRY, Counter  # type: ignore
+            from prometheus_client import REGISTRY, Counter
 
             # Try to reuse an existing collector if already registered.
             counter = None
             try:
-                # Access private mapping conservatively; may not exist.
                 counter = getattr(REGISTRY, "_names_to_collectors", {}).get(
                     "verifier_router_rank_total"
                 )
@@ -316,12 +313,14 @@ class ProviderRouter:
                 try:
                     counter = Counter(
                         "verifier_router_rank_total",
-                        "Count of provider rank computations by tenant and bot.",
+                        (
+                            "Count of provider rank computations by "
+                            "tenant and bot."
+                        ),
                         ["tenant", "bot"],
                         registry=REGISTRY,
                     )
                 except Exception:
-                    # If it already exists, ignore creation error and continue.
                     counter = getattr(REGISTRY, "_names_to_collectors", {}).get(
                         "verifier_router_rank_total"
                     )
