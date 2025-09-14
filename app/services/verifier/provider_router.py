@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
-
 
 # ---- Types -------------------------------------------------------------------
 
@@ -279,9 +278,12 @@ class VerifierRouter:
         return None, attempt_log
 
 
-# Re-export for import sites/tests
+# Re-export alias for legacy imports in tests/callers
+ProviderRouter = VerifierRouter
+
 __all__ = [
     "ProviderSpec",
     "RouterConfig",
     "VerifierRouter",
+    "ProviderRouter",
 ]
