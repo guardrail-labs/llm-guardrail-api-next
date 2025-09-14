@@ -482,25 +482,22 @@ def _install_bindings_fallback(app: FastAPI) -> None:
         # Protected: requires admin key
         _require_admin_key(x_admin_key)
 
-        rec = _BINDINGS.pop((tenant, bot), None)
-        if not rec:
-            return {
-                "deleted": False,
-                "tenant": tenant,
-                "bot": bot,
-                "message": "Binding not found",
-            }
+        # Delete if present (idempotent)
+        _BINDINGS.pop((tenant, bot), None)
 
-        return {
-            "deleted": True,
-            "tenant": tenant,
-            "bot": bot,
-            "rules_path": rec.get("rules_path"),
-            "version": rec.get("version"),
-            "policy_version": rec.get("policy_version") or rec.get("version"),
-        }
-
-    app.include_router(admin)
+        # Return the remaining bindings in the same shape as GET /admin/bindings
+        items: List[Dict[str, str]] = []
+        for (t, b), rec in sorted(_BINDINGS.items()):
+            items.append(
+                {
+                    "tenant": t,
+                    "bot": b,
+                    "rules_path": rec["rules_path"],
+                    "version": rec["version"],
+                    "policy_version": rec.get("policy_version") or rec["version"],
+                }
+            )
+        return {"bindings": items}
 
 
 # ---- Bindings-aware guard middleware for /guardrail --------------------------
