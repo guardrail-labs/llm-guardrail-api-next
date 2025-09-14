@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'guardrail'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['localhost:8000']
+    # Optional API key:
+    # authorization:
+    #   type: Bearer
+    #   credentials: ${METRICS_API_KEY}

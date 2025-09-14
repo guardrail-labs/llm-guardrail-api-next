@@ -19,7 +19,11 @@ def _get_stream_redactions_counter(client) -> float:
     assert m.status_code == 200
     text = m.text
     pat = re.compile(
-        r'(?m)^guardrail_egress_redactions_total\{[^}]*content_type="text/stream"[^}]*\}'
+        r'(?m)^guardrail_egress_redactions_total\{'
+        r'(?=[^}]*tenant="default")'
+        r'(?=[^}]*bot="default")'
+        r'(?=[^}]*kind="text/stream")'
+        r'[^}]*\}'
         r"\s+([0-9]+(?:\.[0-9]+)?)$"
     )
     match = pat.search(text)

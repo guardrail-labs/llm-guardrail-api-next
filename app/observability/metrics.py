@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
+
+_METRICS_LABEL_CARD_MAX = int(
+    os.getenv("METRICS_LABEL_CARDINALITY_MAX", "1000") or "1000"
+)
+_METRICS_LABEL_OVERFLOW = os.getenv("METRICS_LABEL_OVERFLOW", "overflow")
+
+_seen_tenants: Set[str] = set()
+_seen_bots: Set[str] = set()
+
+
+def _safe_label(val: str, cache: Set[str]) -> str:
+    if not val:
+        return "unknown"
+    if val in cache:
+        return val
+    if len(cache) < _METRICS_LABEL_CARD_MAX:
+        cache.add(val)
+        return val
+    return _METRICS_LABEL_OVERFLOW
+
+
+def _limit_tenant_bot_labels(tenant: str, bot: str) -> Tuple[str, str]:
+    return _safe_label(str(tenant), _seen_tenants), _safe_label(
+        str(bot), _seen_bots
+    )
 
 
 # ---- Helpers to avoid duplicate registration ---------------------------------
@@ -211,7 +237,7 @@ GUARDRAIL_CLARIFY_TOTAL = _get_or_create_counter(
 GUARDRAIL_EGRESS_REDACTIONS_TOTAL = _get_or_create_counter(
     "guardrail_egress_redactions_total",
     "Total egress redactions applied",
-    ("content_type",),
+    ("tenant", "bot", "kind"),
 )
 
 
@@ -219,9 +245,15 @@ def inc_clarify(phase: str = "ingress") -> None:
     GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
 
 
-def inc_egress_redactions(content_type: str, n: int = 1) -> None:
+def inc_egress_redactions(tenant: str, bot: str, kind: str, n: int = 1) -> None:
     if n > 0:
-        GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
+        tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+        try:
+            GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(
+                tenant=tenant_l, bot=bot_l, kind=kind
+            ).inc(n)
+        except Exception:
+            pass
 
 
 # ---- Verifier router rank metric (Hybrid-12) ---------------------------------
@@ -239,4 +271,8 @@ def inc_verifier_router_rank(tenant: str, bot: str) -> None:
     Increment the rank counter with canonical label set. Registered on REGISTRY,
     which your /metrics route exports.
     """
-    VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant, bot=bot).inc()
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+    try:
+        VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant_l, bot=bot_l).inc()
+    except Exception:
+        pass

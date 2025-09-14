@@ -28,7 +28,7 @@
       "type": "piechart",
       "title": "Redactions by Content Type (5m)",
       "targets": [
-        { "expr": "sum(rate(guardrail_egress_redactions_total[5m])) by (content_type)", "refId": "A" }
+        { "expr": "sum(rate(guardrail_egress_redactions_total[5m])) by (kind)", "refId": "A" }
       ],
       "gridPos": { "h": 6, "w": 12, "x": 12, "y": 9 }
     }
