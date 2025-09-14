@@ -311,6 +311,13 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
 
+    # Ensure custom metrics are registered on the global REGISTRY early.
+    try:
+        import app.observability.metrics as _  # noqa: F401
+    except Exception:
+        # Never fail app creation due to metrics import issues.
+        pass
+
     # Request ID first so handlers/middleware can use it.
     app.add_middleware(RequestIDMiddleware)
 
