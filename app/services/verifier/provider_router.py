@@ -1,175 +1,205 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-__all__ = [
-    "ProviderSpec",
-    "RouterConfig",
-    "ProviderState",
-    "VerifierRouter",
-    "ProviderRouter",  # legacy compatibility class
-]
+# ---------------- helpers -----------------------------------------------------
 
-# ----------------------------- Public Interfaces -----------------------------
-
-# Minimal provider interface: any async callable returning a mapping with a
-# "decision" key is considered a successful verifier result.
-ProviderFn = Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
+def _now() -> float:
+    return time.time()
 
 
-@dataclass
+def _parse_snapshot_max() -> int:
+    raw = (os.getenv("VERIFIER_ROUTER_SNAPSHOT_MAX") or "").strip()
+    try:
+        v = int(raw)
+        return v if v >= 1 else 200
+    except Exception:
+        return 200
+
+
+def _has_decision(res: Any) -> bool:
+    return isinstance(res, dict) and "decision" in res
+
+
+# ---------------- simple ProviderRouter (rank + snapshots + metric) -----------
+
+class ProviderRouter:
+    """
+    - rank(): identity order
+    - snapshots capped by VERIFIER_ROUTER_SNAPSHOT_MAX (default 200)
+    - emits verifier_router_rank_total via observability.metrics helper
+    """
+
+    def __init__(self) -> None:
+        self._snapshot_max: int = _parse_snapshot_max()
+        # Each snapshot: {"tenant","bot","order","last_ranked_at"}
+        self._order_snapshots: List[Dict[str, Any]] = []
+
+    def rank(self, tenant: str, bot: str, providers: Sequence[str]) -> List[str]:
+        order = list(providers)
+        self._append_snapshot(tenant, bot, order)
+
+        # Soft-hook metric (no hard dep on prometheus here)
+        try:
+            from app.observability.metrics import inc_verifier_router_rank
+
+            inc_verifier_router_rank(tenant, bot)
+        except Exception:
+            # Never break ranking due to metrics issues.
+            pass
+
+        return order
+
+    def _append_snapshot(self, tenant: str, bot: str, order: List[str]) -> None:
+        snap = {
+            "tenant": tenant,
+            "bot": bot,
+            "order": list(order),
+            "last_ranked_at": float(_now()),
+        }
+        self._order_snapshots.append(snap)
+        if len(self._order_snapshots) > self._snapshot_max:
+            excess = len(self._order_snapshots) - self._snapshot_max
+            if excess > 0:
+                del self._order_snapshots[0:excess]
+
+    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
+        return list(self._order_snapshots)
+
+    # Telemetry hooks (no-ops; kept for compatibility)
+    def record_success(
+        self,
+        tenant: str,
+        bot: str,
+        provider: str,
+        duration_seconds: float,
+    ) -> None:
+        return None
+
+    def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
+        return None
+
+    def record_rate_limited(self, tenant: str, bot: str, provider: str) -> None:
+        return None
+
+    def record_error(self, tenant: str, bot: str, provider: str) -> None:
+        return None
+
+
+# ---------------- compatibility API expected by tests -------------------------
+
+@dataclass(frozen=True)
 class ProviderSpec:
     name: str
-    fn: ProviderFn
+    fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
     timeout_sec: float = 3.0
-    max_retries: int = 1  # attempts = max_retries + 1
+    max_retries: int = 0
 
 
-@dataclass
+@dataclass(frozen=True)
 class RouterConfig:
-    # Overall routing budget across all providers (seconds). 0 → unlimited.
-    total_budget_sec: float = 5.0
-    # Circuit breaker: open after N consecutive failures; cool down for X sec.
+    total_budget_sec: float = 2.0
     breaker_fail_threshold: int = 3
-    breaker_cooldown_sec: int = 30
-    # Half-open allows a single probation call when cooldown elapses.
-    enable_half_open: bool = True
+    breaker_cooldown_sec: float = 30.0
 
 
-@dataclass
-class ProviderState:
-    failures: int = 0
-    open_until: float = 0.0
-    half_open: bool = False
+class _ProviderState:
+    __slots__ = ("consecutive_failures", "open_until")
 
+    def __init__(self) -> None:
+        self.consecutive_failures: int = 0
+        self.open_until: float = 0.0
 
-# ------------------------------- Router Core ---------------------------------
 
 class VerifierRouter:
     """
-    Tries providers in order with retries, timeouts, and a circuit breaker.
-    A "success" is any response mapping that contains a 'decision' key.
+    - Uses ProviderSpec list to attempt calls within a total time budget
+    - Per-provider timeout + retries (max_retries)
+    - Simple circuit breaker (threshold -> open for cooldown)
+    - Exposes rank/snapshot methods by delegating to ProviderRouter
+    - record_* hooks are no-ops here; signatures match callers
     """
 
     def __init__(
         self,
-        providers: Iterable[ProviderSpec],
+        providers: Optional[Iterable[ProviderSpec]] = None,
         config: Optional[RouterConfig] = None,
     ) -> None:
-        self.providers: List[ProviderSpec] = list(providers)
-        self.config = config or RouterConfig()
-        self._state: Dict[str, ProviderState] = {
-            p.name: ProviderState() for p in self.providers
+        self.providers: List[ProviderSpec] = list(providers) if providers else []
+        self.config: RouterConfig = config or RouterConfig()
+        self._inner = ProviderRouter()
+        self._state: Dict[str, _ProviderState] = {
+            p.name: _ProviderState() for p in self.providers
         }
 
-    async def _call_with_timeout(
+    # ---- delegate: ranking/snapshots
+
+    def rank(self, tenant: str, bot: str, providers: Sequence[str]) -> List[str]:
+        return self._inner.rank(tenant, bot, providers)
+
+    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
+        return self._inner.get_last_order_snapshot()
+
+    # ---- telemetry hooks (no-ops)
+
+    def record_success(
         self,
-        spec: ProviderSpec,
-        payload: Dict[str, Any],
-        *,
-        timeout_override: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        timeout = timeout_override if timeout_override is not None else spec.timeout_sec
-        return await asyncio.wait_for(spec.fn(payload), timeout=timeout)
+        tenant: str,
+        bot: str,
+        provider: str,
+        duration_seconds: float,
+    ) -> None:
+        return None
 
-    def _is_open(self, name: str, now: float) -> bool:
-        st = self._state[name]
-        if st.open_until <= now:
-            return False
-        return True
+    def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
+        return None
 
-    def _should_probe_half_open(self, name: str, now: float) -> bool:
-        st = self._state[name]
-        if not self.config.enable_half_open:
-            return False
-        if st.open_until <= now and st.failures >= self.config.breaker_fail_threshold:
-            # Cooldown elapsed → allow one probation request.
-            st.half_open = True
-            return True
-        return False
+    def record_rate_limited(self, tenant: str, bot: str, provider: str) -> None:
+        return None
 
-    def _record_success(self, name: str) -> None:
-        st = self._state[name]
-        st.failures = 0
-        st.open_until = 0.0
-        st.half_open = False
+    def record_error(self, tenant: str, bot: str, provider: str) -> None:
+        return None
 
-    def _record_failure(self, name: str) -> None:
-        st = self._state[name]
-        st.failures += 1
-        if st.failures >= self.config.breaker_fail_threshold:
-            st.open_until = time.time() + self.config.breaker_cooldown_sec
-            st.half_open = False
-
-    def _emit_metric(self, kind: str, labels: Dict[str, str]) -> None:
-        """
-        Soft hook: try to emit internal metrics if available.
-        We keep it optional to avoid hard deps in this standalone PR.
-        """
-        try:
-            # Example: app.observability.metrics.inc_verifier(kind, labels)
-            from app.observability.metrics import inc_counter  # type: ignore
-            inc_counter(f"verifier_router_{kind}_total", labels)
-        except Exception:
-            pass
+    # ---- core execution
 
     async def route(
         self,
         payload: Dict[str, Any],
     ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Returns (best_result_or_none, attempt_log).
-        attempt_log is a list of {provider, attempt, ok, err?, duration_ms}.
-        """
-        attempt_log: List[Dict[str, Any]] = []
-        budget = self.config.total_budget_sec
-        start_all = time.time()
-        exhausted = False
+        attempts_log: List[Dict[str, Any]] = []
+        start = _now()
+        budget = max(float(self.config.total_budget_sec), 0.0)
 
         def remaining_budget() -> float:
-            if budget <= 0:
-                return float("inf")
-            return max(0.0, budget - (time.time() - start_all))
+            return max(budget - (_now() - start), 0.0)
 
         for spec in self.providers:
-            # Check budget before attempting this provider.
-            if budget > 0 and remaining_budget() <= 0.0:
-                exhausted = True
-                break
+            st = self._state.setdefault(spec.name, _ProviderState())
+            current = _now()
 
-            now = time.time()
-            st = self._state[spec.name]
-
-            # Circuit breaker: skip if still open.
-            if self._is_open(spec.name, now):
-                attempt_log.append(
+            # Circuit open -> skip
+            if st.open_until > current:
+                attempts_log.append(
                     {
                         "provider": spec.name,
-                        "attempt": 0,
                         "ok": False,
                         "err": "circuit_open",
                         "duration_ms": 0,
                     }
                 )
-                self._emit_metric("skip_open", {"provider": spec.name})
                 continue
 
-            # Half-open probe allowed?
-            half_open_probe = self._should_probe_half_open(spec.name, now)
-
-            attempts = spec.max_retries + 1
-            for i in range(1, attempts + 1):
-                # Enforce budget inside retry loop.
-                rem = remaining_budget()
-                if budget > 0 and rem <= 0.0:
-                    exhausted = True
-                    attempt_log.append(
+            tries = max(int(spec.max_retries), 0) + 1
+            for attempt in range(1, tries + 1):
+                if remaining_budget() <= 0:
+                    attempts_log.append(
                         {
                             "provider": spec.name,
-                            "attempt": i,
+                            "attempt": attempt,
                             "ok": False,
                             "err": "budget_exhausted",
                             "duration_ms": 0,
@@ -177,136 +207,57 @@ class VerifierRouter:
                     )
                     break
 
-                # Optionally cap this attempt’s timeout to remaining budget.
-                timeout_override = None
-                if budget > 0 and rem < float("inf"):
-                    timeout_override = min(spec.timeout_sec, rem)
-
-                t0 = time.time()
-                ok = False
-                err_s: Optional[str] = None
+                t0 = _now()
                 try:
-                    res = await self._call_with_timeout(
-                        spec,
-                        payload,
-                        timeout_override=timeout_override,
+                    res = await asyncio.wait_for(
+                        spec.fn(payload),
+                        timeout=max(float(spec.timeout_sec), 0.0),
                     )
-                    ok = isinstance(res, dict) and "decision" in res
-                    if ok:
-                        self._record_success(spec.name)
-                        self._emit_metric("success", {"provider": spec.name})
-                        duration_ms = int((time.time() - t0) * 1000)
-                        attempt_log.append(
+                    dur = _now() - t0
+                    if _has_decision(res):
+                        st.consecutive_failures = 0
+                        st.open_until = 0.0
+                        self.record_success("", "", spec.name, dur)
+                        attempts_log.append(
                             {
                                 "provider": spec.name,
-                                "attempt": i,
+                                "attempt": attempt,
                                 "ok": True,
-                                "duration_ms": duration_ms,
+                                "duration_ms": int(dur * 1000),
                             }
                         )
-                        return res, attempt_log
-                    else:
-                        err_s = "bad_response"
-                        raise RuntimeError("Verifier returned invalid response")
+                        return res, attempts_log
+
+                    # Treat non-decision results as failures to allow retry.
+                    raise RuntimeError("invalid_result")
                 except asyncio.TimeoutError:
-                    err_s = "timeout"
-                except Exception as e:  # provider error
-                    err_s = getattr(e, "code", None) or type(e).__name__
+                    st.consecutive_failures += 1
+                    self.record_timeout("", "", spec.name)
+                    attempts_log.append(
+                        {
+                            "provider": spec.name,
+                            "attempt": attempt,
+                            "ok": False,
+                            "err": "timeout",
+                            "duration_ms": int((_now() - t0) * 1000),
+                        }
+                    )
+                except Exception as e:
+                    st.consecutive_failures += 1
+                    self.record_error("", "", spec.name)
+                    attempts_log.append(
+                        {
+                            "provider": spec.name,
+                            "attempt": attempt,
+                            "ok": False,
+                            "err": str(e),
+                            "duration_ms": int((_now() - t0) * 1000),
+                        }
+                    )
 
-                # Record failure and decide next step.
-                self._record_failure(spec.name)
-                self._emit_metric("failure", {"provider": spec.name, "reason": err_s})
-                duration_ms = int((time.time() - t0) * 1000)
-                attempt_log.append(
-                    {
-                        "provider": spec.name,
-                        "attempt": i,
-                        "ok": False,
-                        "err": err_s,
-                        "duration_ms": duration_ms,
-                    }
-                )
-
-                # If half-open probing, any failure re-opens immediately; stop.
-                if half_open_probe:
-                    st.open_until = time.time() + self.config.breaker_cooldown_sec
-                    st.half_open = False
+                # If threshold reached, open circuit and stop trying this provider.
+                if st.consecutive_failures >= int(self.config.breaker_fail_threshold):
+                    st.open_until = _now() + float(self.config.breaker_cooldown_sec)
                     break
 
-            if exhausted:
-                break
-            continue
-
-        # Budget exhausted or all providers failed
-        self._emit_metric("exhausted", {})
-        return None, attempt_log
-
-
-# ---------------------------------------------------------------------------
-# Legacy, test-facing compatibility shim
-# ---------------------------------------------------------------------------
-
-class ProviderRouter:
-    """
-    Back-compat façade expected by older imports/tests.
-
-    Surface:
-      - rank(tenant, bot, providers) -> ordered list (deterministic)
-      - get_last_order_snapshot() -> List[Dict[str, Any]]
-      - record_timeout / record_rate_limited / record_error / record_success
-    """
-
-    def __init__(self) -> None:
-        # List of snapshots: each {"tenant","bot","order","last_ranked_at",...}
-        self._order_snapshots: List[Dict[str, Any]] = []
-        # Simple counters by (tenant, bot, provider)
-        self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
-
-    def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
-        # Deterministic pass-through: preserve input order.
-        ordered = list(providers)
-        now = time.time()
-        self._order_snapshots.append(
-            {
-                "tenant": tenant,
-                "bot": bot,
-                "order": ordered,
-                # Tests expect a float timestamp under this key:
-                "last_ranked_at": float(now),
-                # Keep a millisecond field for any incidental consumers:
-                "ts_ms": int(now * 1000),
-            }
-        )
-        return ordered
-
-    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
-        # Return a shallow copy of all snapshots as a list of dicts.
-        return list(self._order_snapshots)
-
-    # --- outcome recording hooks (no-op counters, for compatibility) ---
-
-    def _bump(self, tenant: str, bot: str, provider: str, key: str) -> None:
-        k = (tenant, bot, provider)
-        bucket = self._stats.setdefault(k, {})
-        bucket[key] = bucket.get(key, 0) + 1
-
-    def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
-        self._bump(tenant, bot, provider, "timeout")
-
-    def record_rate_limited(self, tenant: str, bot: str, provider: str) -> None:
-        self._bump(tenant, bot, provider, "rate_limited")
-
-    def record_error(self, tenant: str, bot: str, provider: str) -> None:
-        self._bump(tenant, bot, provider, "error")
-
-    def record_success(
-        self,
-        tenant: str,
-        bot: str,
-        provider: str,
-        duration_ms: float | int,
-    ) -> None:
-        # Store duration as an int; tolerate float input from perf counters.
-        k = (tenant, bot, provider)
-        bucket = self._stats.setdefault(k, {})
-        bucket["success"] = bucket.get("success", 0) + 1
+        return None, attempts_log
