@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 # -----------------------------------------------------------------------------
-# Metrics: define rank counter once, on the same REGISTRY that /metrics exports
+# Local rank counter on the default REGISTRY (fallback if app metrics not loaded)
 # -----------------------------------------------------------------------------
 try:
     from prometheus_client import REGISTRY as _PROM_REGISTRY
@@ -62,6 +62,10 @@ class ProviderState:
 # ------------------------------- Utilities -----------------------------------
 
 def _read_int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    """
+    Parse an int env var safely. On missing/invalid/empty value, fall back to default.
+    If `minimum` is set and parsed value is below it, fall back to default.
+    """
     raw = (os.getenv(name) or "").strip()
     try:
         val = int(raw) if raw else default
@@ -103,9 +107,7 @@ class VerifierRouter:
 
     def _is_open(self, name: str, now: float) -> bool:
         st = self._state[name]
-        if st.open_until <= now:
-            return False
-        return True
+        return st.open_until > now
 
     def _should_probe_half_open(self, name: str, now: float) -> bool:
         st = self._state[name]
@@ -130,7 +132,7 @@ class VerifierRouter:
             st.half_open = False
 
     def _emit_metric(self, _kind: str, _labels: Dict[str, str]) -> None:
-        # Soft hook (no-op). Kept for future use.
+        # Reserved for future use; avoid hard deps here.
         return None
 
     async def route(
@@ -270,26 +272,35 @@ class ProviderRouter:
 
     def _emit_rank_metric(self, tenant: str, bot: str) -> None:
         """
-        Emit rank counter on the global REGISTRY unconditionally, and also
-        call the app helper if available. Doing both ensures the time series
-        exists even when app modules haven't been imported yet.
+        Emit the rank counter onto the global REGISTRY in all cases.
+
+        Strategy:
+        1) Prefer the shared Counter object exported by app.observability.metrics,
+           ensuring the series is on the same REGISTRY scraped by /metrics.
+        2) Also bump the local fallback counter (_RANK_COUNTER) to guarantee a
+           sample even if the app metrics module hasn’t been imported yet.
         """
-        # Always bump the local counter first (registered on default REGISTRY).
+        # Prefer the shared, app-level counter
+        try:
+            from app.observability.metrics import VERIFIER_ROUTER_RANK_TOTAL
+
+            try:
+                VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant, bot=bot).inc()
+                # If the shared counter increments, we're done.
+                return
+            except Exception:
+                pass
+        except Exception:
+            # Import may fail early in process lifetime; fall back below.
+            pass
+
+        # Fallback: bump local counter registered on default REGISTRY
         if _RANK_COUNTER is not None:
             try:
                 _RANK_COUNTER.labels(tenant=tenant, bot=bot).inc()
             except Exception:
+                # Never let metrics failures affect functionality.
                 pass
-
-        # Best-effort: also bump via the app helper (idempotent and shared).
-        try:
-            from app.observability.metrics import inc_verifier_router_rank
-
-            inc_verifier_router_rank(tenant, bot)
-        except Exception:
-            # Never let metrics failures affect functionality.
-            pass
-
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         ordered = list(providers)
