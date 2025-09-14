@@ -187,7 +187,11 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
 
 
 def _include_all_route_modules(app: FastAPI) -> int:
-    """Recursively include APIRouter objects under app.routes, skipping app.routes.egress."""
+    """Recursively include APIRouter objects under app.routes.
+
+    Skips app.routes.egress (included manually) and any admin-focused modules to
+    avoid double-registration; these are handled explicitly in ``create_app``.
+    """
     try:
         routes_pkg = importlib.import_module("app.routes")
     except Exception:
@@ -205,7 +209,14 @@ def _include_all_route_modules(app: FastAPI) -> int:
             name = m.name
             if name in visited:
                 continue
-            if name == "app.routes.egress":
+            if name in {
+                "app.routes.egress",
+                "app.routes.admin",
+                "app.routes.policy_admin",
+                "app.routes.admin_policies",
+                "app.routes.admin_rulepacks",
+                "app.routes.admin_ui",
+            }:
                 visited.add(name)
                 continue
             try:
@@ -522,16 +533,31 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
-    # Admin bindings fallback FIRST (so paths are registered regardless of route auto-includes)
-    _install_bindings_fallback(app)
+    # --- Admin bindings: real if available, else fallback
+    try:
+        from app.routes.admin.bindings import router as admin_bindings_router
 
-    # Include all other routers (skipping egress)
+        app.include_router(admin_bindings_router)
+    except Exception:
+        _install_bindings_fallback(app)
+
+    # Optional explicit admin routers (avoid double-registration in walker)
+    try:
+        from app.routes import admin_policies, admin_rulepacks, admin_ui
+
+        app.include_router(admin_policies.router)
+        app.include_router(admin_rulepacks.router)
+        app.include_router(admin_ui.router)
+    except Exception:
+        pass
+
+    # Include remaining routers (skipping egress and admin modules)
     _include_all_route_modules(app)
 
-    # Public egress route manually included once
+    # Public egress route once
     app.include_router(egress_router)
 
-    # Bindings guard after RequestID but before handlers
+    # Guard after request id & before handlers
     app.add_middleware(_BindingsGuardMiddleware)
 
     @app.get("/health")
