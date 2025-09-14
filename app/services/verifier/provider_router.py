@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-# Prometheus is optional; degrade gracefully if unavailable.
+# Prometheus optional
 try:  # pragma: no cover
     from prometheus_client import (
         REGISTRY,
@@ -16,11 +16,36 @@ try:  # pragma: no cover
     _HAVE_PROM = True
 except Exception:  # pragma: no cover
     REGISTRY = None  # type: ignore[assignment]
-    CollectorRegistry = object  # type: ignore[assignment]
-    Counter = object  # type: ignore[assignment]
-    Gauge = object  # type: ignore[assignment]
-    Histogram = object  # type: ignore[assignment]
     _HAVE_PROM = False
+
+    # Minimal stubs so type checkers are happy and callers can no-op safely.
+    class CollectorRegistry:  # type: ignore[no-redef]
+        ...
+
+    class _BaseMetric:
+        def labels(self, **_kw: str) -> "_BaseMetric":  # type: ignore[name-defined]
+            return self
+
+    class Counter(_BaseMetric):  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            ...
+
+        def inc(self, *_a: Any, **_kw: Any) -> None:
+            ...
+
+    class Gauge(_BaseMetric):  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            ...
+
+        def set(self, *_a: Any, **_kw: Any) -> None:
+            ...
+
+    class Histogram(_BaseMetric):  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            ...
+
+        def observe(self, *_a: Any, **_kw: Any) -> None:
+            ...
 
 
 # ---------------- Verifier provider metrics (existing) ------------------------
@@ -30,7 +55,7 @@ class VerifierMetrics:
     sampled_total: Any
     skipped_total: Any
     timeout_total: Any
-    duration_seconds: Any  # labeled by provider
+    duration_seconds: Any
     circuit_open_total: Any
     error_total: Any
     circuit_state: Any | None
@@ -38,10 +63,10 @@ class VerifierMetrics:
 
 def _get_from_registry(name: str) -> Optional[Any]:
     try:
-        reg = REGISTRY  # type: ignore[name-defined]
-        names_map = getattr(reg, "_names_to_collectors", None)
+        reg = REGISTRY
+        names_map = getattr(reg, "_names_to_collectors", None)  # type: ignore[attr-defined]
         if isinstance(names_map, dict):
-            return names_map.get(name)  # type: ignore[no-any-return]
+            return names_map.get(name)
     except Exception:
         return None
     return None
@@ -60,7 +85,12 @@ def make_verifier_metrics(registry: Any) -> VerifierMetrics:
                 return existing
             raise
 
-    def _hist(name: str, help_: str, labels: Sequence[str], buckets: Tuple[float, ...]):
+    def _hist(
+        name: str,
+        help_: str,
+        labels: Sequence[str],
+        buckets: Tuple[float, ...],
+    ) -> Any:
         try:
             return Histogram(
                 name, help_, labelnames=tuple(labels), registry=registry, buckets=buckets
@@ -78,7 +108,6 @@ def make_verifier_metrics(registry: Any) -> VerifierMetrics:
             existing = _get_from_registry(name)
             if existing is not None:
                 return existing
-            # Some environments may not have Gauge available; let it be None
             return None
 
     sampled = _counter(
@@ -143,7 +172,7 @@ def make_verifier_metrics(registry: Any) -> VerifierMetrics:
 
 
 # Default metrics used by the app
-VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)  # type: ignore[arg-type]
+VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)
 
 
 # ---------------- Clarify / egress counters (existing) ------------------------
@@ -162,8 +191,8 @@ if _HAVE_PROM:
         registry=REGISTRY,
     )
 else:  # pragma: no cover
-    GUARDRAIL_CLARIFY_TOTAL = None  # type: ignore[assignment]
-    GUARDRAIL_EGRESS_REDACTIONS_TOTAL = None  # type: ignore[assignment]
+    GUARDRAIL_CLARIFY_TOTAL = None
+    GUARDRAIL_EGRESS_REDACTIONS_TOTAL = None
 
 
 def inc_clarify(phase: str = "ingress") -> None:
@@ -186,7 +215,6 @@ def inc_egress_redactions(content_type: str, n: int = 1) -> None:
 
 # ---------------- Soft counter helper + router rank counter -------------------
 
-# Cache the label schema we first saw for each metric name to avoid duplication.
 _COUNTER_LABELS: Dict[str, Tuple[str, ...]] = {}
 _COUNTERS: Dict[str, Any] = {}
 
@@ -203,27 +231,27 @@ def inc_counter(name: str, labels: Dict[str, str]) -> None:
         lbls = tuple(sorted(labels.keys()))
         existing = _COUNTERS.get(name)
         if existing is None:
-            # First time: create counter with this label schema (cached).
             schema = _COUNTER_LABELS.setdefault(name, lbls)
-            counter = _get_from_registry(name)
-            if counter is None:
-                from prometheus_client import Counter as _Ctr  # local alias
-                counter = _Ctr(name, name.replace("_", " "), schema, registry=REGISTRY)
-            _COUNTERS[name] = counter
+            ctr = _get_from_registry(name)
+            if ctr is None:
+                ctr = Counter(
+                    name,
+                    name.replace("_", " "),
+                    labelnames=schema,
+                    registry=REGISTRY,
+                )
+            _COUNTERS[name] = ctr
         else:
-            # Ensure schema matches what we created earlier.
             schema = _COUNTER_LABELS.get(name, lbls)
             if lbls != schema:
-                # Ignore mismatched schemas to avoid duplicate registration.
                 return
-            counter = existing
+            ctr = existing
 
-        counter.labels(**labels).inc()  # type: ignore[call-arg]
+        ctr.labels(**labels).inc()
     except Exception:
         # Never fail the request path due to metrics.
         pass
 
 
 def inc_verifier_router_rank(tenant: str, bot: str) -> None:
-    # Dedicated helper used by ProviderRouter.rank and any external callers.
     inc_counter("verifier_router_rank_total", {"tenant": tenant, "bot": bot})
