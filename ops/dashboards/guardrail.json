@@ -1,0 +1,72 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Guardrail p95 latency (all routes)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(guardrail_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Router rank rate by tenant/bot",
+      "targets": [
+        {
+          "expr": "sum by (tenant, bot) (rate(verifier_router_rank_total[5m]))",
+          "legendFormat": "{{tenant}}/{{bot}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Egress redactions rate by kind",
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(guardrail_egress_redactions_total[5m]))",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Verifier p95 by provider",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(guardrail_verifier_duration_seconds_bucket[5m])) by (le, provider))",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "type": "piechart",
+      "title": "Decision breakdown (5m rate)",
+      "targets": [
+        {
+          "expr": "sum by (decision) (rate(guardrail_decision_total[5m]))"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 }
+    }
+  ],
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["guardrail", "observability"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "",
+  "title": "Guardrail Overview",
+  "uid": "guardrail-overview",
+  "version": 1
+}

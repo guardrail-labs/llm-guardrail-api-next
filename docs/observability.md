@@ -7,7 +7,7 @@
 ## Key Metrics (emitted by app)
 - `guardrail_latency_seconds{route,method}` — existing histogram
 - `guardrail_clarify_total{phase}` — total clarify-first decisions (phase: ingress)
-- `guardrail_egress_redactions_total{content_type}` — redactions applied (json/text)
+- `guardrail_egress_redactions_total{tenant,bot,kind}` — redactions applied (json/text)
 
 > Counters are monotonic; use `rate()` or `increase()` over a window.
 
@@ -28,10 +28,10 @@ sum(rate(guardrail_latency_seconds_bucket[5m])) by (le, route)
 sum(rate(guardrail_clarify_total[1m]))
 
 
-### 3) Redactions rate by content type (5m)
+### 3) Redactions rate by kind (5m)
 
 
-sum(rate(guardrail_egress_redactions_total[5m])) by (content_type)
+sum(rate(guardrail_egress_redactions_total[5m])) by (kind)
 
 
 ### 4) Clarify % of total requests (approx)
@@ -49,11 +49,11 @@ Import `dashboards/grafana_guardrail.json` → set your Prometheus datasource.
 
 Incremental redactions performed during SSE/chunked responses increment:
 
-- `guardrail_egress_redactions_total{content_type="text/stream"}`
+- `guardrail_egress_redactions_total{tenant="<t>",bot="<b>",kind="text/stream"}`
 
 **PromQL (rate over 5m):**
 
-sum(rate(guardrail_egress_redactions_total{content_type="text/stream"}[5m]))
+sum(rate(guardrail_egress_redactions_total{kind="text/stream"}[5m]))
 
 ### Rulepack Enforcement
 - Egress redactions from rulepacks are merged with built-ins when `RULEPACKS_ENFORCE=1` and `RULEPACKS_EGRESS_MODE=enforce`.
