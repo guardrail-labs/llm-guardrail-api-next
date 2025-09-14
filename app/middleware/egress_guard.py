@@ -17,6 +17,7 @@ from app.services.rulepacks_engine import (
     rulepacks_enabled,
 )
 from app.shared.headers import BOT_HEADER, TENANT_HEADER, attach_guardrail_headers
+from app.services.egress.incidents import record_incident  # NEW: incident ring buffer hook
 
 # ---------------------------------------------------------------------------
 # Backward-compat test hooks (pytest monkeypatch targets)
@@ -88,7 +89,10 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
                 async def _on_complete(changed: int) -> None:
                     if changed > 0:
-                        inc_egress_redactions(tenant, bot, "stream", changed)
+                        # Metric: label by tenant/bot and mark as "stream"
+                        inc_egress_redactions(tenant, bot, "stream", n=changed)
+                        # NEW: Incident log so admins can see streaming redactions
+                        record_incident(tenant, bot, changed, ["stream"])
 
                 response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
                     original_iter,
@@ -97,7 +101,7 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                     on_complete=_on_complete,
                 )
 
-                # Informational header: active stream filtering (counts via metrics)
+                # Informational header: active stream filtering (counts via metrics/incidents)
                 response.headers.setdefault("X-Guardrail-Streaming-Redactor", "enabled")
 
                 attach_guardrail_headers(
@@ -136,7 +140,9 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             if new_body != body:
                 tenant = request.headers.get(TENANT_HEADER, "default")
                 bot = request.headers.get(BOT_HEADER, "default")
-                inc_egress_redactions(tenant, bot, "json", 1)
+                inc_egress_redactions(tenant, bot, "json", n=1)
+                # NEW: Incident for JSON redaction
+                record_incident(tenant, bot, 1, ["json"])
 
             await _set_body(new_body)
             attach_guardrail_headers(
@@ -159,7 +165,9 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             if new_body != body:
                 tenant = request.headers.get(TENANT_HEADER, "default")
                 bot = request.headers.get(BOT_HEADER, "default")
-                inc_egress_redactions(tenant, bot, "text", 1)
+                inc_egress_redactions(tenant, bot, "text", n=1)
+                # NEW: Incident for text redaction
+                record_incident(tenant, bot, 1, ["text"])
 
             await _set_body(new_body)
             attach_guardrail_headers(
