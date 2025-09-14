@@ -11,7 +11,7 @@ __all__ = [
     "RouterConfig",
     "ProviderState",
     "VerifierRouter",
-    "ProviderRouter",  # legacy compatibility class
+    "ProviderRouter",
 ]
 
 # ----------------------------- Public Interfaces -----------------------------
@@ -45,6 +45,24 @@ class ProviderState:
     failures: int = 0
     open_until: float = 0.0
     half_open: bool = False
+
+
+# ------------------------------- Utilities -----------------------------------
+
+def _read_int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    """
+    Parse an int env var safely. On missing/invalid/empty value, fall back
+    to default. If `minimum` is set and the parsed value is below it, fall
+    back to default.
+    """
+    raw = (os.getenv(name) or "").strip()
+    try:
+        val = int(raw) if raw else default
+    except Exception:
+        val = default
+    if minimum is not None and val < minimum:
+        return default
+    return val
 
 
 # ------------------------------- Router Core ---------------------------------
@@ -108,10 +126,9 @@ class VerifierRouter:
     def _emit_metric(self, kind: str, labels: Dict[str, str]) -> None:
         """
         Soft hook: try to emit internal metrics if available.
-        We keep it optional to avoid hard deps in this standalone PR.
+        Optional to avoid hard deps in this module.
         """
         try:
-            # Example: app.observability.metrics.inc_verifier(kind, labels)
             from app.observability.metrics import inc_counter  # type: ignore
             inc_counter(f"verifier_router_{kind}_total", labels)
         except Exception:
@@ -142,7 +159,6 @@ class VerifierRouter:
                 break
 
             now = time.time()
-            st = self._state[spec.name]
 
             # Circuit breaker: skip if still open.
             if self._is_open(spec.name, now):
@@ -184,7 +200,6 @@ class VerifierRouter:
                     timeout_override = min(spec.timeout_sec, rem)
 
                 t0 = time.time()
-                ok = False
                 err_s: Optional[str] = None
                 try:
                     res = await self._call_with_timeout(
@@ -206,12 +221,11 @@ class VerifierRouter:
                             }
                         )
                         return res, attempt_log
-                    else:
-                        err_s = "bad_response"
-                        raise RuntimeError("Verifier returned invalid response")
+                    err_s = "bad_response"
+                    raise RuntimeError("Verifier returned invalid response")
                 except asyncio.TimeoutError:
                     err_s = "timeout"
-                except Exception as e:  # provider error
+                except Exception as e:
                     err_s = getattr(e, "code", None) or type(e).__name__
 
                 # Record failure and decide next step.
@@ -230,13 +244,13 @@ class VerifierRouter:
 
                 # If half-open probing, any failure re-opens immediately; stop.
                 if half_open_probe:
+                    st = self._state[spec.name]
                     st.open_until = time.time() + self.config.breaker_cooldown_sec
                     st.half_open = False
                     break
 
             if exhausted:
                 break
-            continue
 
         # Budget exhausted or all providers failed
         self._emit_metric("exhausted", {})
@@ -255,14 +269,70 @@ class ProviderRouter:
       - rank(tenant, bot, providers) -> ordered list (deterministic)
       - get_last_order_snapshot() -> List[Dict[str, Any]]
       - record_timeout / record_rate_limited / record_error / record_success
+      - capped snapshot list, rank metric emission
     """
 
     def __init__(self) -> None:
-        # List of snapshots: each {"tenant","bot","order","last_ranked_at",...}
-        self._snapshot_max = int(os.getenv("VERIFIER_ROUTER_SNAPSHOT_MAX", "200"))
+        # List of snapshots: {"tenant","bot","order","last_ranked_at","ts_ms"}
         self._order_snapshots: List[Dict[str, Any]] = []
         # Simple counters by (tenant, bot, provider)
         self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+        # Safe parse with default and minimum bound.
+        self._snapshot_max = _read_int_env(
+            "VERIFIER_ROUTER_SNAPSHOT_MAX",
+            default=200,
+            minimum=1,
+        )
+
+    # --- rank metric emission with robust fallback ---
+
+    def _emit_rank_metric(self, tenant: str, bot: str) -> None:
+        # Preferred path: use app helper registered on the same REGISTRY
+        try:
+            from app.observability.metrics import (  # type: ignore
+                inc_verifier_router_rank,
+            )
+
+            inc_verifier_router_rank(tenant, bot)
+            return
+        except Exception:
+            pass
+
+        # Fallback: register/increment directly on REGISTRY without crashing
+        try:
+            from prometheus_client import REGISTRY, Counter  # type: ignore
+
+            # Try to reuse an existing collector if already registered.
+            counter = None
+            try:
+                # Access private mapping conservatively; may not exist.
+                counter = getattr(REGISTRY, "_names_to_collectors", {}).get(
+                    "verifier_router_rank_total"
+                )
+            except Exception:
+                counter = None
+
+            if counter is None:
+                try:
+                    counter = Counter(
+                        "verifier_router_rank_total",
+                        "Count of provider rank computations by tenant and bot.",
+                        ["tenant", "bot"],
+                        registry=REGISTRY,
+                    )
+                except Exception:
+                    # If it already exists, ignore creation error and continue.
+                    counter = getattr(REGISTRY, "_names_to_collectors", {}).get(
+                        "verifier_router_rank_total"
+                    )
+
+            if counter is not None:
+                counter.labels(tenant=tenant, bot=bot).inc()
+        except Exception:
+            # Never let metrics failures affect routing.
+            pass
+
+    # --- public API ---
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         # Deterministic pass-through: preserve input order.
@@ -273,25 +343,18 @@ class ProviderRouter:
                 "tenant": tenant,
                 "bot": bot,
                 "order": ordered,
-                # Tests expect a float timestamp under this key:
                 "last_ranked_at": float(now),
-                # Keep a millisecond field for any incidental consumers:
                 "ts_ms": int(now * 1000),
             }
         )
-        self._emit_rank_metric(tenant, bot)
+        # Cap memory: keep only the most recent N snapshots.
         if len(self._order_snapshots) > self._snapshot_max:
-            del self._order_snapshots[:-self._snapshot_max]
+            drop = len(self._order_snapshots) - self._snapshot_max
+            if drop > 0:
+                self._order_snapshots = self._order_snapshots[drop:]
+
+        self._emit_rank_metric(tenant, bot)
         return ordered
-
-    def _emit_rank_metric(self, tenant: str, bot: str) -> None:
-        try:
-            # Use the same registry as /metrics via the helper
-            from app.observability.metrics import inc_verifier_router_rank
-
-            inc_verifier_router_rank(tenant, bot)
-        except Exception:
-            pass
 
     def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
         # Return a shallow copy of all snapshots as a list of dicts.
@@ -324,3 +387,4 @@ class ProviderRouter:
         k = (tenant, bot, provider)
         bucket = self._stats.setdefault(k, {})
         bucket["success"] = bucket.get("success", 0) + 1
+        bucket["last_duration_ms"] = int(duration_ms)
