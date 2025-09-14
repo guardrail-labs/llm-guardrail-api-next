@@ -14,6 +14,24 @@ __all__ = [
     "ProviderRouter",
 ]
 
+# -----------------------------------------------------------------------------
+# Metrics: define rank counter once, on the same REGISTRY that /metrics exports
+# -----------------------------------------------------------------------------
+try:
+    # Importing here ensures we register on the default process-wide REGISTRY.
+    from prometheus_client import REGISTRY as _PROM_REGISTRY
+    from prometheus_client import Counter as _PromCounter
+
+    _RANK_COUNTER = _PromCounter(
+        "verifier_router_rank_total",
+        "Count of provider rank computations by tenant and bot.",
+        ["tenant", "bot"],
+        registry=_PROM_REGISTRY,
+    )
+except Exception:  # pragma: no cover
+    _RANK_COUNTER = None  # type: ignore[assignment]
+
+
 # ----------------------------- Public Interfaces -----------------------------
 
 # Any async callable returning a mapping with a "decision" key is treated
@@ -125,8 +143,7 @@ class VerifierRouter:
 
     def _emit_metric(self, kind: str, labels: Dict[str, str]) -> None:
         """
-        Soft hook (no-op). Intentionally avoids hard deps on metrics helpers.
-        Kept for future use; failure-safe.
+        Soft hook (currently a no-op to avoid hard deps in this module).
         """
         return None
 
@@ -280,54 +297,13 @@ class ProviderRouter:
             minimum=1,
         )
 
-    # --- rank metric emission with robust fallback ---
-
     def _emit_rank_metric(self, tenant: str, bot: str) -> None:
-        # Preferred path: use app helper registered on the same REGISTRY.
-        try:
-            from app.observability.metrics import inc_verifier_router_rank
-
-            inc_verifier_router_rank(tenant, bot)
-            return
-        except Exception:
-            pass
-
-        # Fallback: register/increment directly on REGISTRY without crashing.
-        try:
-            from prometheus_client import REGISTRY, Counter
-
-            # Try to reuse an existing collector if already registered.
-            counter = None
+        # Use the pre-registered counter if available; ignore errors.
+        if _RANK_COUNTER is not None:
             try:
-                counter = getattr(REGISTRY, "_names_to_collectors", {}).get(
-                    "verifier_router_rank_total"
-                )
+                _RANK_COUNTER.labels(tenant=tenant, bot=bot).inc()
             except Exception:
-                counter = None
-
-            if counter is None:
-                try:
-                    counter = Counter(
-                        "verifier_router_rank_total",
-                        (
-                            "Count of provider rank computations by "
-                            "tenant and bot."
-                        ),
-                        ["tenant", "bot"],
-                        registry=REGISTRY,
-                    )
-                except Exception:
-                    counter = getattr(REGISTRY, "_names_to_collectors", {}).get(
-                        "verifier_router_rank_total"
-                    )
-
-            if counter is not None:
-                counter.labels(tenant=tenant, bot=bot).inc()
-        except Exception:
-            # Never let metrics failures affect routing.
-            pass
-
-    # --- public API ---
+                pass
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         # Deterministic pass-through: preserve input order.
