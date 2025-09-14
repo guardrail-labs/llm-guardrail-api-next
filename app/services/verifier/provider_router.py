@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# Register a counter on the global REGISTRY at import time so it's always visible in /metrics.
+# --- Prometheus metric (registered on global REGISTRY at import time) ---------
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY as _PROM_REGISTRY, Counter as _PROM_COUNTER
+    from prometheus_client import CollectorRegistry, Counter, REGISTRY
 
-    _RANK_COUNTER = _PROM_COUNTER(
+    _PROM_REGISTRY: Optional[CollectorRegistry] = REGISTRY
+    _RANK_COUNTER: Optional[Counter] = Counter(
         "verifier_router_rank_total",
         "Count of provider rank computations by tenant and bot.",
         ["tenant", "bot"],
-        registry=_PROM_REGISTRY,
+        registry=REGISTRY,
     )
 except Exception:  # pragma: no cover
     _PROM_REGISTRY = None
@@ -38,28 +41,22 @@ def _parse_snapshot_max() -> int:
         return 200
 
 
+# --- Minimal ProviderRouter used across the codebase/tests --------------------
 class ProviderRouter:
     """
-    Minimal router needed by tests:
-      - rank(tenant, bot, providers) -> order (identity) + snapshot saved
-      - get_last_order_snapshot() -> list of snapshots
-      - record_success/timeout/rate_limited/error: present for integration points
-    This implementation focuses on observability & snapshot behavior without changing routing.
+    Lightweight router that:
+      - Returns identity order in rank()
+      - Stores a capped snapshot list (env VERIFIER_ROUTER_SNAPSHOT_MAX, default 200)
+      - Emits verifier_router_rank_total{tenant,bot} on each rank
+      - Provides no-op telemetry hooks used by callers
     """
 
     def __init__(self) -> None:
-        # List of snapshots: each {"tenant","bot","order","last_ranked_at"}
         self._snapshot_max: int = _parse_snapshot_max()
+        # Each snapshot: {"tenant","bot","order","last_ranked_at"}
         self._order_snapshots: List[Dict[str, Any]] = []
 
-    # -------------------------------------------------------------------------
-    # Ranking
-    # -------------------------------------------------------------------------
-    def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
-        """
-        Return an ordering for the given providers. For Hybrid-12 scope we keep
-        ordering stable (identity), record a bounded snapshot, and emit a metric.
-        """
+    def rank(self, tenant: str, bot: str, providers: Sequence[str]) -> List[str]:
         order = list(providers)
         self._append_snapshot(tenant, bot, order)
         _inc_rank_metric(tenant, bot)
@@ -73,30 +70,24 @@ class ProviderRouter:
             "last_ranked_at": float(time.time()),
         }
         self._order_snapshots.append(snap)
-        # Cap in-place; keep newest N.
+        # Cap to latest N
         if len(self._order_snapshots) > self._snapshot_max:
             excess = len(self._order_snapshots) - self._snapshot_max
             if excess > 0:
                 del self._order_snapshots[0:excess]
 
-    # -------------------------------------------------------------------------
-    # Snapshot access
-    # -------------------------------------------------------------------------
     def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
-        # Return a shallow copy to prevent external mutation.
+        # Shallow copy to protect internal list
         return list(self._order_snapshots)
 
-    # -------------------------------------------------------------------------
-    # Telemetry hooks (no-ops for now; present to satisfy integrations/tests)
-    # -------------------------------------------------------------------------
+    # ---- Telemetry hooks (no-ops; signatures match callers) ------------------
     def record_success(
         self,
         tenant: str,
         bot: str,
         provider: str,
-        duration_ms: int,
+        duration_seconds: float,
     ) -> None:
-        # Hook for success accounting; intentionally a no-op here.
         return None
 
     def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
@@ -107,3 +98,99 @@ class ProviderRouter:
 
     def record_error(self, tenant: str, bot: str, provider: str) -> None:
         return None
+
+
+# --- Compatibility API expected by tests/imports ------------------------------
+@dataclass(frozen=True)
+class ProviderSpec:
+    """
+    Minimal provider spec for VerifierRouter compatibility.
+    """
+    name: str
+    fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
+    timeout_sec: float = 3.0
+    max_retries: int = 0
+
+
+@dataclass(frozen=True)
+class RouterConfig:
+    """
+    Minimal router config for VerifierRouter compatibility.
+    """
+    total_budget_sec: float = 2.0
+    breaker_cooldown_sec: float = 30.0
+
+
+class VerifierRouter:
+    """
+    Thin compatibility wrapper exposing:
+      - rank(tenant, bot, providers)
+      - get_last_order_snapshot()
+      - record_success/timeout/rate_limited/error(...)
+      - route(payload)  (best-effort minimalist implementation)
+    """
+
+    def __init__(
+        self,
+        providers: Optional[Iterable[ProviderSpec]] = None,
+        config: Optional[RouterConfig] = None,
+    ) -> None:
+        self.providers: List[ProviderSpec] = list(providers) if providers else []
+        self.config: RouterConfig = config or RouterConfig()
+        self._inner = ProviderRouter()
+
+    # Delegate core methods to the lightweight inner router
+    def rank(self, tenant: str, bot: str, providers: Sequence[str]) -> List[str]:
+        return self._inner.rank(tenant, bot, providers)
+
+    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
+        return self._inner.get_last_order_snapshot()
+
+    def record_success(
+        self,
+        tenant: str,
+        bot: str,
+        provider: str,
+        duration_seconds: float,
+    ) -> None:
+        return self._inner.record_success(tenant, bot, provider, duration_seconds)
+
+    def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
+        return self._inner.record_timeout(tenant, bot, provider)
+
+    def record_rate_limited(self, tenant: str, bot: str, provider: str) -> None:
+        return self._inner.record_rate_limited(tenant, bot, provider)
+
+    def record_error(self, tenant: str, bot: str, provider: str) -> None:
+        return self._inner.record_error(tenant, bot, provider)
+
+    # Minimal async route execution for completeness (tests may not hit this)
+    async def route(
+        self,
+        payload: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        attempt_log: List[Dict[str, Any]] = []
+        best: Optional[Dict[str, Any]] = None
+
+        for spec in self.providers:
+            t0 = time.time()
+            try:
+                res = await asyncio.wait_for(spec.fn(payload), timeout=spec.timeout_sec)
+                self.record_success("", "", spec.name, time.time() - t0)
+                attempt_log.append(
+                    {"provider": spec.name, "ok": True, "duration_ms": int((time.time() - t0) * 1000)}  # noqa: E501
+                )
+                best = res
+                break
+            except Exception as e:  # pragma: no cover - conservative
+                attempt_log.append(
+                    {
+                        "provider": spec.name,
+                        "ok": False,
+                        "err": str(e),
+                        "duration_ms": int((time.time() - t0) * 1000),
+                    }
+                )
+                # continue to next provider
+
+        return best, attempt_log
