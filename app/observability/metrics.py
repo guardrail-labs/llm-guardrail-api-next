@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 
@@ -22,7 +22,7 @@ def _get_or_create_counter(
         if isinstance(names_map, dict):
             existing = names_map.get(name)
             if isinstance(existing, Counter):
-                return existing  # type: ignore[return-value]
+                return existing
     except Exception:
         pass
 
@@ -35,7 +35,7 @@ def _get_or_create_counter(
             if isinstance(names_map, dict):
                 found = names_map.get(name)
                 if isinstance(found, Counter):
-                    return found  # type: ignore[return-value]
+                    return found
         except Exception:
             pass
         # Final fallback: create an unregistered counter (won't be exposed).
@@ -55,7 +55,7 @@ def _get_or_create_histogram(
         if isinstance(names_map, dict):
             existing = names_map.get(name)
             if isinstance(existing, Histogram):
-                return existing  # type: ignore[return-value]
+                return existing
     except Exception:
         pass
 
@@ -73,7 +73,7 @@ def _get_or_create_histogram(
             if isinstance(names_map, dict):
                 found = names_map.get(name)
                 if isinstance(found, Histogram):
-                    return found  # type: ignore[return-value]
+                    return found
         except Exception:
             pass
         return Histogram(name, doc, labelnames=labelnames)
@@ -91,7 +91,7 @@ def _get_or_create_gauge(
         if isinstance(names_map, dict):
             existing = names_map.get(name)
             if isinstance(existing, Gauge):
-                return existing  # type: ignore[return-value]
+                return existing
     except Exception:
         pass
 
@@ -103,7 +103,7 @@ def _get_or_create_gauge(
             if isinstance(names_map, dict):
                 found = names_map.get(name)
                 if isinstance(found, Gauge):
-                    return found  # type: ignore[return-value]
+                    return found
         except Exception:
             pass
         return Gauge(name, doc, labelnames=labelnames)
