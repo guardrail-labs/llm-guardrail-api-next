@@ -433,6 +433,25 @@ def _install_bindings_fallback(app: FastAPI) -> None:
 
         return {"bindings": out}
 
+    @admin.get("/bindings")
+    async def list_bindings(
+        x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    ) -> dict:
+        _require_admin_key(x_admin_key)
+        # Materialize a stable list for response determinism in tests
+        items: List[Dict[str, str]] = []
+        for (tenant, bot), rec in sorted(_BINDINGS.items()):
+            items.append(
+                {
+                    "tenant": tenant,
+                    "bot": bot,
+                    "rules_path": rec["rules_path"],
+                    "version": rec["version"],
+                    "policy_version": rec.get("policy_version") or rec["version"],
+                }
+            )
+        return {"bindings": items}
+
     @admin.get("/bindings/resolve")
     async def get_binding(
         tenant: str = Query(...),
