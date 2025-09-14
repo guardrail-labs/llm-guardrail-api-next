@@ -23,6 +23,7 @@ from app.telemetry.tracing import TracingMiddleware
 from app.routes.egress import router as egress_router
 # NOTE: Removed admin egress manual import to avoid double-registration
 # from app.routes.admin.egress import router as admin_egress_router
+from app.routes.admin.bindings import router as admin_bindings_router  # NEW: ensure /admin/bindings exists
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
@@ -162,7 +163,7 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
 class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     """
     Ensure 401 bodies include {"code","detail","request_id"} and required headers,
-    even if an upstream middleware returned a minimal {"detail": "..."} response.
+    even if an upstream middleware returned a minimal {"detail": \"...\"} response.
     """
 
     async def dispatch(
@@ -346,6 +347,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_policies.router)
     app.include_router(admin_rulepacks.router)
     app.include_router(admin_ui.router)
+    app.include_router(admin_bindings_router)  # NEW: ensure /admin/bindings is present
     app.include_router(egress_router)
     # NOTE: Removed admin_egress_router manual include to avoid duplicate OpenAPI ops
     # app.include_router(admin_egress_router)
