@@ -9,6 +9,7 @@ import pkgutil
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -515,8 +516,49 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
     return JSONResponse(payload, status_code=status, headers=headers)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.routes import system as sysmod
+
+    # Ensure latency histogram is registered once.
+    _get_or_create_latency_histogram()
+
+    # Fail fast if probe is enabled but required env vars are missing.
+    if sysmod._probe_enabled():
+        missing = [k for k in sysmod._probe_required_envs() if not os.getenv(k)]
+        if missing:
+            raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    # Best-effort pre-warm of rulepacks and bindings so first request isn't slow.
+    try:
+        from app.services import rulepacks_engine
+        rulepacks_engine.compile_active_rulepacks()
+    except Exception:
+        pass
+    try:
+        from app.services.config_store import load_bindings
+        load_bindings()
+    except Exception:
+        pass
+
+    await sysmod._startup_readiness()
+    try:
+        yield
+    finally:
+        await sysmod._shutdown_readiness()
+        # Clean shutdown for tracer/exporter if present.
+        try:
+            from opentelemetry import trace as _trace
+            provider = _trace.get_tracer_provider()
+            shutdown = getattr(provider, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        except Exception:
+            pass
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="llm-guardrail-api")
+    app = FastAPI(title="llm-guardrail-api", lifespan=lifespan)
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
