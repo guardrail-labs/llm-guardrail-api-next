@@ -1,5 +1,6 @@
 import asyncio
 import re
+
 from fastapi import APIRouter
 from starlette.responses import StreamingResponse
 
@@ -19,7 +20,7 @@ def _get_stream_redactions_counter(client) -> float:
     assert m.status_code == 200
     text = m.text
     pat = re.compile(
-        r'(?m)^guardrail_egress_redactions_total\{[^}]*content_type="text/stream"[^}]*\}'
+        r'(?m)^guardrail_egress_redactions_total\{[^}]*bot="default"[^}]*reason="stream"[^}]*tenant="default"[^}]*\}'
         r"\s+([0-9]+(?:\.[0-9]+)?)$"
     )
     match = pat.search(text)

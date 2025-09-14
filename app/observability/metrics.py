@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 
-
 # ---- Helpers to avoid duplicate registration ---------------------------------
 
 
@@ -208,10 +207,10 @@ GUARDRAIL_CLARIFY_TOTAL = _get_or_create_counter(
     ("phase",),
 )
 
-GUARDRAIL_EGRESS_REDACTIONS_TOTAL = _get_or_create_counter(
+GUARDRAIL_EGRESS_REDACTIONS = _get_or_create_counter(
     "guardrail_egress_redactions_total",
-    "Total egress redactions applied",
-    ("content_type",),
+    "Total number of egress redactions applied by reason",
+    ("tenant", "bot", "reason"),
 )
 
 
@@ -219,9 +218,10 @@ def inc_clarify(phase: str = "ingress") -> None:
     GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
 
 
-def inc_egress_redactions(content_type: str, n: int = 1) -> None:
-    if n > 0:
-        GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
+def inc_egress_redactions(tenant: str, bot: str, reason: str, n: int = 1) -> None:
+    if n <= 0:
+        return
+    GUARDRAIL_EGRESS_REDACTIONS.labels(tenant=tenant, bot=bot, reason=reason).inc(n)
 
 
 # ---- Verifier router rank metric (Hybrid-12) ---------------------------------

@@ -20,6 +20,8 @@ from app.middleware.quota import QuotaMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
+from app.routes.egress import router as egress_router
+from app.routes.admin.egress import router as admin_egress_router
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
@@ -267,6 +269,8 @@ def _include_all_route_modules(app: FastAPI) -> int:
 
     count = 0
     for m in pkgutil.iter_modules(routes_pkg.__path__, routes_pkg.__name__ + "."):
+        if m.name == "app.routes.egress":
+            continue
         try:
             mod = importlib.import_module(m.name)
         except Exception:
@@ -341,6 +345,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_policies.router)
     app.include_router(admin_rulepacks.router)
     app.include_router(admin_ui.router)
+    app.include_router(egress_router)
+    app.include_router(admin_egress_router)
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")

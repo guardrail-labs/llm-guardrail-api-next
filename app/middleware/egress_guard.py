@@ -7,16 +7,16 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response, StreamingResponse
 
-from app.services.egress.modes import apply_egress_pipeline
+from app.observability.metrics import inc_egress_redactions
 from app.services.egress.filter import DEFAULT_REDACTIONS
+from app.services.egress.modes import apply_egress_pipeline
+from app.services.egress.stream_redactor import wrap_streaming_iterator
 from app.services.rulepacks_engine import (
-    egress_redactions,
     egress_mode,
+    egress_redactions,
     rulepacks_enabled,
 )
-from app.services.egress.stream_redactor import wrap_streaming_iterator
-from app.shared.headers import attach_guardrail_headers
-from app.observability.metrics import inc_egress_redactions
+from app.shared.headers import BOT_HEADER, TENANT_HEADER, attach_guardrail_headers
 
 # ---------------------------------------------------------------------------
 # Backward-compat test hooks (pytest monkeypatch targets)
@@ -83,9 +83,12 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
                 if "event-stream" in ctype:
                     chosen_overlap = max(overlap_chars, sse_min_window)
 
+                tenant = request.headers.get(TENANT_HEADER, "default")
+                bot = request.headers.get(BOT_HEADER, "default")
+
                 async def _on_complete(changed: int) -> None:
                     if changed > 0:
-                        inc_egress_redactions("text/stream", changed)
+                        inc_egress_redactions(tenant, bot, "stream", changed)
 
                 response.body_iterator = wrap_streaming_iterator(  # type: ignore[attr-defined]
                     original_iter,
@@ -131,7 +134,9 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             new_body = json.dumps(processed, ensure_ascii=False).encode("utf-8")
 
             if new_body != body:
-                inc_egress_redactions("application/json", 1)
+                tenant = request.headers.get(TENANT_HEADER, "default")
+                bot = request.headers.get(BOT_HEADER, "default")
+                inc_egress_redactions(tenant, bot, "json", 1)
 
             await _set_body(new_body)
             attach_guardrail_headers(
@@ -152,7 +157,9 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             new_body = new_text.encode("utf-8")
 
             if new_body != body:
-                inc_egress_redactions("text/plain", 1)
+                tenant = request.headers.get(TENANT_HEADER, "default")
+                bot = request.headers.get(BOT_HEADER, "default")
+                inc_egress_redactions(tenant, bot, "text", 1)
 
             await _set_body(new_body)
             attach_guardrail_headers(
