@@ -1,124 +1,98 @@
+# app/observability/metrics.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from threading import Lock
+from typing import Dict, Iterable, Tuple
 
-from prometheus_client import (
-    REGISTRY,
-    CollectorRegistry,
-    Counter,
-    Gauge,
-    Histogram,
-)
+from prometheus_client import REGISTRY, Counter, Histogram
 
+# Known metric names → canonical labelnames (predeclared to avoid dup TS)
+_CANON_LABELS: Dict[str, Tuple[str, ...]] = {
+    # Hybrid-12: rank activity per tenant/bot
+    "verifier_router_rank_total": ("tenant", "bot"),
+    # You can predeclare more names here as needed, e.g.:
+    # "verifier_router_success_total": ("provider",),
+    # "verifier_router_failure_total": ("provider", "reason"),
+}
 
-@dataclass(frozen=True)
-class VerifierMetrics:
-    sampled_total: Counter
-    skipped_total: Counter
-    timeout_total: Counter
-    duration_seconds: Histogram  # labeled by provider
-    circuit_open_total: Counter
-    error_total: Counter
-    circuit_state: Gauge | None
+# Caches of collectors keyed by (name, labelnames_tuple)
+_COUNTERS: Dict[Tuple[str, Tuple[str, ...]], Counter] = {}
+_HISTOS: Dict[Tuple[str, Tuple[str, ...]], Histogram] = {}
+_LOCK = Lock()
 
 
-def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
-    sampled = Counter(
-        "guardrail_verifier_sampled_total",
-        "Count of requests for which the verifier was invoked (sampled).",
-        labelnames=("provider",),
-        registry=registry,
-    )
-    skipped = Counter(
-        "guardrail_verifier_skipped_total",
-        "Count of requests skipped by sampling gate (not verified).",
-        labelnames=("provider",),
-        registry=registry,
-    )
-    timeout = Counter(
-        "guardrail_verifier_timeout_total",
-        "Count of verifier calls that exceeded the latency budget.",
-        labelnames=("provider",),
-        registry=registry,
-    )
-    circuit_open = Counter(
-        "guardrail_verifier_circuit_open_total",
-        "Count of calls skipped because the circuit breaker was open.",
-        labelnames=("provider",),
-        registry=registry,
-    )
-    errors = Counter(
-        "guardrail_verifier_provider_error_total",
-        "Count of verifier provider exceptions (excluding timeouts).",
-        labelnames=("provider",),
-        registry=registry,
-    )
-    duration = Histogram(
-        "guardrail_verifier_duration_seconds",
-        "Time spent in provider evaluation (successful or timed out).",
-        labelnames=("provider",),
-        registry=registry,
-        buckets=(
-            0.001,
-            0.005,
-            0.01,
-            0.025,
-            0.05,
-            0.1,
-            0.25,
-            0.5,
-            1.0,
-            2.5,
-            5.0,
-            10.0,
-        ),
-    )
-    try:
-        circuit_state = Gauge(
-            "guardrail_verifier_circuit_state",
-            "State of verifier circuit breaker (1=open, 0=closed).",
-            labelnames=("provider",),
-            registry=registry,
-        )
-    except Exception:  # pragma: no cover - Gauge may be unavailable
-        circuit_state = None
-
-    return VerifierMetrics(
-        sampled_total=sampled,
-        skipped_total=skipped,
-        timeout_total=timeout,
-        duration_seconds=duration,
-        circuit_open_total=circuit_open,
-        error_total=errors,
-        circuit_state=circuit_state,
-    )
+def _labels_for(name: str, labels: Dict[str, str]) -> Tuple[str, ...]:
+    if name in _CANON_LABELS:
+        return _CANON_LABELS[name]
+    # Fallback: freeze the exact labelnames used on first creation
+    return tuple(sorted(labels.keys()))
 
 
-# Default metrics used by the app
-VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)
+def inc_counter(
+    name: str,
+    labels: Dict[str, str] | None = None,
+    amount: float = 1.0,
+    help_text: str | None = None,
+) -> None:
+    """
+    Increment (or create-then-increment) a Counter in the SAME registry
+    that /metrics exports (prometheus_client.REGISTRY). Label set is
+    canonicalized by _CANON_LABELS to prevent duplicated time series.
+    """
+    if labels is None:
+        labels = {}
+    labelnames = _labels_for(name, labels)
+
+    with _LOCK:
+        key = (name, labelnames)
+        counter = _COUNTERS.get(key)
+        if counter is None:
+            # Use name as help if not provided; short & harmless.
+            counter = Counter(
+                name,
+                help_text or name.replace("_", " "),
+                labelnames=labelnames,
+                registry=REGISTRY,
+            )
+            _COUNTERS[key] = counter
+
+    # Ensure we pass exactly the canonical label set
+    if labelnames:
+        # Fill any missing canonical labels with "unknown"
+        filled = {ln: labels.get(ln, "unknown") for ln in labelnames}
+        counter.labels(**filled).inc(amount)
+    else:
+        counter.inc(amount)
 
 
-# ---- Clarify / egress counters ----------------------------------------------
+def observe_histogram(
+    name: str,
+    value: float,
+    labels: Dict[str, str] | None = None,
+    buckets: Iterable[float] | None = None,
+    help_text: str | None = None,
+) -> None:
+    """
+    Same pattern as inc_counter but for Histogram.
+    """
+    if labels is None:
+        labels = {}
+    labelnames = _labels_for(name, labels)
+    with _LOCK:
+        key = (name, labelnames)
+        hist = _HISTOS.get(key)
+        if hist is None:
+            hist = Histogram(
+                name,
+                help_text or name.replace("_", " "),
+                labelnames=labelnames,
+                buckets=tuple(buckets) if buckets is not None else Histogram.DEFAULT_BUCKETS,
+                registry=REGISTRY,
+            )
+            _HISTOS[key] = hist
 
-# Counters are safe to import multiple times; prometheus_client caches by name.
-GUARDRAIL_CLARIFY_TOTAL = Counter(
-    "guardrail_clarify_total",
-    "Total clarify-first decisions",
-    ["phase"],
-)
-
-GUARDRAIL_EGRESS_REDACTIONS_TOTAL = Counter(
-    "guardrail_egress_redactions_total",
-    "Total egress redactions applied",
-    ["content_type"],
-)
-
-
-def inc_clarify(phase: str = "ingress") -> None:
-    GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
-
-
-def inc_egress_redactions(content_type: str, n: int = 1) -> None:
-    if n > 0:
-        GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
-
+    if labelnames:
+        filled = {ln: labels.get(ln, "unknown") for ln in labelnames}
+        hist.labels(**filled).observe(value)
+    else:
+        hist.observe(value)
