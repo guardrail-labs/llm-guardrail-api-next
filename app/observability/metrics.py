@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Iterable, Optional, cast
 
 from prometheus_client import (
     REGISTRY,
@@ -10,6 +11,96 @@ from prometheus_client import (
     Histogram,
 )
 
+
+# ------------------------- Helper: idempotent collectors -------------------------
+
+def _existing_collector(
+    registry: CollectorRegistry, name: str
+) -> Any | None:
+    """Return an existing collector by name if available."""
+    try:
+        return getattr(registry, "_names_to_collectors", {}).get(name)
+    except Exception:
+        return None
+
+
+def _get_or_create_counter(
+    registry: CollectorRegistry,
+    name: str,
+    documentation: str,
+    labelnames: Iterable[str] | None = None,
+) -> Counter:
+    labelnames = tuple(labelnames or ())
+    existing = _existing_collector(registry, name)
+    if isinstance(existing, Counter):
+        return cast(Counter, existing)
+    try:
+        return Counter(
+            name,
+            documentation,
+            labelnames=labelnames,
+            registry=registry,
+        )
+    except Exception:
+        # If a concurrent import/registration won the race, fetch it.
+        existing = _existing_collector(registry, name)
+        if isinstance(existing, Counter):
+            return cast(Counter, existing)
+        raise
+
+
+def _get_or_create_gauge(
+    registry: CollectorRegistry,
+    name: str,
+    documentation: str,
+    labelnames: Iterable[str] | None = None,
+) -> Gauge:
+    labelnames = tuple(labelnames or ())
+    existing = _existing_collector(registry, name)
+    if isinstance(existing, Gauge):
+        return cast(Gauge, existing)
+    try:
+        return Gauge(
+            name,
+            documentation,
+            labelnames=labelnames,
+            registry=registry,
+        )
+    except Exception:
+        existing = _existing_collector(registry, name)
+        if isinstance(existing, Gauge):
+            return cast(Gauge, existing)
+        raise
+
+
+def _get_or_create_histogram(
+    registry: CollectorRegistry,
+    name: str,
+    documentation: str,
+    labelnames: Iterable[str] | None = None,
+    buckets: Iterable[float] | None = None,
+) -> Histogram:
+    labelnames = tuple(labelnames or ())
+    buckets = tuple(buckets or ())
+    existing = _existing_collector(registry, name)
+    if isinstance(existing, Histogram):
+        return cast(Histogram, existing)
+    try:
+        return Histogram(
+            name,
+            documentation,
+            labelnames=labelnames,
+            registry=registry,
+            buckets=buckets,
+        )
+    except Exception:
+        existing = _existing_collector(registry, name)
+        if isinstance(existing, Histogram):
+            return cast(Histogram, existing)
+        raise
+
+
+# ------------------------------ Verifier metrics -------------------------------
 
 @dataclass(frozen=True)
 class VerifierMetrics:
@@ -23,41 +114,41 @@ class VerifierMetrics:
 
 
 def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
-    sampled = Counter(
+    sampled = _get_or_create_counter(
+        registry,
         "guardrail_verifier_sampled_total",
         "Count of requests for which the verifier was invoked (sampled).",
         labelnames=("provider",),
-        registry=registry,
     )
-    skipped = Counter(
+    skipped = _get_or_create_counter(
+        registry,
         "guardrail_verifier_skipped_total",
         "Count of requests skipped by sampling gate (not verified).",
         labelnames=("provider",),
-        registry=registry,
     )
-    timeout = Counter(
+    timeout = _get_or_create_counter(
+        registry,
         "guardrail_verifier_timeout_total",
         "Count of verifier calls that exceeded the latency budget.",
         labelnames=("provider",),
-        registry=registry,
     )
-    circuit_open = Counter(
+    circuit_open = _get_or_create_counter(
+        registry,
         "guardrail_verifier_circuit_open_total",
         "Count of calls skipped because the circuit breaker was open.",
         labelnames=("provider",),
-        registry=registry,
     )
-    errors = Counter(
+    errors = _get_or_create_counter(
+        registry,
         "guardrail_verifier_provider_error_total",
         "Count of verifier provider exceptions (excluding timeouts).",
         labelnames=("provider",),
-        registry=registry,
     )
-    duration = Histogram(
+    duration = _get_or_create_histogram(
+        registry,
         "guardrail_verifier_duration_seconds",
         "Time spent in provider evaluation (successful or timed out).",
         labelnames=("provider",),
-        registry=registry,
         buckets=(
             0.001,
             0.005,
@@ -73,14 +164,16 @@ def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
             10.0,
         ),
     )
+
+    # Gauge may be unsupported in some environments; guard it.
     try:
-        circuit_state = Gauge(
+        circuit_state = _get_or_create_gauge(
+            registry,
             "guardrail_verifier_circuit_state",
             "State of verifier circuit breaker (1=open, 0=closed).",
             labelnames=("provider",),
-            registry=registry,
         )
-    except Exception:  # pragma: no cover - Gauge may be unavailable
+    except Exception:  # pragma: no cover
         circuit_state = None
 
     return VerifierMetrics(
@@ -94,23 +187,33 @@ def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
     )
 
 
-# Default metrics used by the app
+# Default metrics used by the app (register on the global REGISTRY)
 VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)
 
 
-# ---- Clarify / egress counters ----------------------------------------------
+# ------------------------- Other guardrail-wide counters -----------------------
 
-# Counters are safe to import multiple times; prometheus_client caches by name.
-GUARDRAIL_CLARIFY_TOTAL = Counter(
+# Register on the same REGISTRY the /metrics route scrapes.
+GUARDRAIL_CLARIFY_TOTAL = _get_or_create_counter(
+    REGISTRY,
     "guardrail_clarify_total",
     "Total clarify-first decisions",
-    ["phase"],
+    ("phase",),
 )
 
-GUARDRAIL_EGRESS_REDACTIONS_TOTAL = Counter(
+GUARDRAIL_EGRESS_REDACTIONS_TOTAL = _get_or_create_counter(
+    REGISTRY,
     "guardrail_egress_redactions_total",
     "Total egress redactions applied",
-    ["content_type"],
+    ("content_type",),
+)
+
+# Also expose a shared counter the router uses/tests assert on.
+VERIFIER_ROUTER_RANK_TOTAL = _get_or_create_counter(
+    REGISTRY,
+    "verifier_router_rank_total",
+    "Count of provider rank computations by tenant and bot.",
+    ("tenant", "bot"),
 )
 
 
@@ -123,22 +226,6 @@ def inc_egress_redactions(content_type: str, n: int = 1) -> None:
         GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
 
 
-# ---- Verifier router rank metric (Hybrid-12) ---------------------------------
-
-# Register on the same global REGISTRY that /metrics exports so tests and ops
-# can scrape it reliably.
-VERIFIER_ROUTER_RANK_TOTAL = Counter(
-    "verifier_router_rank_total",
-    "Count of provider rank computations by tenant and bot.",
-    ["tenant", "bot"],
-    registry=REGISTRY,
-)
-
-
-def inc_verifier_router_rank(tenant: str, bot: str) -> None:
-    """
-    Increment the rank counter with canonical label set. Safe to call
-    from any code path; prometheus_client handles de-duplication by name.
-    """
-    VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant, bot=bot).inc()
-
+def inc_verifier_router_rank(tenant: str, bot: str, n: int = 1) -> None:
+    if n > 0:
+        VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant, bot=bot).inc(n)
