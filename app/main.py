@@ -533,28 +533,45 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
-    # --- Admin bindings: real if available, else fallback
+    # --- Admin bindings: prefer real router, else fallback ---
     try:
         from app.routes.admin.bindings import router as admin_bindings_router
-
         app.include_router(admin_bindings_router)
     except Exception:
         _install_bindings_fallback(app)
 
-    # Optional explicit admin routers (avoid double-registration in walker)
+    # --- Explicit admin/policy routers (avoid walker dupes) ---
+    try:
+        from app.routes import policy_admin
+        # Avoid duplicate /admin/policy/reload (admin_runtime provides secured endpoint)
+        try:
+            policy_admin.router.routes = [
+                r
+                for r in policy_admin.router.routes
+                if not (
+                    getattr(r, "path", "") == "/admin/policy/reload"
+                    and "POST" in getattr(r, "methods", set())
+                )
+            ]
+        except Exception:
+            pass
+        app.include_router(policy_admin.router)
+    except Exception:
+        # Intentionally swallow import errors; endpoints just won't be present
+        pass
+
     try:
         from app.routes import admin_policies, admin_rulepacks, admin_ui
-
         app.include_router(admin_policies.router)
         app.include_router(admin_rulepacks.router)
         app.include_router(admin_ui.router)
     except Exception:
         pass
 
-    # Include remaining routers (skipping egress and admin modules)
+    # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
 
-    # Public egress route once
+    # --- Public egress route once ---
     app.include_router(egress_router)
 
     # Guard after request id & before handlers
