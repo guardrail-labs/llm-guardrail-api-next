@@ -115,7 +115,9 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
-                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
+                    self._hist.labels(route=safe_route, method=request.method).observe(
+                        dur
+                    )
                 except Exception:
                     pass  # never break requests due to metrics errors
 
@@ -164,7 +166,7 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
 class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     """
     Ensure 401 bodies include {"code","detail","request_id"} and required headers,
-    even if an upstream middleware returned a minimal {"detail": \"...\"} response.
+    even if an upstream middleware returned a minimal {"detail": "..."} response.
     """
 
     async def dispatch(
@@ -471,6 +473,33 @@ def _install_bindings_fallback(app: FastAPI) -> None:
             "policy_version": rec.get("policy_version") or rec["version"],
         }
 
+    @admin.delete("/bindings")
+    async def delete_binding(
+        tenant: str = Query(...),
+        bot: str = Query(...),
+        x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
+    ) -> dict:
+        # Protected: requires admin key
+        _require_admin_key(x_admin_key)
+
+        rec = _BINDINGS.pop((tenant, bot), None)
+        if not rec:
+            return {
+                "deleted": False,
+                "tenant": tenant,
+                "bot": bot,
+                "message": "Binding not found",
+            }
+
+        return {
+            "deleted": True,
+            "tenant": tenant,
+            "bot": bot,
+            "rules_path": rec.get("rules_path"),
+            "version": rec.get("version"),
+            "policy_version": rec.get("policy_version") or rec.get("version"),
+        }
+
     app.include_router(admin)
 
 
@@ -564,7 +593,7 @@ class _BindingsGuardMiddleware(BaseHTTPMiddleware):
                         "more_body": False,
                     }
 
-                # *** Change here: avoid type: ignore; use setattr instead ***
+                # Avoid type: ignore; set attribute directly
                 setattr(request, "_receive", _receive)
 
         return await call_next(request)
