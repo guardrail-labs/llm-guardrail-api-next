@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 try:
     from app.services.verifier import _ROUTER
 except Exception:  # pragma: no cover
-    _ROUTER = None  # type: ignore[assignment]
+    _ROUTER = None 
 
 _ROUTER = cast(Any, _ROUTER)
 
