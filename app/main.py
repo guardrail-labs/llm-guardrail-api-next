@@ -21,10 +21,8 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
 from app.routes.egress import router as egress_router
-# NOTE: Removed admin egress manual import to avoid double-registration
+# NOTE: Avoid manual include of admin egress (it is auto-included elsewhere)
 # from app.routes.admin.egress import router as admin_egress_router
-# NOTE: Removed brittle import of bindings router; recursive auto-include will pick it up.
-# from app.routes.admin.bindings import router as admin_bindings_router
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
@@ -32,7 +30,6 @@ try:  # pragma: no cover
         REGISTRY as _PromRegistryObj,
         Histogram as _PromHistogramCls,
     )
-
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -109,10 +106,7 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
-                    self._hist.labels(
-                        route=safe_route,
-                        method=request.method,
-                    ).observe(dur)
+                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
                 except Exception:
                     # Never break requests due to metrics errors
                     pass
@@ -315,6 +309,30 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
+def _try_include_bindings_router(app: FastAPI) -> None:
+    """
+    Some repos place the admin bindings router outside of app.routes.*
+    Try a few common module paths and include if present.
+    """
+    candidates = [
+        "app.routes.admin.bindings",
+        "app.routes.admin_bindings",
+        "app.admin.bindings",
+    ]
+    for mod_name in candidates:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        try:
+            r = getattr(mod, "router", None)
+            if isinstance(r, APIRouter):
+                app.include_router(r)
+                return
+        except Exception:
+            continue
+
+
 # ---- Error JSON helpers ------------------------------------------------------
 
 def _status_code_to_code(status: int) -> str:
@@ -372,12 +390,8 @@ def create_app() -> FastAPI:
     # Include every APIRouter found under app.routes.* (recursively)
     _include_all_route_modules(app)
 
-    # Keep explicit includes that are intentionally singletons / special-case
-    # Admin views already picked up by recursive include; no need to include manually
-    # from app.routes import admin_policies, admin_rulepacks, admin_ui
-    # app.include_router(admin_policies.router)
-    # app.include_router(admin_rulepacks.router)
-    # app.include_router(admin_ui.router)
+    # Some bindings routers live outside app.routes.* — include if present.
+    _try_include_bindings_router(app)
 
     # Public egress route is kept as manual include (we skipped it in the walker)
     app.include_router(egress_router)
@@ -455,14 +469,12 @@ csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
 # END PR-K include
 
-
 # BEGIN PR-K include (Compression - custom then built-in as outermost)
 comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
 comp_mod.install_compression(app)
 
 try:
     from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
-
     if _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
         app.add_middleware(
             _StarletteGZip,
