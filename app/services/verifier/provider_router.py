@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
@@ -258,6 +259,7 @@ class ProviderRouter:
 
     def __init__(self) -> None:
         # List of snapshots: each {"tenant","bot","order","last_ranked_at",...}
+        self._snapshot_max = int(os.getenv("VERIFIER_ROUTER_SNAPSHOT_MAX", "200"))
         self._order_snapshots: List[Dict[str, Any]] = []
         # Simple counters by (tenant, bot, provider)
         self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
@@ -277,7 +279,19 @@ class ProviderRouter:
                 "ts_ms": int(now * 1000),
             }
         )
+        self._emit_rank_metric(tenant, bot)
+        if len(self._order_snapshots) > self._snapshot_max:
+            del self._order_snapshots[:-self._snapshot_max]
         return ordered
+
+    def _emit_rank_metric(self, tenant: str, bot: str) -> None:
+        try:
+            # Use the same registry as /metrics via the helper
+            from app.observability.metrics import inc_verifier_router_rank
+
+            inc_verifier_router_rank(tenant, bot)
+        except Exception:
+            pass
 
     def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
         # Return a shallow copy of all snapshots as a list of dicts.

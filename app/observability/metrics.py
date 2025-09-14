@@ -121,3 +121,24 @@ def inc_clarify(phase: str = "ingress") -> None:
 def inc_egress_redactions(content_type: str, n: int = 1) -> None:
     if n > 0:
         GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
+
+
+# ---- Verifier router rank metric (Hybrid-12) ---------------------------------
+
+# Register on the same global REGISTRY that /metrics exports so tests and ops
+# can scrape it reliably.
+VERIFIER_ROUTER_RANK_TOTAL = Counter(
+    "verifier_router_rank_total",
+    "Count of provider rank computations by tenant and bot.",
+    ["tenant", "bot"],
+    registry=REGISTRY,
+)
+
+
+def inc_verifier_router_rank(tenant: str, bot: str) -> None:
+    """
+    Increment the rank counter with canonical label set. Safe to call
+    from any code path; prometheus_client handles de-duplication by name.
+    """
+    VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant, bot=bot).inc()
+
