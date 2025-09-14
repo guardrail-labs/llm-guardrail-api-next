@@ -94,9 +94,8 @@ async def _probe_loop() -> None:
         pass
 
 
-@router.on_event("startup")
-async def _mark_ready_after_delay() -> None:
-    # Ensure draining is reset for each new app lifecycle (important for tests).
+async def _startup_readiness() -> None:
+    """Startup hook run from the app lifespan."""
     global _draining, _probe_task
     _draining = False
 
@@ -112,8 +111,8 @@ async def _mark_ready_after_delay() -> None:
     _ready_event.set()
 
 
-@router.on_event("shutdown")
-async def _flip_not_ready_then_drain() -> None:
+async def _shutdown_readiness() -> None:
+    """Shutdown hook run from the app lifespan."""
     global _draining, _probe_task
     _draining = True
     _ready_event.clear()
