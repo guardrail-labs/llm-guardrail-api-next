@@ -5,7 +5,7 @@ import json
 import os
 import pkgutil
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Set
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -23,7 +23,8 @@ from app.telemetry.tracing import TracingMiddleware
 from app.routes.egress import router as egress_router
 # NOTE: Removed admin egress manual import to avoid double-registration
 # from app.routes.admin.egress import router as admin_egress_router
-from app.routes.admin.bindings import router as admin_bindings_router  # NEW: ensure /admin/bindings exists
+# NOTE: Removed brittle import of bindings router; recursive auto-include will pick it up.
+# from app.routes.admin.bindings import router as admin_bindings_router
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
@@ -258,35 +259,63 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
 
 # ---- Router auto-inclusion ---------------------------------------------------
 
-
 def _include_all_route_modules(app: FastAPI) -> int:
     """
-    Import all submodules under app.routes and include any APIRouter objects
-    they define (whatever they are named).
+    Recursively import all submodules under app.routes and include any APIRouter objects
+    they define (whatever they are named). Skips app.routes.egress because it's included
+    manually below.
     """
     try:
         routes_pkg = importlib.import_module("app.routes")
     except Exception:
         return 0
 
+    visited: Set[str] = set()
     count = 0
-    for m in pkgutil.iter_modules(routes_pkg.__path__, routes_pkg.__name__ + "."):
-        if m.name == "app.routes.egress":
-            continue
-        try:
-            mod = importlib.import_module(m.name)
-        except Exception:
-            continue
-        for attr_name in dir(mod):
-            obj = getattr(mod, attr_name)
-            if isinstance(obj, APIRouter):
-                app.include_router(obj)
-                count += 1
+
+    def _walk(package_mod) -> None:
+        nonlocal count
+        pkg_path = getattr(package_mod, "__path__", None)
+        pkg_name = package_mod.__name__
+        if not pkg_path:
+            return
+
+        for m in pkgutil.iter_modules(pkg_path, pkg_name + "."):
+            name = m.name
+            if name in visited:
+                continue
+            if name == "app.routes.egress":
+                # skip manual include to avoid double-registration
+                visited.add(name)
+                continue
+            try:
+                mod = importlib.import_module(name)
+                visited.add(name)
+            except Exception:
+                continue
+
+            # Include any APIRouter objects defined at module level
+            try:
+                for attr_name in dir(mod):
+                    obj = getattr(mod, attr_name)
+                    if isinstance(obj, APIRouter):
+                        app.include_router(obj)
+                        count += 1
+            except Exception:
+                pass
+
+            # Recurse into packages (e.g., app.routes.admin.*)
+            try:
+                if hasattr(mod, "__path__"):
+                    _walk(mod)
+            except Exception:
+                pass
+
+    _walk(routes_pkg)
     return count
 
 
 # ---- Error JSON helpers ------------------------------------------------------
-
 
 def _status_code_to_code(status: int) -> str:
     if status == 401:
@@ -312,7 +341,6 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
 
 
 # ---- App factory -------------------------------------------------------------
-
 
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api")
@@ -341,16 +369,19 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
-    # Include every APIRouter found under app.routes.*
+    # Include every APIRouter found under app.routes.* (recursively)
     _include_all_route_modules(app)
-    from app.routes import admin_policies, admin_rulepacks, admin_ui
-    app.include_router(admin_policies.router)
-    app.include_router(admin_rulepacks.router)
-    app.include_router(admin_ui.router)
-    app.include_router(admin_bindings_router)  # NEW: ensure /admin/bindings is present
+
+    # Keep explicit includes that are intentionally singletons / special-case
+    # Admin views already picked up by recursive include; no need to include manually
+    # from app.routes import admin_policies, admin_rulepacks, admin_ui
+    # app.include_router(admin_policies.router)
+    # app.include_router(admin_rulepacks.router)
+    # app.include_router(admin_ui.router)
+
+    # Public egress route is kept as manual include (we skipped it in the walker)
     app.include_router(egress_router)
-    # NOTE: Removed admin_egress_router manual include to avoid duplicate OpenAPI ops
-    # app.include_router(admin_egress_router)
+    # NOTE: Do not manually include admin_egress_router to avoid duplicate OpenAPI ops
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
