@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Dict
 
 from prometheus_client import (
     REGISTRY,
@@ -122,3 +123,30 @@ def inc_egress_redactions(content_type: str, n: int = 1) -> None:
     if n > 0:
         GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
 
+
+_COUNTERS: Dict[str, Counter] = {}
+
+
+def inc_counter(name: str, labels: Dict[str, str]) -> None:
+    try:
+        from app.routes.metrics import REGISTRY as route_registry  # type: ignore
+    except Exception:
+        route_registry = None
+    from prometheus_client import REGISTRY as default_registry
+
+    registry = route_registry or default_registry
+
+    counter = _COUNTERS.get(name)
+    registry_counters = getattr(registry, "_names_to_collectors", {})
+    if counter is None or counter not in registry_counters.values():
+        try:
+            counter = Counter(name, name, list(labels.keys()), registry=registry)
+        except ValueError:
+            counter = registry_counters.get(name) if isinstance(registry_counters, dict) else None
+            if counter is None:
+                return
+        _COUNTERS[name] = counter
+    try:
+        counter.labels(**labels).inc()
+    except Exception:
+        pass

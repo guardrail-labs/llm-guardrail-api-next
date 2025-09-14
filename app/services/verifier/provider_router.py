@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
@@ -254,13 +255,32 @@ class ProviderRouter:
       - rank(tenant, bot, providers) -> ordered list (deterministic)
       - get_last_order_snapshot() -> List[Dict[str, Any]]
       - record_timeout / record_rate_limited / record_error / record_success
+      - NEW: capped snapshot list and rank metric
     """
 
     def __init__(self) -> None:
-        # List of snapshots: each {"tenant","bot","order","last_ranked_at",...}
+        # List of snapshots: each {"tenant","bot","order","last_ranked_at","ts_ms"}
         self._order_snapshots: List[Dict[str, Any]] = []
         # Simple counters by (tenant, bot, provider)
         self._stats: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+
+        raw_max = (os.getenv("VERIFIER_ROUTER_SNAPSHOT_MAX") or "").strip()
+        try:
+            self._max_snapshots = int(raw_max) if raw_max else 200
+            if self._max_snapshots <= 0:
+                self._max_snapshots = 200
+        except Exception:
+            self._max_snapshots = 200
+
+    def _emit_rank_metric(self, tenant: str, bot: str) -> None:
+        try:
+            from app.observability.metrics import inc_counter  # type: ignore
+            inc_counter(
+                "verifier_router_rank_total",
+                {"tenant": tenant, "bot": bot},
+            )
+        except Exception:
+            pass
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         # Deterministic pass-through: preserve input order.
@@ -271,12 +291,18 @@ class ProviderRouter:
                 "tenant": tenant,
                 "bot": bot,
                 "order": ordered,
-                # Tests expect a float timestamp under this key:
                 "last_ranked_at": float(now),
-                # Keep a millisecond field for any incidental consumers:
                 "ts_ms": int(now * 1000),
             }
         )
+        # Cap memory: keep only the most recent N snapshots.
+        if len(self._order_snapshots) > self._max_snapshots:
+            # Trim excess from the front while remaining > max.
+            drop = len(self._order_snapshots) - self._max_snapshots
+            if drop > 0:
+                self._order_snapshots = self._order_snapshots[drop:]
+
+        self._emit_rank_metric(tenant, bot)
         return ordered
 
     def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
@@ -310,3 +336,4 @@ class ProviderRouter:
         k = (tenant, bot, provider)
         bucket = self._stats.setdefault(k, {})
         bucket["success"] = bucket.get("success", 0) + 1
+        bucket["last_duration_ms"] = int(duration_ms)
