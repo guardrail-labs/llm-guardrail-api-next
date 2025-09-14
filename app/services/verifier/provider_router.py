@@ -270,23 +270,26 @@ class ProviderRouter:
 
     def _emit_rank_metric(self, tenant: str, bot: str) -> None:
         """
-        First, eagerly import the app-level helper so the counter is
-        registered on the same REGISTRY that /metrics scrapes. If that
-        import fails for any reason, fall back to the module-local counter.
+        Emit rank counter on the global REGISTRY unconditionally, and also
+        call the app helper if available. Doing both ensures the time series
+        exists even when app modules haven't been imported yet.
         """
-        try:
-            from app.observability.metrics import inc_verifier_router_rank
-
-            inc_verifier_router_rank(tenant, bot)
-            return
-        except Exception:
-            pass
-
+        # Always bump the local counter first (registered on default REGISTRY).
         if _RANK_COUNTER is not None:
             try:
                 _RANK_COUNTER.labels(tenant=tenant, bot=bot).inc()
             except Exception:
                 pass
+
+        # Best-effort: also bump via the app helper (idempotent and shared).
+        try:
+            from app.observability.metrics import inc_verifier_router_rank
+
+            inc_verifier_router_rank(tenant, bot)
+        except Exception:
+            # Never let metrics failures affect functionality.
+            pass
+
 
     def rank(self, tenant: str, bot: str, providers: List[str]) -> List[str]:
         ordered = list(providers)
