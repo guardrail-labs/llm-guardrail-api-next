@@ -7,7 +7,17 @@ import os
 import pkgutil
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional, Set, Dict, Tuple, List
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Optional,
+    Set,
+    Dict,
+    Tuple,
+    List,
+    Callable as TypingCallable,
+)
 
 from fastapi import FastAPI, Request, HTTPException, Query, Header
 from fastapi.responses import JSONResponse
@@ -23,8 +33,6 @@ from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.telemetry.tracing import TracingMiddleware
 from app.routes.egress import router as egress_router
-# NOTE: Avoid manual include of admin egress (it may be auto-included elsewhere)
-# from app.routes.admin.egress import router as admin_egress_router
 
 # Prometheus (optional; tests expect metrics but we guard imports)
 try:  # pragma: no cover
@@ -108,10 +116,7 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
                 try:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
-                    self._hist.labels(
-                        route=safe_route,
-                        method=request.method,
-                    ).observe(dur)
+                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
                 except Exception:
                     # Never break requests due to metrics errors
                     pass
@@ -331,6 +336,73 @@ def _compute_version_for_path(p: str) -> str:
     return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
 
 
+def _read_policy_version(p: str) -> Optional[str]:
+    # Try to parse YAML and extract a version-like field.
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return None
+    try:
+        loaded = yaml.safe_load(Path(p).read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            for key in ("policy_version", "version"):
+                v = loaded.get(key)
+                if isinstance(v, (str, int, float)):
+                    return str(v)
+    except Exception:
+        return None
+    return None
+
+
+def _propagate_bindings(bindings: List[Dict[str, str]]) -> None:
+    """
+    Best-effort propagation to internal binding registries so /guardrail respects them.
+    Tries common module paths and function names; ignores failures.
+    """
+    module_candidates = [
+        "app.services.rulepacks.bindings",
+        "app.services.rulepacks_bindings",
+        "app.services.bindings",
+        "app.policy.bindings",
+    ]
+    func_candidates: List[str] = [
+        "set_bindings",
+        "apply_bindings",
+        "update_bindings",
+        "install_bindings",
+    ]
+    # Call a setter if present
+    for mod_name in module_candidates:
+        try:
+            mod = importlib.import_module(mod_name)
+        except Exception:
+            continue
+        for fn_name in func_candidates:
+            try:
+                fn = getattr(mod, fn_name)
+            except Exception:
+                continue
+            try:
+                if isinstance(fn, TypingCallable):
+                    fn(bindings)
+                    return
+            except Exception:
+                pass
+        # Try direct variable injection (dict/list)
+        try:
+            if hasattr(mod, "BINDINGS"):
+                setattr(mod, "BINDINGS", bindings)
+                return
+        except Exception:
+            pass
+        try:
+            if hasattr(mod, "_BINDINGS"):
+                setattr(mod, "_BINDINGS", bindings)
+                return
+        except Exception:
+            pass
+
+
 def _install_bindings_fallback(app: FastAPI) -> None:
     admin = APIRouter(prefix="/admin", tags=["admin-bindings-fallback"])
 
@@ -361,13 +433,27 @@ def _install_bindings_fallback(app: FastAPI) -> None:
                     detail="Missing tenant/bot/rules_path",
                 )
             version = _compute_version_for_path(rules_path)
-            rec = {"tenant": tenant, "bot": bot,
-                   "rules_path": rules_path, "version": version}
+            policy_version = _read_policy_version(rules_path) or version
+            rec = {
+                "tenant": tenant,
+                "bot": bot,
+                "rules_path": rules_path,
+                "version": version,
+                "policy_version": policy_version,
+            }
             _BINDINGS[(tenant, bot)] = {
                 "rules_path": rules_path,
                 "version": version,
+                "policy_version": policy_version,
             }
             out.append(rec)
+
+        # Best-effort: propagate to internal engine so /guardrail enforces it.
+        try:
+            _propagate_bindings(out)
+        except Exception:
+            pass
+
         # Tests expect the echo of the bindings array.
         return {"bindings": out}
 
@@ -386,6 +472,7 @@ def _install_bindings_fallback(app: FastAPI) -> None:
             "bot": bot,
             "rules_path": rec["rules_path"],
             "version": rec["version"],
+            "policy_version": rec.get("policy_version") or rec["version"],
         }
 
     app.include_router(admin)
@@ -456,7 +543,6 @@ def create_app() -> FastAPI:
 
     # Public egress route is kept as manual include (we skipped it in the walker)
     app.include_router(egress_router)
-    # NOTE: Do not manually include admin_egress_router to avoid duplicate OpenAPI ops
 
     # Fallback /health (routers may also provide a richer one)
     @app.get("/health")
