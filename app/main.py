@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
 import pkgutil
 import time
-from typing import Any, Awaitable, Callable, Optional, Set
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional, Set, Dict, Tuple
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Query, Header
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -309,10 +311,12 @@ def _include_all_route_modules(app: FastAPI) -> int:
     return count
 
 
-def _try_include_bindings_router(app: FastAPI) -> None:
+# ---- Optional: try to include an external bindings router; else install fallback
+
+def _try_include_bindings_router(app: FastAPI) -> bool:
     """
-    Some repos place the admin bindings router outside of app.routes.*
-    Try a few common module paths and include if present.
+    Try to locate a real bindings router in common module paths.
+    Returns True if a router was included, False otherwise.
     """
     candidates = [
         "app.routes.admin.bindings",
@@ -328,9 +332,61 @@ def _try_include_bindings_router(app: FastAPI) -> None:
             r = getattr(mod, "router", None)
             if isinstance(r, APIRouter):
                 app.include_router(r)
-                return
+                return True
         except Exception:
             continue
+    return False
+
+
+# Fallback in-memory bindings store (only used if no real router is found)
+_BINDINGS: Dict[Tuple[str, str], Dict[str, str]] = {}
+
+def _compute_version_for_path(p: str) -> str:
+    # Prefer content hash if readable; else stable hash of path string.
+    try:
+        fp = Path(p)
+        if fp.is_file():
+            data = fp.read_bytes()
+            return hashlib.sha256(data).hexdigest()[:16]
+    except Exception:
+        pass
+    return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
+
+
+def _install_bindings_fallback(app: FastAPI) -> None:
+    admin = APIRouter(prefix="/admin", tags=["admin-bindings-fallback"])
+
+    def _require_admin_key(x_admin_key: Optional[str]) -> None:
+        required = os.getenv("ADMIN_API_KEY")
+        if required:
+            if not x_admin_key or x_admin_key != required:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
+    @admin.put("/bindings")
+    async def put_bindings(payload: dict, x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+        _require_admin_key(x_admin_key)
+        bindings = payload.get("bindings") or []
+        if not isinstance(bindings, list):
+            raise HTTPException(status_code=400, detail="Invalid payload")
+        for item in bindings:
+            tenant = str(item.get("tenant") or "").strip()
+            bot = str(item.get("bot") or "").strip()
+            rules_path = str(item.get("rules_path") or "").strip()
+            if not tenant or not bot or not rules_path:
+                raise HTTPException(status_code=400, detail="Missing tenant/bot/rules_path")
+            version = _compute_version_for_path(rules_path)
+            _BINDINGS[(tenant, bot)] = {"rules_path": rules_path, "version": version}
+        return {"ok": True, "count": len(bindings)}
+
+    @admin.get("/bindings/resolve")
+    async def get_binding(tenant: str = Query(...), bot: str = Query(...), x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+        _require_admin_key(x_admin_key)
+        rec = _BINDINGS.get((tenant, bot))
+        if not rec:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return {"tenant": tenant, "bot": bot, "rules_path": rec["rules_path"], "version": rec["version"]}
+
+    app.include_router(admin)
 
 
 # ---- Error JSON helpers ------------------------------------------------------
@@ -390,8 +446,9 @@ def create_app() -> FastAPI:
     # Include every APIRouter found under app.routes.* (recursively)
     _include_all_route_modules(app)
 
-    # Some bindings routers live outside app.routes.* — include if present.
-    _try_include_bindings_router(app)
+    # Try to include external bindings router; if not found, install fallback.
+    if not _try_include_bindings_router(app):
+        _install_bindings_fallback(app)
 
     # Public egress route is kept as manual include (we skipped it in the walker)
     app.include_router(egress_router)
