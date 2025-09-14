@@ -1,28 +1,33 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, List
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 
-# Reuse the existing singleton created in app.services.verifier.__init__
-# (Older code/tests refer to this as _ROUTER; we intentionally import it.)
-try:
-    from app.services.verifier import _ROUTER
-except Exception:  # pragma: no cover
-    _ROUTER = None  # type: ignore[assignment]
+# Import the same singleton the tests use to seed snapshots.
+# _ROUTER is created in app.services.verifier.__init__
+from app.services.verifier import _ROUTER  # noqa: F401
 
-_ROUTER = cast(Any, _ROUTER)
-
-router = APIRouter()
+router = APIRouter(prefix="/admin/api/verifier", tags=["admin"])
 
 
-@router.get("/admin/api/verifier/router/snapshot")
-async def verifier_router_snapshot() -> JSONResponse:
-    if _ROUTER is None:
-        return JSONResponse([], status_code=200)
+@router.get("/router/snapshot")
+async def verifier_router_snapshot() -> List[Any]:
+    """
+    Expose the in-process router's last order snapshot.
+    Returns an empty list if the router is not initialized or an error occurs.
+    """
     try:
-        snaps = _ROUTER.get_last_order_snapshot()
+        router_obj = _ROUTER 
     except Exception:
-        snaps = []
-    return JSONResponse(snaps, status_code=200)
+        router_obj = None
+
+    if router_obj is None:
+        return []
+
+    try:
+        snaps = router_obj.get_last_order_snapshot()
+        # Ensure we always return a list for JSON serialization.
+        return snaps if isinstance(snaps, list) else list(snaps)
+    except Exception:
+        return []
