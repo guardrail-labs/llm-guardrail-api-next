@@ -125,14 +125,10 @@ class VerifierRouter:
 
     def _emit_metric(self, kind: str, labels: Dict[str, str]) -> None:
         """
-        Soft hook: try to emit internal metrics if available.
-        Optional to avoid hard deps in this module.
+        Soft hook (no-op). Intentionally avoids hard deps on metrics helpers.
+        Kept for future use; failure-safe.
         """
-        try:
-            from app.observability.metrics import inc_counter
-            inc_counter(f"verifier_router_{kind}_total", labels)
-        except Exception:
-            pass
+        return None
 
     async def route(
         self,
