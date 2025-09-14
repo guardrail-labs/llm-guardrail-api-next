@@ -53,7 +53,7 @@ class VerifierMetrics:
 def _get_from_registry(name: str) -> Optional[Any]:
     try:
         reg = REGISTRY
-        names_map = getattr(reg, "_names_to_collectors", None)  # type: ignore[attr-defined]
+        names_map = getattr(reg, "_names_to_collectors", None)
         if isinstance(names_map, dict):
             return names_map.get(name)
     except Exception:
