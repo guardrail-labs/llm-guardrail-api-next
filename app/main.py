@@ -16,7 +16,6 @@ from typing import (
     Dict,
     Tuple,
     List,
-    Callable as TypingCallable,
 )
 
 from fastapi import FastAPI, Request, HTTPException, Query, Header
@@ -339,7 +338,7 @@ def _compute_version_for_path(p: str) -> str:
 def _read_policy_version(p: str) -> Optional[str]:
     # Try to parse YAML and extract a version-like field.
     try:
-        import yaml  # type: ignore
+        import yaml
     except Exception:
         return None
     try:
@@ -383,7 +382,7 @@ def _propagate_bindings(bindings: List[Dict[str, str]]) -> None:
             except Exception:
                 continue
             try:
-                if isinstance(fn, TypingCallable):
+                if callable(fn):
                     fn(bindings)
                     return
             except Exception:
