@@ -1,196 +1,229 @@
 from __future__ import annotations
 
-import asyncio
-import os
-import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
-# --- Prometheus metric (registered on global REGISTRY at import time) ---------
+# Prometheus is optional; degrade gracefully if unavailable.
 try:  # pragma: no cover
-    from prometheus_client import CollectorRegistry, Counter, REGISTRY
+    from prometheus_client import (
+        REGISTRY,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        Histogram,
+    )
 
-    _PROM_REGISTRY: Optional[CollectorRegistry] = REGISTRY
-    _RANK_COUNTER: Optional[Counter] = Counter(
-        "verifier_router_rank_total",
-        "Count of provider rank computations by tenant and bot.",
-        ["tenant", "bot"],
+    _HAVE_PROM = True
+except Exception:  # pragma: no cover
+    REGISTRY = None  # type: ignore[assignment]
+    CollectorRegistry = object  # type: ignore[assignment]
+    Counter = object  # type: ignore[assignment]
+    Gauge = object  # type: ignore[assignment]
+    Histogram = object  # type: ignore[assignment]
+    _HAVE_PROM = False
+
+
+# ---------------- Verifier provider metrics (existing) ------------------------
+
+@dataclass(frozen=True)
+class VerifierMetrics:
+    sampled_total: Any
+    skipped_total: Any
+    timeout_total: Any
+    duration_seconds: Any  # labeled by provider
+    circuit_open_total: Any
+    error_total: Any
+    circuit_state: Any | None
+
+
+def _get_from_registry(name: str) -> Optional[Any]:
+    try:
+        reg = REGISTRY  # type: ignore[name-defined]
+        names_map = getattr(reg, "_names_to_collectors", None)
+        if isinstance(names_map, dict):
+            return names_map.get(name)  # type: ignore[no-any-return]
+    except Exception:
+        return None
+    return None
+
+
+def make_verifier_metrics(registry: Any) -> VerifierMetrics:
+    if not _HAVE_PROM or registry is None:  # pragma: no cover
+        return VerifierMetrics(None, None, None, None, None, None, None)
+
+    def _counter(name: str, help_: str, labels: Sequence[str]) -> Any:
+        try:
+            return Counter(name, help_, labelnames=tuple(labels), registry=registry)
+        except Exception:
+            existing = _get_from_registry(name)
+            if existing is not None:
+                return existing
+            raise
+
+    def _hist(name: str, help_: str, labels: Sequence[str], buckets: Tuple[float, ...]):
+        try:
+            return Histogram(
+                name, help_, labelnames=tuple(labels), registry=registry, buckets=buckets
+            )
+        except Exception:
+            existing = _get_from_registry(name)
+            if existing is not None:
+                return existing
+            raise
+
+    def _gauge(name: str, help_: str, labels: Sequence[str]) -> Any:
+        try:
+            return Gauge(name, help_, labelnames=tuple(labels), registry=registry)
+        except Exception:
+            existing = _get_from_registry(name)
+            if existing is not None:
+                return existing
+            # Some environments may not have Gauge available; let it be None
+            return None
+
+    sampled = _counter(
+        "guardrail_verifier_sampled_total",
+        "Count of requests for which the verifier was invoked (sampled).",
+        ("provider",),
+    )
+    skipped = _counter(
+        "guardrail_verifier_skipped_total",
+        "Count of requests skipped by sampling gate (not verified).",
+        ("provider",),
+    )
+    timeout = _counter(
+        "guardrail_verifier_timeout_total",
+        "Count of verifier calls that exceeded the latency budget.",
+        ("provider",),
+    )
+    circuit_open = _counter(
+        "guardrail_verifier_circuit_open_total",
+        "Count of calls skipped because the circuit breaker was open.",
+        ("provider",),
+    )
+    errors = _counter(
+        "guardrail_verifier_provider_error_total",
+        "Count of verifier provider exceptions (excluding timeouts).",
+        ("provider",),
+    )
+    duration = _hist(
+        "guardrail_verifier_duration_seconds",
+        "Time spent in provider evaluation (successful or timed out).",
+        ("provider",),
+        buckets=(
+            0.001,
+            0.005,
+            0.01,
+            0.025,
+            0.05,
+            0.1,
+            0.25,
+            0.5,
+            1.0,
+            2.5,
+            5.0,
+            10.0,
+        ),
+    )
+    circuit_state = _gauge(
+        "guardrail_verifier_circuit_state",
+        "State of verifier circuit breaker (1=open, 0=closed).",
+        ("provider",),
+    )
+
+    return VerifierMetrics(
+        sampled_total=sampled,
+        skipped_total=skipped,
+        timeout_total=timeout,
+        duration_seconds=duration,
+        circuit_open_total=circuit_open,
+        error_total=errors,
+        circuit_state=circuit_state,
+    )
+
+
+# Default metrics used by the app
+VERIFIER_METRICS: VerifierMetrics = make_verifier_metrics(REGISTRY)  # type: ignore[arg-type]
+
+
+# ---------------- Clarify / egress counters (existing) ------------------------
+
+if _HAVE_PROM:
+    GUARDRAIL_CLARIFY_TOTAL = Counter(
+        "guardrail_clarify_total",
+        "Total clarify-first decisions",
+        ["phase"],
         registry=REGISTRY,
     )
-except Exception:  # pragma: no cover
-    _PROM_REGISTRY = None
-    _RANK_COUNTER = None
+    GUARDRAIL_EGRESS_REDACTIONS_TOTAL = Counter(
+        "guardrail_egress_redactions_total",
+        "Total egress redactions applied",
+        ["content_type"],
+        registry=REGISTRY,
+    )
+else:  # pragma: no cover
+    GUARDRAIL_CLARIFY_TOTAL = None  # type: ignore[assignment]
+    GUARDRAIL_EGRESS_REDACTIONS_TOTAL = None  # type: ignore[assignment]
 
 
-def _inc_rank_metric(tenant: str, bot: str) -> None:
-    """Best-effort metric increment; never raises."""
+def inc_clarify(phase: str = "ingress") -> None:
     try:
-        if _RANK_COUNTER is not None:
-            _RANK_COUNTER.labels(tenant=tenant, bot=bot).inc()
+        if GUARDRAIL_CLARIFY_TOTAL is not None:
+            GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
     except Exception:
         pass
 
 
-def _parse_snapshot_max() -> int:
-    """Read VERIFIER_ROUTER_SNAPSHOT_MAX; fall back to 200 if invalid or < 1."""
-    raw = (os.getenv("VERIFIER_ROUTER_SNAPSHOT_MAX") or "").strip()
+def inc_egress_redactions(content_type: str, n: int = 1) -> None:
+    if n <= 0:
+        return
     try:
-        v = int(raw)
-        return v if v >= 1 else 200
+        if GUARDRAIL_EGRESS_REDACTIONS_TOTAL is not None:
+            GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(content_type=content_type).inc(n)
     except Exception:
-        return 200
+        pass
 
 
-# --- Minimal ProviderRouter used across the codebase/tests --------------------
-class ProviderRouter:
+# ---------------- Soft counter helper + router rank counter -------------------
+
+# Cache the label schema we first saw for each metric name to avoid duplication.
+_COUNTER_LABELS: Dict[str, Tuple[str, ...]] = {}
+_COUNTERS: Dict[str, Any] = {}
+
+
+def inc_counter(name: str, labels: Dict[str, str]) -> None:
     """
-    Lightweight router that:
-      - Returns identity order in rank()
-      - Stores a capped snapshot list (env VERIFIER_ROUTER_SNAPSHOT_MAX, default 200)
-      - Emits verifier_router_rank_total{tenant,bot} on each rank
-      - Provides no-op telemetry hooks used by callers
+    Soft-hook counter increment that registers on the same REGISTRY as /metrics.
+    Creates the counter on first use; subsequent calls reuse it.
     """
+    if not _HAVE_PROM or REGISTRY is None:  # pragma: no cover
+        return
 
-    def __init__(self) -> None:
-        self._snapshot_max: int = _parse_snapshot_max()
-        # Each snapshot: {"tenant","bot","order","last_ranked_at"}
-        self._order_snapshots: List[Dict[str, Any]] = []
+    try:
+        lbls = tuple(sorted(labels.keys()))
+        existing = _COUNTERS.get(name)
+        if existing is None:
+            # First time: create counter with this label schema (cached).
+            schema = _COUNTER_LABELS.setdefault(name, lbls)
+            counter = _get_from_registry(name)
+            if counter is None:
+                from prometheus_client import Counter as _Ctr  # local alias
+                counter = _Ctr(name, name.replace("_", " "), schema, registry=REGISTRY)
+            _COUNTERS[name] = counter
+        else:
+            # Ensure schema matches what we created earlier.
+            schema = _COUNTER_LABELS.get(name, lbls)
+            if lbls != schema:
+                # Ignore mismatched schemas to avoid duplicate registration.
+                return
+            counter = existing
 
-    def rank(self, tenant: str, bot: str, providers: Sequence[str]) -> List[str]:
-        order = list(providers)
-        self._append_snapshot(tenant, bot, order)
-        _inc_rank_metric(tenant, bot)
-        return order
-
-    def _append_snapshot(self, tenant: str, bot: str, order: List[str]) -> None:
-        snap = {
-            "tenant": tenant,
-            "bot": bot,
-            "order": list(order),
-            "last_ranked_at": float(time.time()),
-        }
-        self._order_snapshots.append(snap)
-        # Cap to latest N
-        if len(self._order_snapshots) > self._snapshot_max:
-            excess = len(self._order_snapshots) - self._snapshot_max
-            if excess > 0:
-                del self._order_snapshots[0:excess]
-
-    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
-        # Shallow copy to protect internal list
-        return list(self._order_snapshots)
-
-    # ---- Telemetry hooks (no-ops; signatures match callers) ------------------
-    def record_success(
-        self,
-        tenant: str,
-        bot: str,
-        provider: str,
-        duration_seconds: float,
-    ) -> None:
-        return None
-
-    def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
-        return None
-
-    def record_rate_limited(self, tenant: str, bot: str, provider: str) -> None:
-        return None
-
-    def record_error(self, tenant: str, bot: str, provider: str) -> None:
-        return None
+        counter.labels(**labels).inc()  # type: ignore[call-arg]
+    except Exception:
+        # Never fail the request path due to metrics.
+        pass
 
 
-# --- Compatibility API expected by tests/imports ------------------------------
-@dataclass(frozen=True)
-class ProviderSpec:
-    """
-    Minimal provider spec for VerifierRouter compatibility.
-    """
-    name: str
-    fn: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]
-    timeout_sec: float = 3.0
-    max_retries: int = 0
-
-
-@dataclass(frozen=True)
-class RouterConfig:
-    """
-    Minimal router config for VerifierRouter compatibility.
-    """
-    total_budget_sec: float = 2.0
-    breaker_cooldown_sec: float = 30.0
-
-
-class VerifierRouter:
-    """
-    Thin compatibility wrapper exposing:
-      - rank(tenant, bot, providers)
-      - get_last_order_snapshot()
-      - record_success/timeout/rate_limited/error(...)
-      - route(payload)  (best-effort minimalist implementation)
-    """
-
-    def __init__(
-        self,
-        providers: Optional[Iterable[ProviderSpec]] = None,
-        config: Optional[RouterConfig] = None,
-    ) -> None:
-        self.providers: List[ProviderSpec] = list(providers) if providers else []
-        self.config: RouterConfig = config or RouterConfig()
-        self._inner = ProviderRouter()
-
-    # Delegate core methods to the lightweight inner router
-    def rank(self, tenant: str, bot: str, providers: Sequence[str]) -> List[str]:
-        return self._inner.rank(tenant, bot, providers)
-
-    def get_last_order_snapshot(self) -> List[Dict[str, Any]]:
-        return self._inner.get_last_order_snapshot()
-
-    def record_success(
-        self,
-        tenant: str,
-        bot: str,
-        provider: str,
-        duration_seconds: float,
-    ) -> None:
-        return self._inner.record_success(tenant, bot, provider, duration_seconds)
-
-    def record_timeout(self, tenant: str, bot: str, provider: str) -> None:
-        return self._inner.record_timeout(tenant, bot, provider)
-
-    def record_rate_limited(self, tenant: str, bot: str, provider: str) -> None:
-        return self._inner.record_rate_limited(tenant, bot, provider)
-
-    def record_error(self, tenant: str, bot: str, provider: str) -> None:
-        return self._inner.record_error(tenant, bot, provider)
-
-    # Minimal async route execution for completeness (tests may not hit this)
-    async def route(
-        self,
-        payload: Dict[str, Any],
-    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
-        attempt_log: List[Dict[str, Any]] = []
-        best: Optional[Dict[str, Any]] = None
-
-        for spec in self.providers:
-            t0 = time.time()
-            try:
-                res = await asyncio.wait_for(spec.fn(payload), timeout=spec.timeout_sec)
-                self.record_success("", "", spec.name, time.time() - t0)
-                attempt_log.append(
-                    {"provider": spec.name, "ok": True, "duration_ms": int((time.time() - t0) * 1000)}  # noqa: E501
-                )
-                best = res
-                break
-            except Exception as e:  # pragma: no cover - conservative
-                attempt_log.append(
-                    {
-                        "provider": spec.name,
-                        "ok": False,
-                        "err": str(e),
-                        "duration_ms": int((time.time() - t0) * 1000),
-                    }
-                )
-                # continue to next provider
-
-        return best, attempt_log
+def inc_verifier_router_rank(tenant: str, bot: str) -> None:
+    # Dedicated helper used by ProviderRouter.rank and any external callers.
+    inc_counter("verifier_router_rank_total", {"tenant": tenant, "bot": bot})
