@@ -1,127 +1,134 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from threading import RLock
-from typing import List, Optional, TypedDict
+import json
+import os
+import tempfile
+import threading
+import time
+from typing import Any, Dict, Literal, Mapping, Optional, TypedDict, Union
 
-import yaml
+# ----- Types & schema -----
 
-# File lives at repo_root/config/bindings.yaml
-# app/services -> app -> repo_root
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_CONFIG_DIR = _REPO_ROOT / "config"
-_CONFIG_PATH = _CONFIG_DIR / "bindings.yaml"
+BoolKey = Union[
+    Literal["lock_enable"], Literal["lock_deny_as_execute"],
+    Literal["escalation_enabled"],
+]
+IntKey = Union[
+    Literal["escalation_deny_threshold"],
+    Literal["escalation_window_secs"],
+    Literal["escalation_cooldown_secs"],
+]
 
-_LOCK = RLock()
+class ConfigDict(TypedDict, total=False):
+    lock_enable: bool
+    lock_deny_as_execute: bool
+    escalation_enabled: bool
+    escalation_deny_threshold: int
+    escalation_window_secs: int
+    escalation_cooldown_secs: int
 
+BOOL_KEYS: set[str] = {
+    "lock_enable", "lock_deny_as_execute", "escalation_enabled",
+}
+INT_KEYS: set[str] = {
+    "escalation_deny_threshold", "escalation_window_secs", "escalation_cooldown_secs",
+}
 
-class Binding(TypedDict):
-    tenant: str
-    bot: str
-    rules_path: str
+_DEFAULTS: ConfigDict = {
+    "lock_enable": False,
+    "lock_deny_as_execute": False,
+    "escalation_enabled": False,
+    "escalation_deny_threshold": 3,
+    "escalation_window_secs": 300,
+    "escalation_cooldown_secs": 900,
+}
 
-
-@dataclass(frozen=True)
-class BindingsDoc:
-    version: str
-    bindings: List[Binding]
-
+_CONFIG_PATH = os.getenv("CONFIG_PATH", "var/config.json")
+_AUDIT_PATH = os.getenv("CONFIG_AUDIT_PATH", "var/config_audit.jsonl")
+_lock = threading.RLock()
 
 def _ensure_dirs() -> None:
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if not _CONFIG_PATH.exists():
-        _CONFIG_PATH.write_text(yaml.safe_dump({"version": "1", "bindings": []}), encoding="utf-8")
+    d = os.path.dirname(_CONFIG_PATH) or "."
+    os.makedirs(d, exist_ok=True)
+    d2 = os.path.dirname(_AUDIT_PATH) or "."
+    os.makedirs(d2, exist_ok=True)
 
+def _read_file() -> Dict[str, Any]:
+    if not os.path.exists(_CONFIG_PATH):
+        return {}
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
-def load_bindings() -> BindingsDoc:
-    with _LOCK:
-        _ensure_dirs()
-        data = yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
-        version = str(data.get("version", "1"))
-        raw = data.get("bindings") or []
-        bindings: List[Binding] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                continue
-            tenant = str(item.get("tenant", "")).strip() or "default"
-            bot = str(item.get("bot", "")).strip() or "default"
-            path = str(item.get("rules_path", "")).strip()
-            if path:
-                bindings.append({"tenant": tenant, "bot": bot, "rules_path": path})
-        return BindingsDoc(version=version, bindings=bindings)
+def _atomic_write(path: str, content: str) -> None:
+    d = os.path.dirname(path) or "."
+    with tempfile.NamedTemporaryFile("w", dir=d, delete=False, encoding="utf-8") as tmp:
+        tmp.write(content)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_name = tmp.name
+    os.replace(tmp_name, path)
 
-
-def save_bindings(bindings: List[Binding], version: Optional[str] = None) -> BindingsDoc:
-    with _LOCK:
-        _ensure_dirs()
-        doc = {"version": str(version or "1"), "bindings": list(bindings)}
-        _CONFIG_PATH.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
-        return load_bindings()
-
-
-def upsert_binding(tenant: str, bot: str, rules_path: str) -> BindingsDoc:
-    tenant = tenant.strip() or "default"
-    bot = bot.strip() or "default"
-    bindings = load_bindings().bindings
-    # replace if exists
-    updated: List[Binding] = []
-    found = False
-    for b in bindings:
-        if b["tenant"] == tenant and b["bot"] == bot:
-            updated.append({"tenant": tenant, "bot": bot, "rules_path": rules_path})
-            found = True
-        else:
-            updated.append(b)
-    if not found:
-        updated.append({"tenant": tenant, "bot": bot, "rules_path": rules_path})
-    return save_bindings(updated)
-
-
-def delete_binding(tenant: Optional[str] = None, bot: Optional[str] = None) -> BindingsDoc:
-    bindings = load_bindings().bindings
-    if not tenant and not bot:
-        # clear all
-        return save_bindings([])
-    tenant = (tenant or "").strip()
-    bot = (bot or "").strip()
-    kept: List[Binding] = []
-    for b in bindings:
-        if tenant and bot:
-            if b["tenant"] == tenant and b["bot"] == bot:
-                continue
-        elif tenant:
-            if b["tenant"] == tenant:
-                continue
-        elif bot:
-            if b["bot"] == bot:
-                continue
-        kept.append(b)
-    return save_bindings(kept)
-
-
-def resolve_rules_path(tenant: str, bot: str) -> Optional[str]:
-    """
-    Exact match first; then wildcard '*' for tenant and/or bot.
-    Return first matching rules_path, else None.
-    """
-    tenant = tenant.strip() or "default"
-    bot = bot.strip() or "default"
-    doc = load_bindings()
-    # exact
-    for b in doc.bindings:
-        if b["tenant"] == tenant and b["bot"] == bot:
-            return b["rules_path"]
-    # tenant + wildcard bot
-    for b in doc.bindings:
-        if b["tenant"] == tenant and b["bot"] == "*":
-            return b["rules_path"]
-    # wildcard tenant + bot
-    for b in doc.bindings:
-        if b["tenant"] == "*" and b["bot"] == bot:
-            return b["rules_path"]
-    # global wildcard
-    for b in doc.bindings:
-        if b["tenant"] == "*" and b["bot"] == "*":
-            return b["rules_path"]
+def _coerce_bool(val: Any) -> Optional[bool]:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return None
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off"):
+        return False
     return None
+
+def _coerce_int(val: Any) -> Optional[int]:
+    if isinstance(val, int):
+        return val
+    if val is None or val == "":
+        return None
+    try:
+        return int(str(val).strip())
+    except Exception:
+        return None
+
+def normalize_patch(patch: Mapping[str, Any]) -> ConfigDict:
+    """Return a type-safe patch restricted to known keys."""
+    out: ConfigDict = {}
+    for k, v in patch.items():
+        if k in BOOL_KEYS:
+            b = _coerce_bool(v)
+            if b is not None:
+                out[k] = b  # type: ignore[typeddict-item]
+        elif k in INT_KEYS:
+            i = _coerce_int(v)
+            if i is not None:
+                out[k] = i  # type: ignore[typeddict-item]
+        # ignore unknown keys
+    return out
+
+def get_config() -> ConfigDict:
+    with _lock:
+        data = _read_file()
+        normalized = normalize_patch(data)
+        return {**_DEFAULTS, **normalized}
+
+def set_config(patch: Mapping[str, Any], actor: str = "admin") -> ConfigDict:
+    with _lock:
+        _ensure_dirs()
+        current = get_config()
+        typed_patch = normalize_patch(patch)
+        new_cfg: ConfigDict = {**current, **typed_patch}
+        _atomic_write(_CONFIG_PATH, json.dumps(new_cfg, indent=2, sort_keys=True))
+        entry = {
+            "ts": int(time.time()),
+            "actor": actor,
+            "patch": typed_patch,
+            "before": current,
+            "after": new_cfg,
+        }
+        with open(_AUDIT_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        return new_cfg

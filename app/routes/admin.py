@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.services import config_store
+from app.services import bindings_store
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -25,7 +25,7 @@ def _require_admin_key(request: Request) -> None:
 
 @router.get("/bindings")
 async def get_bindings(_request: Request) -> Dict[str, Any]:
-    doc = config_store.load_bindings()
+    doc = bindings_store.load_bindings()
     return {"version": doc.version, "bindings": doc.bindings}
 
 
@@ -41,7 +41,7 @@ async def put_bindings(request: Request, payload: Dict[str, Any]) -> Dict[str, A
             b = str(it.get("bot", "")).strip() or "default"
             p = str(it.get("rules_path", "")).strip()
             if p:
-                doc = config_store.upsert_binding(t, b, p)
+                doc = bindings_store.upsert_binding(t, b, p)
                 out = doc.bindings
         return {"ok": True, "bindings": out}
     else:
@@ -50,7 +50,7 @@ async def put_bindings(request: Request, payload: Dict[str, Any]) -> Dict[str, A
         p = str(payload.get("rules_path", "")).strip()
         if not p:
             raise HTTPException(400, "rules_path required")
-        doc = config_store.upsert_binding(t, b, p)
+        doc = bindings_store.upsert_binding(t, b, p)
         return {"ok": True, "bindings": doc.bindings}
 
 
@@ -59,5 +59,5 @@ async def delete_bindings(
     request: Request, tenant: Optional[str] = None, bot: Optional[str] = None
 ) -> Dict[str, Any]:
     _require_admin_key(request)
-    doc = config_store.delete_binding(tenant=tenant, bot=bot)
+    doc = bindings_store.delete_binding(tenant=tenant, bot=bot)
     return {"ok": True, "bindings": doc.bindings}

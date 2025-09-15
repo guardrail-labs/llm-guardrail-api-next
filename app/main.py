@@ -219,6 +219,7 @@ def _include_all_route_modules(app: FastAPI) -> int:
                 "app.routes.admin_policies",
                 "app.routes.admin_rulepacks",
                 "app.routes.admin_ui",
+                "app.routes.admin_config",
             }:
                 visited.add(name)
                 continue
@@ -538,7 +539,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        from app.services.config_store import load_bindings
+        from app.services.bindings_store import load_bindings
         load_bindings()
     except Exception:
         pass
@@ -607,10 +608,11 @@ def create_app() -> FastAPI:
         pass
 
     try:
-        from app.routes import admin_policies, admin_rulepacks, admin_ui
+        from app.routes import admin_config, admin_policies, admin_rulepacks, admin_ui
         app.include_router(admin_policies.router)
         app.include_router(admin_rulepacks.router)
         app.include_router(admin_ui.router)
+        app.include_router(admin_config.router)
     except Exception:
         pass
 

@@ -54,7 +54,7 @@ def _binding_path_or_none(tenant: str, bot: str) -> str | None:
       or a (rules_path, source) tuple in older shapes.
     """
     try:
-        from app.services import config_store as _cs  # optional module
+        from app.services import bindings_store as _cs  # optional module
 
         resolver = getattr(_cs, "resolve_rules_path", None)
         if not callable(resolver):
