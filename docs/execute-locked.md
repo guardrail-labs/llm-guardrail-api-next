@@ -2,17 +2,23 @@
 
 Execute-locked is a soft enforcement that returns `200 OK` but disables tool/agent execution and redacts sensitive output.
 
-## Enabling
+## Enabling (opt-in)
+
+By default, execute-locked is **disabled**.
+
+Set:
 
 ```
 LOCK_ENABLE=true
 ```
 
-For demos, convert denies to execute_locked (unless escalated to 429):
+Optional: convert denies to execute_locked (unless escalated to 429):
 
 ```
 LOCK_DENY_AS_EXECUTE=true
 ```
+
+When `LOCK_ENABLE=false`, any `action: lock` from policy is treated as a hard deny.
 
 ## Behavior
 - `X-Guardrail-Mode: execute_locked`
