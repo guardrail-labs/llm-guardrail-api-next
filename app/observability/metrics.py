@@ -6,14 +6,19 @@ from typing import Optional, Set, Tuple
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 
-_METRICS_LABEL_CARD_MAX = int(
-    os.getenv("METRICS_LABEL_CARDINALITY_MAX", "1000") or "1000"
+_CARD_MAX_RAW = (
+    os.getenv("METRICS_LABEL_CARD_MAX")
+    or os.getenv("METRICS_LABEL_CARDINALITY_MAX")
+    or "1000"
 )
-_METRICS_LABEL_PAIR_CARD_MAX = int(
-    os.getenv("METRICS_LABEL_PAIR_CARDINALITY_MAX", str(_METRICS_LABEL_CARD_MAX))
+_METRICS_LABEL_CARD_MAX = int(_CARD_MAX_RAW or "1000")
+_PAIR_MAX_RAW = (
+    os.getenv("METRICS_LABEL_PAIR_CARD_MAX")
+    or os.getenv("METRICS_LABEL_PAIR_CARDINALITY_MAX")
     or str(_METRICS_LABEL_CARD_MAX)
 )
-_METRICS_LABEL_OVERFLOW = os.getenv("METRICS_LABEL_OVERFLOW", "overflow")
+_METRICS_LABEL_PAIR_CARD_MAX = int(_PAIR_MAX_RAW or str(_METRICS_LABEL_CARD_MAX))
+_METRICS_LABEL_OVERFLOW = os.getenv("METRICS_LABEL_OVERFLOW", "__overflow__")
 
 _seen_tenants: Set[str] = set()
 _seen_bots: Set[str] = set()

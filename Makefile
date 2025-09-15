@@ -1,4 +1,4 @@
-.PHONY: install lint type test run docker-build docker-run compose-up compose-down
+.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic
 
 install:
 	pip install -r requirements.txt || pip install .
@@ -17,12 +17,15 @@ docker-build:
 	docker build -t guardrail:local -f docker/Dockerfile .
 
 docker-run:
-	docker run --rm -p 8000:8000 --env-file .env \
-	  -v $$(pwd)/rules.yaml:/etc/guardrail/rules.yaml:ro \
-	  guardrail:local
+        docker run --rm -p 8000:8000 --env-file .env \
+          -v $$(pwd)/rules.yaml:/etc/guardrail/rules.yaml:ro \
+          guardrail:local
+
+demo-traffic:
+        python scripts/demo_traffic.py
 
 compose-up:
-	docker compose up --build
+        docker compose up --build
 
 compose-down:
 	docker compose down -v

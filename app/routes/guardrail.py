@@ -42,6 +42,7 @@ from app.services.config_sanitizer import (
     get_verifier_sampling_pct,
 )
 from app.telemetry import metrics as m
+from app.telemetry.metrics import inc_actor_decisions_total
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
@@ -147,6 +148,22 @@ def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
     tenant = (t or "default").strip() or "default"
     bot = (b or "default").strip() or "default"
     return tenant, bot
+
+
+def _actor_labels(request: Request) -> Tuple[Optional[str], Optional[str]]:
+    tenant = request.headers.get("X-Tenant")
+    bot = request.headers.get("X-Bot")
+    if not tenant:
+        tenant = getattr(request.state, "tenant", None)
+    if not bot:
+        bot = getattr(request.state, "bot", None)
+    return tenant, bot
+
+
+def _record_actor_metric(request: Request, action: str) -> None:
+    family = "allow" if action == "allow" else "deny"
+    tenant, bot = _actor_labels(request)
+    inc_actor_decisions_total(family, tenant, bot)
 
 
 def emit_audit_event(payload: Dict[str, Any]) -> None:
@@ -1045,8 +1062,8 @@ async def guardrail_legacy(
         return JSONResponse(body, status_code=413)
 
     tenant, bot = _tenant_bot(
-        request.headers.get("X-Tenant-ID"),
-        request.headers.get("X-Bot-ID"),
+        request.headers.get("X-Tenant") or request.headers.get("X-Tenant-ID"),
+        request.headers.get("X-Bot") or request.headers.get("X-Bot-ID"),
     )
     _set_binding_ctx(tenant, bot)
 
@@ -1096,9 +1113,11 @@ async def guardrail_legacy(
     )
 
     if action == "block":
+        _record_actor_metric(request, "block")
         return _respond_legacy_block(
             request_id, rule_hits, redacted, policy_version, redactions
         )
+    _record_actor_metric(request, "allow")
     return _respond_legacy_allow(
         redacted, request_id, rule_hits, policy_version, redactions
     )
@@ -1107,7 +1126,10 @@ async def guardrail_legacy(
 @router.post("/guardrail/evaluate")
 async def guardrail_evaluate(request: Request):
     headers = request.headers
-    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    tenant, bot = _tenant_bot(
+        headers.get("X-Tenant") or headers.get("X-Tenant-ID"),
+        headers.get("X-Bot") or headers.get("X-Bot-ID"),
+    )
     want_debug = _debug_requested(headers.get("X-Debug"))
     m.inc_requests_total("ingress_evaluate")
     m.set_policy_version(current_rules_version())
@@ -1169,6 +1191,7 @@ async def guardrail_evaluate(request: Request):
                 )
             except Exception:
                 pass
+            _record_actor_metric(request, "full_quarantine")
             return resp
 
         # Tier-1: execute_locked
@@ -1198,6 +1221,7 @@ async def guardrail_evaluate(request: Request):
                 )
             except Exception:
                 pass
+            _record_actor_metric(request, "execute_locked")
             return resp
 
         # Non-escalated path: honor configured RULEPACKS_INGRESS_MODE
@@ -1231,6 +1255,7 @@ async def guardrail_evaluate(request: Request):
                 )
             except Exception:
                 pass
+            _record_actor_metric(request, "block_input_only")
             return resp
         elif mode_cfg == "clarify":
             try:
@@ -1246,6 +1271,7 @@ async def guardrail_evaluate(request: Request):
                 )
             except Exception:
                 pass
+            _record_actor_metric(request, "clarify")
             return respond_with_clarify(
                 extra={"rulepack": "ingress_block", "matches": ",".join(hits)}
             )
@@ -1290,6 +1316,7 @@ async def guardrail_evaluate(request: Request):
                 "reason": f"classifier_outcome={classifier_outcome}",
             }
         )
+        _record_actor_metric(request, "clarify")
         return respond_with_clarify()
     (
         redacted,
@@ -1393,6 +1420,7 @@ async def guardrail_evaluate(request: Request):
                 "reason": f"verifier_outcome={hv_action}",
             }
         )
+        _record_actor_metric(request, "clarify")
         return respond_with_clarify()
 
     action = _apply_hardened_override(action, hv_action)
@@ -1437,6 +1465,8 @@ async def guardrail_evaluate(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
+    _record_actor_metric(request, action)
+
     return _respond_action(
         action,
         redacted,
@@ -1454,7 +1484,10 @@ async def guardrail_evaluate(request: Request):
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
     headers = request.headers
-    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    tenant, bot = _tenant_bot(
+        headers.get("X-Tenant") or headers.get("X-Tenant-ID"),
+        headers.get("X-Bot") or headers.get("X-Bot-ID"),
+    )
     want_debug = _debug_requested(headers.get("X-Debug"))
     m.inc_requests_total("ingress_evaluate")
     m.set_policy_version(current_rules_version())
@@ -1608,6 +1641,8 @@ async def guardrail_evaluate_multipart(request: Request):
     )
     _bump_family("ingress", "ingress_evaluate", action, tenant, bot)
 
+    _record_actor_metric(request, action)
+
     return _respond_action(
         action,
         redacted,
@@ -1625,7 +1660,10 @@ async def guardrail_evaluate_multipart(request: Request):
 @router.post("/guardrail/egress_evaluate")
 async def guardrail_egress(request: Request):
     headers = request.headers
-    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
+    tenant, bot = _tenant_bot(
+        headers.get("X-Tenant") or headers.get("X-Tenant-ID"),
+        headers.get("X-Bot") or headers.get("X-Bot-ID"),
+    )
     want_debug = _debug_requested(headers.get("X-Debug"))
     m.inc_requests_total("egress_evaluate")
     m.set_policy_version(current_rules_version())
@@ -1734,6 +1772,8 @@ async def guardrail_egress(request: Request):
         verifier=verifier_info,
     )
     _bump_family("egress", "egress_evaluate", action, tenant, bot)
+
+    _record_actor_metric(request, action)
 
     return _respond_action(
         action,

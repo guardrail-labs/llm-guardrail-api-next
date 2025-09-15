@@ -57,6 +57,30 @@
       "targets": [
         {"expr": "count by (policy_version) (sum_over_time(guardrail_requests_total[15m]) > 0)", "refId": "A"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Deny rate by tenant (5m)",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (tenant) (rate(guardrail_actor_decisions_total{family=\"deny\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "{{tenant}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top 5 bots by denies (5m)",
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "topk(5, sum by (bot) (rate(guardrail_actor_decisions_total{family=\"deny\"}[5m])))",
+          "refId": "A"
+        }
+      ],
+      "options": { "showHeader": true }
     }
   ],
   "templating": {
