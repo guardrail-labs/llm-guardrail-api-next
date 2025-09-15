@@ -16,3 +16,24 @@ def test_label_cardinality_overflow(monkeypatch):
 
     monkeypatch.delenv("METRICS_LABEL_CARDINALITY_MAX", raising=False)
     importlib.reload(metrics)
+
+
+def test_label_pair_cardinality_overflow(monkeypatch):
+    monkeypatch.setenv("METRICS_LABEL_CARDINALITY_MAX", "100")
+    monkeypatch.setenv("METRICS_LABEL_PAIR_CARDINALITY_MAX", "2")
+    import app.observability.metrics as metrics
+    metrics = importlib.reload(metrics)
+
+    metrics.inc_verifier_router_rank("t1", "b1")
+    metrics.inc_verifier_router_rank("t2", "b1")
+    metrics.inc_verifier_router_rank("t1", "b2")
+
+    text = generate_latest(metrics.REGISTRY).decode("utf-8")
+    assert (
+        f'bot="{metrics._METRICS_LABEL_OVERFLOW}",tenant="{metrics._METRICS_LABEL_OVERFLOW}"'
+        in text
+    )
+
+    monkeypatch.delenv("METRICS_LABEL_CARDINALITY_MAX", raising=False)
+    monkeypatch.delenv("METRICS_LABEL_PAIR_CARDINALITY_MAX", raising=False)
+    importlib.reload(metrics)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Joint tenant/bot metrics label guard via `METRICS_LABEL_PAIR_CARDINALITY_MAX`.
+- Conditional fallback for `/admin/bindings*` when persistent admin routes are missing.
+- Restored `policy_admin` routes such as `/policy/version`.
+
 ## [0.1.0] — 2025-09-07
 ### Added
 - Directional observability (ingress/egress families, tenant/bot breakdowns)

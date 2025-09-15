@@ -9,10 +9,15 @@ from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histo
 _METRICS_LABEL_CARD_MAX = int(
     os.getenv("METRICS_LABEL_CARDINALITY_MAX", "1000") or "1000"
 )
+_METRICS_LABEL_PAIR_CARD_MAX = int(
+    os.getenv("METRICS_LABEL_PAIR_CARDINALITY_MAX", str(_METRICS_LABEL_CARD_MAX))
+    or str(_METRICS_LABEL_CARD_MAX)
+)
 _METRICS_LABEL_OVERFLOW = os.getenv("METRICS_LABEL_OVERFLOW", "overflow")
 
 _seen_tenants: Set[str] = set()
 _seen_bots: Set[str] = set()
+_seen_pairs: Set[Tuple[str, str]] = set()
 
 
 def _safe_label(val: str, cache: Set[str]) -> str:
@@ -27,9 +32,17 @@ def _safe_label(val: str, cache: Set[str]) -> str:
 
 
 def _limit_tenant_bot_labels(tenant: str, bot: str) -> Tuple[str, str]:
-    return _safe_label(str(tenant), _seen_tenants), _safe_label(
-        str(bot), _seen_bots
-    )
+    tenant_l = _safe_label(str(tenant), _seen_tenants)
+    bot_l = _safe_label(str(bot), _seen_bots)
+    if _METRICS_LABEL_OVERFLOW in {tenant_l, bot_l}:
+        return _METRICS_LABEL_OVERFLOW, _METRICS_LABEL_OVERFLOW
+    pair = (tenant_l, bot_l)
+    if pair in _seen_pairs:
+        return pair
+    if len(_seen_pairs) < _METRICS_LABEL_PAIR_CARD_MAX:
+        _seen_pairs.add(pair)
+        return pair
+    return _METRICS_LABEL_OVERFLOW, _METRICS_LABEL_OVERFLOW
 
 
 # ---- Helpers to avoid duplicate registration ---------------------------------
