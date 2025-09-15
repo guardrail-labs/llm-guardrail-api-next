@@ -1,24 +1,19 @@
 from __future__ import annotations
 
-import os
 from typing import Any, Literal, Mapping
+
+from app.services.config_store import get_config
 
 Mode = Literal["allow", "execute_locked", "deny"]
 
-
-def _truthy_env(name: str, default: str) -> bool:
-    raw = os.getenv(name, default)
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _lock_enabled() -> bool:
-    # Opt-in: default OFF unless explicitly enabled
-    return _truthy_env("LOCK_ENABLE", "false")
+    cfg = get_config()
+    return bool(cfg.get("lock_enable", False))
 
 
 def _lock_deny_as_execute() -> bool:
-    # Opt-in: default OFF unless explicitly enabled
-    return _truthy_env("LOCK_DENY_AS_EXECUTE", "false")
+    cfg = get_config()
+    return bool(cfg.get("lock_deny_as_execute", False))
 
 
 def choose_mode(policy_result: Mapping[str, Any] | None, family: str) -> Mode:

@@ -158,6 +158,13 @@ def ui_decisions(
     return resp
 
 
+@router.get("/config", response_class=HTMLResponse)
+def ui_config(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
+    resp = templates.TemplateResponse("config.html", {"request": req})
+    issue_csrf(resp)
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------

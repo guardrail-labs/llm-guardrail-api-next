@@ -72,6 +72,9 @@ The service now includes stdlib-only detectors for **HTML** and **DOCX** hidden 
 ## Admin / Bindings
 See [BINDINGS.md](./BINDINGS.md) for conflict detection rules and examples.
 
+## Runtime Config
+See [docs/admin-config.md](docs/admin-config.md) for live toggles (execute-locked, escalation).
+
 ## Logging
 Use `install_json_logging(app)` to enable structured JSON logs. The installer
 clears duplicate handlers on reload and emits one access log per request.

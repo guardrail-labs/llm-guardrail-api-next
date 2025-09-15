@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Runtime Config</h2>
+  <form method="post" action="/admin/config" onsubmit="return saveCfg(event)">
+    <input type="hidden" name="csrf_token" id="csrf_input" />
+    <div>
+      <label><input type="checkbox" id="lock_enable" name="lock_enable" /> Execute-locked enabled</label>
+    </div>
+    <div>
+      <label><input type="checkbox" id="lock_deny_as_execute" name="lock_deny_as_execute" /> Convert deny → execute_locked</label>
+    </div>
+    <div>
+      <label><input type="checkbox" id="escalation_enabled" name="escalation_enabled" /> Escalation enabled</label>
+    </div>
+    <div>
+      <label>Deny threshold <input type="number" id="escalation_deny_threshold" name="escalation_deny_threshold" min="1" /></label>
+    </div>
+    <div>
+      <label>Window secs <input type="number" id="escalation_window_secs" name="escalation_window_secs" min="1" /></label>
+    </div>
+    <div>
+      <label>Cooldown secs <input type="number" id="escalation_cooldown_secs" name="escalation_cooldown_secs" min="1" /></label>
+    </div>
+    <button type="submit">Save</button>
+    <span id="msg" class="muted" style="margin-left:8px;"></span>
+  </form>
+</div>
+<script>
+  function getCookie(name) {
+    const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return m ? m.pop() : '';
+  }
+  function authHeaders() {
+    const token = localStorage.getItem('auth');
+    return token ? { 'Authorization': token } : {};
+  }
+  function setChecked(id, value) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.checked = !!value;
+    }
+  }
+  function setValue(id, value) {
+    const el = document.getElementById(id);
+    if (el && value !== undefined && value !== null) {
+      el.value = value;
+    }
+  }
+  async function loadCfg() {
+    try {
+      const resp = await fetch('/admin/config', {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: authHeaders(),
+      });
+      if (!resp.ok) {
+        throw new Error('failed to load config');
+      }
+      const cfg = await resp.json();
+      setChecked('lock_enable', cfg.lock_enable);
+      setChecked('lock_deny_as_execute', cfg.lock_deny_as_execute);
+      setChecked('escalation_enabled', cfg.escalation_enabled);
+      setValue('escalation_deny_threshold', cfg.escalation_deny_threshold);
+      setValue('escalation_window_secs', cfg.escalation_window_secs);
+      setValue('escalation_cooldown_secs', cfg.escalation_cooldown_secs);
+      document.getElementById('msg').textContent = '';
+    } catch (err) {
+      console.error(err);
+      document.getElementById('msg').textContent = 'Load failed';
+    }
+  }
+  async function saveCfg(event) {
+    event.preventDefault();
+    document.getElementById('csrf_input').value = getCookie('ui_csrf') || '';
+    const fd = new FormData(event.target);
+    fd.set('lock_enable', document.getElementById('lock_enable').checked ? 'true' : 'false');
+    fd.set('lock_deny_as_execute', document.getElementById('lock_deny_as_execute').checked ? 'true' : 'false');
+    fd.set('escalation_enabled', document.getElementById('escalation_enabled').checked ? 'true' : 'false');
+    try {
+      const resp = await fetch('/admin/config', {
+        method: 'POST',
+        body: fd,
+        credentials: 'same-origin',
+        headers: authHeaders(),
+      });
+      document.getElementById('msg').textContent = resp.ok ? 'Saved' : 'Save failed';
+      if (resp.ok) {
+        await loadCfg();
+      }
+    } catch (err) {
+      console.error(err);
+      document.getElementById('msg').textContent = 'Save failed';
+    }
+    return false;
+  }
+  loadCfg();
+</script>
+{% endblock %}
