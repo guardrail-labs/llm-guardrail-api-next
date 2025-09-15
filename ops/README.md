@@ -45,6 +45,7 @@ max by (provider) (guardrail_verifier_circuit_state)
 ## Label Cardinality Guardrails
 - Controlled by env:
   - `METRICS_LABEL_CARDINALITY_MAX` (default 1000)
+  - `METRICS_LABEL_PAIR_CARDINALITY_MAX` (default matches above)
   - `METRICS_LABEL_OVERFLOW` (default "overflow")
 - When capacity is exceeded, unseen tenant/bot values are reported as `overflow`.
 

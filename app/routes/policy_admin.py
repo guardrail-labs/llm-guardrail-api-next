@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.config import admin_token
+from app.services import policy
 from app.services.policy_loader import get_policy, reload_now
 
 # No prefix; use absolute paths in decorators to avoid surprises
@@ -22,10 +25,30 @@ def policy_version():
     }
 
 
+def _require_admin(request: Request) -> None:
+    token = admin_token()
+    auth = request.headers.get("Authorization")
+    if not token or not auth or not auth.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    provided = auth.split(" ", 1)[1]
+    if provided != token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+
 @router.post("/admin/policy/reload")
-def policy_reload():
-    blob = reload_now()
-    return {"reloaded": True, "version": blob.version, "rules_path": blob.path}
+def policy_reload(request: Request) -> Dict[str, Any]:
+    _require_admin(request)
+    meta = policy.reload_rules()
+    try:
+        blob = reload_now()
+        version = str(blob.version)
+    except Exception:
+        version = str(meta.get("version"))
+    return {
+        "ok": True,
+        "version": version,
+        "rules_count": int(meta.get("rules_count", 0)),
+    }
 
 
 @router.get("/admin/bindings/resolve")

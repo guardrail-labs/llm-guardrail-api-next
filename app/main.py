@@ -7,9 +7,9 @@ import json
 import os
 import pkgutil
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -576,27 +576,27 @@ def create_app() -> FastAPI:
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
 
     # --- Admin bindings: prefer real router, else fallback ---
+    admin_router = None
     try:
-        from app.routes.admin.bindings import router as admin_bindings_router
-        app.include_router(admin_bindings_router)
+        from app.routes import admin as _admin_mod
+
+        admin_router = getattr(_admin_mod, "router", None)
     except Exception:
+        try:
+            from app.routes.admin.bindings import router as _bindings_router
+
+            admin_router = _bindings_router
+        except Exception:
+            admin_router = None
+    if admin_router is not None:
+        app.include_router(admin_router)
+    else:
         _install_bindings_fallback(app)
 
     # --- Explicit admin/policy routers (avoid walker dupes) ---
     try:
         from app.routes import policy_admin
-        # Avoid duplicate /admin/policy/reload (admin_runtime provides secured endpoint)
-        try:
-            policy_admin.router.routes = [
-                r
-                for r in policy_admin.router.routes
-                if not (
-                    getattr(r, "path", "") == "/admin/policy/reload"
-                    and "POST" in getattr(r, "methods", set())
-                )
-            ]
-        except Exception:
-            pass
+
         app.include_router(policy_admin.router)
     except Exception:
         # Intentionally swallow import errors; endpoints just won't be present

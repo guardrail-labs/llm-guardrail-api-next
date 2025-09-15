@@ -6,7 +6,6 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from app.config import admin_token
 from app.services import policy, runtime_flags
-from app.services.policy_loader import reload_now as _reload_now
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -34,22 +33,6 @@ async def set_flags(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]
     if errors:
         raise HTTPException(status_code=400, detail=errors)
     return {"ok": True, "updated": updated, "flags": runtime_flags.effective()}
-
-
-@router.post("/policy/reload")
-async def policy_reload(request: Request) -> Dict[str, Any]:
-    _require_admin(request)
-    meta = policy.reload_rules()
-    try:
-        blob = _reload_now()
-        version = str(blob.version)
-    except Exception:
-        version = str(meta.get("version"))
-    return {
-        "ok": True,
-        "version": version,
-        "rules_count": int(meta.get("rules_count", 0)),
-    }
 
 
 @router.get("/snapshot")
