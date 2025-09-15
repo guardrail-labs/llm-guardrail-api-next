@@ -25,3 +25,22 @@ sum by (family) (rate(guardrail_decisions_total[5m]))
 
 > Note: If your build exports HTTP status counters (e.g., `guardrail_http_status_total{status=...}`), re-enable the 5xx/429 queries accordingly.
 
+## HTTP Status
+
+**5xx rate (req/s)**
+
+
+sum(rate(guardrail_http_status_total{status=~"5.."}[5m]))
+
+
+**429 rate (req/s)**
+
+
+sum(rate(guardrail_http_status_total{status="429"}[5m]))
+
+
+**Status breakdown (5m)**
+
+
+sum by (status) (rate(guardrail_http_status_total[5m]))
+

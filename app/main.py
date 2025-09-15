@@ -24,6 +24,7 @@ from app.middleware.quota import QuotaMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
+from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.routes.egress import router as egress_router
 from app.telemetry.tracing import TracingMiddleware
 
@@ -576,6 +577,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
+    app.add_middleware(HttpStatusMetricsMiddleware)
 
     # --- Admin bindings: prefer real router, else fallback ---
     admin_router = None
