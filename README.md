@@ -52,6 +52,14 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 - **Demo**: copy/paste POC script
   → See [`docs/DemoScript.md`](docs/DemoScript.md)
 
+## Observability Quickstart
+We ship a starter dashboard and alert rules.
+
+- Dashboard: `observability/grafana/guardrail.json`
+- Alerts: `observability/alerts/guardrail-rules.yaml`
+- Queries: `observability/promql/README.md`
+- Docs: `docs/observability.md`
+
 ## Configuration
 See [CONFIG.md](./CONFIG.md) for all tunables and defaults. Values are normalized by
 `app/services/config_sanitizer.py` to ensure safe, predictable behavior.
@@ -95,10 +103,6 @@ Behavior: classifier/verifier ambiguous/timeout → standardized clarify respons
 - `EGRESS_STREAMING_OVERLAP_CHARS=2048` — overlap window to catch cross-chunk matches
 Pipeline: redaction → optional summarize → optional policy-check (annotative; does
 **not** block). Streaming (SSE/chunked) is **never** buffered or transformed.
-
-### Observability
-- New docs: `docs/observability.md`
-- Grafana: import `dashboards/grafana_guardrail.json`
 
 ### Admin — Active Policy View
 - `GET /admin/policies/active` returns:

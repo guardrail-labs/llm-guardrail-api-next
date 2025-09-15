@@ -1,62 +1,68 @@
-# Observability
+# Observability — Guardrail API
 
-## Endpoints
-- **Prometheus**: `/metrics` (exposed by existing Prom integration)
-- **Health**: `GET /health`
+This guide ships a turnkey set of PromQL queries, a Grafana dashboard, and Prometheus alert rules.
 
-## Key Metrics (emitted by app)
-- `guardrail_latency_seconds{route,method}` — existing histogram
-- `guardrail_clarify_total{phase}` — total clarify-first decisions (phase: ingress)
-- `guardrail_egress_redactions_total{tenant,bot,kind}` — redactions applied (json/text)
+## Prereqs
+- Prometheus scraping the app (e.g., `/metrics`)
+- Grafana with access to the same Prometheus datasource
 
-> Counters are monotonic; use `rate()` or `increase()` over a window.
+## Quickstart
 
-## PromQL Recipes
+1) **Import Dashboard**
+- Grafana → Dashboards → Import
+- Upload `observability/grafana/guardrail.json`
+- Choose your Prometheus datasource; save.
 
-### 1) P95 latency by route (5m window)
-
-
-histogram_quantile(
-0.95,
-sum(rate(guardrail_latency_seconds_bucket[5m])) by (le, route)
-)
-
-
-### 2) Clarify rate (per minute)
+2) **Load Alert Rules**
+- Copy `observability/alerts/guardrail-rules.yaml` into your Prometheus rules directory.
+- Reference it in `prometheus.yml`:
+  ```yaml
+  rule_files:
+    - "rules/*.yaml"
+    - "observability/alerts/guardrail-rules.yaml"
 
 
-sum(rate(guardrail_clarify_total[1m]))
+Reload Prometheus or restart the service.
+
+Explore PromQL
+
+See observability/promql/README.md for queries you can paste directly into Grafana Explore.
+
+Key Metrics & Notes
+
+guardrail_requests_total{action, route, tenant, bot, status, policy_version}
+
+Counter for requests and decisions (allow/block).
+
+guardrail_request_latency_ms_bucket
+
+Histogram for request latency; use histogram_quantile.
+
+guardrail_verifier_latency_ms_bucket (if enabled)
+
+Histogram per provider for verifier calls.
+
+Cardinality Guard
+
+We cap (tenant×bot) label combinations; overflow sentinel is __overflow__.
+
+Tune via METRICS_LABEL_CARD_MAX.
+
+SLO Examples
+
+Availability: error_rate < 1% over rolling 30d
+
+100 * sum(rate(guardrail_requests_total{status=~"5.."}[5m])) / sum(rate(guardrail_requests_total[5m])) < 1
 
 
-### 3) Redactions rate by kind (5m)
+Latency: p95 < 300ms
 
+histogram_quantile(0.95, sum by (le) (rate(guardrail_request_latency_ms_bucket[5m]))) < 300
 
-sum(rate(guardrail_egress_redactions_total[5m])) by (kind)
+Troubleshooting
 
+No data in panels: verify the job label (job="guardrail") or remove label selectors in queries.
 
-### 4) Clarify % of total requests (approx)
+Overflow % high: increase METRICS_LABEL_CARD_MAX or validate tenant/bot churn.
 
-
-sum(rate(guardrail_clarify_total[5m]))
-/
-sum by (route) (rate(guardrail_latency_seconds_count[5m]))
-
-
-## Grafana
-Import `dashboards/grafana_guardrail.json` → set your Prometheus datasource.
-
-### Streaming Redactions
-
-Incremental redactions performed during SSE/chunked responses increment:
-
-- `guardrail_egress_redactions_total{tenant="<t>",bot="<b>",kind="text/stream"}`
-
-**PromQL (rate over 5m):**
-
-sum(rate(guardrail_egress_redactions_total{kind="text/stream"}[5m]))
-
-### Rulepack Enforcement
-- Egress redactions from rulepacks are merged with built-ins when `RULEPACKS_ENFORCE=1` and `RULEPACKS_EGRESS_MODE=enforce`.
-- Ingress rulepacks can trigger clarify/block if `RULEPACKS_INGRESS_MODE` is set.
-- See README for env toggles.
-
+429 spikes: review rate limits/quarantine thresholds and traffic patterns.
