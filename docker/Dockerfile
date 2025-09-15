@@ -17,6 +17,10 @@ COPY . .
 
 FROM python:3.11-slim AS runtime
 WORKDIR /app
+# Install curl for container healthcheck
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
 ENV PORT=8000 HOST=0.0.0.0 \
     RULES_PATH=/etc/guardrail/rules.yaml
 

@@ -5,7 +5,9 @@ services:
   guardrail-api:
     build:
       context: .
-    command: uvicorn app.app:create_app --factory --host 0.0.0.0 --port 8000
+      dockerfile: docker/Dockerfile
+    image: guardrail:local
+    command: uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8000
     environment:
       ADMIN_UI_TOKEN: "demo"
       METRICS_LABEL_CARD_MAX: "200"
