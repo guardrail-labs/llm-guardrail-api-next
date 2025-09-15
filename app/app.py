@@ -32,7 +32,7 @@ def _load_from_this_dir() -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load main.py from {main_path}")
     mod = _import_util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    spec.loader.exec_module(mod)  
     return mod
 
 _mod = _load_from_app_package() or _load_from_this_dir()
