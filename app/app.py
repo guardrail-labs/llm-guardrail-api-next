@@ -1,54 +1,20 @@
-# app/app.py  — full replacement
+# app/app.py
 """
-Import shim so both `from app.main import create_app` (tests) and
-`uvicorn app.main:create_app` (runtime) work — even if PYTHONPATH is odd
-and Python tries to import this file as a top-level module.
-
-It first tries a normal absolute import. If that fails, it loads
-`main.py` from this directory via importlib (no relative imports).
+Re-export entrypoints from app.main in a package-safe way.
+No file-loader fallbacks; keeps absolute imports inside app.main working.
 """
 from __future__ import annotations
 
-from importlib import import_module, util as _import_util
-from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable
 
-# Public re-exports (typed so mypy knows create_app is callable)
+from app.main import app, create_app  # required
+try:
+    from app.main import build_app     # optional in some repos
+except Exception:  # pragma: no cover
+    build_app = None  # type: ignore[assignment]
+
+__all__ = ["app", "build_app", "create_app"]
+# Type hints for mypy users importing from app.app
 app: Any
 build_app: Any
 create_app: Callable[..., Any]
-
-def _load_from_app_package() -> ModuleType | None:
-    try:
-        return import_module("app.main")
-    except Exception:
-        return None
-
-def _load_from_this_dir() -> ModuleType:
-    here = Path(__file__).resolve().parent
-    main_path = here / "main.py"
-    spec = _import_util.spec_from_file_location("app_main_fallback", main_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load main.py from {main_path}")
-    mod = _import_util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  
-    return mod
-
-_mod = _load_from_app_package() or _load_from_this_dir()
-
-# Bind expected symbols (raise clear error if missing)
-try:
-    app = getattr(_mod, "app")
-except AttributeError as e:
-    raise ImportError("`app.main` must define `app`") from e
-
-# Optional in some repos; fine if missing
-build_app = getattr(_mod, "build_app", None)
-
-try:
-    create_app = getattr(_mod, "create_app")
-except AttributeError as e:
-    raise ImportError("`app.main` must define `create_app`") from e
-
-__all__ = ["app", "build_app", "create_app"]
