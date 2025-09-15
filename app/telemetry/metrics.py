@@ -177,6 +177,12 @@ guardrail_quota_rejects_total: CounterLike = _mk_counter(
     "guardrail_quota_rejects_total", "Requests rejected due to quotas.", ["tenant", "bot"]
 )
 
+guardrail_mode_total: CounterLike = _mk_counter(
+    "guardrail_mode_total",
+    "Guardrail enforcement mode totals.",
+    ["mode"],
+)
+
 # Family + tenant/bot breakdowns
 guardrail_decisions_family_total: CounterLike = _mk_counter(
     "guardrail_decisions_family_total", "Decision totals by family.", ["family"]
@@ -425,6 +431,10 @@ def inc_decisions_total(family: str = "unknown") -> None:
     global _DEC_TOTAL
     guardrail_decisions_total.labels(family).inc()
     _DEC_TOTAL += 1.0
+
+
+def inc_mode(mode: str) -> None:
+    guardrail_mode_total.labels(str(mode or "unknown")).inc()
 
 
 def inc_rate_limited(amount: float = 1.0) -> None:
