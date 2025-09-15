@@ -117,6 +117,18 @@
         }
       ],
       "options": { "showHeader": true }
+    },
+    {
+      "type": "piechart",
+      "title": "Mode distribution (5m)",
+      "gridPos": { "x": 0, "y": 68, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (mode) (rate(guardrail_mode_total[5m]))",
+          "refId": "A"
+        }
+      ],
+      "options": { "legend": { "displayMode": "table" } }
     }
   ],
   "templating": {

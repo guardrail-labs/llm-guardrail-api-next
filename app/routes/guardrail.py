@@ -6,9 +6,9 @@ import random
 import re
 import uuid
 import time
-from typing import Any, Callable, Awaitable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Awaitable, Dict, List, Mapping, Optional, Tuple, cast
 
-from fastapi import APIRouter, Header, Request, UploadFile
+from fastapi import APIRouter, Header, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.models.debug import SourceDebug
@@ -34,7 +34,9 @@ from app.services.rulepacks_engine import ingress_should_block, ingress_mode
 from app.services.fingerprint import fingerprint
 from app.services import escalation as esc
 from app.services.decision_headers import apply_decision_headers, REQ_ID_HEADER
+from app.services.enforcement import Mode, choose_mode
 from app.shared.headers import attach_guardrail_headers
+from app.egress.redaction import redact_response_body
 # --- BEGIN PR-C wire-up block ---
 from app.services.config_sanitizer import (
     get_verifier_latency_budget_ms,
@@ -42,7 +44,7 @@ from app.services.config_sanitizer import (
     get_verifier_sampling_pct,
 )
 from app.telemetry import metrics as m
-from app.telemetry.metrics import inc_actor_decisions_total
+from app.telemetry.metrics import inc_actor_decisions_total, inc_mode
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
@@ -449,7 +451,7 @@ def _rule_ids_from_hits(rule_hits: Any) -> List[str]:
 
 
 def _finalize_ingress_response(
-    response: JSONResponse,
+    response: Response,
     *,
     request_id: str,
     fingerprint_value: Optional[str],
@@ -458,31 +460,80 @@ def _finalize_ingress_response(
     escalate: bool = True,
     mode_hint: Optional[str] = None,
     retry_after_hint: Optional[int] = None,
-) -> JSONResponse:
-    mode = mode_hint or "normal"
+    policy_result: Optional[Mapping[str, Any]] = None,
+) -> Response:
+    family_norm = str(decision_family or "").strip().lower()
+    default_mode: Mode = "allow" if family_norm == "allow" else "deny"
+
+    header_mode = mode_hint or "normal"
+    metrics_mode: str = default_mode
+
+    if mode_hint is None:
+        try:
+            chosen_mode: Mode = choose_mode(policy_result, family_norm)
+        except Exception:
+            chosen_mode = default_mode
+        metrics_mode = chosen_mode
+        header_mode = "execute_locked" if chosen_mode == "execute_locked" else "normal"
+    else:
+        if mode_hint == "execute_locked":
+            metrics_mode = "execute_locked"
+        elif mode_hint == "full_quarantine":
+            metrics_mode = "full_quarantine"
+        else:
+            metrics_mode = default_mode
+
+    if header_mode == "execute_locked" and response.status_code != 429:
+        raw_body = getattr(response, "body", b"")
+        if isinstance(raw_body, str):
+            raw_bytes = raw_body.encode("utf-8")
+        elif isinstance(raw_body, (bytes, bytearray)):
+            raw_bytes = bytes(raw_body)
+        else:
+            raw_bytes = b""
+        media_type = response.media_type or response.headers.get("Content-Type")
+        ctype = media_type or "application/json"
+        safe_body = redact_response_body(raw_bytes, str(ctype))
+        locked_response = Response(content=safe_body, status_code=200, media_type=str(ctype))
+        for key, value in response.headers.items():
+            if key.lower() == "content-length":
+                continue
+            locked_response.headers[key] = value
+        locked_response.background = response.background
+        response = locked_response
+
+    mode_for_headers = header_mode
     retry_after = retry_after_hint or 0
     fp = fingerprint_value or ""
 
     if escalate and esc.is_enabled() and fp:
-        mode, retry_after = esc.record_and_decide(fp, decision_family)
-        if mode == "full_quarantine":
+        esc_mode, retry_after = esc.record_and_decide(fp, family_norm)
+        if esc_mode == "full_quarantine":
             response = JSONResponse(
                 status_code=429,
                 content={"ok": False, "reason": "quarantine"},
             )
             if retry_after:
                 response.headers["Retry-After"] = str(max(1, retry_after))
+            mode_for_headers = "full_quarantine"
+            metrics_mode = "full_quarantine"
+        else:
+            mode_for_headers = header_mode
     else:
-        if mode == "full_quarantine" and retry_after:
+        if header_mode == "full_quarantine" and retry_after:
             response.headers["Retry-After"] = str(max(1, retry_after))
+        mode_for_headers = header_mode
 
     apply_decision_headers(
         response,
         decision_family,
-        mode,
+        mode_for_headers,
         request_id=request_id,
         rule_ids=rule_ids,
     )
+
+    final_mode = "full_quarantine" if response.status_code == 429 else metrics_mode
+    inc_mode(final_mode)
     return response
 
 
@@ -1250,6 +1301,7 @@ async def guardrail_evaluate(request: Request):
                 fingerprint_value=fingerprint_value,
                 decision_family="deny",
                 rule_ids=hits,
+                policy_result={"action": "block_input_only"},
             )
         elif mode_cfg == "clarify":
             try:
@@ -1275,6 +1327,7 @@ async def guardrail_evaluate(request: Request):
                 fingerprint_value=fingerprint_value,
                 decision_family="deny",
                 rule_ids=hits,
+                policy_result={"action": "clarify"},
             )
         else:
             # annotate only → continue
@@ -1323,6 +1376,7 @@ async def guardrail_evaluate(request: Request):
             fingerprint_value=fingerprint_value,
             decision_family="deny",
             rule_ids=_rule_ids_from_hits(policy_hits),
+            policy_result={"action": "clarify"},
         )
     (
         redacted,
@@ -1434,6 +1488,7 @@ async def guardrail_evaluate(request: Request):
             fingerprint_value=fingerprint_value,
             decision_family="deny",
             rule_ids=_rule_ids_from_hits(policy_hits),
+            policy_result={"action": "clarify"},
         )
 
     action = _apply_hardened_override(action, hv_action)
@@ -1498,6 +1553,7 @@ async def guardrail_evaluate(request: Request):
         fingerprint_value=fingerprint_value,
         decision_family=_decision_family(action),
         rule_ids=_rule_ids_from_hits(policy_hits),
+        policy_result=base_decision,
     )
 
 
@@ -1687,6 +1743,7 @@ async def guardrail_evaluate_multipart(request: Request):
         fingerprint_value=fingerprint_value,
         decision_family=_decision_family(action),
         rule_ids=_rule_ids_from_hits(policy_hits),
+        policy_result=base_decision,
     )
 
 
