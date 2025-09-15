@@ -26,14 +26,17 @@ def test_admin_policies_requires_token_when_enabled(client, monkeypatch):
     assert "policy_version" in j
 
 
-def test_admin_ui_html_public(client, monkeypatch):
-    monkeypatch.setenv("GUARDRAIL_DISABLE_AUTH", "0")
-    monkeypatch.setenv("ADMIN_UI_AUTH", "1")
+def test_admin_ui_html_requires_auth(monkeypatch):
     monkeypatch.setenv("ADMIN_UI_TOKEN", "s3cr3t")
+    app = create_app()
+    client = TestClient(app)
 
     r = client.get("/admin/ui")
-    assert r.status_code == 200
-    assert "Active Policy" in r.text
+    assert r.status_code == 401
+
+    r2 = client.get("/admin/ui", headers={"Authorization": "Bearer s3cr3t"})
+    assert r2.status_code == 200
+    assert "Guardrail Admin" in r2.text
 
 
 def test_policy_preview_works(client, monkeypatch):

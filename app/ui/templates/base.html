@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Guardrail Admin</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+    header { display:flex; gap:1rem; align-items:center; margin-bottom:1rem; }
+    nav a { margin-right:1rem; }
+    .card { border:1px solid #e5e7eb; border-radius:12px; padding:1rem; margin-bottom:1rem; }
+    button { padding:0.5rem 0.75rem; border-radius:8px; border:1px solid #e5e7eb; cursor:pointer; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding:0.5rem; border-bottom:1px solid #eee; }
+    .muted { color:#6b7280; font-size:0.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Guardrail Admin</h1>
+    <nav>
+      <a href="/admin/ui">Overview</a>
+      <a href="/admin/ui/bindings">Bindings</a>
+      <a href="/admin/ui/decisions">Decisions</a>
+    </nav>
+  </header>
+  {% block content %}{% endblock %}
+</body>
+</html>
+

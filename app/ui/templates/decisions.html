@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Recent Decisions ({{ n }})</h2>
+  <p><a href="/admin/ui/export/decisions?n={{ n }}">Export JSONL</a></p>
+  {% if not decisions or decisions|length == 0 %}
+    <p class="muted">No recent decisions available.</p>
+  {% else %}
+    <table>
+      <thead><tr><th>ts</th><th>tenant</th><th>bot</th><th>action</th><th>reason</th></tr></thead>
+      <tbody>
+        {% for d in decisions %}
+        <tr>
+          <td>{{ d.ts or d.timestamp or '—' }}</td>
+          <td>{{ d.tenant or '—' }}</td>
+          <td>{{ d.bot or '—' }}</td>
+          <td>{{ d.action or '—' }}</td>
+          <td>{{ d.reason or d.details or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}
+

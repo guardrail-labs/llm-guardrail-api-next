@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Bindings</h2>
+  {% if not bindings or bindings|length == 0 %}
+    <p class="muted">No bindings found.</p>
+  {% else %}
+    <table>
+      <thead><tr><th>Tenant</th><th>Bot</th><th>Policy</th></tr></thead>
+      <tbody>
+        {% for b in bindings %}
+          <tr><td>{{ b.tenant }}</td><td>{{ b.bot }}</td><td>{{ b.policy_version or '—' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>
+{% endblock %}
+
