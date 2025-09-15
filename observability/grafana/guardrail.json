@@ -16,7 +16,7 @@
     },
     {
       "type": "piechart",
-      "title": "Allow vs Block (5m)",
+      "title": "Allow vs Deny (5m)",
       "gridPos": {"x":6,"y":0,"w":6,"h":8},
       "targets": [
         {
