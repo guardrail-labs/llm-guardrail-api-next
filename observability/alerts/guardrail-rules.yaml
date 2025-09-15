@@ -2,7 +2,7 @@ groups:
   - name: guardrail-api.rules
     interval: 30s
     rules:
-      # Service up (scrape target)
+      # Service up check (keep if your Prometheus job label matches)
       - alert: GuardrailRouteDown
         expr: up{job="guardrail"} == 0
         for: 2m
@@ -12,29 +12,9 @@ groups:
           summary: "Guardrail target is down"
           description: "Prometheus cannot scrape the Guardrail API target for >2m."
 
-      # High 5xx rate
-      - alert: GuardrailServerErrorsHigh
-        expr: sum(rate(guardrail_requests_total{status=~"5.."}[5m])) > 1
-        for: 10m
-        labels:
-          severity: high
-        annotations:
-          summary: "Guardrail 5xx elevated"
-          description: "5xx rate exceeded 1 req/s for 10m."
-
-      # Elevated 429 / throttling
-      - alert: GuardrailThrottlingElevated
-        expr: sum(rate(guardrail_requests_total{status="429"}[5m])) > 2
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Guardrail throttling elevated"
-          description: "429 Too Many Requests sustained >2 req/s for 10m."
-
-      # Latency SLO breach (p95)
+      # Latency SLO breach (p95 in ms)
       - alert: GuardrailLatencyP95Breached
-        expr: histogram_quantile(0.95, sum by (le) (rate(guardrail_request_latency_ms_bucket[5m]))) > 300
+        expr: 1000 * histogram_quantile(0.95, sum by (le) (rate(guardrail_latency_seconds_bucket[5m]))) > 300
         for: 10m
         labels:
           severity: high
@@ -42,12 +22,12 @@ groups:
           summary: "Guardrail p95 latency > 300ms"
           description: "Sustained p95 latency breach for 10m."
 
-      # Cardinality overflow watch
-      - alert: GuardrailMetricsOverflowHigh
-        expr: 100 * sum(rate(guardrail_requests_total{tenant="__overflow__"}[5m])) / sum(rate(guardrail_requests_total[5m])) > 5
+      # High block rate (watch for unexpected policy aggressiveness)
+      - alert: GuardrailBlockRateHigh
+        expr: (sum(rate(guardrail_decisions_total{action="block"}[5m])) / sum(rate(guardrail_decisions_total[5m]))) > 0.5
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "Metrics overflow > 5%"
-          description: "More than 5% of labeled requests collapsed into overflow for 15m. Increase METRICS_LABEL_CARD_MAX or review tenant/bot churn."
+          summary: "Guardrail block rate > 50%"
+          description: "More than half of decisions are blocks over 15m. Investigate policy/regression or traffic quality."

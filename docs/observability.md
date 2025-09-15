@@ -30,15 +30,19 @@ See observability/promql/README.md for queries you can paste directly into Grafa
 
 Key Metrics & Notes
 
-guardrail_requests_total{action, route, tenant, bot, status, policy_version}
+guardrail_requests_total{endpoint}
 
-Counter for requests and decisions (allow/block).
+Counter for incoming requests by endpoint.
 
-guardrail_request_latency_ms_bucket
+guardrail_decisions_total{action}
 
-Histogram for request latency; use histogram_quantile.
+Counter for decisions such as allow or block.
 
-guardrail_verifier_latency_ms_bucket (if enabled)
+guardrail_latency_seconds_bucket
+
+Histogram for request latency in seconds; multiply by 1000 for milliseconds.
+
+guardrail_verifier_latency_seconds_bucket (if enabled)
 
 Histogram per provider for verifier calls.
 
@@ -57,7 +61,7 @@ Availability: error_rate < 1% over rolling 30d
 
 Latency: p95 < 300ms
 
-histogram_quantile(0.95, sum by (le) (rate(guardrail_request_latency_ms_bucket[5m]))) < 300
+1000 * histogram_quantile(0.95, sum by (le) (rate(guardrail_latency_seconds_bucket[5m]))) < 300
 
 Troubleshooting
 
