@@ -24,7 +24,7 @@ groups:
 
       # High block rate (watch for unexpected policy aggressiveness)
       - alert: GuardrailBlockRateHigh
-        expr: (sum(rate(guardrail_decisions_total{action="block"}[5m])) / sum(rate(guardrail_decisions_total[5m]))) > 0.5
+        expr: (sum(rate(guardrail_decisions_total{family="block"}[5m])) / sum(rate(guardrail_decisions_total[5m]))) > 0.5
         for: 15m
         labels:
           severity: warning
