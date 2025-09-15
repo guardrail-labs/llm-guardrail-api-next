@@ -81,6 +81,42 @@
         }
       ],
       "options": { "showHeader": true }
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx rate (req/s)",
+      "gridPos": { "x": 0, "y": 44, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(guardrail_http_status_total{status=~\"5..\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "5xx"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "429 rate (req/s)",
+      "gridPos": { "x": 0, "y": 52, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(guardrail_http_status_total{status=\"429\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "429"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "HTTP status breakdown (5m)",
+      "gridPos": { "x": 0, "y": 60, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(guardrail_http_status_total[5m]))",
+          "refId": "A"
+        }
+      ],
+      "options": { "showHeader": true }
     }
   ],
   "templating": {

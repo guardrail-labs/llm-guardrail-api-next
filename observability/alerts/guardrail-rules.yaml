@@ -31,3 +31,21 @@ groups:
         annotations:
           summary: "Guardrail deny rate > 50%"
           description: "More than half of decisions are denies over 15m. Investigate policy/regression or traffic quality."
+
+      - alert: GuardrailServerErrorsHigh
+        expr: sum(rate(guardrail_http_status_total{status=~"5.."}[5m])) > 1
+        for: 10m
+        labels:
+          severity: high
+        annotations:
+          summary: "Guardrail 5xx elevated"
+          description: "5xx rate exceeded 1 req/s for 10 minutes."
+
+      - alert: GuardrailThrottlingElevated
+        expr: sum(rate(guardrail_http_status_total{status="429"}[5m])) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Guardrail 429 elevated"
+          description: "429 rate sustained >2 req/s for 10 minutes."
