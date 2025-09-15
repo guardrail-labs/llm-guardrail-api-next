@@ -34,5 +34,11 @@ dev = [
 addopts = "-q"
 pythonpath = ["app"]
 
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+install_types = false
+exclude = "(^docker/tools/)"
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

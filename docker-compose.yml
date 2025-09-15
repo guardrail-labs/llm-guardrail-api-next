@@ -55,6 +55,8 @@ services:
     profiles: ["tools"]
     environment:
       BASE_URL: http://guardrail-api:8000
+      TENANTS: T1,T2,T3
+      BOTS: B1,B2,B3,B4
     depends_on:
       guardrail-api:
         condition: service_healthy

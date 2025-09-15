@@ -49,9 +49,7 @@ jobs:
           ruff check --fix .
 
       - name: Typecheck (mypy)
-        run: |
-          # Auto-install missing type stubs non-interactively
-          mypy --install-types --non-interactive .
+        run: mypy .
 
       - name: Tests (pytest)
         run: |

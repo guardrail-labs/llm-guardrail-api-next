@@ -23,6 +23,7 @@ from app.metrics.route_label import route_label
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
+from app.middleware.tenant_bot import TenantBotMiddleware
 from app.routes.egress import router as egress_router
 from app.telemetry.tracing import TracingMiddleware
 
@@ -564,6 +565,7 @@ def create_app() -> FastAPI:
         app.add_middleware(TracingMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(QuotaMiddleware)
+    app.add_middleware(TenantBotMiddleware)
 
     # Max body size (intercepts early)
     try:

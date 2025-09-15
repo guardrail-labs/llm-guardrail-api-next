@@ -192,6 +192,36 @@ guardrail_decisions_family_bot_total: CounterLike = _mk_counter(
     ["tenant", "bot", "family"],
 )
 
+try:  # pragma: no cover - fallback below handles missing import
+    from app.observability.metrics import (
+        _limit_tenant_bot_labels as _limit_labels,
+    )
+except Exception:  # pragma: no cover
+
+    def _limit_labels(tenant: str, bot: str) -> tuple[str, str]:
+        tenant_v = tenant or "unknown"
+        bot_v = bot or "unknown"
+        return tenant_v, bot_v
+
+
+guardrail_actor_decisions_total: CounterLike = _mk_counter(
+    "guardrail_actor_decisions_total",
+    "Guardrail decisions partitioned by family, tenant, and bot",
+    ["family", "tenant", "bot"],
+)
+
+
+def inc_actor_decisions_total(
+    family: str, tenant: str | None, bot: str | None
+) -> None:
+    fam = (family or "unknown").strip() or "unknown"
+    tenant_raw = (tenant or "").strip()
+    bot_raw = (bot or "").strip()
+    tenant_val = tenant_raw if tenant_raw else "unknown"
+    bot_val = bot_raw if bot_raw else "unknown"
+    safe_tenant, safe_bot = _limit_labels(tenant_val, bot_val)
+    guardrail_actor_decisions_total.labels(fam, safe_tenant, safe_bot).inc()
+
 # Directional redactions (direction, tag)
 guardrail_redactions_total: CounterLike = _mk_counter(
     "guardrail_redactions_total",

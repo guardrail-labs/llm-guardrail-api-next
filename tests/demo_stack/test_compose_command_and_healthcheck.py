@@ -3,17 +3,14 @@ from pathlib import Path
 import yaml
 
 
-def test_compose_uses_correct_uvicorn_target_and_healthcheck():
-    p = Path("docker-compose.yml")
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+def test_compose_uvicorn_target_and_healthcheck():
+    data = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
     svc = data["services"]["guardrail-api"]
-    cmd = svc.get("command")
-    assert "app.main:create_app" in cmd, (
-        f"Expected app.main:create_app in command, got: {cmd}"
-    )
-    hc = svc.get("healthcheck", {})
-    test = hc.get("test", [])
-    test_str = " ".join(test) if isinstance(test, list) else str(test)
-    assert ("curl" in test_str) or ("python" in test_str), (
-        f"Healthcheck should use curl or python, got: {test_str}"
-    )
+    assert "app.main:create_app" in svc.get("command", "")
+    healthcheck = svc.get("healthcheck", {})
+    check_cmd = healthcheck.get("test", [])
+    if isinstance(check_cmd, list):
+        check_str = " ".join(str(part) for part in check_cmd)
+    else:
+        check_str = str(check_cmd)
+    assert "curl" in check_str or "python" in check_str
