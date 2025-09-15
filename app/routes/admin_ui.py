@@ -166,7 +166,13 @@ def ui_reload(
     req: Request, csrf_token: str = Form(...), _: None = Depends(require_auth)
 ) -> PlainTextResponse:
     cookie = req.cookies.get("ui_csrf", "")
-    if not (cookie and csrf_token and _csrf_ok(csrf_token) and _csrf_ok(cookie)):
+    if not (
+        cookie
+        and csrf_token
+        and _csrf_ok(csrf_token)
+        and _csrf_ok(cookie)
+        and hmac.compare_digest(cookie, csrf_token)
+    ):
         raise HTTPException(status_code=400, detail="CSRF failed")
     try:
         reload_rules()
