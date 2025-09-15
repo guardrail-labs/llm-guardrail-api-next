@@ -22,12 +22,12 @@ groups:
           summary: "Guardrail p95 latency > 300ms"
           description: "Sustained p95 latency breach for 10m."
 
-      # High block rate (watch for unexpected policy aggressiveness)
+      # High deny rate (watch for unexpected policy aggressiveness)
       - alert: GuardrailBlockRateHigh
-        expr: (sum(rate(guardrail_decisions_total{family="block"}[5m])) / sum(rate(guardrail_decisions_total[5m]))) > 0.5
+        expr: (sum(rate(guardrail_decisions_total{family="deny"}[5m])) / sum(rate(guardrail_decisions_total[5m]))) > 0.5
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "Guardrail block rate > 50%"
-          description: "More than half of decisions are blocks over 15m. Investigate policy/regression or traffic quality."
+          summary: "Guardrail deny rate > 50%"
+          description: "More than half of decisions are denies over 15m. Investigate policy/regression or traffic quality."

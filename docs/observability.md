@@ -36,7 +36,7 @@ Counter for incoming requests by endpoint.
 
 guardrail_decisions_total{family}
 
-Counter for decisions such as allow or block.
+Counter for decisions such as allow or deny.
 
 guardrail_latency_seconds_bucket
 

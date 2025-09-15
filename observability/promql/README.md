@@ -9,7 +9,7 @@
 sum(rate(guardrail_requests_total[5m]))
 
 
-**Allow vs block (decisions/s)**
+**Allow vs deny (decisions/s)**
 
 sum by (family) (rate(guardrail_decisions_total[5m]))
 
