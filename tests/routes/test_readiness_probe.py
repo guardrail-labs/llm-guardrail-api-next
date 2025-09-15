@@ -1,10 +1,9 @@
-# tests/routes/test_readiness_probe.py
 # Summary: Readiness respects optional env-based verifier probe.
 
 from __future__ import annotations
 
-from starlette.testclient import TestClient
 import pytest
+from starlette.testclient import TestClient
 
 import app.main as main
 import app.routes.system as sysmod
