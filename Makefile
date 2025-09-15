@@ -26,3 +26,19 @@ compose-up:
 
 compose-down:
 	docker compose down -v
+.PHONY: demo-stack-up demo-stack-traffic demo-stack-down demo-stack-clean
+
+demo-stack-up:
+	@docker compose up -d --build
+	@echo "API:       http://localhost:8000"
+	@echo "Prometheus http://localhost:9090"
+	@echo "Grafana:   http://localhost:3000  (admin / admin)"
+
+demo-stack-traffic:
+	@docker compose run --rm demo-traffic
+
+demo-stack-down:
+	@docker compose down
+
+demo-stack-clean:
+	@docker compose down -v --remove-orphans
