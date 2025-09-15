@@ -32,8 +32,9 @@ from app.services.threat_feed import (
 from app.services import runtime_flags
 from app.services.clarify import respond_with_clarify, INCIDENT_HEADER
 from app.services.rulepacks_engine import ingress_should_block, ingress_mode
-from app.services.fingerprint import get_fingerprint
-from app.services.escalation import record_unsafe, current_mode
+from app.services.fingerprint import fingerprint
+from app.services import escalation as esc
+from app.services.decision_headers import apply_decision_headers, REQ_ID_HEADER
 from app.shared.headers import attach_guardrail_headers
 # --- BEGIN PR-C wire-up block ---
 from app.services.config_sanitizer import (
@@ -432,6 +433,58 @@ def _apply_redactions(
 
     _normalize_wildcards(rule_hits, is_deny=False)
     return redacted, rule_hits, redactions, spans
+
+
+def _decision_family(action: str) -> str:
+    return "allow" if action == "allow" else "deny"
+
+
+def _rule_ids_from_hits(rule_hits: Any) -> List[str]:
+    if not rule_hits:
+        return []
+    if isinstance(rule_hits, dict):
+        return [str(k) for k in rule_hits.keys() if str(k)]
+    if isinstance(rule_hits, (list, tuple, set)):
+        return [str(k) for k in rule_hits if str(k)]
+    return []
+
+
+def _finalize_ingress_response(
+    response: JSONResponse,
+    *,
+    request_id: str,
+    fingerprint_value: Optional[str],
+    decision_family: str,
+    rule_ids: Optional[List[str]] = None,
+    escalate: bool = True,
+    mode_hint: Optional[str] = None,
+    retry_after_hint: Optional[int] = None,
+) -> JSONResponse:
+    mode = mode_hint or "normal"
+    retry_after = retry_after_hint or 0
+    fp = fingerprint_value or ""
+
+    if escalate and esc.is_enabled() and fp:
+        mode, retry_after = esc.record_and_decide(fp, decision_family)
+        if mode == "full_quarantine":
+            response = JSONResponse(
+                status_code=429,
+                content={"ok": False, "reason": "quarantine"},
+            )
+            if retry_after:
+                response.headers["Retry-After"] = str(max(1, retry_after))
+    else:
+        if mode == "full_quarantine" and retry_after:
+            response.headers["Retry-After"] = str(max(1, retry_after))
+
+    apply_decision_headers(
+        response,
+        decision_family,
+        mode,
+        request_id=request_id,
+        rule_ids=rule_ids,
+    )
+    return response
 
 
 def _debug_requested(x_debug: Optional[str]) -> bool:
@@ -1139,6 +1192,12 @@ async def guardrail_evaluate(request: Request):
     explicit_request_id: Optional[str] = None
     mods: Dict[str, int] = {}
     sources: List[Dict[str, str]] = []
+    req_header_request_id = headers.get(REQ_ID_HEADER)
+    fingerprint_value: Optional[str]
+    try:
+        fingerprint_value = fingerprint(request)
+    except Exception:
+        fingerprint_value = ""
 
     if content_type.startswith("application/json"):
         payload = await request.json()
@@ -1149,82 +1208,12 @@ async def guardrail_evaluate(request: Request):
             request, decode_pdf=False
         )
 
+    request_id = _req_id(explicit_request_id or req_header_request_id)
+
     # Ingress rulepack enforcement (opt-in)
     should_block, hits = ingress_should_block(combined_text or "")
     if should_block:
-        # Record incident for escalation
-        try:
-            fp = get_fingerprint(request)
-            record_unsafe(fp)
-        except Exception:
-            fp = ""
-
-        mode = current_mode(fp)
-        # Tier-2: full quarantine
-        if mode == "full_quarantine":
-            retry = int(os.getenv("ESCALATION_RETRY_AFTER_SEC", "60") or "60")
-            resp = JSONResponse(
-                status_code=int(
-                    os.getenv("ESCALATION_QUARANTINE_HTTP", "429") or "429"
-                ),
-                content={
-                    "action": "full_quarantine",
-                    "reason": "ingress_rulepack",
-                    "matches": hits,
-                },
-            )
-            resp.headers["Retry-After"] = str(retry)
-            resp.headers[INCIDENT_HEADER] = f"fq-{fp[:8]}" if fp else "fq"
-            attach_guardrail_headers(
-                resp,
-                decision="block",
-                ingress_action="full_quarantine",
-                egress_action="allow",
-            )
-            try:
-                from app.services.audit_forwarder import emit_audit_event
-                emit_audit_event(
-                    {
-                        "event": "escalation",
-                        "data": {"mode": "full_quarantine", "matches": hits},
-                    }
-                )
-            except Exception:
-                pass
-            _record_actor_metric(request, "full_quarantine")
-            return resp
-
-        # Tier-1: execute_locked
-        if mode == "execute_locked":
-            resp = JSONResponse(
-                status_code=200,
-                content={
-                    "action": "execute_locked",
-                    "reason": "ingress_rulepack",
-                    "matches": hits,
-                },
-            )
-            resp.headers[INCIDENT_HEADER] = f"xl-{fp[:8]}" if fp else "xl"
-            attach_guardrail_headers(
-                resp,
-                decision="block",
-                ingress_action="execute_locked",
-                egress_action="allow",
-            )
-            try:
-                from app.services.audit_forwarder import emit_audit_event
-                emit_audit_event(
-                    {
-                        "event": "escalation",
-                        "data": {"mode": "execute_locked", "matches": hits},
-                    }
-                )
-            except Exception:
-                pass
-            _record_actor_metric(request, "execute_locked")
-            return resp
-
-        # Non-escalated path: honor configured RULEPACKS_INGRESS_MODE
+        # Honor configured RULEPACKS_INGRESS_MODE
         mode_cfg = ingress_mode()
         if mode_cfg == "block":
             resp = JSONResponse(
@@ -1256,7 +1245,13 @@ async def guardrail_evaluate(request: Request):
             except Exception:
                 pass
             _record_actor_metric(request, "block_input_only")
-            return resp
+            return _finalize_ingress_response(
+                resp,
+                request_id=request_id,
+                fingerprint_value=fingerprint_value,
+                decision_family="deny",
+                rule_ids=hits,
+            )
         elif mode_cfg == "clarify":
             try:
                 from app.services.audit_forwarder import emit_audit_event
@@ -1272,14 +1267,19 @@ async def guardrail_evaluate(request: Request):
             except Exception:
                 pass
             _record_actor_metric(request, "clarify")
-            return respond_with_clarify(
+            clar_resp = respond_with_clarify(
                 extra={"rulepack": "ingress_block", "matches": ",".join(hits)}
+            )
+            return _finalize_ingress_response(
+                clar_resp,
+                request_id=request_id,
+                fingerprint_value=fingerprint_value,
+                decision_family="deny",
+                rule_ids=hits,
             )
         else:
             # annotate only → continue
             pass
-
-    request_id = _req_id(explicit_request_id)
 
     classifier_outcome, policy_hits, policy_dbg = _evaluate_ingress_policy(
         combined_text, want_debug
@@ -1317,7 +1317,14 @@ async def guardrail_evaluate(request: Request):
             }
         )
         _record_actor_metric(request, "clarify")
-        return respond_with_clarify()
+        clar_resp = respond_with_clarify()
+        return _finalize_ingress_response(
+            clar_resp,
+            request_id=request_id,
+            fingerprint_value=fingerprint_value,
+            decision_family="deny",
+            rule_ids=_rule_ids_from_hits(policy_hits),
+        )
     (
         redacted,
         redaction_hits,
@@ -1421,7 +1428,14 @@ async def guardrail_evaluate(request: Request):
             }
         )
         _record_actor_metric(request, "clarify")
-        return respond_with_clarify()
+        clar_resp = respond_with_clarify()
+        return _finalize_ingress_response(
+            clar_resp,
+            request_id=request_id,
+            fingerprint_value=fingerprint_value,
+            decision_family="deny",
+            rule_ids=_rule_ids_from_hits(policy_hits),
+        )
 
     action = _apply_hardened_override(action, hv_action)
     if hv_action is None and hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
@@ -1467,7 +1481,7 @@ async def guardrail_evaluate(request: Request):
 
     _record_actor_metric(request, action)
 
-    return _respond_action(
+    resp = _respond_action(
         action,
         redacted,
         request_id,
@@ -1478,6 +1492,13 @@ async def guardrail_evaluate(request: Request):
         verifier_sampled=verifier_sampled,
         direction="ingress",
         extra_headers=hv_headers,
+    )
+    return _finalize_ingress_response(
+        resp,
+        request_id=request_id,
+        fingerprint_value=fingerprint_value,
+        decision_family=_decision_family(action),
+        rule_ids=_rule_ids_from_hits(policy_hits),
     )
 
 
@@ -1492,10 +1513,16 @@ async def guardrail_evaluate_multipart(request: Request):
     m.inc_requests_total("ingress_evaluate")
     m.set_policy_version(current_rules_version())
 
+    req_header_request_id = headers.get(REQ_ID_HEADER)
+    try:
+        fingerprint_value = fingerprint(request)
+    except Exception:
+        fingerprint_value = ""
+
     combined_text, mods, sources, docx_results = await _read_form_and_merge(
         request, decode_pdf=True
     )
-    request_id = _req_id(None)
+    request_id = _req_id(req_header_request_id)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(
         combined_text, want_debug
@@ -1643,7 +1670,7 @@ async def guardrail_evaluate_multipart(request: Request):
 
     _record_actor_metric(request, action)
 
-    return _respond_action(
+    resp = _respond_action(
         action,
         redacted,
         request_id,
@@ -1654,6 +1681,13 @@ async def guardrail_evaluate_multipart(request: Request):
         verifier_sampled=verifier_sampled,
         direction="ingress",
         extra_headers=hv_headers,
+    )
+    return _finalize_ingress_response(
+        resp,
+        request_id=request_id,
+        fingerprint_value=fingerprint_value,
+        decision_family=_decision_family(action),
+        rule_ids=_rule_ids_from_hits(policy_hits),
     )
 
 

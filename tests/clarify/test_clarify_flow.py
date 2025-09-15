@@ -19,5 +19,5 @@ def test_clarify_response_shape(monkeypatch):
     assert j["action"] == "clarify"
     assert "incident_id" in j
     assert isinstance(j.get("questions", []), list)
-    assert r.headers.get("X-Guardrail-Decision") == "clarify"
+    assert r.headers.get("X-Guardrail-Decision") == "deny"
 
