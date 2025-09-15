@@ -1,3 +1,4 @@
+# app/app.py  — full replacement
 """
 Import shim so both `from app.main import create_app` (tests) and
 `uvicorn app.main:create_app` (runtime) work — even if PYTHONPATH is odd
@@ -11,11 +12,12 @@ from __future__ import annotations
 from importlib import import_module, util as _import_util
 from pathlib import Path
 from types import ModuleType
+from typing import Any, Callable
 
-# Public re-exports
-app = None 
-build_app = None 
-create_app = None 
+# Public re-exports (typed so mypy knows create_app is callable)
+app: Any
+build_app: Any
+create_app: Callable[..., Any]
 
 def _load_from_app_package() -> ModuleType | None:
     try:
@@ -30,7 +32,7 @@ def _load_from_this_dir() -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load main.py from {main_path}")
     mod = _import_util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return mod
 
 _mod = _load_from_app_package() or _load_from_this_dir()
@@ -41,11 +43,8 @@ try:
 except AttributeError as e:
     raise ImportError("`app.main` must define `app`") from e
 
-try:
-    build_app = getattr(_mod, "build_app")
-except AttributeError:
-    # optional in some repos; leave as None if not present
-    build_app = None  
+# Optional in some repos; fine if missing
+build_app = getattr(_mod, "build_app", None)
 
 try:
     create_app = getattr(_mod, "create_app")
