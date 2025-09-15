@@ -13,9 +13,9 @@ from pathlib import Path
 from types import ModuleType
 
 # Public re-exports
-app = None  # type: ignore[assignment]
-build_app = None  # type: ignore[assignment]
-create_app = None  # type: ignore[assignment]
+app = None 
+build_app = None 
+create_app = None 
 
 def _load_from_app_package() -> ModuleType | None:
     try:
