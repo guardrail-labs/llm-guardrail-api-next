@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, Tuple, Literal
+from typing import Dict, Literal, Tuple
 
 Mode = Literal["normal", "execute_locked", "full_quarantine"]
 
@@ -51,12 +51,16 @@ def record_and_decide(fp: str, family: str, *, now: float | None = None) -> Tupl
         return "normal", 0
 
     ts = now if now is not None else _now()
-    first_ts, count, quarantine_until = _STATE.get(fp, (ts, 0, 0.0))
+    entry = _STATE.get(fp)
 
-    # Active quarantine holds priority regardless of incoming family.
-    if quarantine_until > ts:
-        retry = max(1, int(quarantine_until - ts))
-        return "full_quarantine", retry
+    if entry is not None:
+        first_ts, count, quarantine_until = entry
+        # Active quarantine holds priority regardless of incoming family.
+        if quarantine_until > ts:
+            retry = max(1, int(quarantine_until - ts))
+            return "full_quarantine", retry
+    else:
+        first_ts, count, quarantine_until = ts, 0, 0.0
 
     if family == "deny":
         window = _window_secs()
@@ -73,11 +77,12 @@ def record_and_decide(fp: str, family: str, *, now: float | None = None) -> Tupl
         _STATE[fp] = (first_ts, count, 0.0)
         return "normal", 0
 
-    # Non-deny: maintain window bookkeeping but do not escalate.
+    # Non-deny path: skip creating new entries.
+    if entry is None:
+        return "normal", 0
+
     if ts - first_ts > _window_secs():
         _STATE.pop(fp, None)
-    else:
-        _STATE[fp] = (first_ts, count, 0.0)
     return "normal", 0
 
 
