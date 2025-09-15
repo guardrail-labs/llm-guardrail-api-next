@@ -2,65 +2,92 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, List, Literal
+from typing import Dict, Tuple, Literal
 
 Mode = Literal["normal", "execute_locked", "full_quarantine"]
 
-
-def _WINDOW() -> int:
-    return int(os.getenv("ESCALATION_WINDOW_SEC", "300") or "300")
-
-
-def _T1() -> int:
-    return int(os.getenv("ESCALATION_TIER1_THRESHOLD", "3") or "3")
+def _enabled() -> bool:
+    return os.getenv("ESCALATION_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
 
-def _T2() -> int:
-    return int(os.getenv("ESCALATION_TIER2_THRESHOLD", "10") or "10")
+def _deny_threshold() -> int:
+    try:
+        raw = int(os.getenv("ESCALATION_DENY_THRESHOLD", "3"))
+    except Exception:
+        raw = 3
+    return max(1, raw)
 
 
-def _COOLDOWN() -> int:
-    return int(os.getenv("ESCALATION_COOLDOWN_SEC", "300") or "300")
+def _window_secs() -> int:
+    try:
+        raw = int(os.getenv("ESCALATION_WINDOW_SECS", "300"))
+    except Exception:
+        raw = 300
+    return max(1, raw)
 
 
-def _ENABLED() -> bool:
-    return os.getenv("ESCALATION_ENABLED", "0") == "1"
+def _cooldown_secs() -> int:
+    try:
+        raw = int(os.getenv("ESCALATION_COOLDOWN_SECS", "900"))
+    except Exception:
+        raw = 900
+    return max(1, raw)
 
-# in-memory counters: fp -> timestamps of unsafe ingress decisions
-_UNSAFE: Dict[str, List[int]] = {}
-# cooldown map: fp -> until_ts for full_quarantine
-_COOLDOWN_UNTIL: Dict[str, int] = {}
+_STATE: Dict[str, Tuple[float, int, float]] = {}
 
-def record_unsafe(fp: str) -> None:
-    if not _ENABLED():
-        return
-    now = int(time.time())
-    buf = _UNSAFE.setdefault(fp, [])
-    buf.append(now)
-    # prune old
-    cutoff = now - _WINDOW()
-    while buf and buf[0] < cutoff:
-        buf.pop(0)
 
-def current_mode(fp: str) -> Mode:
-    if not _ENABLED():
-        return "normal"
-    now = int(time.time())
-    # tier2 cooldown check
-    until = _COOLDOWN_UNTIL.get(fp, 0)
-    if until > now:
-        return "full_quarantine"
+def _now() -> float:
+    return time.time()
 
-    buf = _UNSAFE.get(fp, [])
-    n = len(buf)
-    if n >= _T2():
-        # enter full_quarantine and set cooldown
-        _COOLDOWN_UNTIL[fp] = now + _COOLDOWN()
-        return "full_quarantine"
-    if n >= _T1():
-        return "execute_locked"
-    return "normal"
 
-def reset_memory() -> None:
-    _UNSAFE.clear()
-    _COOLDOWN_UNTIL.clear()
+def record_and_decide(fp: str, family: str, *, now: float | None = None) -> Tuple[Mode, int]:
+    """Record the latest decision family and return escalation mode and retry."""
+
+    if not _enabled():
+        return "normal", 0
+
+    if not fp:
+        # Without a fingerprint we cannot reliably track; remain normal.
+        return "normal", 0
+
+    ts = now if now is not None else _now()
+    first_ts, count, quarantine_until = _STATE.get(fp, (ts, 0, 0.0))
+
+    # Active quarantine holds priority regardless of incoming family.
+    if quarantine_until > ts:
+        retry = max(1, int(quarantine_until - ts))
+        return "full_quarantine", retry
+
+    if family == "deny":
+        window = _window_secs()
+        if ts - first_ts > window:
+            first_ts, count = ts, 0
+        count += 1
+        threshold = _deny_threshold()
+        if count >= threshold:
+            cooldown = _cooldown_secs()
+            quarantine_until = ts + cooldown
+            _STATE[fp] = (first_ts, count, quarantine_until)
+            retry_after = max(1, int(cooldown)) if cooldown > 0 else 0
+            return "full_quarantine", retry_after
+        _STATE[fp] = (first_ts, count, 0.0)
+        return "normal", 0
+
+    # Non-deny: maintain window bookkeeping but do not escalate.
+    if ts - first_ts > _window_secs():
+        _STATE.pop(fp, None)
+    else:
+        _STATE[fp] = (first_ts, count, 0.0)
+    return "normal", 0
+
+
+def reset_state() -> None:
+    _STATE.clear()
+
+
+def reset_memory() -> None:  # backward compat for existing tests
+    reset_state()
+
+
+def is_enabled() -> bool:
+    return _enabled()

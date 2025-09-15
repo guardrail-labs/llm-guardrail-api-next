@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+from typing import Iterable
 
 from fastapi import Request
+
+_PEPPER = os.getenv("ESCALATION_HASH_PEPPER", "guardrail-pepper")
 
 
 def _extract_ip(req: Request) -> str:
@@ -14,21 +17,23 @@ def _extract_ip(req: Request) -> str:
     return client.host if client else "0.0.0.0"
 
 
+def _parts(req: Request) -> Iterable[str]:
+    tenant = req.headers.get("X-Tenant") or req.headers.get("X-Tenant-ID") or "unknown"
+    bot = req.headers.get("X-Bot") or req.headers.get("X-Bot-ID") or "unknown"
+    ua = req.headers.get("User-Agent") or req.headers.get("user-agent") or "unknown"
+    api_key = req.headers.get("X-API-Key") or req.headers.get("x-api-key") or "unknown"
+    ip = _extract_ip(req) or "unknown"
+    return tenant, bot, ua, api_key, ip, _PEPPER
+
+
+def fingerprint(req: Request) -> str:
+    """Generate a stable, non-PII fingerprint for escalation tracking."""
+
+    base = "|".join(str(part) for part in _parts(req))
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
 def get_fingerprint(req: Request) -> str:
-    """
-    Produces a stable, non-reversible fingerprint hash from request attributes.
-    Uses: X-API-Key (if any), IP (or X-Forwarded-For), and User-Agent.
-    """
-    api_key = req.headers.get("x-api-key", "")
-    ip = _extract_ip(req)
-    ua = req.headers.get("user-agent", "")
-    salt = os.getenv("FINGERPRINT_SALT", "guardrail")
-    m = hashlib.sha256()
-    m.update(salt.encode("utf-8"))
-    m.update(b"|")
-    m.update(api_key.encode("utf-8"))
-    m.update(b"|")
-    m.update(ip.encode("utf-8"))
-    m.update(b"|")
-    m.update(ua.encode("utf-8"))
-    return m.hexdigest()
+    """Backward-compatible alias for callers still importing this helper."""
+
+    return fingerprint(req)

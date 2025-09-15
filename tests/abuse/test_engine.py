@@ -69,13 +69,16 @@ def test_headers_and_incident_id_format() -> None:
     inc = generate_incident_id(now=0.0)  # 1970-01-01 for deterministic prefix
     assert inc.startswith("gr-1970-01-01-")
     h1 = decision_headers("block_input_only", inc, retry_after_s=None)
-    assert h1["X-Guardrail-Decision"] == "block_input_only"
+    assert h1["X-Guardrail-Decision"] == "deny"
     assert h1["X-Guardrail-Incident-ID"] == inc
-    assert "X-Guardrail-Mode" not in h1 and "Retry-After" not in h1
+    assert h1["X-Guardrail-Mode"] == "normal"
+    assert "Retry-After" not in h1
 
     h2 = decision_headers("execute_locked", inc, retry_after_s=None)
+    assert h2["X-Guardrail-Decision"] == "deny"
     assert h2["X-Guardrail-Mode"] == "execute_locked"
 
     h3 = decision_headers("full_quarantine", inc, retry_after_s=42)
+    assert h3["X-Guardrail-Decision"] == "deny"
     assert h3["X-Guardrail-Mode"] == "full_quarantine"
     assert h3["Retry-After"] == "42"

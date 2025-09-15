@@ -175,12 +175,15 @@ def decision_headers(
     incident_id: str,
     retry_after_s: Optional[int] = None,
 ) -> Dict[str, str]:
-    headers: Dict[str, str] = {
-        "X-Guardrail-Decision": decision,
-        "X-Guardrail-Incident-ID": incident_id,
-    }
+    decision_family = "allow" if decision == "allow" else "deny"
+    mode = "normal"
     if decision in ("execute_locked", "full_quarantine"):
-        headers["X-Guardrail-Mode"] = decision
+        mode = decision
+    headers: Dict[str, str] = {
+        "X-Guardrail-Decision": decision_family,
+        "X-Guardrail-Incident-ID": incident_id,
+        "X-Guardrail-Mode": mode,
+    }
     if decision == "full_quarantine" and retry_after_s and retry_after_s > 0:
         headers["Retry-After"] = str(retry_after_s)
     return headers

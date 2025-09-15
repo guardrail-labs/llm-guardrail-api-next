@@ -43,14 +43,14 @@ def test_execute_locked_then_full_quarantine(monkeypatch):
     # First request -> execute_locked (allowed 200 + headers)
     r1 = c.get("/ok", headers={"x-api-key": "keyA"})
     assert r1.status_code == 200
-    assert r1.headers.get("X-Guardrail-Decision") in ("execute_locked", "block_input_only", "allow")
-    # If escalated to execute_locked, X-Guardrail-Mode header is present
-    # (block_input_only may still be returned by the engine, which we accept)
+    assert r1.headers.get("X-Guardrail-Decision") in ("allow", "deny")
+    assert r1.headers.get("X-Guardrail-Mode") in ("normal", "execute_locked")
     # Second unsafe request -> full_quarantine (429)
     r2 = c.get("/ok", headers={"x-api-key": "keyA"})
     assert r2.status_code == 429
     assert r2.json()["code"] == "guardrail_quarantined"
-    assert r2.headers.get("X-Guardrail-Decision") == "full_quarantine"
+    assert r2.headers.get("X-Guardrail-Decision") == "deny"
+    assert r2.headers.get("X-Guardrail-Mode") == "full_quarantine"
     assert "Retry-After" in r2.headers
 
 
@@ -72,4 +72,5 @@ def test_quarantine_short_circuits(monkeypatch):
     monkeypatch.setattr(gate, "fetch_verdict", lambda req: "safe")
     r2 = c.get("/ok", headers={"x-api-key": "keyB"})
     assert r2.status_code == 429
-    assert r2.headers.get("X-Guardrail-Decision") == "full_quarantine"
+    assert r2.headers.get("X-Guardrail-Decision") == "deny"
+    assert r2.headers.get("X-Guardrail-Mode") == "full_quarantine"

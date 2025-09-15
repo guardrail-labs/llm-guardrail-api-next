@@ -40,7 +40,8 @@ def test_adapter_marks_unsafe_and_escalates():
     r2 = c.post("/ok", data=body, headers=h)
     assert r2.status_code == 429
     assert r2.json()["code"] == "guardrail_quarantined"
-    assert r2.headers.get("X-Guardrail-Decision") == "full_quarantine"
+    assert r2.headers.get("X-Guardrail-Decision") == "deny"
+    assert r2.headers.get("X-Guardrail-Mode") == "full_quarantine"
 
 
 def test_adapter_safe_allows():
@@ -55,4 +56,4 @@ def test_adapter_safe_allows():
     r = c.post("/ok", data=body, headers={"content-type": "application/json", "x-api-key": "ten-2"})
     assert r.status_code == 200
     # decision header is present; allow or execute_locked depending on prior strikes (none here)
-    assert r.headers.get("X-Guardrail-Decision") in ("allow", "block_input_only", "execute_locked")
+    assert r.headers.get("X-Guardrail-Decision") in ("allow", "deny")
