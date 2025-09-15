@@ -192,6 +192,19 @@ guardrail_decisions_family_bot_total: CounterLike = _mk_counter(
     ["tenant", "bot", "family"],
 )
 
+# --- New: per-tenant/bot decisions metric with limiter ---
+try:  # pragma: no cover - fallback path is trivial
+    from app.observability.metrics import _limit_tenant_bot_labels as _limit_labels
+except Exception:  # pragma: no cover
+    def _limit_labels(tenant: str, bot: str) -> Tuple[str, str]:
+        return tenant or "unknown", bot or "unknown"
+
+guardrail_actor_decisions_total: CounterLike = _mk_counter(
+    "guardrail_actor_decisions_total",
+    "Guardrail decisions partitioned by family, tenant, and bot",
+    ["family", "tenant", "bot"],
+)
+
 # Directional redactions (direction, tag)
 guardrail_redactions_total: CounterLike = _mk_counter(
     "guardrail_redactions_total",
@@ -428,6 +441,16 @@ def inc_decision_family_tenant_bot(family: str, tenant: str, bot: str) -> None:
     _FAMILY_TOTALS[family] = _FAMILY_TOTALS.get(family, 0.0) + 1.0
     key = (family, tenant, bot)
     _FAMILY_TENANT_BOT[key] = _FAMILY_TENANT_BOT.get(key, 0.0) + 1.0
+
+
+def inc_actor_decisions_total(
+    family: str, tenant: str | None, bot: str | None,
+) -> None:
+    """Increment actor-scoped decision metric with label limiting."""
+    t = (tenant or "").strip() or "unknown"
+    b = (bot or "").strip() or "unknown"
+    t, b = _limit_labels(t, b)
+    guardrail_actor_decisions_total.labels(family, t, b).inc()
 
 
 def inc_verifier_outcome(verifier: str, outcome: str) -> None:

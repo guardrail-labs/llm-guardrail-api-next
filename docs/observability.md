@@ -70,3 +70,13 @@ No data in panels: verify the job label (job="guardrail") or remove label select
 Overflow % high: increase METRICS_LABEL_CARD_MAX or validate tenant/bot churn.
 
 429 spikes: review rate limits/quarantine thresholds and traffic patterns.
+
+### Multi-tenant labels
+
+Requests can supply headers:
+- `X-Tenant`: logical tenant/org identifier
+- `X-Bot`: calling bot/service identifier
+
+We emit `guardrail_actor_decisions_total{family,tenant,bot}` and cap `(tenant×bot)` label cardinality using `METRICS_LABEL_CARD_MAX`. Values beyond the cap collapse to `__overflow__`.
+
+> Tip: Use the demo traffic (`make demo-traffic` or `make demo-stack-traffic`) to generate diverse tenants/bots.

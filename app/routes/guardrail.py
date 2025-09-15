@@ -42,6 +42,7 @@ from app.services.config_sanitizer import (
     get_verifier_sampling_pct,
 )
 from app.telemetry import metrics as m
+from app.telemetry.metrics import inc_actor_decisions_total
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
@@ -465,9 +466,12 @@ def _respond_action(
     verifier_sampled: bool = False,
     direction: str = "ingress",
     extra_headers: Optional[Dict[str, str]] = None,
+    tenant: str | None = None,
+    bot: str | None = None,
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     _maybe_metric("inc_decisions_total", fam)
+    inc_actor_decisions_total(fam, tenant, bot)
 
     decisions: List[Dict[str, Any]] = []
     if redaction_count > 0:
@@ -517,8 +521,11 @@ def _respond_legacy_allow(
     rule_hits: List[str] | Dict[str, List[str]],
     policy_version: str,
     redactions: int,
+    tenant: str | None = None,
+    bot: str | None = None,
 ) -> JSONResponse:
     _maybe_metric("inc_decisions_total", "allow")
+    inc_actor_decisions_total("allow", tenant, bot)
     body: Dict[str, Any] = {
         "request_id": request_id,
         "decision": "allow",
@@ -541,8 +548,11 @@ def _respond_legacy_block(
     transformed_text: str,
     policy_version: str,
     redactions: int,
+    tenant: str | None = None,
+    bot: str | None = None,
 ) -> JSONResponse:
     _maybe_metric("inc_decisions_total", "deny")
+    inc_actor_decisions_total("deny", tenant, bot)
     body: Dict[str, Any] = {
         "request_id": request_id,
         "decision": "block",
@@ -1032,6 +1042,10 @@ async def guardrail_legacy(
     prompt = str(payload.get("prompt") or "")
     request_id = _req_id(str(payload.get("request_id") or ""))
 
+    headers = request.headers
+    tenant_actor = headers.get("X-Tenant") or getattr(request.state, "tenant", None)
+    bot_actor = headers.get("X-Bot") or getattr(request.state, "bot", None)
+
     try:
         max_chars = int(runtime_flags.get("max_prompt_chars"))
     except Exception:
@@ -1044,10 +1058,7 @@ async def guardrail_legacy(
         }
         return JSONResponse(body, status_code=413)
 
-    tenant, bot = _tenant_bot(
-        request.headers.get("X-Tenant-ID"),
-        request.headers.get("X-Bot-ID"),
-    )
+    tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     _set_binding_ctx(tenant, bot)
 
     policy_blob = _get_policy()
@@ -1097,16 +1108,30 @@ async def guardrail_legacy(
 
     if action == "block":
         return _respond_legacy_block(
-            request_id, rule_hits, redacted, policy_version, redactions
+            request_id,
+            rule_hits,
+            redacted,
+            policy_version,
+            redactions,
+            tenant=tenant_actor,
+            bot=bot_actor,
         )
     return _respond_legacy_allow(
-        redacted, request_id, rule_hits, policy_version, redactions
+        redacted,
+        request_id,
+        rule_hits,
+        policy_version,
+        redactions,
+        tenant=tenant_actor,
+        bot=bot_actor,
     )
 
 
 @router.post("/guardrail/evaluate")
 async def guardrail_evaluate(request: Request):
     headers = request.headers
+    tenant_actor = headers.get("X-Tenant") or getattr(request.state, "tenant", None)
+    bot_actor = headers.get("X-Bot") or getattr(request.state, "bot", None)
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
     m.inc_requests_total("ingress_evaluate")
@@ -1448,12 +1473,16 @@ async def guardrail_evaluate(request: Request):
         verifier_sampled=verifier_sampled,
         direction="ingress",
         extra_headers=hv_headers,
+        tenant=tenant_actor,
+        bot=bot_actor,
     )
 
 
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
     headers = request.headers
+    tenant_actor = headers.get("X-Tenant") or getattr(request.state, "tenant", None)
+    bot_actor = headers.get("X-Bot") or getattr(request.state, "bot", None)
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
     m.inc_requests_total("ingress_evaluate")
@@ -1619,12 +1648,16 @@ async def guardrail_evaluate_multipart(request: Request):
         verifier_sampled=verifier_sampled,
         direction="ingress",
         extra_headers=hv_headers,
+        tenant=tenant_actor,
+        bot=bot_actor,
     )
 
 
 @router.post("/guardrail/egress_evaluate")
 async def guardrail_egress(request: Request):
     headers = request.headers
+    tenant_actor = headers.get("X-Tenant") or getattr(request.state, "tenant", None)
+    bot_actor = headers.get("X-Bot") or getattr(request.state, "bot", None)
     tenant, bot = _tenant_bot(headers.get("X-Tenant-ID"), headers.get("X-Bot-ID"))
     want_debug = _debug_requested(headers.get("X-Debug"))
     m.inc_requests_total("egress_evaluate")
@@ -1746,4 +1779,6 @@ async def guardrail_egress(request: Request):
         verifier_sampled=False,
         direction="egress",
         extra_headers=hv_headers,
+        tenant=tenant_actor,
+        bot=bot_actor,
     )
