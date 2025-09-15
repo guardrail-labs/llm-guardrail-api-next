@@ -1,17 +1,59 @@
 version: "3.9"
+name: guardrail-demo
+
 services:
-  guardrail:
+  guardrail-api:
     build:
       context: .
-      dockerfile: docker/Dockerfile
-    image: guardrail:local
+    command: uvicorn app.app:create_app --factory --host 0.0.0.0 --port 8000
+    environment:
+      ADMIN_UI_TOKEN: "demo"
+      METRICS_LABEL_CARD_MAX: "200"
     ports:
       - "8000:8000"
-    env_file: .env
-    volumes:
-      - ./rules.yaml:/etc/guardrail/rules.yaml:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 10s
       timeout: 3s
       retries: 10
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      guardrail-api:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    volumes:
+      # Provision datasource and dashboard
+      - ./docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./docker/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # Mount repo so provisioning can reference our dashboard JSON directly
+      - ./:/repo:ro
+    depends_on:
+      - prometheus
+
+  demo-traffic:
+    build:
+      context: ./docker/tools
+    profiles: ["tools"]
+    environment:
+      BASE_URL: http://guardrail-api:8000
+    depends_on:
+      guardrail-api:
+        condition: service_healthy
+
