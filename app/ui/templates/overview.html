@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Status</h2>
+  <p>Policy version: <strong>{{ policy_version }}</strong></p>
+  {% if grafana_url %}
+  <p>Observability: <a href="{{ grafana_url }}" target="_blank" rel="noopener">Open Grafana</a></p>
+  {% endif %}
+  <form method="post" action="/admin/ui/reload" onsubmit="return pushReload(event)">
+    <input type="hidden" name="csrf_token" id="csrf_input" />
+    <button type="submit">Reload Policy</button>
+    <span id="reload_msg" class="muted" style="margin-left:8px;"></span>
+  </form>
+  <script>
+    function getCookie(name){ return (document.cookie.match('(^|;)\\s*'+name+'\\s*=\\s*([^;]+)')||[])[2]; }
+    function pushReload(e){
+      e.preventDefault();
+      const t = getCookie('ui_csrf'); document.getElementById('csrf_input').value = t || '';
+      const fd = new FormData(e.target);
+      fetch('/admin/ui/reload', { method:'POST', body: fd, credentials: 'same-origin' })
+        .then(r => r.ok ? r.text() : r.text().then(x=>Promise.reject(x)))
+        .then(_ => { document.getElementById('reload_msg').textContent = 'Reload: OK'; })
+        .catch(err => { document.getElementById('reload_msg').textContent = 'Reload failed'; console.error(err); });
+      return false;
+    }
+  </script>
+</div>
+<div class="card">
+  <h2>Metrics</h2>
+  <p><a href="/metrics" target="_blank" rel="noopener">Scrape /metrics</a></p>
+</div>
+{% endblock %}
+

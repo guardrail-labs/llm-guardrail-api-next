@@ -1,19 +1,30 @@
-# Admin UI (Read-Only)
+# Admin UI (minimal)
 
-This minimal Admin UI renders the current **Active Policy** exposed by `GET /admin/policies/active`.
+Read-only surface for inspecting and reloading guardrail policy.  The UI only
+exposes status pages and a policy reload action; there are no mutation paths
+other than the reload call.
 
-- URL: `/admin/ui`
-- Auth: **Not enforced in this PR** (TODO — wire OIDC/session/capability check)
-- Data source: `/admin/policies/active` JSON
-- Purpose: enterprise demo + internal operator visibility
+## Environment variables
 
-## What it shows
-- Policy version
-- Env toggles (CORS, EGRESS_*, CLARIFY_*)
-- Decision mapping (classifier/verifier → action)
-- Raw JSON (for quick copy/paste)
+Authentication uses either a bearer token or basic auth:
 
-## Next steps
-- Add auth gating
-- Promote to a JS app (React) if needed
-- Add live metrics embeds (Grafana panels) and policy edit previews
+- `ADMIN_UI_TOKEN` – preferred bearer secret
+- `ADMIN_UI_USER` / `ADMIN_UI_PASS` – basic auth fallback if token unset
+- `ADMIN_UI_SECRET` – optional HMAC secret for CSRF (falls back to
+  `APP_SECRET` / `SECRET_KEY`)
+- `GRAFANA_URL` – optional link to external dashboards
+
+## Quickstart
+
+```bash
+export ADMIN_UI_TOKEN=devtoken
+uvicorn app.main:create_app --factory
+# then open http://localhost:8000/admin/ui
+```
+
+## Security notes
+
+- Deploy behind TLS; set `Secure` cookies via reverse proxy.
+- Rotate the token or credentials periodically.
+- The reload action uses double-submit CSRF tokens derived from `ADMIN_UI_SECRET`.
+
