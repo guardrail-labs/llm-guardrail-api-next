@@ -75,3 +75,6 @@ Overflow % high: increase METRICS_LABEL_CARD_MAX or validate tenant/bot churn.
 We emit `guardrail_actor_decisions_total{family,tenant,bot}`. Provide `X-Tenant` and `X-Bot` headers; missing values default to `unknown`. `(tenant×bot)` cardinality is capped via `METRICS_LABEL_CARD_MAX`, collapsing extras to `__overflow__`.
 
 Use the demo traffic (`make demo-traffic` or `make demo-stack-traffic`) to generate varied tenants/bots.
+
+### HTTP status metrics
+We emit `guardrail_http_status_total{endpoint,status}` via middleware. Use it for 5xx/429 alerts and status breakdown tables. The endpoint label uses the route pattern (e.g., `/guardrail/evaluate`) to avoid high cardinality.

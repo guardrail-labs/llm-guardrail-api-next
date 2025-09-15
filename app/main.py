@@ -20,6 +20,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from app.metrics.route_label import route_label
+from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
@@ -576,6 +577,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
+    app.add_middleware(HttpStatusMetricsMiddleware)
 
     # --- Admin bindings: prefer real router, else fallback ---
     admin_router = None
