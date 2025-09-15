@@ -19,7 +19,10 @@
       "title": "Allow vs Block (5m)",
       "gridPos": {"x":6,"y":0,"w":6,"h":8},
       "targets": [
-        {"expr": "sum by (action) (rate(guardrail_decisions_total[5m]))", "refId": "A"}
+        {
+          "expr": "sum by (family) (rate(guardrail_decisions_total[5m]))",
+          "refId": "A"
+        }
       ],
       "options": {"legend": {"displayMode": "table"}}
     },
@@ -37,10 +40,14 @@
     },
     {
       "type": "timeseries",
-      "title": "Decisions/s by action",
+      "title": "Decisions/s by family",
       "gridPos": {"x":0,"y":12,"w":12,"h":8},
       "targets": [
-        {"expr": "sum by (action) (rate(guardrail_decisions_total[5m]))", "refId": "A", "legendFormat": "{{action}}"}
+        {
+          "expr": "sum by (family) (rate(guardrail_decisions_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{family}}"
+        }
       ]
     },
     {

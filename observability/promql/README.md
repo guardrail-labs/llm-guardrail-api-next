@@ -11,7 +11,7 @@ sum(rate(guardrail_requests_total[5m]))
 
 **Allow vs block (decisions/s)**
 
-sum by (action) (rate(guardrail_decisions_total[5m]))
+sum by (family) (rate(guardrail_decisions_total[5m]))
 
 
 ## 2) Latency

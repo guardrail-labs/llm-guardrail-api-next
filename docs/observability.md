@@ -34,7 +34,7 @@ guardrail_requests_total{endpoint}
 
 Counter for incoming requests by endpoint.
 
-guardrail_decisions_total{action}
+guardrail_decisions_total{family}
 
 Counter for decisions such as allow or block.
 
