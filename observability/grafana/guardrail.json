@@ -1,0 +1,71 @@
+{
+  "title": "Guardrail API — Starter",
+  "uid": "guardrail-starter",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Req/s",
+      "gridPos": {"x":0,"y":0,"w":6,"h":4},
+      "targets": [
+        {"expr": "sum(rate(guardrail_requests_total[5m]))", "refId": "A", "legendFormat": "total"}
+      ]
+    },
+    {
+      "type": "piechart",
+      "title": "Allow vs Block (5m)",
+      "gridPos": {"x":6,"y":0,"w":6,"h":8},
+      "targets": [
+        {"expr": "sum by (action) (rate(guardrail_requests_total{action=~\"allow|block\"}[5m]))", "refId": "A"}
+      ],
+      "options": {"legend": {"displayMode": "table"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p95 (ms) by route",
+      "gridPos": {"x":0,"y":4,"w":12,"h":8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, route) (rate(guardrail_request_latency_ms_bucket[5m])))", "refId": "A", "legendFormat": "{{route}}"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx and 429 rates",
+      "gridPos": {"x":0,"y":12,"w":12,"h":8},
+      "targets": [
+        {"expr": "sum(rate(guardrail_requests_total{status=~\"5..\"}[5m]))", "refId": "A", "legendFormat": "5xx"},
+        {"expr": "sum(rate(guardrail_requests_total{status=\"429\"}[5m]))", "refId": "B", "legendFormat": "429"}
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Overflow %",
+      "gridPos": {"x":0,"y":20,"w":6,"h":4},
+      "targets": [
+        {"expr": "100 * sum(rate(guardrail_requests_total{tenant=\"__overflow__\"}[5m])) / sum(rate(guardrail_requests_total[5m]))", "refId": "A"}
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Active Policy Versions (15m)",
+      "gridPos": {"x":6,"y":20,"w":6,"h":8},
+      "targets": [
+        {"expr": "count by (policy_version) (sum_over_time(guardrail_requests_total[15m]) > 0)", "refId": "A"}
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "DS_PROMETHEUS",
+        "query": "prometheus",
+        "label": "Prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"}
+      }
+    ]
+  }
+}
