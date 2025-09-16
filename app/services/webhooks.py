@@ -12,11 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import httpx
 
 from app.services.config_store import get_config
-from app.telemetry.metrics import (
-    WEBHOOK_DELIVERIES_TOTAL,
-    WEBHOOK_EVENTS_TOTAL,
-    WEBHOOK_LATENCY_SECONDS,
-)
+from app.telemetry import metrics as _metrics
 
 # Dead-letter path (append JSONL on permanent failures)
 _DLQ_PATH = os.getenv("WEBHOOK_DLQ_PATH", "var/webhook_deadletter.jsonl")
@@ -129,15 +125,15 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
             with httpx.Client(timeout=timeout_ms / 1000.0, verify=not insecure_tls) as cli:
                 resp = cli.post(url, content=body_bytes, headers=headers)
             last_code = resp.status_code
-            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
+            _metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
             if 200 <= resp.status_code < 300:
                 return "sent", _status_bucket(last_code, None)
         except httpx.TimeoutException:
             last_exc = "timeout"
-            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
+            _metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
         except Exception:
             last_exc = "error"
-            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
+            _metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
 
         if attempt > max_retries:
             status = _status_bucket(last_code, last_exc)
@@ -158,13 +154,13 @@ def _worker() -> None:
                 _stats["processed"] += 1
                 _stats["last_status"] = status
                 _stats["last_error"] = "" if outcome == "sent" else status
-            WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
+            _metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
         except Exception as exc:  # pragma: no cover
             with _lock:
                 _stats["processed"] += 1
                 _stats["last_status"] = "error"
                 _stats["last_error"] = str(exc)
-            WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
+            _metrics.WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
 
 
 def _ensure_worker() -> None:
@@ -182,7 +178,7 @@ def enqueue(evt: Dict[str, Any]) -> None:
 
     with _lock:
         _stats["queued"] += 1
-    WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+    _metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
     _ensure_worker()
     _q.put(evt)
 
@@ -203,3 +199,77 @@ def configure(*, reset: bool = False) -> None:
 def stats() -> Dict[str, Any]:
     with _lock:
         return dict(_stats)
+
+
+def dlq_count() -> int:
+    try:
+        with _lock:
+            path = _DLQ_PATH
+            if not os.path.exists(path):
+                return 0
+            count = 0
+            with open(path, "r", encoding="utf-8") as handle:
+                for _ in handle:
+                    count += 1
+            return count
+    except Exception:
+        return 0
+
+
+def requeue_from_dlq(limit: int) -> int:
+    try:
+        limit_int = int(limit)
+    except Exception:
+        limit_int = 0
+    limit_int = max(0, min(limit_int, 1000))
+    if limit_int == 0:
+        return 0
+
+    try:
+        with _lock:
+            path = _DLQ_PATH
+            if not os.path.exists(path):
+                return 0
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            except FileNotFoundError:
+                return 0
+
+            requeued = 0
+            survivors: list[str] = []
+            worker_started = False
+
+            for line in lines:
+                if requeued >= limit_int:
+                    survivors.append(line)
+                    continue
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    survivors.append(line)
+                    continue
+                if not isinstance(record, dict):
+                    survivors.append(line)
+                    continue
+                event = record.get("event")
+                if isinstance(event, dict):
+                    if not worker_started:
+                        _ensure_worker()
+                        worker_started = True
+                    _q.put(event)
+                    requeued += 1
+                    _metrics.WEBHOOK_DELIVERIES_TOTAL.labels("dlq_replayed", "-").inc()
+                    continue
+                survivors.append(line)
+
+            tmp_path = f"{path}.tmp"
+            _ensure_dir(path)
+            with open(tmp_path, "w", encoding="utf-8") as out:
+                out.writelines(survivors)
+            os.replace(tmp_path, path)
+            return requeued
+    except Exception:
+        return 0
+
+    return 0
