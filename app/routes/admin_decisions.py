@@ -39,8 +39,8 @@ def _parse_params(req: Request) -> Tuple[Dict[str, Any], int, bool]:
         limit = 1
     if limit > 2000:
         limit = 2000
-    sse = (q.get("sse") or "").lower() in ("1", "true", "yes", "on")
-    return filters, limit, sse
+    sse_flag = (q.get("sse") or "").lower() in ("1", "true", "yes", "on")
+    return filters, limit, sse_flag
 
 
 def _match(evt: Dict[str, Any], f: Dict[str, Any]) -> bool:
@@ -69,7 +69,7 @@ def _match(evt: Dict[str, Any], f: Dict[str, Any]) -> bool:
 
 @router.get("/decisions")
 def get_decisions(req: Request, _: None = Depends(require_auth)) -> JSONResponse:
-    filters, limit, _ = _parse_params(req)
+    filters, limit, sse_flag = _parse_params(req)  # noqa: F841  (sse_flag unused here)
     events = [e for e in reversed(snapshot()) if _match(e, filters)]
     return JSONResponse(events[:limit])
 
@@ -78,7 +78,7 @@ def get_decisions(req: Request, _: None = Depends(require_auth)) -> JSONResponse
 def export_decisions_csv(
     req: Request, _: None = Depends(require_auth)
 ) -> PlainTextResponse:
-    filters, limit, _ = _parse_params(req)
+    filters, limit, sse_flag = _parse_params(req)  # noqa: F841
     events = [e for e in reversed(snapshot()) if _match(e, filters)][:limit]
 
     out = io.StringIO()
@@ -107,7 +107,7 @@ def export_decisions_csv(
 
 @router.get("/decisions/stream")
 def stream_decisions(req: Request, _: None = Depends(require_auth)) -> StreamingResponse:
-    filters, limit, _ = _parse_params(req)
+    filters, limit, sse_flag = _parse_params(req)  # noqa: F841
     sub = subscribe()
 
     def _sse():
