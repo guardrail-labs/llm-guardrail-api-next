@@ -244,11 +244,14 @@ def configure(*, reset: bool = False) -> None:
             _stats["last_status"] = ""
             _stats["last_error"] = ""
 
-    if reset:
-        try:
-            webhook_dlq_length_set(dlq_count())
-        except Exception:
-            pass
+    # Always sync the DLQ gauge to the current backlog so restarts immediately reflect
+    # reality. Previously this only ran for reset=True which left the gauge stale on
+    # cold starts.
+    try:
+        webhook_dlq_length_set(dlq_count())
+    except Exception:
+        # Never fail configure on metrics path.
+        pass
 
 
 def stats() -> Dict[str, Any]:
