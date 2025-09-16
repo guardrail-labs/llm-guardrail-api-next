@@ -144,6 +144,10 @@ class ConfigDict(TypedDict, total=False):
     webhook_timeout_ms: int
     webhook_max_retries: int
     webhook_backoff_ms: int
+    webhook_cb_error_threshold: int
+    webhook_cb_window: int
+    webhook_cb_cooldown_sec: int
+    webhook_backoff_cap_ms: int
     webhook_allow_insecure_tls: bool
     webhook_allowlist_host: str
 
@@ -159,6 +163,10 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "webhook_timeout_ms": 2000,
     "webhook_max_retries": 5,
     "webhook_backoff_ms": 500,
+    "webhook_cb_error_threshold": 8,
+    "webhook_cb_window": 30,
+    "webhook_cb_cooldown_sec": 60,
+    "webhook_backoff_cap_ms": 10_000,
     "webhook_allow_insecure_tls": False,
     "webhook_allowlist_host": "",
 }
@@ -174,6 +182,10 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "webhook_timeout_ms": "WEBHOOK_TIMEOUT_MS",
     "webhook_max_retries": "WEBHOOK_MAX_RETRIES",
     "webhook_backoff_ms": "WEBHOOK_BACKOFF_MS",
+    "webhook_cb_error_threshold": "WEBHOOK_CB_ERROR_THRESHOLD",
+    "webhook_cb_window": "WEBHOOK_CB_WINDOW",
+    "webhook_cb_cooldown_sec": "WEBHOOK_CB_COOLDOWN_SEC",
+    "webhook_backoff_cap_ms": "WEBHOOK_BACKOFF_CAP_MS",
     "webhook_allow_insecure_tls": "WEBHOOK_ALLOW_INSECURE_TLS",
     "webhook_allowlist_host": "WEBHOOK_ALLOWLIST_HOST",
 }
@@ -292,6 +304,26 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         if int_val is not None and int_val >= 0:
             normalized["webhook_backoff_ms"] = int_val
 
+    if "webhook_cb_error_threshold" in data:
+        int_val = _coerce_int(data.get("webhook_cb_error_threshold"))
+        if int_val is not None and int_val > 0:
+            normalized["webhook_cb_error_threshold"] = int_val
+
+    if "webhook_cb_window" in data:
+        int_val = _coerce_int(data.get("webhook_cb_window"))
+        if int_val is not None and int_val > 0:
+            normalized["webhook_cb_window"] = int_val
+
+    if "webhook_cb_cooldown_sec" in data:
+        int_val = _coerce_int(data.get("webhook_cb_cooldown_sec"))
+        if int_val is not None and int_val >= 0:
+            normalized["webhook_cb_cooldown_sec"] = int_val
+
+    if "webhook_backoff_cap_ms" in data:
+        int_val = _coerce_int(data.get("webhook_backoff_cap_ms"))
+        if int_val is not None and int_val >= 0:
+            normalized["webhook_backoff_cap_ms"] = int_val
+
     if "webhook_allow_insecure_tls" in data:
         bool_val = _coerce_bool(data.get("webhook_allow_insecure_tls"))
         if bool_val is not None:
@@ -386,6 +418,22 @@ def _env_overrides() -> ConfigDict:
             int_val = _coerce_int(raw)
             if int_val is not None and int_val >= 0:
                 overrides[key] = int_val
+        elif key == "webhook_cb_error_threshold":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val > 0:
+                overrides[key] = int_val
+        elif key == "webhook_cb_window":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val > 0:
+                overrides[key] = int_val
+        elif key == "webhook_cb_cooldown_sec":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
+        elif key == "webhook_backoff_cap_ms":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
         elif key == "webhook_allow_insecure_tls":
             bool_val = _coerce_bool(raw)
             if bool_val is not None:
@@ -406,6 +454,16 @@ def get_config() -> ConfigDict:
     with _LOCK:
         _ensure_config_loaded_locked()
         return cast(ConfigDict, dict(_current_config_locked()))
+
+
+def get_webhook_cb_tuning() -> Dict[str, int]:
+    cfg = get_config()
+    return {
+        "webhook_cb_error_threshold": int(cfg.get("webhook_cb_error_threshold", 8) or 8),
+        "webhook_cb_window": int(cfg.get("webhook_cb_window", 30) or 30),
+        "webhook_cb_cooldown_sec": int(cfg.get("webhook_cb_cooldown_sec", 60) or 60),
+        "webhook_backoff_cap_ms": int(cfg.get("webhook_backoff_cap_ms", 10_000) or 10_000),
+    }
 
 
 def _append_audit_entry(
