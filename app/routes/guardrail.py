@@ -1357,7 +1357,9 @@ async def guardrail_evaluate(request: Request):
             request_id=request_id,
             fingerprint_value=fingerprint_value,
             decision_family=decision_family,
-            rule_ids=rule_ids,
+            pr = locals().get("policy_result")
+            raw_rule_ids = (pr or {}).get("rule_ids")
+            rule_ids = list(raw_rule_ids) if raw_rule_ids else None,
             escalate=escalate,
             mode_hint=mode_hint,
             retry_after_hint=retry_after_hint,
