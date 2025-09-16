@@ -1,131 +1,103 @@
 from __future__ import annotations
 
 import collections
-import copy
 import json
 import os
 import threading
 import time
-from typing import Any, Deque, Dict, Iterable, Iterator, Optional, Set
+from typing import Any, Deque, Dict, Iterator, Optional, Tuple
 
-__all__ = ["publish", "snapshot", "subscribe", "unsubscribe", "configure"]
-
-
-class DecisionsSubscription(Iterator[Dict[str, Any]]):
-    """Thread-safe subscription queue for live decision events."""
-
-    def __init__(self) -> None:
-        self._queue: Deque[Dict[str, Any]] = collections.deque()
-        self._cond = threading.Condition()
-        self._closed = False
-
-    def push(self, evt: Dict[str, Any]) -> bool:
-        with self._cond:
-            if self._closed:
-                return False
-            self._queue.append(evt)
-            self._cond.notify()
-            return True
-
-    def get(self, timeout: Optional[float] = None) -> Dict[str, Any]:
-        with self._cond:
-            if timeout is None:
-                while not self._queue:
-                    if self._closed:
-                        raise StopIteration
-                    self._cond.wait()
-            else:
-                end = time.time() + timeout
-                while not self._queue and not self._closed:
-                    remaining = end - time.time()
-                    if remaining <= 0:
-                        break
-                    self._cond.wait(remaining)
-            if self._queue:
-                return self._queue.popleft()
-            raise StopIteration
-
-    def close(self) -> None:
-        with self._cond:
-            self._closed = True
-            self._cond.notify_all()
-
-    # Iterator API -----------------------------------------------------
-    def __iter__(self) -> "DecisionsSubscription":
-        return self
-
-    def __next__(self) -> Dict[str, Any]:
-        return self.get()
-
+# Runtime-configurable storage
+_PATH = os.getenv("DECISIONS_AUDIT_PATH", "var/decisions.jsonl")
+_MAX = int(os.getenv("DECISIONS_BUFFER_MAX", "2000"))
 
 _lock = threading.RLock()
-_max = int(os.getenv("DECISIONS_BUFFER_MAX", "2000"))
-_path = os.getenv("DECISIONS_AUDIT_PATH", "var/decisions.jsonl")
-_buf: Deque[Dict[str, Any]] = collections.deque(maxlen=_max)
-_listeners: Set[DecisionsSubscription] = set()
+_buf: Deque[Dict[str, Any]] = collections.deque(maxlen=_MAX)
+
+# Subscribers are simple generators that receive events via .send(evt)
+# We keep (gen,) so we can drop dead ones on StopIteration.
+_listeners: set[Tuple[Iterator[Dict[str, Any]],]] = set()
 
 
-def _ensure_dir() -> None:
-    directory = os.path.dirname(_path) or "."
-    os.makedirs(directory, exist_ok=True)
-
-
-def configure(*, path: Optional[str] = None, max_size: Optional[int] = None, reset: bool = False) -> None:
-    """Adjust runtime configuration (primarily for tests)."""
-
-    global _path, _buf, _max
-    with _lock:
-        if path is not None:
-            _path = path
-        if max_size is not None and max_size > 0:
-            items = list(_buf)
-            _max = max_size
-            _buf = collections.deque(items[-max_size:], maxlen=max_size)
-        if reset:
-            _buf.clear()
-            if path:
-                try:
-                    os.remove(path)
-                except FileNotFoundError:
-                    pass
+def _ensure_dir(path: str) -> None:
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
 
 
 def publish(evt: Dict[str, Any]) -> None:
-    data = dict(evt)
-    data.setdefault("ts", int(time.time()))
-
+    """Publish a decision event to the in-memory buffer, audit log, and subscribers."""
     with _lock:
-        _buf.append(copy.deepcopy(data))
+        if "ts" not in evt:
+            evt["ts"] = int(time.time())
+
+        # ring buffer
+        _buf.append(evt)
+
+        # append-only audit log
+        _ensure_dir(_PATH)
+        with open(_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(evt) + "\n")
+
+        # fan-out to subscribers
+        dead: list[Tuple[Iterator[Dict[str, Any]],]] = []
+        for (gen,) in _listeners:
+            try:
+                gen.send(evt)
+            except StopIteration:
+                dead.append((gen,))
+        for item in dead:
+            _listeners.discard(item)
+
+
+def snapshot() -> list[Dict[str, Any]]:
+    """Return a copy of the current buffer (newest last)."""
+    with _lock:
+        return list(_buf)
+
+
+def subscribe() -> Iterator[Dict[str, Any]]:
+    """
+    Return a primed generator that accepts events via .send(evt).
+
+    NOTE: This iterator yields nothing by itself; callers typically call
+    .send(None) to step the generator, and we push events via publish().
+    """
+    def _gen() -> Iterator[Dict[str, Any]]:
         try:
-            _ensure_dir()
-            with open(_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(data, ensure_ascii=False) + "\n")
-        except Exception:
-            # Persistence failures shouldn't break request handling.
-            pass
+            while True:
+                # Wait to receive an event from publish() via .send(evt)
+                evt = (yield)  # type: ignore[misc]
+                # No-op: we don't yield back here; the caller controls streaming.
+                # (SSE handlers usually keep their own snapshot and formatting.)
+                _ = evt
+        finally:
+            # generator closed by caller
+            return
 
-        stale: Set[DecisionsSubscription] = set()
-        for listener in list(_listeners):
-            if not listener.push(copy.deepcopy(data)):
-                stale.add(listener)
-        for listener in stale:
-            _listeners.discard(listener)
-
-
-def snapshot() -> Iterable[Dict[str, Any]]:
+    it = _gen()
+    next(it)  # prime
     with _lock:
-        return [copy.deepcopy(evt) for evt in _buf]
+        _listeners.add((it,))
+    return it
 
 
-def subscribe() -> DecisionsSubscription:
-    listener = DecisionsSubscription()
+def configure(
+    *,
+    path: Optional[str] = None,
+    max_size: Optional[int] = None,
+    reset: bool = False,
+) -> None:
+    """Adjust runtime configuration (primarily for tests)."""
+    global _PATH, _buf
     with _lock:
-        _listeners.add(listener)
-    return listener
+        if path is not None:
+            _PATH = path
 
+        if max_size is not None and max_size > 0:
+            # Resize buffer while preserving most-recent entries
+            new_len = int(max_size)
+            new_buf: Deque[Dict[str, Any]] = collections.deque(_buf, maxlen=new_len)
+            _buf = new_buf
 
-def unsubscribe(listener: DecisionsSubscription) -> None:
-    with _lock:
-        if listener in _listeners:
-            _listeners.remove(listener)
-    listener.close()
+        if reset:
+            _buf.clear()
