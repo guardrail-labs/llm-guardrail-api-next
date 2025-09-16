@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -156,6 +158,19 @@ _CONFIG_STATE: Dict[str, Any] = {}
 _CONFIG_LOADED = False
 
 
+def _config_audit_path() -> Path:
+    raw = os.getenv("CONFIG_AUDIT_PATH")
+    if raw:
+        return Path(raw)
+    return _REPO_ROOT / "var" / "config_audit.jsonl"
+
+
+def get_config_audit_path() -> Path:
+    """Return the configured audit log path for admin config writes."""
+
+    return _config_audit_path()
+
+
 def _coerce_bool(val: Any) -> Optional[bool]:
     if isinstance(val, bool):
         return val
@@ -297,19 +312,52 @@ def get_config() -> ConfigDict:
         return cast(ConfigDict, dict(_current_config_locked()))
 
 
-def set_config(patch: Mapping[str, Any]) -> ConfigDict:
+def _append_audit_entry(
+    before_state: Mapping[str, Any], after_state: Mapping[str, Any], actor: str
+) -> None:
+    entry = {
+        "ts": int(time.time() * 1000),
+        "actor": actor,
+        "before": dict(before_state),
+        "after": dict(after_state),
+    }
+    path = _config_audit_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
+    except Exception:
+        # Never allow audit persistence failures to block config updates.
+        pass
+
+
+def set_config(
+    patch: Mapping[str, Any], *, actor: str = "admin-api", replace: bool = False
+) -> ConfigDict:
     with _LOCK:
         _ensure_config_loaded_locked()
+        before_effective = dict(_current_config_locked())
         normalized = _normalize_config(patch)
 
         if "shadow_policy_path" in patch and "shadow_policy_path" not in normalized:
             normalized["shadow_policy_path"] = ""
 
-        if normalized:
+        updated = False
+        if replace:
+            _CONFIG_STATE.clear()
             _CONFIG_STATE.update(normalized)
             _write_config_locked(_CONFIG_STATE)
+            updated = True
+        elif normalized:
+            _CONFIG_STATE.update(normalized)
+            _write_config_locked(_CONFIG_STATE)
+            updated = True
 
-        return cast(ConfigDict, dict(_current_config_locked()))
+        after_effective = dict(_current_config_locked())
+        if updated and after_effective != before_effective:
+            _append_audit_entry(before_effective, after_effective, actor)
+
+        return cast(ConfigDict, after_effective)
 
 
 def reset_config() -> None:

@@ -6,7 +6,7 @@ from typing import Any, Dict, Mapping, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from app.routes.admin_ui import require_auth, _csrf_ok
+from app.routes.admin_ui import _csrf_ok, require_auth
 from app.services.config_store import get_config, set_config
 
 router = APIRouter(prefix="/admin", tags=["admin-config"])
@@ -90,7 +90,7 @@ async def update_runtime_config(
         _csrf_check_or_400(request, csrf_token)
 
         # Hand off to config_store; it handles normalization/typing.
-        set_config(dict(payload))
+        set_config(dict(payload), actor="admin-ui")
         return JSONResponse(get_config(), status_code=status.HTTP_200_OK)
 
     # B) Form path (fallback for existing UI posts)
@@ -112,5 +112,5 @@ async def update_runtime_config(
             continue
         form_dict[k] = v
 
-    set_config(form_dict)
+    set_config(form_dict, actor="admin-ui")
     return JSONResponse(get_config(), status_code=status.HTTP_200_OK)
