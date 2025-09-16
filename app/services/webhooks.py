@@ -147,6 +147,11 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
     last_exc: Optional[str] = None
 
     while True:
+        if attempt > 0 and reg.should_dlq_now(url):
+            # If the breaker opened after the previous attempt, stop retrying immediately.
+            _dlq_write(evt, reason="cb_open")
+            return "cb_open", "-"
+
         attempt += 1
         t0 = time.perf_counter()
         try:
