@@ -170,7 +170,6 @@ def _worker() -> None:
                 _stats["processed"] += 1
                 _stats["last_status"] = status
                 _stats["last_error"] = "" if outcome == "sent" else status
-            # Use positional labels per mypy typing (order matches labelnames)
             WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
         except Exception as e:  # pragma: no cover
             with _lock:
@@ -194,18 +193,18 @@ def enqueue(evt: Dict[str, Any]) -> None:
     """Queue a decision event for delivery."""
     with _lock:
         _stats["queued"] += 1
-    # Positional label (single label: outcome)
     WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
     _ensure_worker()
     _q.put(evt)
 
 
 def configure(*, reset: bool = False) -> None:
-    """Test helper: reset in-memory counters and queue."""
-    global _q
+    """Test helper: reset in-memory counters and queue (and restart worker)."""
+    global _q, _worker_started
     with _lock:
         if reset:
             _q = queue.SimpleQueue()
+            _worker_started = False  # force a new worker for the fresh queue
             for k in ("queued", "processed", "dropped"):
                 _stats[k] = 0
             _stats["last_status"] = ""
@@ -240,7 +239,8 @@ def requeue_from_dlq(limit: int) -> int:
     """
     Move up to `limit` oldest DLQ entries back to the worker queue.
     Protected by the same lock as _dlq_write to prevent lost appends during
-    atomic rewrite (os.replace).
+    atomic rewrite (os.replace). Ensures a worker is running for the current
+    queue before enqueueing.
     """
     limit = max(0, min(int(limit), 1000))
     if limit == 0:
@@ -251,6 +251,9 @@ def requeue_from_dlq(limit: int) -> int:
         with _lock:
             if not os.path.exists(path):
                 return 0
+
+            # Ensure worker consumes the current _q
+            _ensure_worker()
 
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
@@ -267,7 +270,6 @@ def requeue_from_dlq(limit: int) -> int:
                     if isinstance(evt, dict):
                         _q.put(evt)
                         requeued += 1
-                        # Positional labels: outcome, status
                         WEBHOOK_DELIVERIES_TOTAL.labels("dlq_replayed", "-").inc()
                     else:
                         survivors.append(line)
