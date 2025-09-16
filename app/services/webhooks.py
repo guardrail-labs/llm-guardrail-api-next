@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 import httpx
 
 from app.services.config_store import get_config
+from app.services.webhooks_cb import compute_backoff_ms, get_cb_registry
 from app.telemetry.metrics import (
     WEBHOOK_DELIVERIES_TOTAL,
     WEBHOOK_EVENTS_TOTAL,
@@ -108,8 +109,8 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
     """
     Deliver a single event with retries.
     Returns (outcome, status_bucket).
-    outcome: "sent" | "failed" | "dlq"
-    status_bucket: "2xx" | "4xx" | "5xx" | "timeout" | "error"
+    outcome: "sent" | "failed" | "dlq" | "cb_open"
+    status_bucket: "2xx" | "3xx" | "4xx" | "5xx" | "timeout" | "error" | "-"
     """
     cfg = get_config()
     url = str(cfg.get("webhook_url") or "")
@@ -124,6 +125,11 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
         return "failed", "error"
     if not _allow_host(url, allow_host):
         return "failed", "error"
+
+    reg = get_cb_registry()
+    if reg.should_dlq_now(url):
+        _dlq_write(evt, reason="cb_open")
+        return "cb_open", "-"
 
     body_bytes = json.dumps(evt).encode("utf-8")
     headers = {
@@ -150,23 +156,27 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
             ) as cli:
                 resp = cli.post(url, content=body_bytes, headers=headers)
                 last_code = resp.status_code
+                last_exc = None
                 WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
                 if 200 <= resp.status_code < 300:
+                    reg.on_success(url)
                     return "sent", _status_bucket(last_code, None)
+                reg.on_failure(url)
         except httpx.TimeoutException:
             last_exc = "timeout"
+            reg.on_failure(url)
             WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
         except Exception:
             last_exc = "error"
+            reg.on_failure(url)
             WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
 
         if attempt > max_retries:
             _dlq_write(evt, reason=_status_bucket(last_code, last_exc))
             return "dlq", _status_bucket(last_code, last_exc)
 
-        sleep_ms = backoff_ms * (2 ** (attempt - 1))
-        # Cap backoff to keep tests snappy
-        time.sleep(min(sleep_ms, 10_000) / 1000.0)
+        sleep_ms = compute_backoff_ms(backoff_ms, attempt - 1)
+        time.sleep(sleep_ms / 1000.0)
 
 
 def _worker() -> None:
