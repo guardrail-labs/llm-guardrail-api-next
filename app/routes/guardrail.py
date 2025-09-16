@@ -57,6 +57,7 @@ from app.services.config_sanitizer import (
     get_verifier_retry_budget,
     get_verifier_sampling_pct,
 )
+from app.services.config_store import get_config
 from app.telemetry import metrics as m
 from app.telemetry.metrics import (
     inc_actor_decisions_total,
@@ -1468,23 +1469,28 @@ async def guardrail_evaluate(request: Request):
         # We publish the fields we can reliably determine here. tenant/bot/endpoint
         # may be injected elsewhere; if you already add them to headers, they will
         # appear here; otherwise they default to "unknown".
-        publish(
-            {
-                "incident_id": resp.headers.get("X-Guardrail-Incident-ID"),
-                "request_id": request_id,
-                "tenant": resp.headers.get("X-Guardrail-Tenant", "unknown"),
-                "bot": resp.headers.get("X-Guardrail-Bot", "unknown"),
-                "family": decision_family,  # allow|deny
-                "mode": final_mode,         # allow|execute_locked|deny|full_quarantine
-                "status": resp.status_code,
-                "endpoint": resp.headers.get("X-Guardrail-Endpoint"),  # optional
-                "rule_ids": final_rule_ids or [],
-                "policy_version": resp.headers.get("X-Guardrail-Policy-Version"),
-                "shadow_action": shadow_action_val,
-                "shadow_rule_ids": shadow_rule_ids_list,
-                # latency_ms can be added here if you track it on request.state.*
-            }
-        )
+        event_payload = {
+            "incident_id": resp.headers.get("X-Guardrail-Incident-ID"),
+            "request_id": request_id,
+            "tenant": resp.headers.get("X-Guardrail-Tenant", "unknown"),
+            "bot": resp.headers.get("X-Guardrail-Bot", "unknown"),
+            "family": decision_family,  # allow|deny
+            "mode": final_mode,  # allow|execute_locked|deny|full_quarantine
+            "status": resp.status_code,
+            "endpoint": resp.headers.get("X-Guardrail-Endpoint"),  # optional
+            "rule_ids": final_rule_ids or [],
+            "policy_version": resp.headers.get("X-Guardrail-Policy-Version"),
+            "shadow_action": shadow_action_val,
+            "shadow_rule_ids": shadow_rule_ids_list,
+            # latency_ms can be added here if you track it on request.state.*
+        }
+        publish(event_payload)
+
+        cfg = get_config()
+        if cfg.get("webhook_enable"):
+            from app.services import webhooks as wh
+
+            wh.enqueue(event_payload)
 
         return resp
 

@@ -399,6 +399,13 @@ guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     "OCR extractions by type and outcome.",
     ["type", "outcome"],
 )
+
+# Webhook queue outcomes
+guardrail_webhook_events_total: CounterLike = _mk_counter(
+    "GUARDRAIL_WEBHOOK_EVENTS_TOTAL",
+    "Webhook queue events by outcome.",
+    ["outcome"],
+)
 guardrail_ocr_bytes_total: CounterLike = _mk_counter(
     "guardrail_ocr_bytes_total",
     "Total bytes processed by OCR input type.",
