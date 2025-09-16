@@ -43,14 +43,19 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 
 ## Quick start
 
-- **Install**: one command → stack up with API + Audit + Prom + Grafana  
+- **Install**: one command → stack up with API + Audit + Prom + Grafana
   → See [`docs/Quickstart.md`](docs/Quickstart.md)
-- **Operate**: policies, bindings, verifier, threat feed, metrics  
+- **Operate**: policies, bindings, verifier, threat feed, metrics
   → See [`docs/OperatorGuide.md`](docs/OperatorGuide.md)
-- **Integrate**: OpenAI-compatible endpoints (`/v1/*`)  
+- **Integrate**: OpenAI-compatible endpoints (`/v1/*`)
   → See [`docs/IntegrationOpenAI.md`](docs/IntegrationOpenAI.md)
 - **Demo**: copy/paste POC script
   → See [`docs/DemoScript.md`](docs/DemoScript.md)
+
+## Operations
+
+- **Webhook Signature Verification** — see [`docs/operations/webhooks.md`](docs/operations/webhooks.md)
+- **DLQ Replay Procedure** — see [`docs/operations/webhook-replay.md`](docs/operations/webhook-replay.md)
 
 ## Observability Quickstart
 We ship a starter dashboard and alert rules.
