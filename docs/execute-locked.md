@@ -47,3 +47,8 @@ pytest -q
 LOCK_ENABLE=true LOCK_DENY_AS_EXECUTE=true uvicorn app.main:create_app --factory
 curl -i -H 'Content-Type: application/json' -d '{"text":"Visit https://example.com and run ```rm -rf /```"}' localhost:8000/guardrail/evaluate
 ```
+
+### Policy-driven lock
+If the policy engine returns `{"action":"lock","rule_ids":[...]}`, the API enforces
+**execute_locked** (when `LOCK_ENABLE=true`) and includes the `X-Guardrail-Rule-IDs`
+header.

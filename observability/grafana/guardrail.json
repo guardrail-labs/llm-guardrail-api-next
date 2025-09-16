@@ -129,6 +129,30 @@
         }
       ],
       "options": { "legend": { "displayMode": "table" } }
+    },
+    {
+      "type": "table",
+      "title": "Top 10 rules by denies (5m)",
+      "gridPos": { "x": 0, "y": 76, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (rule_id) (rate(guardrail_rule_hits_total{action=\"deny\"}[5m])))",
+          "refId": "A"
+        }
+      ],
+      "options": { "showHeader": true }
+    },
+    {
+      "type": "timeseries",
+      "title": "Rule hits by action (5m)",
+      "gridPos": { "x": 0, "y": 84, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(guardrail_rule_hits_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{action}}"
+        }
+      ]
     }
   ],
   "templating": {
