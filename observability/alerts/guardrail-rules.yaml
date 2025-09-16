@@ -70,14 +70,27 @@ groups:
             Investigate receiver availability, secrets, allowlist, or TLS settings.
             Ratio = (non-sent outcomes) / (all deliveries).
 
-    # Optional (uncomment after adding a DLQ gauge/counter series)
-    #      - alert: GuardrailWebhookDLQGrowing
-    #        expr: rate(guardrail_webhook_events_total{event="dlq"}[15m]) > 0
-    #        for: 15m
-    #        labels:
-    #          severity: warning
-    #          team: guardrail
-    #          service: guardrail-api
-    #        annotations:
-    #          summary: "Guardrail webhook DLQ is receiving events"
-    #          description: "DLQ receiving events for 15m+. Consider replay once receiver is fixed."
+  - name: guardrail-webhooks-dlq
+    interval: 1m
+    rules:
+      - alert: GuardrailWebhookDLQBacklog
+        expr: guardrail_webhook_dlq_length > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: guardrail
+          service: guardrail-api
+        annotations:
+          summary: "Guardrail webhook DLQ backlog > 0"
+          description: "DLQ has items for 10m+. Investigate receiver availability and consider replay."
+
+      - alert: GuardrailWebhookDLQGrowing
+        expr: delta(guardrail_webhook_dlq_length[15m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+          team: guardrail
+          service: guardrail-api
+        annotations:
+          summary: "Guardrail webhook DLQ is growing"
+          description: "DLQ length increased over the last 15m. Receiver may be unhealthy or misconfigured."

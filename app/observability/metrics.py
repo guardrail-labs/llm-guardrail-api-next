@@ -294,3 +294,44 @@ def inc_verifier_router_rank(tenant: str, bot: str) -> None:
         VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant_l, bot=bot_l).inc()
     except Exception:
         pass
+
+
+# ---- Webhooks: DLQ length gauge ---------------------------------------------
+
+_webhook_dlq_length = _get_or_create_gauge(
+    "guardrail_webhook_dlq_length",
+    "Number of webhook events currently queued in the DLQ.",
+)
+
+
+def webhook_dlq_length_set(n: float) -> None:
+    try:
+        _webhook_dlq_length.set(float(n))
+    except Exception:
+        # defensive: never throw from metrics path
+        pass
+
+
+def webhook_dlq_length_inc(delta: float = 1) -> None:
+    try:
+        _webhook_dlq_length.inc(float(delta))
+    except Exception:
+        pass
+
+
+def webhook_dlq_length_dec(delta: float = 1) -> None:
+    try:
+        current = webhook_dlq_length_get()
+        _webhook_dlq_length.set(max(0.0, current - float(delta)))
+    except Exception:
+        pass
+
+
+def webhook_dlq_length_get() -> float:
+    try:
+        for metric in _webhook_dlq_length.collect():
+            for sample in metric.samples:
+                return float(sample.value)
+    except Exception:
+        pass
+    return 0.0

@@ -231,6 +231,27 @@
           "legendFormat": "p95"
         }
       ]
+    },
+    {
+      "type": "stat",
+      "title": "Webhook DLQ length",
+      "id": 9010,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "guardrail_webhook_dlq_length" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Webhook DLQ length over time",
+      "id": 9011,
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "guardrail_webhook_dlq_length" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right" } }
     }
   ],
   "templating": {
