@@ -11,6 +11,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
+from app.observability.metrics import (
+    webhook_dlq_length_dec,
+    webhook_dlq_length_inc,
+    webhook_dlq_length_set,
+)
 from app.services.config_store import get_config
 from app.services.webhooks_cb import compute_backoff_ms, get_cb_registry
 from app.telemetry.metrics import (
@@ -100,6 +105,7 @@ def _dlq_write(evt: Dict[str, Any], reason: str) -> None:
             _ensure_dir(path)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
+            webhook_dlq_length_inc(1)
     except Exception:
         # DLQ failures are best-effort; swallow errors.
         pass
@@ -238,6 +244,12 @@ def configure(*, reset: bool = False) -> None:
             _stats["last_status"] = ""
             _stats["last_error"] = ""
 
+    if reset:
+        try:
+            webhook_dlq_length_set(dlq_count())
+        except Exception:
+            pass
+
 
 def stats() -> Dict[str, Any]:
     with _lock:
@@ -310,6 +322,8 @@ def requeue_from_dlq(limit: int) -> int:
                 out.writelines(survivors)
             os.replace(tmp_path, path)
 
+            if requeued:
+                webhook_dlq_length_dec(requeued)
             return requeued
     except Exception:
         return 0
