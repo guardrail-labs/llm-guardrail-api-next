@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from hmac import compare_digest
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from app.routes.admin_ui import require_auth, _csrf_ok  # reuse existing auth + CSRF helpers
-from app.services.config_store import get_config, set_config, normalize_patch
+from app.routes.admin_ui import require_auth, _csrf_ok
+from app.services.config_store import get_config, set_config
 
 router = APIRouter(prefix="/admin", tags=["admin-config"])
 
@@ -47,21 +47,6 @@ def _csrf_check_or_400(request: Request, csrf_token: Optional[str]) -> None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed"
         )
-
-
-def _normalize_json_payload(
-    payload: Mapping[str, Any]
-) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    """
-    Use config_store.normalize_patch to strictly coerce known keys/types.
-    Also collect simple per-key errors (currently unused; reserved for UI).
-    """
-    try:
-        patch = normalize_patch(payload)
-    except Exception:
-        patch = {}
-    # For now, we don't produce granular errors — return empty dict.
-    return patch, {}
 
 
 # ---- Endpoints ---------------------------------------------------------------
@@ -104,9 +89,8 @@ async def update_runtime_config(
         csrf_token = _extract_csrf_token(request, payload)
         _csrf_check_or_400(request, csrf_token)
 
-        patch, _errors = _normalize_json_payload(payload)
-        if patch:
-            set_config(patch)
+        # Hand off to config_store; it handles normalization/typing.
+        set_config(dict(payload))
         return JSONResponse(get_config(), status_code=status.HTTP_200_OK)
 
     # B) Form path (fallback for existing UI posts)
@@ -121,14 +105,12 @@ async def update_runtime_config(
     csrf_token = str(csrf_token_val) if csrf_token_val is not None else ""
     _csrf_check_or_400(request, csrf_token)
 
-    # Map form fields to a dict, pass through normalizer
+    # Map form fields to a dict; config_store will coerce/ignore as needed.
     form_dict: Dict[str, Any] = {}
     for k, v in (form or {}).items():
         if k == "csrf_token":
             continue
         form_dict[k] = v
 
-    patch, _errors = _normalize_json_payload(form_dict)
-    if patch:
-        set_config(patch)
+    set_config(form_dict)
     return JSONResponse(get_config(), status_code=status.HTTP_200_OK)
