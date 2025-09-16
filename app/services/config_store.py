@@ -138,6 +138,13 @@ class ConfigDict(TypedDict, total=False):
     shadow_policy_path: str
     shadow_timeout_ms: int
     shadow_sample_rate: float
+    webhook_enable: bool
+    webhook_url: str
+    webhook_secret: str
+    webhook_timeout_ms: int
+    webhook_max_retries: int
+    webhook_backoff_ms: int
+    webhook_allow_insecure_tls: bool
 
 
 _CONFIG_DEFAULTS: ConfigDict = {
@@ -145,6 +152,13 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "shadow_policy_path": "",
     "shadow_timeout_ms": 100,
     "shadow_sample_rate": 1.0,
+    "webhook_enable": False,
+    "webhook_url": "",
+    "webhook_secret": "",
+    "webhook_timeout_ms": 2000,
+    "webhook_max_retries": 5,
+    "webhook_backoff_ms": 500,
+    "webhook_allow_insecure_tls": False,
 }
 
 _CONFIG_ENV_MAP: Dict[str, str] = {
@@ -152,6 +166,13 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "shadow_policy_path": "SHADOW_POLICY_PATH",
     "shadow_timeout_ms": "SHADOW_TIMEOUT_MS",
     "shadow_sample_rate": "SHADOW_SAMPLE_RATE",
+    "webhook_enable": "WEBHOOK_ENABLE",
+    "webhook_url": "WEBHOOK_URL",
+    "webhook_secret": "WEBHOOK_SECRET",
+    "webhook_timeout_ms": "WEBHOOK_TIMEOUT_MS",
+    "webhook_max_retries": "WEBHOOK_MAX_RETRIES",
+    "webhook_backoff_ms": "WEBHOOK_BACKOFF_MS",
+    "webhook_allow_insecure_tls": "WEBHOOK_ALLOW_INSECURE_TLS",
 }
 
 _CONFIG_STATE: Dict[str, Any] = {}
@@ -234,6 +255,45 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
             clamped = max(0.0, min(1.0, float_val))
             normalized["shadow_sample_rate"] = clamped
 
+    if "webhook_enable" in data:
+        bool_val = _coerce_bool(data.get("webhook_enable"))
+        if bool_val is not None:
+            normalized["webhook_enable"] = bool_val
+
+    if "webhook_url" in data:
+        raw = data.get("webhook_url")
+        if raw is None:
+            normalized["webhook_url"] = ""
+        else:
+            normalized["webhook_url"] = str(raw).strip()
+
+    if "webhook_secret" in data:
+        raw = data.get("webhook_secret")
+        if raw is None:
+            normalized["webhook_secret"] = ""
+        else:
+            normalized["webhook_secret"] = str(raw).strip()
+
+    if "webhook_timeout_ms" in data:
+        int_val = _coerce_int(data.get("webhook_timeout_ms"))
+        if int_val is not None and int_val >= 0:
+            normalized["webhook_timeout_ms"] = int_val
+
+    if "webhook_max_retries" in data:
+        int_val = _coerce_int(data.get("webhook_max_retries"))
+        if int_val is not None and int_val >= 0:
+            normalized["webhook_max_retries"] = int_val
+
+    if "webhook_backoff_ms" in data:
+        int_val = _coerce_int(data.get("webhook_backoff_ms"))
+        if int_val is not None and int_val >= 0:
+            normalized["webhook_backoff_ms"] = int_val
+
+    if "webhook_allow_insecure_tls" in data:
+        bool_val = _coerce_bool(data.get("webhook_allow_insecure_tls"))
+        if bool_val is not None:
+            normalized["webhook_allow_insecure_tls"] = bool_val
+
     return cast(ConfigDict, normalized)
 
 
@@ -296,6 +356,30 @@ def _env_overrides() -> ConfigDict:
             float_val = _coerce_float(raw)
             if float_val is not None:
                 overrides[key] = max(0.0, min(1.0, float_val))
+        elif key == "webhook_enable":
+            bool_val = _coerce_bool(raw)
+            if bool_val is not None:
+                overrides[key] = bool_val
+        elif key == "webhook_url":
+            overrides[key] = str(raw).strip()
+        elif key == "webhook_secret":
+            overrides[key] = str(raw).strip()
+        elif key == "webhook_timeout_ms":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
+        elif key == "webhook_max_retries":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
+        elif key == "webhook_backoff_ms":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
+        elif key == "webhook_allow_insecure_tls":
+            bool_val = _coerce_bool(raw)
+            if bool_val is not None:
+                overrides[key] = bool_val
     return cast(ConfigDict, overrides)
 
 
