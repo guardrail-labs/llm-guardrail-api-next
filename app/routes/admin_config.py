@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional, Tuple
 from hmac import compare_digest
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -11,14 +11,18 @@ from app.services.config_store import get_config, set_config, normalize_patch
 
 router = APIRouter(prefix="/admin", tags=["admin-config"])
 
+
 # ---- Helpers ----------------------------------------------------------------
 
-def _extract_csrf_token(request: Request, payload: Optional[Mapping[str, Any]]) -> Optional[str]:
+
+def _extract_csrf_token(
+    request: Request, payload: Optional[Mapping[str, Any]]
+) -> Optional[str]:
     """
-    Try to get a CSRF token from:
+    Try to get a CSRF token from (in order):
       1) Header: X-CSRF-Token
       2) JSON body: {"csrf_token": "..."} (if JSON)
-      3) Form field: csrf_token (handled separately by form endpoint if you have one)
+      3) Form body handled by the form branch in the endpoint
     """
     hdr = request.headers.get("x-csrf-token")
     if hdr:
@@ -32,14 +36,25 @@ def _extract_csrf_token(request: Request, payload: Optional[Mapping[str, Any]]) 
 
 def _csrf_check_or_400(request: Request, csrf_token: Optional[str]) -> None:
     cookie = request.cookies.get("ui_csrf", "")
-    if not (cookie and csrf_token and _csrf_ok(cookie) and _csrf_ok(csrf_token) and compare_digest(cookie, csrf_token)):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed")
+    ok = (
+        cookie
+        and csrf_token
+        and _csrf_ok(cookie)
+        and _csrf_ok(csrf_token)
+        and compare_digest(cookie, csrf_token)
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed"
+        )
 
 
-def _normalize_json_payload(payload: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+def _normalize_json_payload(
+    payload: Mapping[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, str]]:
     """
-    Use the config_store.normalize_patch to strictly coerce known keys/types.
-    Also collect simple per-key errors for user feedback (optional).
+    Use config_store.normalize_patch to strictly coerce known keys/types.
+    Also collect simple per-key errors (currently unused; reserved for UI).
     """
     try:
         patch = normalize_patch(payload)
@@ -51,17 +66,24 @@ def _normalize_json_payload(payload: Mapping[str, Any]) -> Tuple[Dict[str, Any],
 
 # ---- Endpoints ---------------------------------------------------------------
 
+
 @router.get("/config")
 def get_cfg(_: None = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(get_config())
 
 
 @router.post("/config")
-async def update_runtime_config(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
+async def update_runtime_config(
+    request: Request, _: None = Depends(require_auth)
+) -> JSONResponse:
     """
     Accept JSON or form POST to update runtime configuration, with CSRF equality check.
-    - JSON: Content-Type: application/json; body contains keys and optional "csrf_token".
-    - Form: application/x-www-form-urlencoded or multipart/form-data; we read `csrf_token` and fields from form.
+
+    - JSON:
+      Content-Type: application/json; body contains keys and optional "csrf_token".
+    - Form:
+      application/x-www-form-urlencoded or multipart/form-data; we read a "csrf_token"
+      field and additional key/value fields to update.
     """
     content_type = (request.headers.get("content-type") or "").lower()
 
@@ -70,10 +92,14 @@ async def update_runtime_config(request: Request, _: None = Depends(require_auth
         try:
             payload = await request.json()
         except Exception:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json"
+            )
 
         if not isinstance(payload, Mapping):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload"
+            )
 
         csrf_token = _extract_csrf_token(request, payload)
         _csrf_check_or_400(request, csrf_token)
@@ -87,10 +113,12 @@ async def update_runtime_config(request: Request, _: None = Depends(require_auth
     try:
         form = await request.form()
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid form")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid form"
+        )
 
-    csrf_token = (form.get("csrf_token") or "") if form else ""
-    csrf_token = str(csrf_token) if csrf_token is not None else ""
+    csrf_token_val = (form.get("csrf_token") or "") if form else ""
+    csrf_token = str(csrf_token_val) if csrf_token_val is not None else ""
     _csrf_check_or_400(request, csrf_token)
 
     # Map form fields to a dict, pass through normalizer
