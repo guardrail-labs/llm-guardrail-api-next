@@ -39,12 +39,11 @@ def test_reload_with_csrf_ok(monkeypatch) -> None:
     assert r2.text == "ok"
 
 
-def test_export_ndjson_auth() -> None:
+def test_decisions_page_renders() -> None:
     c = _client()
     r = c.get(
-        "/admin/ui/export/decisions?n=2",
+        "/admin/ui/decisions",
         headers={"Authorization": "Bearer secret"},
     )
     assert r.status_code == 200
-    assert r.headers.get("content-type", "").startswith("application/x-ndjson")
-
+    assert "Decisions" in r.text

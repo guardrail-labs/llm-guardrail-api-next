@@ -1,26 +1,194 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <h2>Recent Decisions ({{ n }})</h2>
-  <p><a href="/admin/ui/export/decisions?n={{ n }}">Export JSONL</a></p>
-  {% if not decisions or decisions|length == 0 %}
-    <p class="muted">No recent decisions available.</p>
-  {% else %}
-    <table>
-      <thead><tr><th>ts</th><th>tenant</th><th>bot</th><th>action</th><th>reason</th></tr></thead>
-      <tbody>
-        {% for d in decisions %}
-        <tr>
-          <td>{{ d.ts or d.timestamp or '—' }}</td>
-          <td>{{ d.tenant or '—' }}</td>
-          <td>{{ d.bot or '—' }}</td>
-          <td>{{ d.action or '—' }}</td>
-          <td>{{ d.reason or d.details or '—' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
+  <h2>Decisions</h2>
+  <div class="row" style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; margin-bottom:0.75rem;">
+    <input id="f-tenant" class="filter" placeholder="Tenant" />
+    <input id="f-bot" class="filter" placeholder="Bot" />
+    <select id="f-family" class="filter">
+      <option value="">family</option>
+      <option value="allow">allow</option>
+      <option value="deny">deny</option>
+    </select>
+    <select id="f-mode" class="filter">
+      <option value="">mode</option>
+      <option value="allow">allow</option>
+      <option value="execute_locked">execute_locked</option>
+      <option value="deny">deny</option>
+      <option value="full_quarantine">full_quarantine</option>
+    </select>
+    <input id="f-rule" class="filter" placeholder="Rule ID" />
+    <button id="apply">Apply</button>
+    <label style="display:flex; align-items:center; gap:0.25rem;">
+      <input type="checkbox" id="live" checked />
+      Live
+    </label>
+    <a id="csv" href="#" style="margin-left:auto;">Export CSV</a>
+  </div>
+  <table id="decisions-table">
+    <thead>
+      <tr>
+        <th>ts</th>
+        <th>incident</th>
+        <th>tenant</th>
+        <th>bot</th>
+        <th>family</th>
+        <th>mode</th>
+        <th>status</th>
+        <th>endpoint</th>
+        <th>rules</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 </div>
-{% endblock %}
+<script>
+(function(){
+  const tableLimit = 200;
+  let source = null;
+  const tbody = document.querySelector('#decisions-table tbody');
 
+  function formQuery(extra={}){
+    const params = new URLSearchParams();
+    const tenant = document.getElementById('f-tenant').value.trim();
+    const bot = document.getElementById('f-bot').value.trim();
+    const family = document.getElementById('f-family').value;
+    const mode = document.getElementById('f-mode').value;
+    const rule = document.getElementById('f-rule').value.trim();
+    if(tenant) params.set('tenant', tenant);
+    if(bot) params.set('bot', bot);
+    if(family) params.set('family', family);
+    if(mode) params.set('mode', mode);
+    if(rule) params.set('rule_id', rule);
+    params.set('limit', String(tableLimit));
+    for (const [key, value] of Object.entries(extra)){
+      if(value !== undefined && value !== null && value !== ''){
+        params.set(key, value);
+      }
+    }
+    return params.toString();
+  }
+
+  function updateCsvLink(){
+    document.getElementById('csv').href = '/admin/decisions/export.csv?' + formQuery();
+  }
+
+  function copyIncident(incident){
+    if(!incident) return;
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(incident).catch(()=>{});
+    }
+  }
+
+  function renderRow(evt){
+    const tr = document.createElement('tr');
+
+    const cells = [
+      evt.ts ?? '',
+      evt.incident_id || '',
+      evt.tenant || '',
+      evt.bot || '',
+      evt.family || '',
+      evt.mode || '',
+      evt.status ?? '',
+      evt.endpoint || '',
+      (evt.rule_ids || []).join(',')
+    ];
+
+    cells.forEach((value, idx) => {
+      const td = document.createElement('td');
+      td.textContent = value;
+      if(idx === 1){
+        td.title = evt.request_id || '';
+        if(evt.incident_id){
+          td.style.cursor = 'pointer';
+          td.addEventListener('click', () => copyIncident(evt.incident_id));
+        }
+      }
+      tr.appendChild(td);
+    });
+    return tr;
+  }
+
+  function resetTable(){
+    tbody.innerHTML = '';
+  }
+
+  function prependRow(evt){
+    const tr = renderRow(evt);
+    if(tbody.firstChild){
+      tbody.insertBefore(tr, tbody.firstChild);
+    } else {
+      tbody.appendChild(tr);
+    }
+    while(tbody.children.length > tableLimit){
+      tbody.removeChild(tbody.lastElementChild);
+    }
+  }
+
+  function populate(events){
+    resetTable();
+    events.forEach((evt) => {
+      tbody.appendChild(renderRow(evt));
+    });
+  }
+
+  function closeStream(){
+    if(source){
+      source.close();
+      source = null;
+    }
+  }
+
+  function startStream(){
+    closeStream();
+    const url = '/admin/decisions/stream?' + formQuery();
+    source = new EventSource(url, { withCredentials: true });
+    const handler = (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        prependRow(parsed);
+      } catch(err) {
+        console.warn('Failed to parse SSE payload', err);
+      }
+    };
+    source.addEventListener('init', handler);
+    source.onmessage = handler;
+    source.onerror = () => {
+      closeStream();
+    };
+  }
+
+  function reload(){
+    updateCsvLink();
+    closeStream();
+    fetch('/admin/decisions?' + formQuery(), { credentials: 'same-origin' })
+      .then((resp) => resp.ok ? resp.json() : Promise.reject(resp))
+      .then((events) => {
+        populate(events);
+        if(document.getElementById('live').checked){
+          startStream();
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load decisions', err);
+        resetTable();
+      });
+  }
+
+  document.getElementById('apply').addEventListener('click', (ev) => {
+    ev.preventDefault();
+    reload();
+  });
+  document.getElementById('live').addEventListener('change', () => {
+    if(document.getElementById('live').checked){
+      startStream();
+    } else {
+      closeStream();
+    }
+  });
+  window.addEventListener('beforeunload', closeStream);
+  reload();
+})();
+</script>
+{% endblock %}

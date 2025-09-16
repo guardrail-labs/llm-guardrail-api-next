@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import io
 import os
 import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
 from app.services.policy import current_rules_version, reload_rules
@@ -19,13 +18,6 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - import error fallback
     def list_bindings() -> List[Dict[str, Any]]:
         return []
-
-try:  # pragma: no cover - optional dependency
-    from app.services.audit_forwarder import fetch_recent_decisions  # type: ignore
-except Exception:  # pragma: no cover - missing audit store
-    def fetch_recent_decisions(n: int = 50) -> List[Dict[str, Any]]:
-        return []
-
 
 router = APIRouter(prefix="/admin/ui", tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/ui/templates")
@@ -146,14 +138,8 @@ def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
 
 
 @router.get("/decisions", response_class=HTMLResponse)
-def ui_decisions(
-    req: Request, n: int = 50, _: None = Depends(require_auth)
-) -> HTMLResponse:
-    decisions = fetch_recent_decisions(n)
-    resp = templates.TemplateResponse(
-        "decisions.html",
-        {"request": req, "decisions": decisions, "n": n},
-    )
+def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
+    resp = templates.TemplateResponse("decisions.html", {"request": req})
     issue_csrf(resp)
     return resp
 
@@ -180,20 +166,4 @@ def ui_reload(
     except Exception as exc:  # pragma: no cover - reload failure
         raise HTTPException(status_code=500, detail=f"reload failed: {exc}")
 
-
-@router.get("/export/decisions")
-def export_decisions(
-    n: int = 1000, _: None = Depends(require_auth)
-) -> StreamingResponse:
-    buf = io.StringIO()
-    for item in fetch_recent_decisions(n):
-        import json
-
-        buf.write(json.dumps(item) + "\n")
-    buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/x-ndjson",
-        headers={"Content-Disposition": "attachment; filename=decisions.ndjson"},
-    )
 

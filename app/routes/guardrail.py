@@ -6,7 +6,7 @@ import random
 import re
 import uuid
 import time
-from typing import Any, Callable, Awaitable, Dict, List, Mapping, Optional, Tuple, cast
+from typing import Any, Callable, Awaitable, Dict, Iterable, List, Mapping, Optional, Tuple, cast
 
 from fastapi import APIRouter, Header, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -34,10 +34,12 @@ from app.services.rulepacks_engine import ingress_should_block, ingress_mode
 from app.services.fingerprint import fingerprint
 from app.services import escalation as esc
 from app.services.decision_headers import apply_decision_headers, REQ_ID_HEADER
+from app.services.decisions_bus import publish as publish_decision_event
 from app.services.enforcement import Mode, choose_mode
 from app.services.policy_types import PolicyResult
 from app.shared.headers import attach_guardrail_headers
 from app.egress.redaction import redact_response_body
+from app.observability.http_status import _endpoint_name
 # --- BEGIN PR-C wire-up block ---
 from app.services.config_sanitizer import (
     get_verifier_latency_budget_ms,
@@ -167,6 +169,51 @@ def _record_actor_metric(request: Request, action: str) -> None:
     family = "allow" if action == "allow" else "deny"
     tenant, bot = _actor_labels(request)
     inc_actor_decisions_total(family, tenant, bot)
+
+
+def _publish_decision(
+    request: Request,
+    response: Response,
+    *,
+    tenant: str,
+    bot: str,
+    decision_family: str,
+    rule_ids: Optional[Iterable[str]] = None,
+) -> None:
+    try:
+        final_mode = (
+            getattr(response, "_guardrail_final_mode", None)
+            or response.headers.get("X-Guardrail-Final-Mode")
+            or response.headers.get("X-Guardrail-Mode")
+        )
+        rule_ids_attr = getattr(response, "_guardrail_rule_ids", None)
+        rule_list: List[str]
+        if rule_ids_attr:
+            rule_list = [str(r) for r in rule_ids_attr if str(r)]
+        elif rule_ids:
+            rule_list = [str(r) for r in rule_ids if str(r)]
+        else:
+            header_ids = response.headers.get("X-Guardrail-Rule-IDs", "")
+            rule_list = [rid for rid in header_ids.split(",") if rid]
+
+        publish_decision_event(
+            {
+                "ts": int(time.time()),
+                "incident_id": response.headers.get("X-Guardrail-Incident-ID"),
+                "request_id": response.headers.get(REQ_ID_HEADER),
+                "tenant": (tenant or "unknown"),
+                "bot": (bot or "unknown"),
+                "family": (decision_family or "unknown"),
+                "mode": final_mode or "unknown",
+                "status": response.status_code,
+                "endpoint": _endpoint_name(request),
+                "rule_ids": rule_list,
+                "policy_version": response.headers.get("X-Guardrail-Policy-Version"),
+                "latency_ms": getattr(request.state, "latency_ms", None),
+            }
+        )
+    except Exception:
+        pass
 
 
 def emit_audit_event(payload: Dict[str, Any]) -> None:
@@ -560,6 +607,13 @@ def _finalize_ingress_response(
         request_id=request_id,
         rule_ids=rule_ids_clean,
     )
+
+    setattr(response, "_guardrail_rule_ids", list(rule_ids_clean))
+    setattr(response, "_guardrail_final_mode", final_mode)
+    try:
+        response.headers["X-Guardrail-Final-Mode"] = final_mode
+    except Exception:
+        pass
 
     inc_mode(final_mode)
     return response
@@ -1288,6 +1342,37 @@ async def guardrail_evaluate(request: Request):
 
     request_id = _req_id(explicit_request_id or req_header_request_id)
 
+    def finalize_response(
+        response: Response,
+        *,
+        decision_family: str,
+        rule_ids: Optional[Iterable[str]] = None,
+        escalate: bool = True,
+        mode_hint: Optional[str] = None,
+        retry_after_hint: Optional[int] = None,
+        policy_result: Optional[Mapping[str, Any]] = None,
+    ) -> Response:
+        finalized = _finalize_ingress_response(
+            response,
+            request_id=request_id,
+            fingerprint_value=fingerprint_value,
+            decision_family=decision_family,
+            rule_ids=rule_ids,
+            escalate=escalate,
+            mode_hint=mode_hint,
+            retry_after_hint=retry_after_hint,
+            policy_result=policy_result,
+        )
+        _publish_decision(
+            request,
+            finalized,
+            tenant=tenant,
+            bot=bot,
+            decision_family=decision_family,
+            rule_ids=rule_ids,
+        )
+        return finalized
+
     # Ingress rulepack enforcement (opt-in)
     should_block, hits = ingress_should_block(combined_text or "")
     if should_block:
@@ -1323,10 +1408,8 @@ async def guardrail_evaluate(request: Request):
             except Exception:
                 pass
             _record_actor_metric(request, "block_input_only")
-            return _finalize_ingress_response(
+            return finalize_response(
                 resp,
-                request_id=request_id,
-                fingerprint_value=fingerprint_value,
                 decision_family="deny",
                 rule_ids=hits,
                 policy_result={
@@ -1352,10 +1435,8 @@ async def guardrail_evaluate(request: Request):
             clar_resp = respond_with_clarify(
                 extra={"rulepack": "ingress_block", "matches": ",".join(hits)}
             )
-            return _finalize_ingress_response(
+            return finalize_response(
                 clar_resp,
-                request_id=request_id,
-                fingerprint_value=fingerprint_value,
                 decision_family="deny",
                 rule_ids=hits,
                 policy_result={
@@ -1404,10 +1485,8 @@ async def guardrail_evaluate(request: Request):
         )
         _record_actor_metric(request, "clarify")
         clar_resp = respond_with_clarify()
-        return _finalize_ingress_response(
+        return finalize_response(
             clar_resp,
-            request_id=request_id,
-            fingerprint_value=fingerprint_value,
             decision_family="deny",
             rule_ids=_rule_ids_from_hits(policy_hits),
             policy_result={
@@ -1519,10 +1598,8 @@ async def guardrail_evaluate(request: Request):
         )
         _record_actor_metric(request, "clarify")
         clar_resp = respond_with_clarify()
-        return _finalize_ingress_response(
+        return finalize_response(
             clar_resp,
-            request_id=request_id,
-            fingerprint_value=fingerprint_value,
             decision_family="deny",
             rule_ids=_rule_ids_from_hits(policy_hits),
             policy_result={"action": "clarify"},
@@ -1588,10 +1665,8 @@ async def guardrail_evaluate(request: Request):
         direction="ingress",
         extra_headers=hv_headers,
     )
-    return _finalize_ingress_response(
+    return finalize_response(
         resp,
-        request_id=request_id,
-        fingerprint_value=fingerprint_value,
         decision_family=_decision_family(action),
         rule_ids=_rule_ids_from_hits(policy_hits),
         policy_result=base_decision,
