@@ -1342,29 +1342,54 @@ async def guardrail_evaluate(request: Request):
 
     request_id = _req_id(explicit_request_id or req_header_request_id)
 
-    def finalize_response(
-        response: Response,
-        *,
-        decision_family: str,
-        rule_ids: Optional[Iterable[str]] = None,
-        escalate: bool = True,
-        mode_hint: Optional[str] = None,
-        retry_after_hint: Optional[int] = None,
-        policy_result: Optional[Mapping[str, Any]] = None,
-    ) -> Response:
-        finalized = _finalize_ingress_response(
-            response,
-            request_id=request_id,
-            fingerprint_value=fingerprint_value,
-            decision_family=decision_family,
-            pr = locals().get("policy_result")
-            raw_rule_ids = (pr or {}).get("rule_ids")
-            rule_ids = list(raw_rule_ids) if raw_rule_ids else None,
-            escalate=escalate,
-            mode_hint=mode_hint,
-            retry_after_hint=retry_after_hint,
-            policy_result=policy_result,
-        )
+def finalize_response(
+    response: Response,
+    *,
+    decision_family: str,
+    rule_ids: Optional[Iterable[str]] = None,
+    escalate: bool = True,
+    mode_hint: Optional[str] = None,
+    retry_after_hint: Optional[int] = None,
+    policy_result: Optional[Mapping[str, Any]] = None,
+) -> Response:
+    """
+    Normalize and forward arguments to _finalize_ingress_response.
+    Ensures rule_ids is a concrete list[str] | None and prefers IDs
+    supplied by the policy_result, if present.
+    """
+    # Prefer rule IDs from policy_result when present; otherwise use the param.
+    # Always coerce to a concrete list[str] to match callee's signature.
+    final_rule_ids: Optional[list[str]] = None
+
+    # Pull rule_ids from policy_result if available
+    pr_rule_ids_any: Any = None
+    if policy_result is not None:
+        pr_rule_ids_any = policy_result.get("rule_ids")
+
+    if pr_rule_ids_any:
+        if isinstance(pr_rule_ids_any, (list, tuple, set)):
+            final_rule_ids = [str(x) for x in pr_rule_ids_any]
+        elif isinstance(pr_rule_ids_any, str):
+            final_rule_ids = [pr_rule_ids_any]
+        else:
+            # Unknown type: ignore and fall back to the function param
+            final_rule_ids = None
+
+    # Fall back to function parameter if no usable IDs came from policy_result
+    if final_rule_ids is None and rule_ids is not None:
+        final_rule_ids = [str(x) for x in rule_ids]
+
+    return _finalize_ingress_response(
+        response,
+        request_id=request_id,
+        fingerprint_value=fingerprint_value,
+        decision_family=decision_family,
+        rule_ids=final_rule_ids,
+        escalate=escalate,
+        mode_hint=mode_hint,
+        retry_after_hint=retry_after_hint,
+        policy_result=policy_result,
+    )
         _publish_decision(
             request,
             finalized,
