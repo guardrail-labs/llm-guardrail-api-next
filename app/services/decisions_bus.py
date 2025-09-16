@@ -3,9 +3,10 @@ from __future__ import annotations
 import collections
 import json
 import os
+import queue
 import threading
 import time
-from typing import Any, Deque, Dict, Iterator, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, Optional
 
 # Runtime-configurable storage
 _PATH = os.getenv("DECISIONS_AUDIT_PATH", "var/decisions.jsonl")
@@ -14,9 +15,8 @@ _MAX = int(os.getenv("DECISIONS_BUFFER_MAX", "2000"))
 _lock = threading.RLock()
 _buf: Deque[Dict[str, Any]] = collections.deque(maxlen=_MAX)
 
-# Subscribers are simple generators that receive events via .send(evt)
-# We keep (gen,) so we can drop dead ones on StopIteration.
-_listeners: set[Tuple[Iterator[Dict[str, Any]],]] = set()
+# Subscribers receive events on a SimpleQueue published by publish().
+_subscribers: set[queue.SimpleQueue[Dict[str, Any]]] = set()
 
 
 def _ensure_dir(path: str) -> None:
@@ -38,15 +38,16 @@ def publish(evt: Dict[str, Any]) -> None:
         with open(_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(evt) + "\n")
 
-        # fan-out to subscribers
-        dead: list[Tuple[Iterator[Dict[str, Any]],]] = []
-        for (gen,) in _listeners:
+        # fan-out to subscribers (non-blocking)
+        dead: list[queue.SimpleQueue[Dict[str, Any]]] = []
+        for q in _subscribers:
             try:
-                gen.send(evt)
-            except StopIteration:
-                dead.append((gen,))
-        for item in dead:
-            _listeners.discard(item)
+                q.put_nowait(evt)
+            except Exception:
+                # extremely rare; mark dead and drop after iteration
+                dead.append(q)
+        for q in dead:
+            _subscribers.discard(q)
 
 
 def snapshot() -> list[Dict[str, Any]]:
@@ -55,30 +56,21 @@ def snapshot() -> list[Dict[str, Any]]:
         return list(_buf)
 
 
-def subscribe() -> Iterator[Dict[str, Any]]:
+def subscribe() -> queue.SimpleQueue[Dict[str, Any]]:
     """
-    Return a primed generator that accepts events via .send(evt).
-
-    NOTE: This iterator yields nothing by itself; callers typically call
-    .send(None) to step the generator, and we push events via publish().
+    Create a subscriber queue that receives future events.
+    Caller must call unsubscribe(q) when done.
     """
-    def _gen() -> Iterator[Dict[str, Any]]:
-        try:
-            while True:
-                # Wait to receive an event from publish() via .send(evt)
-                evt = (yield)  # type: ignore[misc]
-                # No-op: we don't yield back here; the caller controls streaming.
-                # (SSE handlers usually keep their own snapshot and formatting.)
-                _ = evt
-        finally:
-            # generator closed by caller
-            return
-
-    it = _gen()
-    next(it)  # prime
+    q: queue.SimpleQueue[Dict[str, Any]] = queue.SimpleQueue()
     with _lock:
-        _listeners.add((it,))
-    return it
+        _subscribers.add(q)
+    return q
+
+
+def unsubscribe(q: queue.SimpleQueue[Dict[str, Any]]) -> None:
+    """Remove a subscriber queue created by subscribe()."""
+    with _lock:
+        _subscribers.discard(q)
 
 
 def configure(
