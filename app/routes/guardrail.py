@@ -48,6 +48,7 @@ from app.services import escalation as esc
 from app.services.decision_headers import apply_decision_headers, REQ_ID_HEADER
 from app.services.enforcement import Mode, choose_mode
 from app.services.policy_types import PolicyResult
+from app.services.shadow_policy import maybe_eval_shadow
 from app.shared.headers import attach_guardrail_headers
 from app.egress.redaction import redact_response_body
 # --- BEGIN PR-C wire-up block ---
@@ -57,7 +58,12 @@ from app.services.config_sanitizer import (
     get_verifier_sampling_pct,
 )
 from app.telemetry import metrics as m
-from app.telemetry.metrics import inc_actor_decisions_total, inc_mode, inc_rule_hits
+from app.telemetry.metrics import (
+    inc_actor_decisions_total,
+    inc_mode,
+    inc_rule_hits,
+    inc_shadow_disagreement,
+)
 from app.services.audit import emit_audit_event as _emit
 from app.services import ocr as _ocr
 
@@ -461,6 +467,37 @@ def _rule_ids_from_hits(rule_hits: Any) -> List[str]:
     if isinstance(rule_hits, (list, tuple, set)):
         return [str(k) for k in rule_hits if str(k)]
     return []
+
+
+def _shadow_policy_evaluator(
+    payload: Mapping[str, Any], *, policy: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    _ = payload  # payload is currently unused; reserved for future evaluators
+    action_raw = policy.get("default_action")
+    if action_raw is None:
+        action_raw = policy.get("action")
+    action = str(action_raw or "").strip().lower()
+    if action in {"block", "block_input_only", "reject"}:
+        action = "deny"
+    elif action not in {"allow", "deny", "lock", "clarify"}:
+        action = "allow"
+
+    rule_ids: List[str] = []
+    raw_rule_ids = policy.get("rule_ids")
+    if isinstance(raw_rule_ids, (list, tuple, set)):
+        rule_ids = [str(r) for r in raw_rule_ids if str(r)]
+    elif isinstance(raw_rule_ids, str):
+        rid = raw_rule_ids.strip()
+        if rid:
+            rule_ids = [rid]
+
+    result: Dict[str, Any] = {"action": action}
+    if rule_ids:
+        result["rule_ids"] = rule_ids
+    reason = policy.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        result["reason"] = reason.strip()
+    return result
 
 
 def _finalize_ingress_response(
@@ -1282,6 +1319,7 @@ async def guardrail_evaluate(request: Request):
     explicit_request_id: Optional[str] = None
     mods: Dict[str, int] = {}
     sources: List[Dict[str, str]] = []
+    request_payload_dict: Dict[str, Any] = {}
     req_header_request_id = headers.get(REQ_ID_HEADER)
     fingerprint_value: Optional[str]
     try:
@@ -1291,12 +1329,17 @@ async def guardrail_evaluate(request: Request):
 
     if content_type.startswith("application/json"):
         payload = await request.json()
-        combined_text = str(payload.get("text") or "")
-        explicit_request_id = str(payload.get("request_id") or "") or None
+        if isinstance(payload, dict):
+            request_payload_dict = dict(payload)
+        else:
+            request_payload_dict = {}
+        combined_text = str(request_payload_dict.get("text") or "")
+        explicit_request_id = str(request_payload_dict.get("request_id") or "") or None
     else:
         combined_text, mods, sources, _docx_unused = await _read_form_and_merge(
             request, decode_pdf=False
         )
+        request_payload_dict = {"text": combined_text}
 
     request_id = _req_id(explicit_request_id or req_header_request_id)
 
@@ -1337,6 +1380,54 @@ async def guardrail_evaluate(request: Request):
         if final_rule_ids is None and rule_ids is not None:
             final_rule_ids = [str(x) for x in rule_ids]
 
+        live_action_val = ""
+        if policy_result is not None:
+            try:
+                live_action_val = str(policy_result.get("action") or "")
+            except Exception:
+                live_action_val = ""
+        if not live_action_val:
+            live_action_val = str(decision_family or "")
+        live_action_norm = str(live_action_val or "").strip().lower()
+        if not live_action_norm:
+            live_action_norm = "unknown"
+
+        shadow_payload: Mapping[str, Any]
+        if isinstance(request_payload_dict, Mapping):
+            shadow_payload = request_payload_dict
+        else:
+            try:
+                shadow_payload = dict(request_payload_dict)
+            except Exception:
+                shadow_payload = {}
+
+        shadow_res = maybe_eval_shadow(
+            payload=shadow_payload,
+            live_action=live_action_norm,
+            route=str(request.url.path),
+            evaluator=_shadow_policy_evaluator,
+        )
+
+        shadow_action_val: Optional[str] = None
+        shadow_rule_ids_list: List[str] = []
+        if shadow_res:
+            raw_shadow_action = shadow_res.get("action")
+            if isinstance(raw_shadow_action, str):
+                action_str = raw_shadow_action.strip().lower()
+                if action_str:
+                    shadow_action_val = action_str
+            raw_shadow_rule_ids = shadow_res.get("rule_ids")
+            if isinstance(raw_shadow_rule_ids, (list, tuple, set)):
+                shadow_rule_ids_list = [
+                    str(rid)
+                    for rid in raw_shadow_rule_ids
+                    if str(rid).strip()
+                ]
+            elif isinstance(raw_shadow_rule_ids, str):
+                rid_str = raw_shadow_rule_ids.strip()
+                if rid_str:
+                    shadow_rule_ids_list = [rid_str]
+
         # 2) Finalize the response (sets headers, status, etc.)
         resp = _finalize_ingress_response(
             response,
@@ -1363,6 +1454,16 @@ async def guardrail_evaluate(request: Request):
             else:
                 final_mode = "allow"
 
+        route_label_val = resp.headers.get("X-Guardrail-Endpoint") or str(
+            request.url.path
+        )
+        if (
+            shadow_action_val
+            and shadow_action_val
+            and shadow_action_val != live_action_norm
+        ):
+            inc_shadow_disagreement(route_label_val, live_action_norm, shadow_action_val)
+
         # 4) Publish the decision event for admin feed / SSE / CSV
         # We publish the fields we can reliably determine here. tenant/bot/endpoint
         # may be injected elsewhere; if you already add them to headers, they will
@@ -1379,6 +1480,8 @@ async def guardrail_evaluate(request: Request):
                 "endpoint": resp.headers.get("X-Guardrail-Endpoint"),  # optional
                 "rule_ids": final_rule_ids or [],
                 "policy_version": resp.headers.get("X-Guardrail-Policy-Version"),
+                "shadow_action": shadow_action_val,
+                "shadow_rule_ids": shadow_rule_ids_list,
                 # latency_ms can be added here if you track it on request.state.*
             }
         )

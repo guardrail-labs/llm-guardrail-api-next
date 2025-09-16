@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, 
 from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from app.services.config_store import get_config
 from app.services.policy import current_rules_version, reload_rules
 
 # Best-effort helpers that may not exist in all deployments
@@ -153,6 +154,20 @@ def ui_decisions(
     resp = templates.TemplateResponse(
         "decisions.html",
         {"request": req, "decisions": decisions, "n": n},
+    )
+    issue_csrf(resp)
+    return resp
+
+
+@router.get("/config", response_class=HTMLResponse)
+def ui_config(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
+    cfg = get_config()
+    resp = templates.TemplateResponse(
+        "config.html",
+        {
+            "request": req,
+            "config": cfg,
+        },
     )
     issue_csrf(resp)
     return resp
