@@ -153,6 +153,30 @@
           "legendFormat": "{{action}}"
         }
       ]
+    },
+    {
+      "type": "table",
+      "title": "Policy disagreements by route (5m)",
+      "gridPos": { "x": 0, "y": 92, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(guardrail_policy_disagreement_total[5m]))",
+          "refId": "A"
+        }
+      ],
+      "options": { "showHeader": true }
+    },
+    {
+      "type": "timeseries",
+      "title": "Disagreements by live vs shadow action (5m)",
+      "gridPos": { "x": 0, "y": 100, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (live_action, shadow_action) (rate(guardrail_policy_disagreement_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{live_action}}→{{shadow_action}}"
+        }
+      ]
     }
   ],
   "templating": {

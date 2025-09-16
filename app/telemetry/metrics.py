@@ -189,6 +189,12 @@ guardrail_rule_hits_total: CounterLike = _mk_counter(
     ["rule_id", "action", "mode"],
 )
 
+guardrail_policy_disagreement_total: CounterLike = _mk_counter(
+    "guardrail_policy_disagreement_total",
+    "Shadow policy disagrees with live policy",
+    ["route", "live_action", "shadow_action"],
+)
+
 # Family + tenant/bot breakdowns
 guardrail_decisions_family_total: CounterLike = _mk_counter(
     "guardrail_decisions_family_total", "Decision totals by family.", ["family"]
@@ -460,6 +466,12 @@ def inc_rule_hits(rule_ids: Iterable[str] | None, action: str, mode: str) -> Non
         if not rid_str:
             continue
         guardrail_rule_hits_total.labels(rid_str, action_norm, mode_norm).inc()
+
+
+def inc_shadow_disagreement(route: str, live: str, shadow: str) -> None:
+    guardrail_policy_disagreement_total.labels(
+        str(route or "unknown"), str(live or "unknown"), str(shadow or "unknown")
+    ).inc()
 
 
 def inc_rate_limited(amount: float = 1.0) -> None:

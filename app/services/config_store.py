@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from typing import List, Optional, TypedDict
+from typing import Any, Dict, List, Mapping, Optional, TypedDict, cast
 
 import yaml
 
@@ -12,6 +13,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = _REPO_ROOT / "config"
 _CONFIG_PATH = _CONFIG_DIR / "bindings.yaml"
+_ADMIN_CONFIG_PATH = _CONFIG_DIR / "admin_config.yaml"
 
 _LOCK = RLock()
 
@@ -32,6 +34,8 @@ def _ensure_dirs() -> None:
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not _CONFIG_PATH.exists():
         _CONFIG_PATH.write_text(yaml.safe_dump({"version": "1", "bindings": []}), encoding="utf-8")
+    if not _ADMIN_CONFIG_PATH.exists():
+        _ADMIN_CONFIG_PATH.write_text(yaml.safe_dump({}, sort_keys=False), encoding="utf-8")
 
 
 def load_bindings() -> BindingsDoc:
@@ -125,3 +129,191 @@ def resolve_rules_path(tenant: str, bot: str) -> Optional[str]:
         if b["tenant"] == "*" and b["bot"] == "*":
             return b["rules_path"]
     return None
+
+
+class ConfigDict(TypedDict, total=False):
+    shadow_enable: bool
+    shadow_policy_path: str
+    shadow_timeout_ms: int
+    shadow_sample_rate: float
+
+
+_CONFIG_DEFAULTS: ConfigDict = {
+    "shadow_enable": False,
+    "shadow_policy_path": "",
+    "shadow_timeout_ms": 100,
+    "shadow_sample_rate": 1.0,
+}
+
+_CONFIG_ENV_MAP: Dict[str, str] = {
+    "shadow_enable": "SHADOW_ENABLE",
+    "shadow_policy_path": "SHADOW_POLICY_PATH",
+    "shadow_timeout_ms": "SHADOW_TIMEOUT_MS",
+    "shadow_sample_rate": "SHADOW_SAMPLE_RATE",
+}
+
+_CONFIG_STATE: Dict[str, Any] = {}
+_CONFIG_LOADED = False
+
+
+def _coerce_bool(val: Any) -> Optional[bool]:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    if isinstance(val, (int, float)):
+        return bool(val)
+    return None
+
+
+def _coerce_int(val: Any) -> Optional[int]:
+    if isinstance(val, bool):
+        return int(val)
+    try:
+        if isinstance(val, (int, float)):
+            return int(val)
+        return int(float(str(val).strip()))
+    except Exception:
+        return None
+
+
+def _coerce_float(val: Any) -> Optional[float]:
+    if isinstance(val, bool):
+        return float(val)
+    try:
+        if isinstance(val, (int, float)):
+            return float(val)
+        return float(str(val).strip())
+    except Exception:
+        return None
+
+
+def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
+    normalized: Dict[str, Any] = {}
+
+    if "shadow_enable" in data:
+        bool_val = _coerce_bool(data.get("shadow_enable"))
+        if bool_val is not None:
+            normalized["shadow_enable"] = bool_val
+
+    if "shadow_policy_path" in data:
+        raw = data.get("shadow_policy_path")
+        if raw is None:
+            normalized["shadow_policy_path"] = ""
+        else:
+            s = str(raw).strip()
+            normalized["shadow_policy_path"] = s
+
+    if "shadow_timeout_ms" in data:
+        int_val = _coerce_int(data.get("shadow_timeout_ms"))
+        if int_val is not None and int_val >= 0:
+            normalized["shadow_timeout_ms"] = int_val
+
+    if "shadow_sample_rate" in data:
+        float_val = _coerce_float(data.get("shadow_sample_rate"))
+        if float_val is not None:
+            clamped = max(0.0, min(1.0, float_val))
+            normalized["shadow_sample_rate"] = clamped
+
+    return cast(ConfigDict, normalized)
+
+
+def _load_config_locked() -> ConfigDict:
+    _ensure_dirs()
+    try:
+        text = _ADMIN_CONFIG_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return cast(ConfigDict, {})
+    except Exception:
+        return cast(ConfigDict, {})
+
+    try:
+        raw = yaml.safe_load(text) or {}
+    except Exception:
+        return cast(ConfigDict, {})
+    if not isinstance(raw, Mapping):
+        return cast(ConfigDict, {})
+    return _normalize_config(raw)
+
+
+def _write_config_locked(state: Mapping[str, Any]) -> None:
+    _ensure_dirs()
+    payload: Dict[str, Any] = {}
+    for key in _CONFIG_DEFAULTS.keys():
+        if key in state:
+            payload[key] = state[key]
+    _ADMIN_CONFIG_PATH.write_text(
+        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+    )
+
+
+def _ensure_config_loaded_locked() -> None:
+    global _CONFIG_LOADED, _CONFIG_STATE
+    if _CONFIG_LOADED:
+        return
+    _CONFIG_STATE = dict(_load_config_locked())
+    _CONFIG_LOADED = True
+
+
+def _env_overrides() -> ConfigDict:
+    overrides: Dict[str, Any] = {}
+    for key, env in _CONFIG_ENV_MAP.items():
+        raw = os.getenv(env)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and raw.strip() == "":
+            continue
+        if key == "shadow_enable":
+            bool_val = _coerce_bool(raw)
+            if bool_val is not None:
+                overrides[key] = bool_val
+        elif key == "shadow_policy_path":
+            overrides[key] = str(raw).strip()
+        elif key == "shadow_timeout_ms":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
+        elif key == "shadow_sample_rate":
+            float_val = _coerce_float(raw)
+            if float_val is not None:
+                overrides[key] = max(0.0, min(1.0, float_val))
+    return cast(ConfigDict, overrides)
+
+
+def _current_config_locked() -> ConfigDict:
+    merged: Dict[str, Any] = dict(_CONFIG_DEFAULTS)
+    merged.update(_CONFIG_STATE)
+    merged.update(_env_overrides())
+    return cast(ConfigDict, merged)
+
+
+def get_config() -> ConfigDict:
+    with _LOCK:
+        _ensure_config_loaded_locked()
+        return cast(ConfigDict, dict(_current_config_locked()))
+
+
+def set_config(patch: Mapping[str, Any]) -> ConfigDict:
+    with _LOCK:
+        _ensure_config_loaded_locked()
+        normalized = _normalize_config(patch)
+
+        if "shadow_policy_path" in patch and "shadow_policy_path" not in normalized:
+            normalized["shadow_policy_path"] = ""
+
+        if normalized:
+            _CONFIG_STATE.update(normalized)
+            _write_config_locked(_CONFIG_STATE)
+
+        return cast(ConfigDict, dict(_current_config_locked()))
+
+
+def reset_config() -> None:
+    global _CONFIG_LOADED, _CONFIG_STATE
+    with _LOCK:
+        _CONFIG_STATE = {}
+        _CONFIG_LOADED = False

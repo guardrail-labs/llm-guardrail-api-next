@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Shadow policy</h2>
+  <form id="config_form">
+    <div style="margin-bottom:0.5rem;">
+      <label>
+        <input type="checkbox" name="shadow_enable" {% if config.shadow_enable %}checked{% endif %} />
+        Shadow enabled
+      </label>
+    </div>
+    <div style="margin-bottom:0.5rem;">
+      <label>
+        Shadow policy path<br />
+        <input type="text" name="shadow_policy_path" value="{{ config.shadow_policy_path or '' }}" placeholder="/path/to/shadow_policy.json" style="width:100%;" />
+      </label>
+    </div>
+    <div style="margin-bottom:0.5rem;">
+      <label>
+        Shadow timeout (ms)<br />
+        <input type="number" name="shadow_timeout_ms" min="0" value="{{ config.shadow_timeout_ms or 0 }}" />
+      </label>
+    </div>
+    <div style="margin-bottom:0.5rem;">
+      <label>
+        Shadow sample rate (0..1)<br />
+        <input type="number" name="shadow_sample_rate" min="0" max="1" step="0.05" value="{{ '%.2f'|format(config.shadow_sample_rate or 0.0) }}" />
+      </label>
+    </div>
+    <button type="submit">Save</button>
+    <span id="config_msg" class="muted" style="margin-left:8px;"></span>
+  </form>
+</div>
+<script>
+  function getCookie(name) {
+    return (document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)') || [])[2];
+  }
+  document.getElementById('config_form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const form = e.target;
+    const payload = {
+      shadow_enable: form.shadow_enable.checked,
+      shadow_policy_path: form.shadow_policy_path.value,
+      shadow_timeout_ms: form.shadow_timeout_ms.value,
+      shadow_sample_rate: form.shadow_sample_rate.value,
+      csrf_token: getCookie('ui_csrf') || ''
+    };
+    const msg = document.getElementById('config_msg');
+    msg.textContent = 'Saving…';
+    fetch('/admin/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload)
+    })
+      .then((res) => res.json().then((body) => ({ ok: res.ok, body })))
+      .then(({ ok, body }) => {
+        if (!ok || (body && body.errors && Object.keys(body.errors).length)) {
+          msg.textContent = 'Save failed';
+          console.error('config update error', body && body.errors);
+        } else {
+          msg.textContent = 'Saved';
+        }
+      })
+      .catch((err) => {
+        msg.textContent = 'Save failed';
+        console.error(err);
+      });
+  });
+</script>
+{% endblock %}

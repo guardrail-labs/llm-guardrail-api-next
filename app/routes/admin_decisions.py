@@ -94,6 +94,8 @@ def export_decisions_csv(
         "endpoint",
         "rule_ids",
         "policy_version",
+        "shadow_action",
+        "shadow_rule_ids",
         "latency_ms",
     ]
     w = csv.DictWriter(out, fieldnames=headers)
@@ -101,6 +103,7 @@ def export_decisions_csv(
     for e in events:
         row = dict(e)
         row["rule_ids"] = ",".join(e.get("rule_ids") or [])
+        row["shadow_rule_ids"] = ",".join(e.get("shadow_rule_ids") or [])
         w.writerow(row)
     return PlainTextResponse(out.getvalue(), media_type="text/csv")
 
