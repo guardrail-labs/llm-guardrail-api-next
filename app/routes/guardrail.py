@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from app.models.debug import SourceDebug
 from app.services.debug_sources import make_source
+from app.services.decisions_bus import publish
 from app.services.policy import (
     apply_injection_default,
     maybe_route_to_verifier,
@@ -1310,11 +1311,15 @@ async def guardrail_evaluate(request: Request):
         policy_result: Optional[Mapping[str, Any]] = None,
     ) -> Response:
         """
-        Normalize and forward arguments to _finalize_ingress_response.
-        Ensures rule_ids is a concrete list[str] | None and prefers IDs
-        supplied by the policy_result, if present.
+        Normalize and forward arguments to _finalize_ingress_response, then publish
+        a decision event for the admin feed.
+
+        - Prefers rule_ids from policy_result (if present), falling back to the
+          function parameter.
+        - Coerces rule_ids to a concrete list[str] | None for type safety.
+        - Publishes AFTER finalization so headers/status/mode are accurate.
         """
-        # Prefer rule IDs from policy_result when present; otherwise use the param.
+        # 1) Build a concrete list[str] | None for rule IDs
         final_rule_ids: Optional[list[str]] = None
 
         pr_rule_ids_any: Any = None
@@ -1332,7 +1337,8 @@ async def guardrail_evaluate(request: Request):
         if final_rule_ids is None and rule_ids is not None:
             final_rule_ids = [str(x) for x in rule_ids]
 
-        return _finalize_ingress_response(
+        # 2) Finalize the response (sets headers, status, etc.)
+        resp = _finalize_ingress_response(
             response,
             request_id=request_id,
             fingerprint_value=fingerprint_value,
@@ -1343,6 +1349,41 @@ async def guardrail_evaluate(request: Request):
             retry_after_hint=retry_after_hint,
             policy_result=policy_result,
         )
+
+        # 3) Determine final mode (prefer header set by finalizer)
+        final_mode = resp.headers.get("X-Guardrail-Mode")
+        if not final_mode:
+            # fall back to hint or derive from status code
+            if mode_hint:
+                final_mode = mode_hint
+            elif resp.status_code == 429:
+                final_mode = "full_quarantine"
+            elif resp.status_code >= 400:
+                final_mode = "deny"
+            else:
+                final_mode = "allow"
+
+        # 4) Publish the decision event for admin feed / SSE / CSV
+        # We publish the fields we can reliably determine here. tenant/bot/endpoint
+        # may be injected elsewhere; if you already add them to headers, they will
+        # appear here; otherwise they default to "unknown".
+        publish(
+            {
+                "incident_id": resp.headers.get("X-Guardrail-Incident-ID"),
+                "request_id": request_id,
+                "tenant": resp.headers.get("X-Guardrail-Tenant", "unknown"),
+                "bot": resp.headers.get("X-Guardrail-Bot", "unknown"),
+                "family": decision_family,  # allow|deny
+                "mode": final_mode,         # allow|execute_locked|deny|full_quarantine
+                "status": resp.status_code,
+                "endpoint": resp.headers.get("X-Guardrail-Endpoint"),  # optional
+                "rule_ids": final_rule_ids or [],
+                "policy_version": resp.headers.get("X-Guardrail-Policy-Version"),
+                # latency_ms can be added here if you track it on request.state.*
+            }
+        )
+
+        return resp
 
     # Ingress rulepack enforcement (opt-in)
     should_block, hits = ingress_should_block(combined_text or "")
