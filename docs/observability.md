@@ -75,3 +75,12 @@ Overflow % high: increase METRICS_LABEL_CARD_MAX or validate tenant/bot churn.
 We emit `guardrail_actor_decisions_total{family,tenant,bot}`. Provide `X-Tenant` and `X-Bot` headers; missing values default to `unknown`. `(tenant×bot)` cardinality is capped via `METRICS_LABEL_CARD_MAX`, collapsing extras to `__overflow__`.
 
 Use the demo traffic (`make demo-traffic` or `make demo-stack-traffic`) to generate varied tenants/bots.
+
+### Rule hits
+The policy engine can return `rule_ids`, which the API records in:
+- Header: `X-Guardrail-Rule-IDs` (CSV)
+- Metric: `guardrail_rule_hits_total{rule_id,action,mode}`
+
+Use Grafana panels:
+- **Top 10 rules by denies** (5m): identify over-triggering rules
+- **Rule hits by action**: watch mix of allow/lock/deny outcomes

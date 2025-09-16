@@ -19,5 +19,7 @@ def test_guardrail_decisions_metric_uses_family_label() -> None:
         f"Expected 'family' label for guardrail_decisions_total; got:\n{body[:2000]}"
     )
     assert "guardrail_decisions_total{family=" in body
-    assert "action=" not in body
+    for line in body.splitlines():
+        if line.startswith("guardrail_decisions_total{"):
+            assert "action=" not in line
 

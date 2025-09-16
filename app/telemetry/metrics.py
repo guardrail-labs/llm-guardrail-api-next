@@ -183,6 +183,12 @@ guardrail_mode_total: CounterLike = _mk_counter(
     ["mode"],
 )
 
+guardrail_rule_hits_total: CounterLike = _mk_counter(
+    "guardrail_rule_hits_total",
+    "Number of policy rule hits by rule_id, action, and mode",
+    ["rule_id", "action", "mode"],
+)
+
 # Family + tenant/bot breakdowns
 guardrail_decisions_family_total: CounterLike = _mk_counter(
     "guardrail_decisions_family_total", "Decision totals by family.", ["family"]
@@ -435,6 +441,25 @@ def inc_decisions_total(family: str = "unknown") -> None:
 
 def inc_mode(mode: str) -> None:
     guardrail_mode_total.labels(str(mode or "unknown")).inc()
+
+
+def inc_rule_hits(rule_ids: Iterable[str] | None, action: str, mode: str) -> None:
+    if not rule_ids:
+        return
+
+    action_norm = str(action or "").strip().lower()
+    if action_norm not in {"allow", "lock", "deny"}:
+        action_norm = "allow"
+
+    mode_norm = str(mode or "").strip().lower()
+    if mode_norm not in {"allow", "execute_locked", "deny", "full_quarantine"}:
+        mode_norm = "allow"
+
+    for rid in rule_ids:
+        rid_str = str(rid or "").strip()
+        if not rid_str:
+            continue
+        guardrail_rule_hits_total.labels(rid_str, action_norm, mode_norm).inc()
 
 
 def inc_rate_limited(amount: float = 1.0) -> None:
