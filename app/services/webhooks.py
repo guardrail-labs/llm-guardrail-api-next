@@ -12,17 +12,21 @@ from typing import Any, Dict, Optional, Tuple
 import httpx
 
 from app.services.config_store import get_config
-from app.telemetry import metrics as _metrics
+from app.telemetry.metrics import (
+    WEBHOOK_EVENTS_TOTAL,
+    WEBHOOK_DELIVERIES_TOTAL,
+    WEBHOOK_LATENCY_SECONDS,
+)
 
-# Dead-letter path (append JSONL on permanent failures)
-_DLQ_PATH = os.getenv("WEBHOOK_DLQ_PATH", "var/webhook_deadletter.jsonl")
+# Default dead-letter file path (may be overridden via WEBHOOK_DLQ_PATH)
+_DEFAULT_DLQ_PATH = "var/webhook_deadletter.jsonl"
 
 # Worker state
 _lock = threading.RLock()
 _q: "queue.SimpleQueue[Dict[str, Any]]" = queue.SimpleQueue()
 _worker_started = False
 
-# Stats (simple, not performance-critical)
+# Stats (simple counters for /admin and tests)
 _stats: Dict[str, Any] = {
     "queued": 0,
     "processed": 0,
@@ -32,9 +36,14 @@ _stats: Dict[str, Any] = {
 }
 
 
+def _dlq_path() -> str:
+    """Resolve DLQ path dynamically so tests can monkeypatch env at runtime."""
+    return os.getenv("WEBHOOK_DLQ_PATH", _DEFAULT_DLQ_PATH)
+
+
 def _ensure_dir(path: str) -> None:
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
 
 
 def _hmac_signature(secret: str, body: bytes) -> str:
@@ -44,9 +53,7 @@ def _hmac_signature(secret: str, body: bytes) -> str:
 
 def _status_bucket(code: Optional[int], exc: Optional[str]) -> str:
     if exc:
-        if exc == "timeout":
-            return "timeout"
-        return "error"
+        return "timeout" if exc == "timeout" else "error"
     if code is None:
         return "error"
     if 200 <= code < 300:
@@ -61,34 +68,41 @@ def _status_bucket(code: Optional[int], exc: Optional[str]) -> str:
 
 
 def _allow_host(url: str, allow_host: str) -> bool:
+    """Very light allow-list check: exact host match when configured."""
     try:
         from urllib.parse import urlparse
 
         host = urlparse(url).hostname or ""
-        allowed = (allow_host or "").strip()
-        return (not allowed) or (host == allowed)
+        allow = (allow_host or "").strip()
+        return (not allow) or (host == allow)
     except Exception:
         return False
 
 
 def _dlq_write(evt: Dict[str, Any], reason: str) -> None:
+    """
+    Append a failed event to DLQ. Synchronized with the same lock used by replay
+    to avoid dropping lines during an os.replace rewrite.
+    """
     try:
-        _ensure_dir(_DLQ_PATH)
-        record = {"ts": int(time.time()), "reason": reason, "event": evt}
-        with open(_DLQ_PATH, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
+        path = _dlq_path()
+        rec = {"ts": int(time.time()), "reason": reason, "event": evt}
+        with _lock:
+            _ensure_dir(path)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
     except Exception:
-        # Never allow DLQ persistence issues to break delivery.
+        # DLQ failures are best-effort; swallow errors.
         pass
 
 
 def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
-    """Deliver a single event with retries.
-
-    Returns a tuple of (outcome, status_bucket) where outcome is one of
-    "sent", "failed", or "dlq".
     """
-
+    Deliver a single event with retries.
+    Returns (outcome, status_bucket).
+    outcome: "sent" | "failed" | "dlq"
+    status_bucket: "2xx" | "4xx" | "5xx" | "timeout" | "error"
+    """
     cfg = get_config()
     url = str(cfg.get("webhook_url") or "")
     secret = str(cfg.get("webhook_secret") or "")
@@ -120,29 +134,31 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
 
     while True:
         attempt += 1
-        started = time.perf_counter()
+        t0 = time.perf_counter()
         try:
-            with httpx.Client(timeout=timeout_ms / 1000.0, verify=not insecure_tls) as cli:
+            with httpx.Client(
+                timeout=timeout_ms / 1000.0,
+                verify=not insecure_tls,
+            ) as cli:
                 resp = cli.post(url, content=body_bytes, headers=headers)
-            last_code = resp.status_code
-            _metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
-            if 200 <= resp.status_code < 300:
-                return "sent", _status_bucket(last_code, None)
+                last_code = resp.status_code
+                WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+                if 200 <= resp.status_code < 300:
+                    return "sent", _status_bucket(last_code, None)
         except httpx.TimeoutException:
             last_exc = "timeout"
-            _metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
+            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
         except Exception:
             last_exc = "error"
-            _metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - started)
+            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
 
         if attempt > max_retries:
-            status = _status_bucket(last_code, last_exc)
-            _dlq_write(evt, reason=status)
-            return "dlq", status
+            _dlq_write(evt, reason=_status_bucket(last_code, last_exc))
+            return "dlq", _status_bucket(last_code, last_exc)
 
         sleep_ms = backoff_ms * (2 ** (attempt - 1))
-        sleep_seconds = min(sleep_ms, 10_000) / 1000.0
-        time.sleep(sleep_seconds)
+        # Cap backoff to keep tests snappy
+        time.sleep(min(sleep_ms, 10_000) / 1000.0)
 
 
 def _worker() -> None:
@@ -154,13 +170,13 @@ def _worker() -> None:
                 _stats["processed"] += 1
                 _stats["last_status"] = status
                 _stats["last_error"] = "" if outcome == "sent" else status
-            _metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
-        except Exception as exc:  # pragma: no cover
+            WEBHOOK_DELIVERIES_TOTAL.labels(outcome=outcome, status=status).inc()
+        except Exception as e:  # pragma: no cover
             with _lock:
                 _stats["processed"] += 1
                 _stats["last_status"] = "error"
-                _stats["last_error"] = str(exc)
-            _metrics.WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
+                _stats["last_error"] = str(e)
+            WEBHOOK_DELIVERIES_TOTAL.labels(outcome="failed", status="error").inc()
 
 
 def _ensure_worker() -> None:
@@ -168,32 +184,30 @@ def _ensure_worker() -> None:
     with _lock:
         if _worker_started:
             return
-        thread = threading.Thread(target=_worker, name="webhook-worker", daemon=True)
-        thread.start()
+        t = threading.Thread(target=_worker, name="webhook-worker", daemon=True)
+        t.start()
         _worker_started = True
 
 
 def enqueue(evt: Dict[str, Any]) -> None:
     """Queue a decision event for delivery."""
-
     with _lock:
         _stats["queued"] += 1
-    _metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+    WEBHOOK_EVENTS_TOTAL.labels(outcome="enqueued").inc()
     _ensure_worker()
     _q.put(evt)
 
 
 def configure(*, reset: bool = False) -> None:
-    """Test helper to reset in-memory counters and queue."""
-
-    global _q, _worker_started
+    """Test helper: reset in-memory counters and queue."""
+    global _q
     with _lock:
         if reset:
             _q = queue.SimpleQueue()
-            _worker_started = False
-            for key in ("queued", "processed", "dropped", "last_status", "last_error"):
-                value = _stats.get(key)
-                _stats[key] = 0 if isinstance(value, int) else ""
+            for k in ("queued", "processed", "dropped"):
+                _stats[k] = 0
+            _stats["last_status"] = ""
+            _stats["last_error"] = ""
 
 
 def stats() -> Dict[str, Any]:
@@ -201,75 +215,70 @@ def stats() -> Dict[str, Any]:
         return dict(_stats)
 
 
+# --------------------- DLQ helpers (replay-safe) ------------------------------
+
+
 def dlq_count() -> int:
+    """Count lines in DLQ file. Locked to avoid racing with rewrite/append."""
     try:
+        path = _dlq_path()
         with _lock:
-            path = _DLQ_PATH
             if not os.path.exists(path):
                 return 0
-            count = 0
-            with open(path, "r", encoding="utf-8") as handle:
-                for _ in handle:
-                    count += 1
-            return count
+            n = 0
+            with open(path, "r", encoding="utf-8") as f:
+                for _ in f:
+                    n += 1
+            return n
     except Exception:
         return 0
 
 
 def requeue_from_dlq(limit: int) -> int:
-    try:
-        limit_int = int(limit)
-    except Exception:
-        limit_int = 0
-    limit_int = max(0, min(limit_int, 1000))
-    if limit_int == 0:
+    """
+    Move up to `limit` oldest DLQ entries back to the worker queue.
+    Protected by the same lock as _dlq_write to prevent lost appends during
+    atomic rewrite (os.replace).
+    """
+    limit = max(0, min(int(limit), 1000))
+    if limit == 0:
         return 0
 
     try:
+        path = _dlq_path()
         with _lock:
-            path = _DLQ_PATH
             if not os.path.exists(path):
                 return 0
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    lines = handle.readlines()
-            except FileNotFoundError:
-                return 0
+
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
 
             requeued = 0
             survivors: list[str] = []
-            worker_started = False
-
             for line in lines:
-                if requeued >= limit_int:
+                if requeued >= limit:
                     survivors.append(line)
                     continue
                 try:
-                    record = json.loads(line)
+                    rec = json.loads(line)
+                    evt = rec.get("event")
+                    if isinstance(evt, dict):
+                        _q.put(evt)
+                        requeued += 1
+                        WEBHOOK_DELIVERIES_TOTAL.labels(
+                            outcome="dlq_replayed", status="-"
+                        ).inc()
+                    else:
+                        survivors.append(line)
                 except Exception:
                     survivors.append(line)
-                    continue
-                if not isinstance(record, dict):
-                    survivors.append(line)
-                    continue
-                event = record.get("event")
-                if isinstance(event, dict):
-                    if not worker_started:
-                        _ensure_worker()
-                        worker_started = True
-                    _q.put(event)
-                    requeued += 1
-                    _metrics.WEBHOOK_DELIVERIES_TOTAL.labels("dlq_replayed", "-").inc()
-                    continue
-                survivors.append(line)
 
             tmp_path = f"{path}.tmp"
             _ensure_dir(path)
             with open(tmp_path, "w", encoding="utf-8") as out:
                 out.writelines(survivors)
             os.replace(tmp_path, path)
+
             return requeued
     except Exception:
         return 0
-
-    return 0
