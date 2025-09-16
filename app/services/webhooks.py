@@ -13,8 +13,8 @@ import httpx
 
 from app.services.config_store import get_config
 from app.telemetry.metrics import (
-    WEBHOOK_EVENTS_TOTAL,
     WEBHOOK_DELIVERIES_TOTAL,
+    WEBHOOK_EVENTS_TOTAL,
     WEBHOOK_LATENCY_SECONDS,
 )
 

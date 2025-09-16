@@ -111,14 +111,16 @@ def _csrf_cookie_secure() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def issue_csrf(resp: Response) -> None:
+def issue_csrf(resp: Response, token: Optional[str] = None) -> str:
+    token = token or _csrf_token()
     resp.set_cookie(
         "ui_csrf",
-        _csrf_token(),
+        token,
         httponly=False,
         samesite="strict",
         secure=_csrf_cookie_secure(),
     )
+    return token
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +186,49 @@ def ui_config_history(
 ) -> HTMLResponse:
     resp = templates.TemplateResponse("config_history.html", {"request": req})
     issue_csrf(resp)
+    return resp
+
+
+@router.get("/webhooks", response_class=HTMLResponse)
+def ui_webhooks(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
+    raw_cfg: Dict[str, Any] = dict(get_config())
+
+    def _int_val(key: str, default: int) -> int:
+        value = raw_cfg.get(key)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
+
+    cfg = {
+        "webhook_enable": bool(raw_cfg.get("webhook_enable", False)),
+        "webhook_url": raw_cfg.get("webhook_url") or "",
+        "webhook_secret": raw_cfg.get("webhook_secret") or "",
+        "webhook_timeout_ms": _int_val("webhook_timeout_ms", 2000),
+        "webhook_max_retries": _int_val("webhook_max_retries", 5),
+        "webhook_backoff_ms": _int_val("webhook_backoff_ms", 500),
+        "webhook_allow_insecure_tls": bool(
+            raw_cfg.get("webhook_allow_insecure_tls", False)
+        ),
+        "webhook_allowlist_host": raw_cfg.get("webhook_allowlist_host") or "",
+    }
+
+    csrf_token = _csrf_token()
+    resp = templates.TemplateResponse(
+        "webhooks.html",
+        {
+            "request": req,
+            "cfg": cfg,
+            "csrf_token": csrf_token,
+        },
+    )
+    issue_csrf(resp, csrf_token)
     return resp
 
 
