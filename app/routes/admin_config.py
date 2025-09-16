@@ -1,109 +1,106 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Tuple
+from hmac import compare_digest
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from app.routes.admin_ui import require_auth
-from app.services.config_store import get_config, set_config
+from app.routes.admin_ui import require_auth, _csrf_ok  # reuse existing auth + CSRF helpers
+from app.services.config_store import get_config, set_config, normalize_patch
 
 router = APIRouter(prefix="/admin", tags=["admin-config"])
 
+# ---- Helpers ----------------------------------------------------------------
 
-def _parse_bool(raw: Any) -> Tuple[Optional[bool], Optional[str]]:
-    if isinstance(raw, bool):
-        return raw, None
-    if isinstance(raw, (int, float)):
-        return bool(raw), None
-    if isinstance(raw, str):
-        s = raw.strip().lower()
-        if s in {"1", "true", "yes", "y", "on"}:
-            return True, None
-        if s in {"0", "false", "no", "n", "off"}:
-            return False, None
-    return None, "must be a boolean"
+def _extract_csrf_token(request: Request, payload: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """
+    Try to get a CSRF token from:
+      1) Header: X-CSRF-Token
+      2) JSON body: {"csrf_token": "..."} (if JSON)
+      3) Form field: csrf_token (handled separately by form endpoint if you have one)
+    """
+    hdr = request.headers.get("x-csrf-token")
+    if hdr:
+        return hdr
+    if payload and isinstance(payload, Mapping):
+        tok = payload.get("csrf_token")
+        if isinstance(tok, str) and tok:
+            return tok
+    return None
 
 
-def _parse_int(raw: Any) -> Tuple[Optional[int], Optional[str]]:
-    if raw is None or raw == "":
-        return None, "required"
+def _csrf_check_or_400(request: Request, csrf_token: Optional[str]) -> None:
+    cookie = request.cookies.get("ui_csrf", "")
+    if not (cookie and csrf_token and _csrf_ok(cookie) and _csrf_ok(csrf_token) and compare_digest(cookie, csrf_token)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed")
+
+
+def _normalize_json_payload(payload: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    Use the config_store.normalize_patch to strictly coerce known keys/types.
+    Also collect simple per-key errors for user feedback (optional).
+    """
     try:
-        val = int(float(str(raw).strip()))
+        patch = normalize_patch(payload)
     except Exception:
-        return None, "must be an integer"
-    return val, None
+        patch = {}
+    # For now, we don't produce granular errors — return empty dict.
+    return patch, {}
 
 
-def _parse_float(raw: Any) -> Tuple[Optional[float], Optional[str]]:
-    if raw is None or raw == "":
-        return None, "required"
-    try:
-        val = float(str(raw).strip())
-    except Exception:
-        return None, "must be a float"
-    return val, None
-
-
-def _normalize_payload(data: Mapping[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    patch: Dict[str, Any] = {}
-    errors: Dict[str, str] = {}
-
-    if "shadow_enable" in data:
-        bool_val, bool_err = _parse_bool(data.get("shadow_enable"))
-        if bool_err:
-            errors["shadow_enable"] = bool_err
-        elif bool_val is not None:
-            patch["shadow_enable"] = bool_val
-
-    if "shadow_policy_path" in data:
-        path_raw = data.get("shadow_policy_path")
-        if path_raw is None:
-            patch["shadow_policy_path"] = ""
-        else:
-            patch["shadow_policy_path"] = str(path_raw).strip()
-
-    if "shadow_timeout_ms" in data:
-        int_val, int_err = _parse_int(data.get("shadow_timeout_ms"))
-        if int_err:
-            errors["shadow_timeout_ms"] = int_err
-        elif int_val is not None and int_val >= 0:
-            patch["shadow_timeout_ms"] = int_val
-        else:
-            errors["shadow_timeout_ms"] = "must be non-negative"
-
-    if "shadow_sample_rate" in data:
-        float_val, float_err = _parse_float(data.get("shadow_sample_rate"))
-        if float_err:
-            errors["shadow_sample_rate"] = float_err
-        elif float_val is not None:
-            if float_val < 0.0 or float_val > 1.0:
-                errors["shadow_sample_rate"] = "must be between 0 and 1"
-            else:
-                patch["shadow_sample_rate"] = float_val
-
-    return patch, errors
-
+# ---- Endpoints ---------------------------------------------------------------
 
 @router.get("/config")
-def get_runtime_config(_: None = Depends(require_auth)) -> JSONResponse:
+def get_cfg(_: None = Depends(require_auth)) -> JSONResponse:
     return JSONResponse(get_config())
 
 
 @router.post("/config")
-async def update_runtime_config(
-    request: Request, _: None = Depends(require_auth)
-) -> JSONResponse:
+async def update_runtime_config(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
+    """
+    Accept JSON or form POST to update runtime configuration, with CSRF equality check.
+    - JSON: Content-Type: application/json; body contains keys and optional "csrf_token".
+    - Form: application/x-www-form-urlencoded or multipart/form-data; we read `csrf_token` and fields from form.
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    # A) JSON path
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json")
+
+        if not isinstance(payload, Mapping):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload")
+
+        csrf_token = _extract_csrf_token(request, payload)
+        _csrf_check_or_400(request, csrf_token)
+
+        patch, _errors = _normalize_json_payload(payload)
+        if patch:
+            set_config(patch)
+        return JSONResponse(get_config(), status_code=status.HTTP_200_OK)
+
+    # B) Form path (fallback for existing UI posts)
     try:
-        payload = await request.json()
+        form = await request.form()
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid form")
 
-    if not isinstance(payload, Mapping):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload")
+    csrf_token = (form.get("csrf_token") or "") if form else ""
+    csrf_token = str(csrf_token) if csrf_token is not None else ""
+    _csrf_check_or_400(request, csrf_token)
 
-    patch, errors = _normalize_payload(payload)
+    # Map form fields to a dict, pass through normalizer
+    form_dict: Dict[str, Any] = {}
+    for k, v in (form or {}).items():
+        if k == "csrf_token":
+            continue
+        form_dict[k] = v
+
+    patch, _errors = _normalize_json_payload(form_dict)
     if patch:
         set_config(patch)
-    cfg = get_config()
-    return JSONResponse({"ok": not errors, "errors": errors, "config": cfg})
+    return JSONResponse(get_config(), status_code=status.HTTP_200_OK)
