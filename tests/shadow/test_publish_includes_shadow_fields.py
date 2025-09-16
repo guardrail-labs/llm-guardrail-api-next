@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
-from app.services.config_store import set_config
 from app.services import decisions_bus
+from app.services.config_store import set_config
 
 
 def reset_config() -> None:

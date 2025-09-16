@@ -609,6 +609,7 @@ def create_app() -> FastAPI:
     try:
         from app.routes import (
             admin_config,
+            admin_config_history,
             admin_decisions,
             admin_policies,
             admin_rulepacks,
@@ -620,6 +621,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_rulepacks.router)
         app.include_router(admin_ui.router)
         app.include_router(admin_config.router)
+        app.include_router(admin_config_history.router)
     except Exception:
         pass
 

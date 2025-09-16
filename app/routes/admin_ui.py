@@ -106,13 +106,18 @@ def _csrf_ok(token: str) -> bool:
         return False
 
 
+def _csrf_cookie_secure() -> bool:
+    raw = (os.getenv("ADMIN_UI_COOKIE_SECURE") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def issue_csrf(resp: Response) -> None:
     resp.set_cookie(
         "ui_csrf",
         _csrf_token(),
         httponly=False,
-        samesite="lax",
-        secure=False,  # secure=True when served behind TLS
+        samesite="strict",
+        secure=_csrf_cookie_secure(),
     )
 
 
@@ -169,6 +174,15 @@ def ui_config(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             "config": cfg,
         },
     )
+    issue_csrf(resp)
+    return resp
+
+
+@router.get("/config/history", response_class=HTMLResponse)
+def ui_config_history(
+    req: Request, _: None = Depends(require_auth)
+) -> HTMLResponse:
+    resp = templates.TemplateResponse("config_history.html", {"request": req})
     issue_csrf(resp)
     return resp
 

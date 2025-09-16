@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .history-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    margin-bottom: 1rem;
+  }
+  .history-controls input[type="search"] {
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+    min-width: 220px;
+  }
+  .history-controls select {
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid #d1d5db;
+  }
+  .history-actions button {
+    margin-right: 0.5rem;
+  }
+  #json_modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    z-index: 20;
+  }
+  #json_modal.show {
+    display: flex;
+  }
+  #json_modal .modal-card {
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 1.5rem;
+    max-width: 960px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: auto;
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.25);
+  }
+  #json_modal pre {
+    background: #f9fafb;
+    border-radius: 8px;
+    padding: 0.75rem;
+    overflow: auto;
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+  }
+  .modal-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+  .modal-body section {
+    flex: 1 1 320px;
+  }
+</style>
+<div class="card">
+  <h2>Config history</h2>
+  <div class="history-controls">
+    <label>
+      Search actor / key<br />
+      <input id="history_search" type="search" placeholder="Search history" />
+    </label>
+    <label>
+      Limit<br />
+      <select id="history_limit">
+        <option value="20">20</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+      </select>
+    </label>
+    <button type="button" id="history_reload">Reload</button>
+    <span id="history_msg" class="muted"></span>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 24%;">Time</th>
+        <th style="width: 20%;">Actor</th>
+        <th>Changed keys</th>
+        <th style="width: 20%;">Actions</th>
+      </tr>
+    </thead>
+    <tbody id="history_tbody"></tbody>
+  </table>
+  <div id="history_empty" class="muted" style="margin-top: 1rem; display: none;">No config changes recorded yet.</div>
+</div>
+<div id="json_modal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 id="json_modal_title" style="margin: 0;">Config snapshot</h3>
+      <button type="button" id="json_modal_close">Close</button>
+    </div>
+    <div class="modal-body">
+      <section>
+        <h4>Before</h4>
+        <pre id="json_modal_before">{}</pre>
+      </section>
+      <section>
+        <h4>After</h4>
+        <pre id="json_modal_after">{}</pre>
+      </section>
+    </div>
+  </div>
+</div>
+<script>
+  (function () {
+    const tableBody = document.getElementById('history_tbody');
+    const emptyState = document.getElementById('history_empty');
+    const message = document.getElementById('history_msg');
+    const searchInput = document.getElementById('history_search');
+    const limitSelect = document.getElementById('history_limit');
+    const reloadButton = document.getElementById('history_reload');
+    const modal = document.getElementById('json_modal');
+    const modalClose = document.getElementById('json_modal_close');
+    const modalBefore = document.getElementById('json_modal_before');
+    const modalAfter = document.getElementById('json_modal_after');
+    const modalTitle = document.getElementById('json_modal_title');
+
+    const state = {
+      rows: [],
+      map: new Map()
+    };
+
+    function getCookie(name) {
+      return (document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)') || [])[2];
+    }
+
+    function csrfToken() {
+      return getCookie('ui_csrf') || '';
+    }
+
+    function formatTs(ts) {
+      if (ts === null || ts === undefined) {
+        return '-';
+      }
+      const num = Number(ts);
+      if (!Number.isFinite(num)) {
+        return String(ts);
+      }
+      const ms = num > 1e12 ? num : num * 1000;
+      const date = new Date(ms);
+      if (Number.isNaN(date.getTime())) {
+        return String(ts);
+      }
+      return date.toLocaleString();
+    }
+
+    function renderRows(rows) {
+      tableBody.innerHTML = '';
+      if (!rows.length) {
+        emptyState.style.display = 'block';
+        return;
+      }
+      emptyState.style.display = 'none';
+      rows.forEach((row) => {
+        const tr = document.createElement('tr');
+
+        const timeTd = document.createElement('td');
+        timeTd.textContent = formatTs(row.ts);
+        tr.appendChild(timeTd);
+
+        const actorTd = document.createElement('td');
+        actorTd.textContent = row.actor || '—';
+        tr.appendChild(actorTd);
+
+        const keysTd = document.createElement('td');
+        const keys = Array.isArray(row.changed_keys) && row.changed_keys.length
+          ? row.changed_keys.join(', ')
+          : '—';
+        keysTd.textContent = keys;
+        tr.appendChild(keysTd);
+
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'history-actions';
+        const viewBtn = document.createElement('button');
+        viewBtn.type = 'button';
+        viewBtn.textContent = 'View JSON';
+        viewBtn.addEventListener('click', () => openModal(row));
+        const rollbackBtn = document.createElement('button');
+        rollbackBtn.type = 'button';
+        rollbackBtn.textContent = 'Rollback';
+        rollbackBtn.addEventListener('click', () => confirmRollback(row));
+        actionsTd.appendChild(viewBtn);
+        actionsTd.appendChild(rollbackBtn);
+        tr.appendChild(actionsTd);
+
+        tableBody.appendChild(tr);
+      });
+    }
+
+    function applyFilter() {
+      const q = (searchInput.value || '').trim().toLowerCase();
+      if (!q) {
+        renderRows(state.rows);
+        return;
+      }
+      const filtered = state.rows.filter((row) => {
+        const actor = (row.actor || '').toLowerCase();
+        const keys = Array.isArray(row.changed_keys) ? row.changed_keys.join(' ').toLowerCase() : '';
+        return actor.includes(q) || keys.includes(q);
+      });
+      renderRows(filtered);
+    }
+
+    function fetchHistory() {
+      message.textContent = 'Loading…';
+      const limit = Number(limitSelect.value) || 50;
+      fetch(`/admin/config/versions?limit=${limit}`, { credentials: 'same-origin' })
+        .then((res) => res.json().then((body) => ({ ok: res.ok, body })))
+        .then(({ ok, body }) => {
+          if (!ok || !Array.isArray(body)) {
+            throw new Error('Failed to load history');
+          }
+          state.rows = body;
+          state.map = new Map(state.rows.map((row) => [String(row.ts), row]));
+          message.textContent = state.rows.length ? '' : 'No history yet';
+          applyFilter();
+        })
+        .catch((err) => {
+          console.error(err);
+          message.textContent = 'Failed to load history';
+          tableBody.innerHTML = '';
+          emptyState.style.display = 'block';
+        });
+    }
+
+    function openModal(row) {
+      modalBefore.textContent = JSON.stringify(row.before || {}, null, 2);
+      modalAfter.textContent = JSON.stringify(row.after || {}, null, 2);
+      modalTitle.textContent = `Config snapshot @ ${formatTs(row.ts)}`;
+      modal.classList.add('show');
+    }
+
+    function closeModal() {
+      modal.classList.remove('show');
+    }
+
+    function confirmRollback(row) {
+      if (!row || row.ts === undefined || row.ts === null) {
+        return;
+      }
+      const confirmed = window.confirm('Rollback to the previous config snapshot?');
+      if (!confirmed) {
+        return;
+      }
+      message.textContent = 'Rolling back…';
+      const payload = {
+        ts: row.ts,
+        csrf_token: csrfToken()
+      };
+      fetch('/admin/config/rollback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload)
+      })
+        .then((res) => res.json().then((body) => ({ ok: res.ok, body })))
+        .then(({ ok, body }) => {
+          if (!ok) {
+            throw new Error(body && body.detail ? body.detail : 'Rollback failed');
+          }
+          message.textContent = 'Rollback complete';
+          fetchHistory();
+        })
+        .catch((err) => {
+          console.error(err);
+          message.textContent = 'Rollback failed';
+        });
+    }
+
+    reloadButton.addEventListener('click', fetchHistory);
+    searchInput.addEventListener('input', () => {
+      applyFilter();
+    });
+    limitSelect.addEventListener('change', () => {
+      fetchHistory();
+    });
+    modalClose.addEventListener('click', closeModal);
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        closeModal();
+      }
+    });
+
+    fetchHistory();
+  })();
+</script>
+{% endblock %}
