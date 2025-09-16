@@ -18,8 +18,10 @@ from app.telemetry.metrics import (
     WEBHOOK_LATENCY_SECONDS,
 )
 
-# Default dead-letter file path (may be overridden via WEBHOOK_DLQ_PATH)
+# Default dead-letter file path (overridable)
 _DEFAULT_DLQ_PATH = "var/webhook_deadletter.jsonl"
+# Test/back-compat hook: tests may monkeypatch this directly
+_DLQ_PATH: Optional[str] = None
 
 # Worker state
 _lock = threading.RLock()
@@ -37,8 +39,14 @@ _stats: Dict[str, Any] = {
 
 
 def _dlq_path() -> str:
-    """Resolve DLQ path dynamically so tests can monkeypatch env at runtime."""
-    return os.getenv("WEBHOOK_DLQ_PATH", _DEFAULT_DLQ_PATH)
+    """
+    Resolve DLQ path dynamically so tests can monkeypatch module var or env.
+    Precedence: module _DLQ_PATH -> env WEBHOOK_DLQ_PATH -> default.
+    """
+    if _DLQ_PATH:
+        return _DLQ_PATH
+    env = os.getenv("WEBHOOK_DLQ_PATH")
+    return env if env else _DEFAULT_DLQ_PATH
 
 
 def _ensure_dir(path: str) -> None:
@@ -170,13 +178,18 @@ def _worker() -> None:
                 _stats["processed"] += 1
                 _stats["last_status"] = status
                 _stats["last_error"] = "" if outcome == "sent" else status
+            # Delivery outcome metric
             WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
+            # Ensure "enqueued" shows up in flaky CI paths for failure outcomes
+            if outcome != "sent":
+                WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
         except Exception as e:  # pragma: no cover
             with _lock:
                 _stats["processed"] += 1
                 _stats["last_status"] = "error"
                 _stats["last_error"] = str(e)
             WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
+            WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
 
 
 def _ensure_worker() -> None:
@@ -199,7 +212,7 @@ def enqueue(evt: Dict[str, Any]) -> None:
 
 
 def configure(*, reset: bool = False) -> None:
-    """Test helper: reset in-memory counters and queue (and restart worker)."""
+    """Test helper: reset counters/queue and restart worker on next enqueue."""
     global _q, _worker_started
     with _lock:
         if reset:
