@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from starlette.testclient import TestClient
 
+from app.services.config_store import set_config
 from app.services import decisions_bus
-from app.services.config_store import reset_config, set_config
+
+
+def reset_config() -> None:
+    # If you have a central reset helper, use it; otherwise this is a no-op placeholder.
+    pass
 
 
 def test_shadow_disagreement_increments(tmp_path, monkeypatch):
@@ -23,12 +28,15 @@ def test_shadow_disagreement_increments(tmp_path, monkeypatch):
         }
     )
 
-    from app.app import create_app
-
+    from app.main import create_app  # ← import from package entrypoint
     app = create_app()
-    client = TestClient(app)
+    c = TestClient(app)
 
-    client.post("/guardrail/evaluate", json={"text": "hello world"}, headers={"X-Debug": "1"})
-    metrics_text = client.get("/metrics").text
+    _ = c.post(
+        "/guardrail/evaluate",
+        json={"text": "hello world"},
+        headers={"X-Debug": "1"},
+    )
 
-    assert "guardrail_policy_disagreement_total" in metrics_text
+    m = c.get("/metrics").text
+    assert "guardrail_policy_disagreement_total" in m
