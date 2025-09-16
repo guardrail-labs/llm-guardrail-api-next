@@ -3,110 +3,136 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import Any, Dict, Iterator
+import queue
+import time
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.routes.admin_ui import require_auth
-from app.services.decisions_bus import snapshot, subscribe, unsubscribe
-from app.services.decisions_filter import match
+from app.services.decisions_bus import (
+    snapshot,
+    subscribe,
+    unsubscribe,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin-decisions"])
 
 
-def _parse_params(req: Request) -> tuple[dict[str, Any], int, bool]:
-    q = req.query_params
-    limit_raw = q.get("limit")
+def _safe_int(s: Optional[str]) -> Optional[int]:
+    if s is None:
+        return None
     try:
-        limit = int(limit_raw) if limit_raw is not None else 200
+        return int(s)
     except Exception:
-        limit = 200
-    limit = max(1, min(2000, limit))
-    filters: dict[str, Any] = {
+        return None
+
+
+def _parse_params(req: Request) -> Tuple[Dict[str, Any], int, bool]:
+    q = req.query_params
+    filters: Dict[str, Any] = {
         "tenant": q.get("tenant") or None,
         "bot": q.get("bot") or None,
         "family": q.get("family") or None,
         "mode": q.get("mode") or None,
         "rule_id": q.get("rule_id") or None,
-        "since": int(q.get("since")) if q.get("since") else None,
+        "since": _safe_int(q.get("since")),
     }
-    once = (q.get("once") or "").strip().lower() in {"1", "true", "yes", "on"}
-    return filters, limit, once
+    limit_s = q.get("limit")
+    limit = _safe_int(limit_s) or 200
+    if limit < 1:
+        limit = 1
+    if limit > 2000:
+        limit = 2000
+    sse = (q.get("sse") or "").lower() in ("1", "true", "yes", "on")
+    return filters, limit, sse
 
 
-def _filtered_snapshot(filters: dict[str, Any], limit: int) -> list[Dict[str, Any]]:
-    events = [evt for evt in reversed(list(snapshot())) if match(evt, **filters)]
-    return events[:limit]
+def _match(evt: Dict[str, Any], f: Dict[str, Any]) -> bool:
+    tenant = f.get("tenant")
+    if tenant and evt.get("tenant") != tenant:
+        return False
+    bot = f.get("bot")
+    if bot and evt.get("bot") != bot:
+        return False
+    family = f.get("family")
+    if family and evt.get("family") != family:
+        return False
+    mode = f.get("mode")
+    if mode and evt.get("mode") != mode:
+        return False
+    since = f.get("since")
+    if since is not None and int(evt.get("ts", 0)) < int(since):
+        return False
+    rule_id = f.get("rule_id")
+    if rule_id:
+        rids = evt.get("rule_ids") or []
+        if rule_id not in rids:
+            return False
+    return True
 
 
 @router.get("/decisions")
 def get_decisions(req: Request, _: None = Depends(require_auth)) -> JSONResponse:
     filters, limit, _ = _parse_params(req)
-    events = _filtered_snapshot(filters, limit)
-    return JSONResponse(events)
+    events = [e for e in reversed(snapshot()) if _match(e, filters)]
+    return JSONResponse(events[:limit])
 
 
 @router.get("/decisions/export.csv")
 def export_decisions_csv(req: Request, _: None = Depends(require_auth)) -> PlainTextResponse:
     filters, limit, _ = _parse_params(req)
-    events = _filtered_snapshot(filters, limit)
+    events = [e for e in reversed(snapshot()) if _match(e, filters)][:limit]
+
     out = io.StringIO()
-    writer = csv.DictWriter(
-        out,
-        fieldnames=[
-            "ts",
-            "incident_id",
-            "request_id",
-            "tenant",
-            "bot",
-            "family",
-            "mode",
-            "status",
-            "endpoint",
-            "rule_ids",
-            "policy_version",
-            "latency_ms",
-        ],
-    )
-    writer.writeheader()
-    for evt in events:
-        row = dict(evt)
-        rule_ids = evt.get("rule_ids") or []
-        row["rule_ids"] = ",".join(str(rid) for rid in rule_ids if str(rid))
-        writer.writerow(row)
-    csv_text = out.getvalue()
-    return PlainTextResponse(
-        csv_text,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=decisions.csv"},
-    )
+    headers: List[str] = [
+        "ts",
+        "incident_id",
+        "request_id",
+        "tenant",
+        "bot",
+        "family",
+        "mode",
+        "status",
+        "endpoint",
+        "rule_ids",
+        "policy_version",
+        "latency_ms",
+    ]
+    w = csv.DictWriter(out, fieldnames=headers)
+    w.writeheader()
+    for e in events:
+        row = dict(e)
+        row["rule_ids"] = ",".join(e.get("rule_ids") or [])
+        w.writerow(row)
+    return PlainTextResponse(out.getvalue(), media_type="text/csv")
 
 
 @router.get("/decisions/stream")
 def stream_decisions(req: Request, _: None = Depends(require_auth)) -> StreamingResponse:
-    filters, limit, once = _parse_params(req)
-    subscription = subscribe()
+    filters, limit, _ = _parse_params(req)
+    sub = subscribe()
 
-    def _stream() -> Iterator[bytes]:
+    def _sse():
+        # initial snapshot (newest first → present oldest of slice first)
+        snap = [e for e in reversed(snapshot()) if _match(e, filters)][:limit]
+        for e in reversed(snap):
+            yield b"event: init\n"
+            yield b"data: " + json.dumps(e).encode("utf-8") + b"\n\n"
+
+        # live events
         try:
-            yield b":ok\n\n"
-            snapshot_events = _filtered_snapshot(filters, limit)
-            for evt in reversed(snapshot_events):
-                payload = json.dumps(evt, ensure_ascii=False)
-                yield f"event:init\ndata:{payload}\n\n".encode("utf-8")
-            if once:
-                return
+            while True:
+                try:
+                    evt = sub.get(timeout=15.0)  # keep-alive window
+                except queue.Empty:
+                    yield b": keep-alive\n\n"
+                    continue
 
-            for evt in subscription:
-                if match(evt, **filters):
-                    payload = json.dumps(evt, ensure_ascii=False)
-                    yield f"data:{payload}\n\n".encode("utf-8")
+                if _match(evt, filters):
+                    yield b"data: " + json.dumps(evt).encode("utf-8") + b"\n\n"
         finally:
-            unsubscribe(subscription)
+            unsubscribe(sub)
 
-    headers = {
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",
-    }
-    return StreamingResponse(_stream(), media_type="text/event-stream", headers=headers)
+    return StreamingResponse(_sse(), media_type="text/event-stream")
