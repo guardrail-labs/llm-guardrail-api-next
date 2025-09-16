@@ -400,12 +400,33 @@ guardrail_ocr_extractions_total: CounterLike = _mk_counter(
     ["type", "outcome"],
 )
 
-# Webhook queue outcomes
-guardrail_webhook_events_total: CounterLike = _mk_counter(
-    "GUARDRAIL_WEBHOOK_EVENTS_TOTAL",
-    "Webhook queue events by outcome.",
+# Webhook metrics
+WEBHOOK_EVENTS_TOTAL: CounterLike = _mk_counter(
+    "guardrail_webhook_events_total",
+    "Webhook events lifecycle.",
     ["outcome"],
 )
+
+WEBHOOK_DELIVERIES_TOTAL: CounterLike = _mk_counter(
+    "guardrail_webhook_deliveries_total",
+    "Webhook delivery outcomes.",
+    ["outcome", "status"],
+)
+
+WEBHOOK_LATENCY_SECONDS: HistogramLike = cast(
+    HistogramLike,
+    _get_or_create(
+        "guardrail_webhook_latency_seconds",
+        lambda: HistogramClass(
+            "guardrail_webhook_latency_seconds",
+            "Webhook delivery latency.",
+            buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0),
+        ),
+    ),
+)
+
+# Backwards compatibility alias (deprecated)
+guardrail_webhook_events_total = WEBHOOK_EVENTS_TOTAL
 guardrail_ocr_bytes_total: CounterLike = _mk_counter(
     "guardrail_ocr_bytes_total",
     "Total bytes processed by OCR input type.",

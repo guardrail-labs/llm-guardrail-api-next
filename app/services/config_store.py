@@ -145,6 +145,7 @@ class ConfigDict(TypedDict, total=False):
     webhook_max_retries: int
     webhook_backoff_ms: int
     webhook_allow_insecure_tls: bool
+    webhook_allowlist_host: str
 
 
 _CONFIG_DEFAULTS: ConfigDict = {
@@ -159,6 +160,7 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "webhook_max_retries": 5,
     "webhook_backoff_ms": 500,
     "webhook_allow_insecure_tls": False,
+    "webhook_allowlist_host": "",
 }
 
 _CONFIG_ENV_MAP: Dict[str, str] = {
@@ -173,6 +175,7 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "webhook_max_retries": "WEBHOOK_MAX_RETRIES",
     "webhook_backoff_ms": "WEBHOOK_BACKOFF_MS",
     "webhook_allow_insecure_tls": "WEBHOOK_ALLOW_INSECURE_TLS",
+    "webhook_allowlist_host": "WEBHOOK_ALLOWLIST_HOST",
 }
 
 _CONFIG_STATE: Dict[str, Any] = {}
@@ -294,6 +297,13 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         if bool_val is not None:
             normalized["webhook_allow_insecure_tls"] = bool_val
 
+    if "webhook_allowlist_host" in data:
+        raw = data.get("webhook_allowlist_host")
+        if raw is None:
+            normalized["webhook_allowlist_host"] = ""
+        else:
+            normalized["webhook_allowlist_host"] = str(raw).strip()
+
     return cast(ConfigDict, normalized)
 
 
@@ -380,6 +390,8 @@ def _env_overrides() -> ConfigDict:
             bool_val = _coerce_bool(raw)
             if bool_val is not None:
                 overrides[key] = bool_val
+        elif key == "webhook_allowlist_host":
+            overrides[key] = str(raw).strip()
     return cast(ConfigDict, overrides)
 
 

@@ -614,6 +614,7 @@ def create_app() -> FastAPI:
             admin_policies,
             admin_rulepacks,
             admin_ui,
+            admin_webhook,
         )
 
         app.include_router(admin_decisions.router)
@@ -622,6 +623,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_ui.router)
         app.include_router(admin_config.router)
         app.include_router(admin_config_history.router)
+        app.include_router(admin_webhook.router)
     except Exception:
         pass
 
