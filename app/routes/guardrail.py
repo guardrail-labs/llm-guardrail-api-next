@@ -6,7 +6,18 @@ import random
 import re
 import uuid
 import time
-from typing import Any, Callable, Awaitable, Dict, List, Mapping, Optional, Tuple, cast
+from typing import (
+    Any,
+    Callable,
+    Awaitable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    cast,
+)
 
 from fastapi import APIRouter, Header, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -1288,6 +1299,51 @@ async def guardrail_evaluate(request: Request):
 
     request_id = _req_id(explicit_request_id or req_header_request_id)
 
+    def finalize_response(
+        response: Response,
+        *,
+        decision_family: str,
+        rule_ids: Optional[Iterable[str]] = None,
+        escalate: bool = True,
+        mode_hint: Optional[str] = None,
+        retry_after_hint: Optional[int] = None,
+        policy_result: Optional[Mapping[str, Any]] = None,
+    ) -> Response:
+        """
+        Normalize and forward arguments to _finalize_ingress_response.
+        Ensures rule_ids is a concrete list[str] | None and prefers IDs
+        supplied by the policy_result, if present.
+        """
+        # Prefer rule IDs from policy_result when present; otherwise use the param.
+        final_rule_ids: Optional[list[str]] = None
+
+        pr_rule_ids_any: Any = None
+        if policy_result is not None:
+            pr_rule_ids_any = policy_result.get("rule_ids")
+
+        if pr_rule_ids_any:
+            if isinstance(pr_rule_ids_any, (list, tuple, set)):
+                final_rule_ids = [str(x) for x in pr_rule_ids_any]
+            elif isinstance(pr_rule_ids_any, str):
+                final_rule_ids = [pr_rule_ids_any]
+            else:
+                final_rule_ids = None
+
+        if final_rule_ids is None and rule_ids is not None:
+            final_rule_ids = [str(x) for x in rule_ids]
+
+        return _finalize_ingress_response(
+            response,
+            request_id=request_id,
+            fingerprint_value=fingerprint_value,
+            decision_family=decision_family,
+            rule_ids=final_rule_ids,
+            escalate=escalate,
+            mode_hint=mode_hint,
+            retry_after_hint=retry_after_hint,
+            policy_result=policy_result,
+        )
+
     # Ingress rulepack enforcement (opt-in)
     should_block, hits = ingress_should_block(combined_text or "")
     if should_block:
@@ -1323,10 +1379,8 @@ async def guardrail_evaluate(request: Request):
             except Exception:
                 pass
             _record_actor_metric(request, "block_input_only")
-            return _finalize_ingress_response(
+            return finalize_response(
                 resp,
-                request_id=request_id,
-                fingerprint_value=fingerprint_value,
                 decision_family="deny",
                 rule_ids=hits,
                 policy_result={
@@ -1352,10 +1406,8 @@ async def guardrail_evaluate(request: Request):
             clar_resp = respond_with_clarify(
                 extra={"rulepack": "ingress_block", "matches": ",".join(hits)}
             )
-            return _finalize_ingress_response(
+            return finalize_response(
                 clar_resp,
-                request_id=request_id,
-                fingerprint_value=fingerprint_value,
                 decision_family="deny",
                 rule_ids=hits,
                 policy_result={
@@ -1404,10 +1456,8 @@ async def guardrail_evaluate(request: Request):
         )
         _record_actor_metric(request, "clarify")
         clar_resp = respond_with_clarify()
-        return _finalize_ingress_response(
+        return finalize_response(
             clar_resp,
-            request_id=request_id,
-            fingerprint_value=fingerprint_value,
             decision_family="deny",
             rule_ids=_rule_ids_from_hits(policy_hits),
             policy_result={
@@ -1588,10 +1638,8 @@ async def guardrail_evaluate(request: Request):
         direction="ingress",
         extra_headers=hv_headers,
     )
-    return _finalize_ingress_response(
+    return finalize_response(
         resp,
-        request_id=request_id,
-        fingerprint_value=fingerprint_value,
         decision_family=_decision_family(action),
         rule_ids=_rule_ids_from_hits(policy_hits),
         policy_result=base_decision,
