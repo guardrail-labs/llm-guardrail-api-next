@@ -21,14 +21,28 @@ When a receiver is down or misconfigured, Guardrail routes failed deliveries to 
 
 ## Replay via API
 
+### Option A — JSON body (double-submit with cookie + body)
+
 ```bash
+TOKEN="<copy-from-admin-ui-cookie-ui_csrf>"
 curl -X POST https://<host>/admin/webhook/replay \
   -H "Content-Type: application/json" \
-  -H "Cookie: ADMIN_CSRF=<token>" \
+  --cookie "ui_csrf=${TOKEN}" \
+  -d "{\"limit\": 500, \"csrf_token\": \"${TOKEN}\"}"
+```
+
+### Option B — Header (double-submit with cookie + header)
+
+```bash
+TOKEN="<copy-from-admin-ui-cookie-ui_csrf>"
+curl -X POST https://<host>/admin/webhook/replay \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: ${TOKEN}" \
+  --cookie "ui_csrf=${TOKEN}" \
   -d '{"limit": 500}'
 ```
 
-- **CSRF:** Use the token issued by the admin UI (issue_csrf double-submit).
+- **CSRF:** Guardrail’s admin endpoints use double-submit (ui_csrf cookie + matching csrf_token body field or X-CSRF-Token header).
 - **Limit:** Cap the batch to avoid thundering herds on partner systems.
 
 ## Safety Notes
