@@ -49,3 +49,35 @@ groups:
         annotations:
           summary: "Guardrail 429 elevated"
           description: "429 rate sustained >2 req/s for 10 minutes."
+
+  - name: guardrail-webhooks
+    interval: 1m
+    rules:
+      - alert: GuardrailWebhookFailureRateHigh
+        expr: |
+          sum(rate(guardrail_webhook_deliveries_total{outcome!="sent"}[15m]))
+            /
+          sum(rate(guardrail_webhook_deliveries_total[15m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+          team: guardrail
+          service: guardrail-api
+        annotations:
+          summary: "Guardrail webhooks high failure rate"
+          description: |
+            Failure ratio > 20% over 15m.
+            Investigate receiver availability, secrets, allowlist, or TLS settings.
+            Ratio = (non-sent outcomes) / (all deliveries).
+
+    # Optional (uncomment after adding a DLQ gauge/counter series)
+    #      - alert: GuardrailWebhookDLQGrowing
+    #        expr: rate(guardrail_webhook_events_total{event="dlq"}[15m]) > 0
+    #        for: 15m
+    #        labels:
+    #          severity: warning
+    #          team: guardrail
+    #          service: guardrail-api
+    #        annotations:
+    #          summary: "Guardrail webhook DLQ is receiving events"
+    #          description: "DLQ receiving events for 15m+. Consider replay once receiver is fixed."
