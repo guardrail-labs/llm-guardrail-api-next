@@ -23,6 +23,13 @@ def test_health_contract_models():
     parsed = HealthResponse.model_validate(r.json())
     assert parsed.ok is True
     assert parsed.status == "ok"
+    assert {
+        "policy",
+        "decisions",
+        "webhooks",
+        "ratelimit",
+        "metrics",
+    }.issubset(parsed.checks.keys())
 
 
 def test_evaluate_contract_models_and_redaction():

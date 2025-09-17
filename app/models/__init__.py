@@ -1,18 +1,28 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from .debug import DebugPayload, RedactionSpan, SourceDebug
 
 
+class HealthCheckResult(BaseModel):
+    status: Literal["ok", "fail"]
+    detail: Optional[Any] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
 class HealthResponse(BaseModel):
-    ok: bool
-    status: str
-    requests_total: float
-    decisions_total: float
-    rules_version: str
+    status: Literal["ok", "fail"]
+    checks: Dict[str, HealthCheckResult]
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
 
 
 class EvaluateRequest(BaseModel):
@@ -41,6 +51,7 @@ class AdminReloadResponse(BaseModel):
 
 
 __all__ = [
+    "HealthCheckResult",
     "HealthResponse",
     "EvaluateRequest",
     "Decision",

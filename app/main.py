@@ -219,6 +219,7 @@ def _include_all_route_modules(app: FastAPI) -> int:
                 "app.routes.admin_policies",
                 "app.routes.admin_rulepacks",
                 "app.routes.admin_ui",
+                "app.routes.health",
             }:
                 visited.add(name)
                 continue
@@ -562,6 +563,12 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api", lifespan=lifespan)
     try:
+        from app.routes.health import router as health_router
+
+        app.include_router(health_router)
+    except Exception:
+        pass
+    try:
         from app.routes.admin_policy_packs import router as admin_policy_packs_router
 
         app.include_router(admin_policy_packs_router)
@@ -670,10 +677,6 @@ def create_app() -> FastAPI:
 
     # Guard after request id & before handlers
     app.add_middleware(_BindingsGuardMiddleware)
-
-    @app.get("/health")
-    async def _health_fallback():
-        return {"status": "ok", "ok": True}
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
