@@ -255,7 +255,7 @@ GUARDRAIL_CLARIFY_TOTAL = _get_or_create_counter(
 GUARDRAIL_EGRESS_REDACTIONS_TOTAL = _get_or_create_counter(
     "guardrail_egress_redactions_total",
     "Total egress redactions applied",
-    ("tenant", "bot", "kind"),
+    ("tenant", "bot", "kind", "rule_id"),
 )
 
 
@@ -263,12 +263,22 @@ def inc_clarify(phase: str = "ingress") -> None:
     GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
 
 
-def inc_egress_redactions(tenant: str, bot: str, kind: str, n: int = 1) -> None:
+def inc_egress_redactions(
+    tenant: str,
+    bot: str,
+    kind: str,
+    n: int = 1,
+    *,
+    rule_id: str | None = None,
+) -> None:
     if n > 0:
         tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
         try:
             GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(
-                tenant=tenant_l, bot=bot_l, kind=kind
+                tenant=tenant_l,
+                bot=bot_l,
+                kind=kind,
+                rule_id=rule_id or "",
             ).inc(n)
         except Exception:
             pass

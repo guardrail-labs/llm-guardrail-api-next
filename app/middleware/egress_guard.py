@@ -89,7 +89,13 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
 
                 async def _on_complete(changed: int) -> None:
                     if changed > 0:
-                        inc_egress_redactions(tenant, bot, "text/stream", changed)
+                        inc_egress_redactions(
+                            tenant,
+                            bot,
+                            "text/stream",
+                            changed,
+                            rule_id="legacy",
+                        )
                         try:
                             record_incident(
                                 kind="stream",
@@ -147,7 +153,13 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             if new_body != body:
                 tenant = request.headers.get(TENANT_HEADER, "default")
                 bot = request.headers.get(BOT_HEADER, "default")
-                inc_egress_redactions(tenant, bot, "application/json", 1)
+                inc_egress_redactions(
+                    tenant,
+                    bot,
+                    "application/json",
+                    1,
+                    rule_id="legacy",
+                )
                 try:
                     record_incident(
                         kind="json",
@@ -180,7 +192,13 @@ class EgressGuardMiddleware(BaseHTTPMiddleware):
             if new_body != body:
                 tenant = request.headers.get(TENANT_HEADER, "default")
                 bot = request.headers.get(BOT_HEADER, "default")
-                inc_egress_redactions(tenant, bot, "text/plain", 1)
+                inc_egress_redactions(
+                    tenant,
+                    bot,
+                    "text/plain",
+                    1,
+                    rule_id="legacy",
+                )
                 try:
                     record_incident(
                         kind="text",
