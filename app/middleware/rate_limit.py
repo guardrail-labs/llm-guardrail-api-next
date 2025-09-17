@@ -75,6 +75,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         }
         if request_id:
             payload["request_id"] = request_id
+        try:
+            request.state.guardrail_decision = {
+                "outcome": "block_input_only",
+                "mode": "Tier1",
+                "incident_id": payload.get("incident_id") or f"rl-{tenant}-{bot}",
+            }
+        except Exception:
+            pass
         return JSONResponse(
             payload,
             status_code=429,

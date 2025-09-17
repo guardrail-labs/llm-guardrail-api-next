@@ -105,3 +105,28 @@ def test_headers_present_and_health_skipped(monkeypatch):
 
     health = client.get("/health")
     assert health.status_code == 200
+
+
+def test_block_sets_decision_headers(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_RPS", "1")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "1")
+
+    from app.middleware.decision_headers import DecisionHeaderMiddleware
+
+    app = FastAPI()
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(DecisionHeaderMiddleware)
+
+    @app.get("/echo")
+    def echo():  # pragma: no cover - executed via TestClient
+        return {"ok": True}
+
+    client = TestClient(app)
+    headers = {"X-Guardrail-Tenant": "acme", "X-Guardrail-Bot": "ui"}
+    assert client.get("/echo", headers=headers).status_code == 200
+    response = client.get("/echo", headers=headers)
+    assert response.status_code == 429
+    assert response.headers.get("X-Guardrail-Decision") == "block_input_only"
+    assert response.headers.get("X-Guardrail-Mode") == "Tier1"
+    assert response.headers.get("X-Guardrail-Incident-ID")
