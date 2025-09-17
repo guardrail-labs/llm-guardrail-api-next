@@ -171,7 +171,9 @@ guardrail_latency_seconds: HistogramLike = _mk_histogram(
     "guardrail_latency_seconds", "Latency in seconds.", labels=["endpoint"]
 )
 guardrail_rate_limited_total: CounterLike = _mk_counter(
-    "guardrail_rate_limited_total", "Requests rejected by legacy rate limiter."
+    "guardrail_rate_limited_total",
+    "Requests rejected by rate limiting.",
+    labels=["tenant", "bot"],
 )
 guardrail_quota_rejects_total: CounterLike = _mk_counter(
     "guardrail_quota_rejects_total", "Requests rejected due to quotas.", ["tenant", "bot"]
@@ -502,9 +504,13 @@ def inc_shadow_disagreement(route: str, live: str, shadow: str) -> None:
     ).inc()
 
 
-def inc_rate_limited(amount: float = 1.0) -> None:
+def inc_rate_limited(
+    amount: float = 1.0, tenant: str | None = None, bot: str | None = None
+) -> None:
     global _RATE_LIMITED
-    guardrail_rate_limited_total.inc(amount)
+    tenant_label = str(tenant or "unknown")
+    bot_label = str(bot or "unknown")
+    guardrail_rate_limited_total.labels(tenant_label, bot_label).inc(amount)
     _RATE_LIMITED += float(amount)
 
 

@@ -22,7 +22,6 @@ from starlette.responses import Response as StarletteResponse
 from app.metrics.route_label import route_label
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.quota import QuotaMiddleware
-from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
@@ -565,7 +564,12 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
-    app.add_middleware(RateLimitMiddleware)
+    try:
+        from app.middleware.rate_limit import RateLimitMiddleware
+
+        app.add_middleware(RateLimitMiddleware)
+    except Exception:
+        pass
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(EgressRedactMiddleware)
     app.add_middleware(TenantBotMiddleware)

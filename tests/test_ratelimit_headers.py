@@ -5,11 +5,18 @@ import importlib
 from fastapi.testclient import TestClient
 
 
-def _reload_app():
-    # Ensure a fresh app with env-applied state
-    import app.telemetry.metrics as metrics
+def _reload_app(monkeypatch):
+    monkeypatch.setenv("API_KEY", "test-key")
+    import app.services.ratelimit as rl
 
-    importlib.reload(metrics)
+    importlib.reload(rl)
+    monkeypatch.setattr(rl, "_global_enabled", None, raising=False)
+    monkeypatch.setattr(rl, "_global_limiter", None, raising=False)
+
+    import app.middleware.rate_limit as middleware
+
+    importlib.reload(middleware)
+
     import app.main as main
 
     importlib.reload(main)
@@ -17,36 +24,32 @@ def _reload_app():
 
 
 def test_ratelimit_headers_and_429(monkeypatch):
-    # Enable rate limiting with tiny burst so we can hit 429 quickly
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
-    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
-    monkeypatch.setenv("RATE_LIMIT_BURST", "2")
+    monkeypatch.setenv("RATE_LIMIT_RPS", "1")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "1")
 
-    app = _reload_app()
+    app = _reload_app(monkeypatch)
     client = TestClient(app)
 
-    # First two should pass and include headers
-    r1 = client.get("/health")
-    assert r1.status_code == 200
-    assert "X-RateLimit-Limit" in r1.headers
-    assert "X-RateLimit-Remaining" in r1.headers
-    assert "X-RateLimit-Reset" in r1.headers
+    headers = {
+        "X-Guardrail-Tenant": "acme",
+        "X-Guardrail-Bot": "web",
+        "X-API-Key": "test-key",
+    }
 
-    r2 = client.get("/health")
-    assert r2.status_code == 200
-    assert r2.headers.get("X-RateLimit-Limit") == "2"
-    # Remaining should be <= 1 after second request
-    assert int(r2.headers.get("X-RateLimit-Remaining", "0")) <= 1
+    allowed = client.post("/guardrail/", json={"prompt": "ping"}, headers=headers)
+    assert allowed.status_code in (200, 202, 207)
+    assert allowed.headers.get("X-RateLimit-Limit") == "1; burst=1"
+    assert allowed.headers.get("X-RateLimit-Remaining") == "0"
 
-    # Third should be blocked
-    r3 = client.get("/health")
-    assert r3.status_code == 429
-    assert r3.headers.get("Retry-After") == "60"
-    assert r3.headers.get("X-RateLimit-Limit") == "2"
-    assert r3.headers.get("X-RateLimit-Remaining") == "0"
-    assert "X-RateLimit-Reset" in r3.headers
+    blocked = client.post("/guardrail/", json={"prompt": "again"}, headers=headers)
+    assert blocked.status_code == 429
+    assert blocked.headers.get("Retry-After") == "1"
+    assert blocked.headers.get("X-RateLimit-Limit") == "1; burst=1"
+    assert blocked.headers.get("X-RateLimit-Remaining") == "0"
 
-    # Body shape for consistency with other 429s
-    j = r3.json()
-    assert j["code"] == "rate_limited"
-    assert "request_id" in j
+    payload = blocked.json()
+    assert payload["detail"] == "Rate limit exceeded"
+    assert payload["tenant"] == "acme"
+    assert payload["bot"] == "web"
+    assert payload["retry_after_seconds"] == 1

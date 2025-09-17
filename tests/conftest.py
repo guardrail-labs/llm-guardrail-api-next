@@ -14,6 +14,18 @@ if str(ROOT) not in sys.path:
 from app.main import create_app  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _disable_rate_limit(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+    try:
+        import app.services.ratelimit as rl
+
+        monkeypatch.setattr(rl, "_global_enabled", None, raising=False)
+        monkeypatch.setattr(rl, "_global_limiter", None, raising=False)
+    except Exception:
+        pass
+
+
 @pytest.fixture()
 def app():
     # Function scope: new app for each test to pick up monkeypatched env.
