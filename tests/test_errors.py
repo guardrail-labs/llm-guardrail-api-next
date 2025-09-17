@@ -81,7 +81,7 @@ def test_429_has_retry_after_and_code():
         r = client.post("/guardrail/", json={"prompt": "3"}, headers=h)
         assert r.status_code == 429
         body = r.json()
-        assert body.get("detail") == "rate limit exceeded"
+        assert body.get("detail") == "Rate limit exceeded"
         assert "Retry-After" in r.headers
         assert "X-Request-ID" in r.headers
 
