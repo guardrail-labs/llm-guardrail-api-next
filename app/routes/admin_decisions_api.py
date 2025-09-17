@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import csv
 import importlib
+import io
+import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple, cast
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Protocol, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
@@ -303,3 +306,144 @@ async def decisions_page(
             "page_size": page_size,
         },
     )
+
+
+CSV_FIELDS = (
+    "ts",
+    "tenant",
+    "bot",
+    "outcome",
+    "policy_version",
+    "rule_id",
+    "incident_id",
+    "mode",
+    "id",
+    "details",  # JSON-encoded blob in CSV
+)
+
+
+def _paged_items(
+    provider,
+    since_dt,
+    tenant: str | None,
+    bot: str | None,
+    outcome: str | None,
+    batch: int = 1000,
+) -> Iterator[DecisionItem]:
+    offset = 0
+    while True:
+        try:
+            chunk, _total = provider(
+                since=since_dt,
+                tenant=tenant,
+                bot=bot,
+                outcome=outcome,
+                limit=batch,
+                offset=offset,
+            )
+        except TypeError:
+            chunk, _total = provider(since_dt, tenant, bot, outcome, batch, offset)
+        if not chunk:
+            break
+        for raw in chunk:
+            yield _norm_item(raw)
+        if len(chunk) < batch:
+            break
+        offset += batch
+
+
+def _stream_csv(
+    provider,
+    since_dt,
+    tenant: str | None,
+    bot: str | None,
+    outcome: str | None,
+    batch: int = 1000,
+) -> Iterable[bytes]:
+    # header
+    header_buf = io.StringIO()
+    writer = csv.writer(header_buf)
+    writer.writerow(CSV_FIELDS)
+    yield header_buf.getvalue().encode("utf-8", errors="replace")
+
+    # rows
+    for it in _paged_items(provider, since_dt, tenant, bot, outcome, batch):
+        row_buf = io.StringIO()
+        w = csv.writer(row_buf)
+        details_str = json.dumps(it.details or {}, separators=(",", ":"), ensure_ascii=False)
+        w.writerow(
+            (
+                it.ts,
+                it.tenant,
+                it.bot,
+                it.outcome,
+                it.policy_version or "",
+                it.rule_id or "",
+                it.incident_id or "",
+                it.mode or "",
+                it.id,
+                details_str,
+            )
+        )
+        yield row_buf.getvalue().encode("utf-8", errors="replace")
+
+
+def _stream_jsonl(
+    provider,
+    since_dt,
+    tenant: str | None,
+    bot: str | None,
+    outcome: str | None,
+    batch: int = 1000,
+) -> Iterable[bytes]:
+    for it in _paged_items(provider, since_dt, tenant, bot, outcome, batch):
+        line = (
+            json.dumps(
+                {
+                    "id": it.id,
+                    "ts": it.ts,
+                    "tenant": it.tenant,
+                    "bot": it.bot,
+                    "outcome": it.outcome,
+                    "policy_version": it.policy_version,
+                    "rule_id": it.rule_id,
+                    "incident_id": it.incident_id,
+                    "mode": it.mode,
+                    "details": it.details,
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        yield line.encode("utf-8", errors="replace")
+
+
+@router.get("/admin/api/decisions/export")
+async def export_decisions(
+    _request: Request,
+    format: str = Query("csv", pattern="^(csv|jsonl)$"),
+    since: Optional[str] = Query(None, description="ISO8601 timestamp (UTC)"),
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    batch: int = Query(1000, ge=100, le=10000),
+):
+    """
+    Stream decisions as CSV or JSONL. Same filters as the list API.
+    """
+
+    prov = _get_provider()
+    since_dt = _parse_since(since)
+
+    if format == "jsonl":
+        filename = "decisions.jsonl"
+        media_type = "application/x-ndjson"
+        body_iter = _stream_jsonl(prov, since_dt, tenant, bot, outcome, batch)
+    else:
+        filename = "decisions.csv"
+        media_type = "text/csv"
+        body_iter = _stream_csv(prov, since_dt, tenant, bot, outcome, batch)
+
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(body_iter, media_type=media_type, headers=headers)
