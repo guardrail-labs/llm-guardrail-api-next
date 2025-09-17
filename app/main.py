@@ -567,6 +567,12 @@ def create_app() -> FastAPI:
         app.include_router(admin_decisions_router)
     except Exception:
         pass
+    try:
+        from app.routes.admin_overview import router as admin_overview_router
+
+        app.include_router(admin_overview_router)
+    except Exception:
+        pass
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
