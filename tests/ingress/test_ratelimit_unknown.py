@@ -77,3 +77,29 @@ def test_skip_metric_emitted_on_bypass(monkeypatch):
     if metrics_response.status_code == 200:
         assert "guardrail_rate_limit_skipped_total" in metrics_response.text
         assert '{reason="unknown_identity"}' in metrics_response.text
+
+
+def test_partial_identity_is_limited_by_default(monkeypatch):
+    # Limiter enabled; unknown enforcement not enabled
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_RPS", "1")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "1")
+    monkeypatch.delenv("RATE_LIMIT_ENFORCE_UNKNOWN", raising=False)
+
+    app = _make_app()
+    c = TestClient(app)
+
+    # Provide only tenant, omit bot -> should rate-limit on (tenant, "unknown")
+    h = {"X-Guardrail-Tenant": "acme"}
+    r1 = c.get("/echo", headers=h)  # consumes token
+    r2 = c.get("/echo", headers=h)  # should be blocked
+    assert r1.status_code == 200
+    assert r2.status_code == 429
+    assert "Retry-After" in r2.headers
+
+    # Provide only bot, omit tenant -> should rate-limit on ("unknown", bot)
+    h2 = {"X-Guardrail-Bot": "ui"}
+    r3 = c.get("/echo", headers=h2)  # consumes token
+    r4 = c.get("/echo", headers=h2)  # should be blocked
+    assert r3.status_code == 200
+    assert r4.status_code == 429
