@@ -70,7 +70,12 @@ def test_413_has_code_and_request_id():
 
 def test_429_has_retry_after_and_code():
     # Enable rate limiting only for this test
-    with temp_env(RATE_LIMIT_ENABLED="true", RATE_LIMIT_PER_MINUTE="2", RATE_LIMIT_BURST="2"):
+    with temp_env(
+        RATE_LIMIT_ENABLED="true",
+        RATE_LIMIT_PER_MINUTE="2",
+        RATE_LIMIT_BURST="2",
+        RATE_LIMIT_ENFORCE_UNKNOWN="true",
+    ):
         app = _build_app()
         client = _make_client(app)
         h = {"X-API-Key": "unit-test-key"}
