@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 # Paths that bypass auth entirely (exact match)
-_SAFE_PATHS: set[str] = {"/health", "/metrics"}
+_SAFE_PATHS: set[str] = {"/health", "/healthz", "/readyz", "/livez", "/metrics"}
 
 # Prefixes that bypass auth.  Our OpenAI-compatible routes live under ``/v1``
 # and are intentionally unauthenticated to mimic the upstream API contract.
@@ -35,7 +35,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     Uniform API key/Authorization gate for the whole app.
     Exemptions:
       - OPTIONS preflight
-      - /health and /metrics
+      - Probe endpoints (/health, /healthz, /readyz, /livez, /metrics)
     You can bypass entirely via GUARDRAIL_DISABLE_AUTH=1 (used by CI when needed).
     """
 

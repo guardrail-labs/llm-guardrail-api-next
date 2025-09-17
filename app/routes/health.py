@@ -9,7 +9,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.services.detectors.ingress_pipeline import _enabled as _flag_enabled
-from app.services.policy import current_rules_version
 
 router = APIRouter(tags=["system"])
 
@@ -140,6 +139,18 @@ def _check_metrics_route(app: Any) -> Dict[str, Any]:
     return _ok("metrics", {"route": _has_metrics(app)})
 
 
+def _current_rules_version_safe() -> str:
+    try:
+        pol = importlib.import_module("app.services.policy")
+        if hasattr(pol, "current_rules_version"):
+            version = pol.current_rules_version()
+            if version:
+                return str(version)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return "unknown"
+
+
 @router.get("/livez")
 async def livez() -> JSONResponse:
     return JSONResponse({"status": "ok", "time": time.time()})
@@ -180,7 +191,7 @@ async def healthz() -> JSONResponse:
     }
     payload = {
         "status": "ok",
-        "policy_version": str(current_rules_version()),
+        "policy_version": _current_rules_version_safe(),
         "features": features,
     }
     return JSONResponse(payload)
