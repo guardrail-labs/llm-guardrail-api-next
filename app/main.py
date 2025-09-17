@@ -561,6 +561,12 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api", lifespan=lifespan)
+    try:
+        from app.routes.admin_decisions_api import router as admin_decisions_router
+
+        app.include_router(admin_decisions_router)
+    except Exception:
+        pass
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)

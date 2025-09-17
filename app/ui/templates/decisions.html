@@ -1,26 +1,135 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="card">
-  <h2>Recent Decisions ({{ n }})</h2>
-  <p><a href="/admin/ui/export/decisions?n={{ n }}">Export JSONL</a></p>
-  {% if not decisions or decisions|length == 0 %}
-    <p class="muted">No recent decisions available.</p>
-  {% else %}
-    <table>
-      <thead><tr><th>ts</th><th>tenant</th><th>bot</th><th>action</th><th>reason</th></tr></thead>
-      <tbody>
-        {% for d in decisions %}
-        <tr>
-          <td>{{ d.ts or d.timestamp or '—' }}</td>
-          <td>{{ d.tenant or '—' }}</td>
-          <td>{{ d.bot or '—' }}</td>
-          <td>{{ d.action or '—' }}</td>
-          <td>{{ d.reason or d.details or '—' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
-</div>
-{% endblock %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8"/>
+    <title>Guardrail Decisions</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; }
+      header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+      form.filters { display: grid; grid-template-columns: repeat(5, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 14px; }
+      th { background: #f9fafb; position: sticky; top: 0; }
+      .controls { display: flex; gap: 8px; align-items: center; margin: 12px 0; }
+      input, select { padding: 6px 8px; font-size: 14px; }
+      button { padding: 6px 10px; font-size: 14px; cursor: pointer; }
+      .muted { color: #6b7280; }
+      .badge { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2ff; color: #3730a3; }
+      .outcome-allow { background: #ecfdf5; color: #065f46; }
+      .outcome-block_input_only { background: #fff7ed; color: #9a3412; }
+      .outcome-execute_locked, .outcome-full_quarantine { background: #fee2e2; color: #991b1b; }
+      .nowrap { white-space: nowrap; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Decision Log</h1>
+      <span class="muted">Read-only · latest first</span>
+    </header>
 
+    <form class="filters" method="get" action="/admin/decisions">
+      <input type="text" name="since" placeholder="Since (ISO8601)" value="{{ since }}"/>
+      <input type="text" name="tenant" placeholder="Tenant" value="{{ tenant }}"/>
+      <input type="text" name="bot" placeholder="Bot" value="{{ bot }}"/>
+      <select name="outcome">
+        <option value="" {% if not outcome %}selected{% endif %}>Any outcome</option>
+        {% for o in ["allow","block_input_only","execute_locked","full_quarantine"] %}
+        <option value="{{ o }}" {% if outcome==o %}selected{% endif %}>{{ o }}</option>
+        {% endfor %}
+      </select>
+      <div>
+        <input type="number" name="page_size" min="1" max="500" value="{{ page_size }}" />
+      </div>
+      <div class="controls">
+        <button type="submit">Apply</button>
+      </div>
+    </form>
+
+    <div class="controls">
+      <button id="prev">Prev</button>
+      <span class="muted">Page <span id="pg">{{ page }}</span></span>
+      <button id="next">Next</button>
+    </div>
+
+    <table id="grid">
+      <thead>
+        <tr>
+          <th class="nowrap">Time (UTC)</th>
+          <th>Tenant</th>
+          <th>Bot</th>
+          <th>Outcome</th>
+          <th>Policy</th>
+          <th>Rule</th>
+          <th>Incident</th>
+          <th>ID</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <script>
+      const qs = new URLSearchParams(window.location.search);
+      let page = parseInt(qs.get("page") || "{{ page }}", 10) || 1;
+      let pageSize = parseInt(qs.get("page_size") || "{{ page_size }}", 10) || 50;
+
+      async function load() {
+        const params = new URLSearchParams();
+        const since = "{{ since }}";
+        const tenant = "{{ tenant }}";
+        const bot = "{{ bot }}";
+        const outcome = "{{ outcome }}";
+
+        if (since) params.set("since", since);
+        if (tenant) params.set("tenant", tenant);
+        if (bot) params.set("bot", bot);
+        if (outcome) params.set("outcome", outcome);
+        params.set("page", String(page));
+        params.set("page_size", String(pageSize));
+
+        const r = await fetch(`/admin/api/decisions?${params.toString()}`, { method: "GET", credentials: "same-origin" });
+        const data = await r.json();
+
+        const tbody = document.querySelector("#grid tbody");
+        tbody.innerHTML = "";
+        for (const it of data.items) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="nowrap">${it.ts}</td>
+            <td>${it.tenant}</td>
+            <td>${it.bot}</td>
+            <td><span class="badge outcome-${it.outcome.replaceAll(" ", "_")}">${it.outcome}</span></td>
+            <td>${it.policy_version || ""}</td>
+            <td>${it.rule_id || ""}</td>
+            <td>${it.incident_id || ""}</td>
+            <td class="muted">${it.id}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+
+        document.getElementById("pg").textContent = data.page;
+        document.getElementById("prev").disabled = (page <= 1);
+        document.getElementById("next").disabled = !data.has_more;
+      }
+
+      document.getElementById("prev").addEventListener("click", () => {
+        if (page > 1) {
+          page -= 1;
+          const url = new URL(window.location.href);
+          url.searchParams.set("page", String(page));
+          window.history.replaceState({}, "", url.toString());
+          load();
+        }
+      });
+      document.getElementById("next").addEventListener("click", () => {
+        page += 1;
+        const url = new URL(window.location.href);
+        url.searchParams.set("page", String(page));
+        window.history.replaceState({}, "", url.toString());
+        load();
+      });
+
+      load();
+    </script>
+  </body>
+</html>

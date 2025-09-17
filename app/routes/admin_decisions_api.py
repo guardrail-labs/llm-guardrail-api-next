@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple, cast
+
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from pydantic import BaseModel
+from starlette.templating import Jinja2Templates
+
+router = APIRouter()
+templates = Jinja2Templates(directory="app/ui/templates")
+
+
+class DecisionItem(BaseModel):
+    id: str
+    ts: str
+    tenant: str
+    bot: str
+    outcome: str
+    policy_version: Optional[str] = None
+    rule_id: Optional[str] = None
+    incident_id: Optional[str] = None
+    mode: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+
+class DecisionPage(BaseModel):
+    items: List[DecisionItem]
+    page: int
+    page_size: int
+    has_more: bool
+    total: Optional[int] = None
+
+
+class DecisionProvider(Protocol):
+    def __call__(
+        self,
+        since: Optional[datetime],
+        tenant: Optional[str],
+        bot: Optional[str],
+        outcome: Optional[str],
+        limit: int,
+        offset: int,
+    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        ...
+
+_provider: Optional[DecisionProvider] = None
+
+
+def set_decision_provider(fn: DecisionProvider) -> None:
+    global _provider
+    _provider = fn
+
+
+def _auto_detect_provider() -> Optional[DecisionProvider]:
+    for mod_name in (
+        "app.services.decisions",
+        "app.services.decision_log",
+        "app.observability.decisions",
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=["*"])
+            for fn_name in ("query", "list", "search"):
+                fn = getattr(mod, fn_name, None)
+                if callable(fn):
+                    def provider(
+                        since: Optional[datetime],
+                        tenant: Optional[str],
+                        bot: Optional[str],
+                        outcome: Optional[str],
+                        limit: int,
+                        offset: int,
+                        _fn=fn,
+                    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+                        res = _fn(
+                            since=since,
+                            tenant=tenant,
+                            bot=bot,
+                            outcome=outcome,
+                            limit=limit,
+                            offset=offset,
+                        )
+                        if isinstance(res, tuple) and len(res) == 2:
+                            return cast(Tuple[List[Dict[str, Any]], Optional[int]], res)
+                        items = list(cast(Iterable[Dict[str, Any]], res))
+                        return items, None
+
+                    return provider
+        except Exception:
+            continue
+    return None
+
+
+def _get_provider() -> DecisionProvider:
+    global _provider
+    if _provider is not None:
+        return _provider
+    detected = _auto_detect_provider()
+    if detected is None:
+        def empty_provider(
+            since: Optional[datetime],
+            tenant: Optional[str],
+            bot: Optional[str],
+            outcome: Optional[str],
+            limit: int,
+            offset: int,
+        ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+            return [], 0
+
+        _provider = empty_provider
+    else:
+        _provider = detected
+    return _provider
+
+
+def _parse_since(since: Optional[str]) -> Optional[datetime]:
+    if not since:
+        return None
+    try:
+        dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _iso_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _norm_item(d: Dict[str, Any]) -> DecisionItem:
+    ts = d.get("ts")
+    if isinstance(ts, datetime):
+        ts_iso = _iso_utc(ts)
+    elif isinstance(ts, str):
+        ts_iso = _iso_utc(_parse_since(ts) or datetime.now(timezone.utc))
+    else:
+        ts_iso = _iso_utc(datetime.now(timezone.utc))
+    return DecisionItem(
+        id=str(d.get("id") or d.get("request_id") or d.get("incident_id") or ""),
+        ts=ts_iso,
+        tenant=str(d.get("tenant") or "unknown"),
+        bot=str(d.get("bot") or "unknown"),
+        outcome=str(d.get("outcome") or d.get("decision") or "unknown"),
+        policy_version=d.get("policy_version"),
+        rule_id=d.get("rule_id"),
+        incident_id=d.get("incident_id"),
+        mode=d.get("mode"),
+        details=d.get("details"),
+    )
+
+
+@router.get("/admin/api/decisions", response_model=DecisionPage)
+async def get_decisions(
+    request: Request,
+    since: Optional[str] = Query(None, description="ISO8601 timestamp (UTC)"),
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+) -> JSONResponse:
+    prov = _get_provider()
+    since_dt = _parse_since(since)
+    offset = (page - 1) * page_size
+    try:
+        items_raw, total = prov(
+            since=since_dt,
+            tenant=tenant,
+            bot=bot,
+            outcome=outcome,
+            limit=page_size,
+            offset=offset,
+        )
+    except TypeError:
+        items_raw, total = prov(since_dt, tenant, bot, outcome, page_size, offset)
+    items = [_norm_item(x) for x in items_raw]
+    if total is not None:
+        has_more = (offset + len(items)) < total
+    else:
+        has_more = len(items) == page_size
+    payload = DecisionPage(
+        items=items,
+        page=page,
+        page_size=page_size,
+        has_more=has_more,
+        total=total,
+    )
+    return JSONResponse(payload.model_dump())
+
+
+@router.get("/admin/decisions", response_class=HTMLResponse)
+async def decisions_page(
+    request: Request,
+    since: Optional[str] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    outcome: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> Response:
+    accept = (request.headers.get("accept") or "").lower()
+    wants_html = "text/html" in accept or "application/xhtml+xml" in accept
+    if not wants_html:
+        prov = _get_provider()
+        since_dt = _parse_since(since)
+        offset = (page - 1) * page_size
+        items_raw, _ = prov(since_dt, tenant, bot, outcome, page_size, offset)
+        return JSONResponse(items_raw)
+    return templates.TemplateResponse(
+        "decisions.html",
+        {
+            "request": request,
+            "since": since or "",
+            "tenant": tenant or "",
+            "bot": bot or "",
+            "outcome": outcome or "",
+            "page": page,
+            "page_size": page_size,
+        },
+    )
