@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from app.routes.admin_rbac import require_admin
 from app.services.config_store import get_policy_packs
 from app.services.policy import current_rules_version, force_reload, get_pack_refs
 
@@ -37,7 +38,11 @@ def _csrf_check(request: Request, token_body: str | None) -> None:
 
 
 @router.post("/admin/api/policy/reload")
-def policy_reload(request: Request, payload: dict = Body(...)) -> JSONResponse:
+def policy_reload(
+    request: Request,
+    payload: dict = Body(...),
+    _admin: None = Depends(require_admin),
+) -> JSONResponse:
     """
     Reload policy packs; returns the new version. CSRF-protected.
     Payload may include: {"csrf_token": "..."} for double-submit.

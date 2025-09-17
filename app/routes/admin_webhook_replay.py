@@ -6,6 +6,7 @@ from typing import Any, Mapping, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from app.routes.admin_rbac import require_admin
 from app.routes.admin_ui import _csrf_ok, require_auth
 from app.services.webhooks import dlq_count, requeue_from_dlq
 
@@ -54,7 +55,11 @@ def get_dlq(_: None = Depends(require_auth)) -> JSONResponse:
 
 
 @router.post("/webhook/replay")
-async def post_replay(req: Request, _: None = Depends(require_auth)) -> JSONResponse:
+async def post_replay(
+    req: Request,
+    _: None = Depends(require_auth),
+    _admin: None = Depends(require_admin),
+) -> JSONResponse:
     content_type = (req.headers.get("content-type") or "").lower()
     limit = 100
     token: Optional[str] = None
