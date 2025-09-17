@@ -677,6 +677,12 @@ def create_app() -> FastAPI:
     from app.middleware.json_logging import install_json_logging
 
     app.add_middleware(EgressGuardMiddleware)
+    try:
+        from app.middleware.decision_headers import DecisionHeaderMiddleware
+
+        app.add_middleware(DecisionHeaderMiddleware)
+    except Exception:
+        pass
     install_json_logging(app)
 
     return app
