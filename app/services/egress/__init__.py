@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, List, Tuple
 
 # Reuse ingress sanitization helpers for egress redactions
+from app.services.egress.redact_text import redact_text
 from app.services.policy import sanitize_text
 
 # Minimal "hard deny" marker: if an LLM tries to output a private key envelope,
@@ -57,3 +58,6 @@ def egress_check(text: str, debug: bool = False) -> Tuple[Dict[str, Any], List[s
     if debug and debug_matches:
         debug_msgs.append(f"Applied {redaction_count} redactions at egress.")
     return payload, debug_msgs
+
+
+__all__ = ["egress_check", "redact_text"]
