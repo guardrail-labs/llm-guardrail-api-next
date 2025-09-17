@@ -1,0 +1,15 @@
+meta:
+  name: gdpr
+  version: 1
+  tags: [compliance, GDPR]
+settings:
+  data_retention_days: 30
+rules:
+  redact:
+    - id: redact.pii.phone
+      reason: "Redact potential PII: phone numbers"
+      pattern: "(?i)\\b\\+?[0-9][0-9()\\-\\s]{6,}[0-9]\\b"
+      replacement: "[redacted-phone]"
+  deny: []
+  allow: []
+  verifiers: []

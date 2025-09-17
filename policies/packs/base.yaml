@@ -1,0 +1,18 @@
+meta:
+  name: base
+  version: 1
+  tags: [default]
+settings:
+  ingress:
+    sampling_pct: 1.0
+  egress:
+    redact_enabled: false
+rules:
+  deny:
+    - id: deny.secrets
+      reason: "Secret leakage (keys/passwords)"
+      pattern: "(?i)\\b(api[_-]?key|password|secret[_-]?key|token)\\b"
+      action: "block_input_only"
+  allow: []
+  redact: []
+  verifiers: []

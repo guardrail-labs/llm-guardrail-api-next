@@ -1,0 +1,16 @@
+meta:
+  name: hipaa
+  version: 1
+  tags: [compliance, HIPAA]
+settings:
+  egress:
+    redact_enabled: true
+rules:
+  redact:
+    - id: redact.phi.email
+      reason: "Redact potential PHI: emails"
+      pattern: "(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}"
+      replacement: "[redacted-email]"
+  deny: []
+  allow: []
+  verifiers: []
