@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from app.routes.admin_rbac import require_admin
 from app.routes.admin_ui import _csrf_ok, require_auth
 from app.services import webhooks as wh
 from app.services.config_store import get_config, set_config
@@ -56,7 +57,11 @@ def get_webhook_cfg(_: None = Depends(require_auth)) -> JSONResponse:
 
 
 @router.post("/webhook/config")
-async def set_webhook_cfg(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
+async def set_webhook_cfg(
+    request: Request,
+    _: None = Depends(require_auth),
+    _admin: None = Depends(require_admin),
+) -> JSONResponse:
     content_type = (request.headers.get("content-type") or "").lower()
     if "application/json" in content_type:
         try:
@@ -78,7 +83,11 @@ async def set_webhook_cfg(request: Request, _: None = Depends(require_auth)) -> 
 
 
 @router.post("/webhook/test")
-async def webhook_test(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
+async def webhook_test(
+    request: Request,
+    _: None = Depends(require_auth),
+    _admin: None = Depends(require_admin),
+) -> JSONResponse:
     content_type = (request.headers.get("content-type") or "").lower()
     token: Optional[str] = None
     if "application/json" in content_type:

@@ -56,6 +56,7 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 
 - **Webhook Signature Verification** — see [`docs/operations/webhooks.md`](docs/operations/webhooks.md)
 - **DLQ Replay Procedure** — see [`docs/operations/webhook-replay.md`](docs/operations/webhook-replay.md)
+- **Admin RBAC (scaffold):** see [`docs/operations/admin-rbac.md`](docs/operations/admin-rbac.md)
 
 ## Observability Quickstart
 We ship a starter dashboard and alert rules.

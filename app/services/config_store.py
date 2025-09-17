@@ -153,6 +153,8 @@ class ConfigDict(TypedDict, total=False):
     webhook_signing_mode: str
     webhook_signing_dual: bool
     policy_packs: List[str]
+    admin_rbac_enabled: bool
+    admin_api_key: str
 
 
 _CONFIG_DEFAULTS: ConfigDict = {
@@ -179,6 +181,8 @@ _CONFIG_DEFAULTS: ConfigDict = {
     # When mode == "ts_body": also emit legacy v0 header in parallel for migration
     "webhook_signing_dual": True,
     "policy_packs": ["base"],
+    "admin_rbac_enabled": False,
+    "admin_api_key": "",
 }
 
 _CONFIG_ENV_MAP: Dict[str, str] = {
@@ -201,6 +205,8 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "webhook_signing_mode": "WEBHOOK_SIGNING_MODE",
     "webhook_signing_dual": "WEBHOOK_SIGNING_DUAL",
     "policy_packs": "POLICY_PACKS",
+    "admin_rbac_enabled": "ADMIN_RBAC_ENABLED",
+    "admin_api_key": "ADMIN_API_KEY",
 }
 
 _CONFIG_STATE: Dict[str, Any] = {}
@@ -382,6 +388,18 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         elif data.get("policy_packs") is None:
             normalized["policy_packs"] = ["base"]
 
+    if "admin_rbac_enabled" in data:
+        bool_val = _coerce_bool(data.get("admin_rbac_enabled"))
+        if bool_val is not None:
+            normalized["admin_rbac_enabled"] = bool_val
+
+    if "admin_api_key" in data:
+        raw = data.get("admin_api_key")
+        if raw is None:
+            normalized["admin_api_key"] = ""
+        else:
+            normalized["admin_api_key"] = str(raw).strip()
+
     return cast(ConfigDict, normalized)
 
 
@@ -498,6 +516,12 @@ def _env_overrides() -> ConfigDict:
             packs = _parse_policy_packs(raw)
             if packs is not None:
                 overrides[key] = packs
+        elif key == "admin_rbac_enabled":
+            bool_val = _coerce_bool(raw)
+            if bool_val is not None:
+                overrides[key] = bool_val
+        elif key == "admin_api_key":
+            overrides[key] = str(raw).strip()
     return cast(ConfigDict, overrides)
 
 
@@ -548,6 +572,16 @@ def get_policy_packs() -> List[str]:
         items = [str(x).strip() for x in val if str(x).strip()]
         return items or ["base"]
     return ["base"]
+
+
+def is_admin_rbac_enabled() -> bool:
+    cfg = get_config()
+    return bool(cfg.get("admin_rbac_enabled", False))
+
+
+def get_admin_api_key() -> str:
+    cfg = get_config()
+    return str(cfg.get("admin_api_key", "") or "")
 
 
 def _append_audit_entry(
