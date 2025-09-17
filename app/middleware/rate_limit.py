@@ -17,6 +17,8 @@ from app.services.ratelimit import (
     get_global,
 )
 
+PROBE_PATHS = {"/health", "/healthz", "/readyz", "/livez", "/metrics"}
+
 _ID_SAFE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 
 
@@ -54,7 +56,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
-        if path in ("/health", "/metrics"):
+        if path in PROBE_PATHS:
             return await call_next(request)
 
         tenant, bot = _extract_identity(request)
