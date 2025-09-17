@@ -1,0 +1,141 @@
+{
+  "id": null,
+  "uid": "guardrail-core",
+  "title": "Guardrail API — Core",
+  "tags": ["guardrail", "api", "core"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "type": "query",
+        "label": "Tenant",
+        "hide": 0,
+        "datasource": "$datasource",
+        "query": "label_values(guardrail_rate_limited_total, tenant)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true
+      },
+      {
+        "name": "bot",
+        "type": "query",
+        "label": "Bot",
+        "hide": 0,
+        "datasource": "$datasource",
+        "query": "label_values(guardrail_rate_limited_total, bot)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true
+      },
+      {
+        "name": "rule_id",
+        "type": "query",
+        "label": "Redaction Rule",
+        "hide": 0,
+        "datasource": "$datasource",
+        "query": "label_values(guardrail_egress_redactions_total, rule_id)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true
+      },
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "label": "Datasource",
+        "query": "prometheus",
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Redactions (last $__interval)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "sum(increase(guardrail_egress_redactions_total{rule_id=~\"$rule_id\"}[$__rate_interval]))",
+          "legendFormat": "redactions"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Redactions by Rule",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 },
+      "datasource": "$datasource",
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "increase(guardrail_egress_redactions_total{rule_id=~\"$rule_id\"}[$__rate_interval])",
+          "legendFormat": "{{rule_id}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-Limited Requests by Tenant/Bot",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": "$datasource",
+      "fieldConfig": { "defaults": { "unit": "req/s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "increase(guardrail_rate_limited_total{tenant=~\"$tenant\",bot=~\"$bot\"}[$__rate_interval])",
+          "legendFormat": "{{tenant}}/{{bot}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top 10 Rate-Limited (1h)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "topk(10, sum(increase(guardrail_rate_limited_total{tenant=~\"$tenant\",bot=~\"$bot\"}[1h])) by (tenant,bot))",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "organize", "options": { "indexByName": {}, "renameByName": {} } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-Limit Skips (reasons)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "increase(guardrail_rate_limit_skipped_total[$__rate_interval])",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Tokens (current) — selected tenant/bot",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 12 },
+      "datasource": "$datasource",
+      "targets": [
+        {
+          "expr": "avg(guardrail_ratelimit_tokens{tenant=~\"$tenant\",bot=~\"$bot\"})",
+          "legendFormat": "tokens"
+        }
+      ]
+    }
+  ]
+}
