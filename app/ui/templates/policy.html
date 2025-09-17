@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Guardrail Admin · Policy{% endblock %}
+
+{% block content %}
+<section class="container" style="max-width: 900px; margin: 2rem auto;">
+  <h1>Policy</h1>
+  <p class="muted">View the active policy version (from merged packs) and reload if packs change.</p>
+
+  <div class="card" style="padding: 1rem 1.25rem; margin-top: 1rem;">
+    <h2 style="margin-top:0;">Active Version</h2>
+    <div id="versionBox"
+         style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; background:#f9fafb; border:1px solid #e5e7eb; border-radius:.5rem; padding:.5rem .75rem;">
+      {{ version }}
+    </div>
+    <details style="margin-top:.75rem;">
+      <summary><strong>Packs</strong></summary>
+      <ul>
+        {% for p in packs %}
+        <li>{{ p }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+
+    <div style="margin-top:1rem; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;">
+      <label>
+        <span style="display:block; font-size:.9rem; color:#555;">Admin key (optional)</span>
+        <input id="adminKey" type="password" placeholder="Only if RBAC is enabled"
+               style="min-width: 260px; padding:.45rem .6rem; border:1px solid #d1d5db; border-radius:.5rem;">
+      </label>
+
+      <button id="reloadBtn" class="btn primary">Reload Policy</button>
+      <span id="statusMsg" class="muted" style="margin-left:.5rem;"></span>
+    </div>
+  </div>
+</section>
+
+<style>
+  .btn { padding:.5rem .85rem; border-radius:.5rem; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; }
+  .btn.primary { background:#2563eb; border-color:#2563eb; color:white; }
+  .muted { color:#666; }
+  .card { border:1px solid #e5e7eb; border-radius:.75rem; background:white; }
+</style>
+
+<script>
+  (function () {
+    const btn = document.getElementById('reloadBtn');
+    const msg = document.getElementById('statusMsg');
+    const vbox = document.getElementById('versionBox');
+    const adminKey = document.getElementById('adminKey');
+    const csrf = {{ csrf_token|tojson }};
+
+    async function reload() {
+      msg.textContent = 'Reloading...';
+      try {
+        const headers = { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf };
+        const key = (adminKey && adminKey.value || '').trim();
+        if (key) headers['X-Admin-Key'] = key;
+
+        const res = await fetch('/admin/api/policy/reload', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ csrf_token: csrf })
+        });
+
+        if (!res.ok) {
+          const t = await res.text();
+          msg.textContent = `Failed (${res.status}): ${t || 'error'}`;
+          return;
+        }
+        const data = await res.json();
+        vbox.textContent = data.version || '(unknown)';
+
+        // Fetch packs/version again to keep in sync (optional)
+        const vres = await fetch('/admin/api/policy/version');
+        if (vres.ok) {
+          const vj = await vres.json();
+          vbox.textContent = vj.version || vbox.textContent;
+        }
+
+        msg.textContent = 'Reloaded.';
+        setTimeout(() => { msg.textContent = ''; }, 2000);
+      } catch (e) {
+        msg.textContent = 'Error reloading.';
+      }
+    }
+
+    if (btn) btn.addEventListener('click', reload);
+  })();
+</script>
+{% endblock %}

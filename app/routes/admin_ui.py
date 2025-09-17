@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, 
 from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from app.services.config_store import get_config
+from app.services.config_store import get_config, get_policy_packs
 from app.services.policy import current_rules_version, reload_rules
 
 # Best-effort helpers that may not exist in all deployments
@@ -28,7 +28,7 @@ except Exception:  # pragma: no cover - missing audit store
         return []
 
 
-router = APIRouter(prefix="/admin/ui", tags=["admin-ui"])
+router = APIRouter(tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/ui/templates")
 
 
@@ -126,7 +126,7 @@ def issue_csrf(resp: Response, token: Optional[str] = None) -> str:
 # ---------------------------------------------------------------------------
 # Pages
 # ---------------------------------------------------------------------------
-@router.get("", response_class=HTMLResponse)
+@router.get("/admin/ui", response_class=HTMLResponse)
 def ui_overview(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     resp = templates.TemplateResponse(
         "overview.html",
@@ -140,7 +140,7 @@ def ui_overview(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     return resp
 
 
-@router.get("/bindings", response_class=HTMLResponse)
+@router.get("/admin/ui/bindings", response_class=HTMLResponse)
 def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     try:
         bindings = list_bindings()
@@ -153,7 +153,7 @@ def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     return resp
 
 
-@router.get("/decisions", response_class=HTMLResponse)
+@router.get("/admin/ui/decisions", response_class=HTMLResponse)
 def ui_decisions(
     req: Request, n: int = 50, _: None = Depends(require_auth)
 ) -> HTMLResponse:
@@ -166,7 +166,7 @@ def ui_decisions(
     return resp
 
 
-@router.get("/config", response_class=HTMLResponse)
+@router.get("/admin/ui/config", response_class=HTMLResponse)
 def ui_config(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     cfg = get_config()
     resp = templates.TemplateResponse(
@@ -180,7 +180,7 @@ def ui_config(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     return resp
 
 
-@router.get("/config/history", response_class=HTMLResponse)
+@router.get("/admin/ui/config/history", response_class=HTMLResponse)
 def ui_config_history(
     req: Request, _: None = Depends(require_auth)
 ) -> HTMLResponse:
@@ -189,7 +189,7 @@ def ui_config_history(
     return resp
 
 
-@router.get("/webhooks", response_class=HTMLResponse)
+@router.get("/admin/ui/webhooks", response_class=HTMLResponse)
 def ui_webhooks(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     raw_cfg: Dict[str, Any] = dict(get_config())
 
@@ -232,10 +232,32 @@ def ui_webhooks(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     return resp
 
 
+@router.get("/admin/policy", response_class=HTMLResponse)
+def policy_page(
+    request: Request, _: None = Depends(require_auth)
+) -> HTMLResponse:
+    """Render Policy admin page with active version and configured packs."""
+
+    csrf_token = _csrf_token()
+    version = current_rules_version()
+    packs = get_policy_packs()
+    resp = templates.TemplateResponse(
+        "policy.html",
+        {
+            "request": request,
+            "csrf_token": csrf_token,
+            "version": version,
+            "packs": packs,
+        },
+    )
+    issue_csrf(resp, csrf_token)
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
-@router.post("/reload", response_class=PlainTextResponse)
+@router.post("/admin/ui/reload", response_class=PlainTextResponse)
 def ui_reload(
     req: Request, csrf_token: str = Form(...), _: None = Depends(require_auth)
 ) -> PlainTextResponse:
@@ -255,7 +277,7 @@ def ui_reload(
         raise HTTPException(status_code=500, detail=f"reload failed: {exc}")
 
 
-@router.get("/export/decisions")
+@router.get("/admin/ui/export/decisions")
 def export_decisions(
     n: int = 1000, _: None = Depends(require_auth)
 ) -> StreamingResponse:
