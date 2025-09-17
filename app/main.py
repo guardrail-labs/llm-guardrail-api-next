@@ -629,6 +629,15 @@ def create_app() -> FastAPI:
     except Exception:
         pass
 
+    # Admin Policy API (version + reload)
+    try:
+        from app.routes import admin_policy_api
+
+        app.include_router(admin_policy_api.router)
+    except Exception:
+        # keep startup resilient even if import order changes during refactors
+        pass
+
     # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
 

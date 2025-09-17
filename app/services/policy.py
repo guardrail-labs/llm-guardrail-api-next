@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Pattern, Tuple
@@ -89,6 +90,18 @@ def _coerce_action(val: str | None) -> Action | None:
     if v == Action.ALLOW.value:
         return Action.ALLOW
     return None
+
+
+def get_active_policy() -> Dict[str, Any]:
+    """Return a deep copy of the active policy for safe read-only use."""
+
+    return deepcopy(_RULES)
+
+
+def get_pack_refs() -> List[dict]:
+    """Return [{name, path}] for the last merged pack refs."""
+
+    return [{"name": r.name, "path": r.path} for r in _PACK_REFS]
 
 
 def resolve_injection_default_action() -> Action:

@@ -67,3 +67,9 @@ POLICY_PACKS="base,hipaa"
 ```
 
 At startup (and on reload), Guardrail merges packs in order and exposes the version via `current_rules_version()`.
+
+## Operations: Policy Version & Reload
+
+- **GET** `/admin/api/policy/version` → `{ "version": "<sha256>", "packs": [...], "refs": [{name,path}...] }`
+- **POST** `/admin/api/policy/reload` (CSRF double-submit: `ui_csrf` cookie + `csrf_token` body or `X-CSRF-Token` header)
+  → `{ "version": "<sha256>" }`
