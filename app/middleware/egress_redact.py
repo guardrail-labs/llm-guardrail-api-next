@@ -6,12 +6,14 @@ from typing import Any, Dict
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response
+from starlette.responses import PlainTextResponse, Response, StreamingResponse
 from starlette.types import ASGIApp
 
 from app.observability.metrics import inc_egress_redactions
 from app.services.egress import redact_text
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
+
+STREAM_LIKE_CT = ("text/event-stream",)
 
 
 def _redact_enabled(request: Request) -> bool:
@@ -76,6 +78,24 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
         raw_content_type = response.headers.get("content-type") or ""
         content_type = raw_content_type.lower()
         if not any(token in content_type for token in ("text", "json", "html")):
+            return response
+
+        transfer_encoding = (response.headers.get("transfer-encoding") or "").lower()
+
+        # Preserve streaming semantics by skipping known streaming types/content
+        if (
+            isinstance(response, StreamingResponse)
+            or any(token in content_type for token in STREAM_LIKE_CT)
+            or "chunked" in transfer_encoding
+        ):
+            return response
+
+        content_length_raw = response.headers.get("content-length")
+        if content_length_raw is None:
+            return response
+        try:
+            int(content_length_raw)
+        except (TypeError, ValueError):
             return response
 
         kind_label = content_type.split(";", 1)[0] or "text/plain"
