@@ -6,4 +6,5 @@ providers:
     disableDeletion: false
     updateIntervalSeconds: 30
     options:
-      path: /var/lib/grafana/dashboards
+      # Point to the compose-mounted repo path that contains the dashboard JSONs
+      path: /repo/observability/grafana

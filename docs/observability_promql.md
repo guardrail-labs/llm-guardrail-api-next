@@ -1,6 +1,7 @@
 # Guardrail API — PromQL Cookbook
 
-> Dashboard JSON: `observability/grafana/guardrail-api.core.json`
+> Grafana provisioning watches: `/repo/observability/grafana`
+> Dashboard JSON lives at: `observability/grafana/guardrail-api.core.json`
 > Provisioning: `docker/grafana/provisioning/dashboards/guardrail.yaml`
 
 ## Redactions
