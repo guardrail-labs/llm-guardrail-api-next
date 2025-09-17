@@ -1,5 +1,8 @@
 # Guardrail API — PromQL Cookbook
 
+> Dashboard JSON: `observability/grafana/guardrail-api.core.json`
+> Provisioning: `docker/grafana/provisioning/dashboards/guardrail.yaml`
+
 ## Redactions
 - **Rate by rule (panel):**
 
