@@ -14,7 +14,7 @@ templates = Jinja2Templates(directory="app/ui/templates")
 
 
 # ---- Admin guard (reuse the same resolution policy as decisions router)
-def _load_require_admin():
+def _load_require_admin() -> Optional[Any]:
     env = os.getenv("ADMIN_GUARD")
     if env:
         mod_name, _, fn_name = env.partition(":")
@@ -69,25 +69,49 @@ router = APIRouter(dependencies=[Depends(_require_admin_dep)])
 
 # ---- Policy helpers
 def _get_merged_policy() -> Dict[str, Any]:
+    """
+    Return the effective merged policy as a plain dict.
+    Prefers policy.get_active_policy(); falls back to policy.get() if present.
+    """
     try:
         from app.services import policy as pol
 
-        if hasattr(pol, "get"):
+        data = None
+        if hasattr(pol, "get_active_policy"):
+            data = pol.get_active_policy()
+        elif hasattr(pol, "get"):
+            # legacy alias, if still present
             data = pol.get()
-            if isinstance(data, Mapping):
-                return dict(data)
-            if data:
-                return dict(cast(Dict[str, Any], data))
+
+        if isinstance(data, Mapping):
+            return dict(data)
+        if data:
+            return dict(cast(Dict[str, Any], data))
     except Exception:
         pass
     return {}
 
 
-def _policy_version_hash(merged: Dict[str, Any]) -> str:
+def _policy_version_id(merged: Dict[str, Any]) -> str:
+    """
+    Prefer policy.current_rules_version(); fallback to a short SHA-256 of the merged doc.
+    """
     try:
-        # stable-ish short hash
-        data = json.dumps(merged, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(data).hexdigest()[:12]
+        from app.services import policy as pol
+
+        if hasattr(pol, "current_rules_version"):
+            ver = pol.current_rules_version()
+            if ver:
+                return str(ver)
+    except Exception:
+        pass
+
+    # Fallback: stable-ish short hash of merged policy
+    if not merged:
+        return "none"
+    try:
+        b = json.dumps(merged, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(b).hexdigest()[:12]
     except Exception:
         return "unknown"
 
@@ -113,7 +137,7 @@ def _redact(val: Any) -> Any:
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_overview(request: Request):
     merged = _get_merged_policy()
-    version = _policy_version_hash(merged) if merged else "none"
+    version = _policy_version_id(merged)
     return templates.TemplateResponse(
         "admin_overview.html",
         {
@@ -125,26 +149,18 @@ async def admin_overview(request: Request):
 
 @router.get("/admin/policy/current", response_class=HTMLResponse)
 async def policy_current(request: Request):
-    yaml_mod: Optional[Any]
-    try:
-        import yaml as yaml_mod
-    except Exception:  # pragma: no cover - dependency optional
-        yaml_mod = None
-
     merged = _get_merged_policy()
     redacted = _redact(merged)
-    if yaml_mod is not None:
-        try:
-            yaml_text = yaml_mod.safe_dump(redacted, sort_keys=True, default_flow_style=False)
-            fmt = "yaml"
-            text = yaml_text
-        except Exception:
-            text = json.dumps(redacted, indent=2, sort_keys=True)
-            fmt = "json"
-    else:
+    try:
+        import yaml  # if unavailable, JSON fallback below still works
+
+        yaml_text = yaml.safe_dump(redacted, sort_keys=True, default_flow_style=False)
+        fmt = "yaml"
+        text = yaml_text
+    except Exception:
         text = json.dumps(redacted, indent=2, sort_keys=True)
         fmt = "json"
-    version = _policy_version_hash(merged) if merged else "none"
+    version = _policy_version_id(merged)
     return templates.TemplateResponse(
         "policy_view.html",
         {
