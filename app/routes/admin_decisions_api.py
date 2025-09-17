@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple, cast
@@ -11,14 +12,43 @@ from starlette.templating import Jinja2Templates
 
 
 def _load_require_admin():
-    # Try known project locations for a shared admin dependency
-    for mod_name, fn_name in (
+    """
+    Locate the shared admin guard.
+
+    Resolution order:
+    1) ADMIN_GUARD env var as 'module.subpath:callable' (or 'module.subpath' -> require_admin)
+    2) Known project modules (rbac/auth):
+       - app.routes.admin_rbac:require_admin
+       - app.security.admin_auth:require_admin
+       - app.routes.admin_common:require_admin
+       - app.security.admin:require_admin
+       - app.security.auth:require_admin
+    Returns a callable or None.
+    """
+    # 1) Env override
+    env = os.getenv("ADMIN_GUARD")
+    if env:
+        mod_name, _, fn_name = env.partition(":")
+        fn_name = fn_name or "require_admin"
+        try:
+            mod = importlib.import_module(mod_name)
+            fn = getattr(mod, fn_name, None)
+            if callable(fn):
+                return fn
+        except Exception:
+            pass  # fall through to known list
+
+    # 2) Known modules in this repo
+    candidates = (
+        ("app.routes.admin_rbac", "require_admin"),
+        ("app.security.admin_auth", "require_admin"),
         ("app.routes.admin_common", "require_admin"),
         ("app.security.admin", "require_admin"),
         ("app.security.auth", "require_admin"),
-    ):
+    )
+    for mod_name, fn_name in candidates:
         try:
-            mod = __import__(mod_name, fromlist=[fn_name])
+            mod = importlib.import_module(mod_name)
             fn = getattr(mod, fn_name, None)
             if callable(fn):
                 return fn
