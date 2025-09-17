@@ -10,20 +10,24 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Patter
 from app.config import get_settings
 from app.models.verifier import VerifierInput
 from app.services import runtime_flags, verifier_client as vcli
+from app.services.config_store import get_policy_packs
+from app.services.policy_packs import merge_packs
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
 _REDACTIONS_TOTAL = 0.0
 
-# Versioning for rules (string to satisfy response contracts/tests)
-_RULES_VERSION: str = "1"
+# Live policy state sourced from policy packs
+_RULES: Dict[str, Any] = {}
+_RULES_VERSION: str = "unknown"
+_PACK_REFS: List[Any] = []
 
-# Track source file and mtime (for autoreload)
+# Track source file and mtime (for autoreload of legacy yaml)
 _RULES_PATH: Optional[Path] = None
 _RULES_MTIME: Optional[float] = None
 
-# Compiled rule caches
-_RULES: Dict[str, List[Pattern[str]]] = {
+# Compiled rule caches (legacy heuristics)
+_COMPILED_RULES: Dict[str, List[Pattern[str]]] = {
     "secrets": [],
     "unsafe": [],
     "gray": [],
@@ -228,9 +232,40 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
+def _load_policy_from_packs() -> Tuple[Dict[str, Any], str]:
+    """Load and merge policy packs producing merged rules and version."""
+
+    names = get_policy_packs()
+    merged, version, refs = merge_packs(names)
+
+    if not isinstance(merged, dict):
+        merged = {}
+
+    settings = merged.get("settings")
+    if not isinstance(settings, dict):
+        merged["settings"] = {}
+
+    rules = merged.get("rules")
+    if not isinstance(rules, dict):
+        rules = {}
+        merged["rules"] = rules
+
+    rules.setdefault("deny", [])
+    rules.setdefault("allow", [])
+    rules.setdefault("redact", [])
+    rules.setdefault("verifiers", [])
+
+    global _PACK_REFS
+    _PACK_REFS = list(refs)
+
+    return merged, version
+
+
+def _compile_rules_from_dict(
+    cfg: Optional[Dict[str, Any]], *, version: Optional[str] = None
+) -> None:
     """Compile rules using an optional yaml dict. Merge with built-ins."""
-    global _RULES, _REDACTIONS, _RULES_VERSION
+    global _COMPILED_RULES, _REDACTIONS, _RULES_VERSION
     with _RULE_LOCK:
         # --- Secrets (sample subset) ---
         secrets: List[Pattern[str]] = [
@@ -269,7 +304,7 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
             re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I),
         ]
 
-        _RULES = {"secrets": secrets, "unsafe": unsafe, "gray": gray}
+        _COMPILED_RULES = {"secrets": secrets, "unsafe": unsafe, "gray": gray}
 
         # Redactions: map to labels for auditability
         _REDACTIONS = [
@@ -280,10 +315,16 @@ def _compile_rules_from_dict(cfg: Optional[Dict[str, Any]]) -> None:
         ]
 
         # Set version (yaml wins; else bump)
-        if cfg and isinstance(cfg.get("version"), (str, int)):
+        if version is not None:
+            _RULES_VERSION = str(version)
+        elif cfg and isinstance(cfg.get("version"), (str, int)):
             _RULES_VERSION = str(cfg["version"])
         else:
-            _RULES_VERSION = str(int(_RULES_VERSION) + 1)
+            try:
+                current = int(_RULES_VERSION)
+            except (TypeError, ValueError):
+                current = 0
+            _RULES_VERSION = str(current + 1)
 
 
 def _maybe_autoreload() -> None:
@@ -307,7 +348,7 @@ def _maybe_autoreload() -> None:
     mtime = path.stat().st_mtime
     if _RULES_MTIME is None or mtime != _RULES_MTIME or _RULES_PATH != path:
         cfg = _load_yaml(path)
-        _compile_rules_from_dict(cfg)
+        _compile_rules_from_dict(cfg, version=_RULES_VERSION)
         _RULES_MTIME = mtime
         _RULES_PATH = path
 
@@ -321,11 +362,31 @@ def _compile_rules_initial() -> None:
             cfg = _load_yaml(Path(path_str))
         except Exception:
             cfg = None
-    _compile_rules_from_dict(cfg)
+    _compile_rules_from_dict(cfg, version=_RULES_VERSION)
 
 
 # Initial load on import
 _compile_rules_initial()
+
+
+def force_reload() -> str:
+    """Reload active policy from configured packs."""
+
+    global _RULES, _RULES_VERSION
+
+    merged, version = _load_policy_from_packs()
+    _RULES = merged
+    _RULES_VERSION = str(version)
+
+    rules_block: Optional[Dict[str, Any]]
+    rules_val = merged.get("rules")
+    if isinstance(rules_val, Mapping):
+        rules_block = dict(rules_val)
+    else:
+        rules_block = None
+
+    _compile_rules_from_dict(rules_block, version=_RULES_VERSION)
+    return _RULES_VERSION
 
 
 def current_rules_version() -> str:
@@ -335,24 +396,34 @@ def current_rules_version() -> str:
 
 
 def reload_rules() -> Dict[str, Any]:
-    """
-    Recompile rules and return metadata.
-    If POLICY_RULES_PATH is set, (re)load from that path.
-    """
-    path_str = _env("POLICY_RULES_PATH")
-    cfg = None
-    if path_str and Path(path_str).exists():
-        try:
-            cfg = _load_yaml(Path(path_str))
-        except Exception:
-            cfg = None
-    _compile_rules_from_dict(cfg)
+    """Reload policy packs and optional legacy YAML overrides."""
 
     global _RULES_MTIME, _RULES_PATH
-    if path_str and Path(path_str).exists():
-        p = Path(path_str)
-        _RULES_MTIME = p.stat().st_mtime
-        _RULES_PATH = p
+
+    try:
+        version = force_reload()
+    except Exception:
+        version = _RULES_VERSION
+
+    path_str = _env("POLICY_RULES_PATH")
+    loaded_path: Optional[Path] = None
+    cfg = None
+    if path_str:
+        candidate = Path(path_str)
+        if candidate.exists():
+            try:
+                cfg = _load_yaml(candidate)
+                loaded_path = candidate
+            except Exception:
+                cfg = None
+        else:
+            cfg = None
+
+    if cfg is not None:
+        _compile_rules_from_dict(cfg, version=version)
+        if loaded_path is not None:
+            _RULES_MTIME = loaded_path.stat().st_mtime
+            _RULES_PATH = loaded_path
     else:
         _RULES_MTIME = None
         _RULES_PATH = None
@@ -360,14 +431,10 @@ def reload_rules() -> Dict[str, Any]:
     return {
         "policy_version": current_rules_version(),
         "version": current_rules_version(),  # alias for older callers
-        "rules_count": sum(len(v) for v in _RULES.values()),
+        "rules_count": sum(len(v) for v in _COMPILED_RULES.values()),
         "redaction_patterns": len(_REDACTIONS),
         "rules_loaded": True,
     }
-
-
-# Some code may import this older alias.
-force_reload = reload_rules
 
 
 def get_redactions_total() -> float:
@@ -394,7 +461,7 @@ def rule_hits(text: str) -> List[Dict[str, Any]]:
     """Return a list of rule hits with lightweight tagging."""
     _maybe_autoreload()
     hits: List[Dict[str, Any]] = []
-    for tag, patterns in _RULES.items():
+    for tag, patterns in _COMPILED_RULES.items():
         for rx in patterns:
             if rx.search(text):
                 hits.append({"tag": tag, "pattern": rx.pattern})
@@ -655,3 +722,12 @@ def map_verifier_outcome_to_headers(outcome: Dict[str, Any]) -> tuple[str, str]:
     if status in {"error", "timeout", "ambiguous"}:
         return "clarify", "live"
     return "clarify", "live"
+
+
+# Initialize live policy on import, but avoid crashing if packs misconfigure.
+try:
+    if _RULES_VERSION == "unknown":
+        force_reload()
+except Exception:
+    # Defer failures to first explicit use; version remains "unknown".
+    pass

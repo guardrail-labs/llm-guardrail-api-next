@@ -152,6 +152,7 @@ class ConfigDict(TypedDict, total=False):
     webhook_allowlist_host: str
     webhook_signing_mode: str
     webhook_signing_dual: bool
+    policy_packs: List[str]
 
 
 _CONFIG_DEFAULTS: ConfigDict = {
@@ -177,6 +178,7 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "webhook_signing_mode": "body",
     # When mode == "ts_body": also emit legacy v0 header in parallel for migration
     "webhook_signing_dual": True,
+    "policy_packs": ["base"],
 }
 
 _CONFIG_ENV_MAP: Dict[str, str] = {
@@ -198,6 +200,7 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "webhook_allowlist_host": "WEBHOOK_ALLOWLIST_HOST",
     "webhook_signing_mode": "WEBHOOK_SIGNING_MODE",
     "webhook_signing_dual": "WEBHOOK_SIGNING_DUAL",
+    "policy_packs": "POLICY_PACKS",
 }
 
 _CONFIG_STATE: Dict[str, Any] = {}
@@ -251,6 +254,18 @@ def _coerce_float(val: Any) -> Optional[float]:
         return float(str(val).strip())
     except Exception:
         return None
+
+
+def _parse_policy_packs(val: Any) -> Optional[List[str]]:
+    if val is None:
+        return None
+    if isinstance(val, str):
+        items = [s.strip() for s in val.split(",") if s and s.strip()]
+        return items or None
+    if isinstance(val, (list, tuple)):
+        items = [str(x).strip() for x in val if str(x).strip()]
+        return items or None
+    return None
 
 
 def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
@@ -359,6 +374,13 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         bool_val = _coerce_bool(data.get("webhook_signing_dual"))
         if bool_val is not None:
             normalized["webhook_signing_dual"] = bool_val
+
+    if "policy_packs" in data:
+        packs = _parse_policy_packs(data.get("policy_packs"))
+        if packs is not None:
+            normalized["policy_packs"] = packs
+        elif data.get("policy_packs") is None:
+            normalized["policy_packs"] = ["base"]
 
     return cast(ConfigDict, normalized)
 
@@ -472,6 +494,10 @@ def _env_overrides() -> ConfigDict:
             bool_val = _coerce_bool(raw)
             if bool_val is not None:
                 overrides[key] = bool_val
+        elif key == "policy_packs":
+            packs = _parse_policy_packs(raw)
+            if packs is not None:
+                overrides[key] = packs
     return cast(ConfigDict, overrides)
 
 
@@ -510,6 +536,18 @@ def get_webhook_signing() -> Dict[str, Any]:
     dual = True if bool_dual is None else bool_dual
 
     return {"mode": mode, "dual": dual}
+
+
+def get_policy_packs() -> List[str]:
+    cfg = get_config()
+    val = cfg.get("policy_packs", ["base"])
+    if isinstance(val, str):
+        items = [s.strip() for s in val.split(",") if s.strip()]
+        return items or ["base"]
+    if isinstance(val, (list, tuple)):
+        items = [str(x).strip() for x in val if str(x).strip()]
+        return items or ["base"]
+    return ["base"]
 
 
 def _append_audit_entry(

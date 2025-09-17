@@ -48,3 +48,22 @@ A follow-up will:
 - Add a configuration key `policy_packs = ["base", ...]`.
 - Replace the current policy load with `merge_packs(...)`.
 - Expose `current_rules_version()` derived from the merged packs' version.
+
+## Runtime wiring
+
+Set the packs list via config:
+
+```yaml
+policy_packs:
+  - base
+  - hipaa
+  # - gdpr
+```
+
+Or environment (comma-separated):
+
+```
+POLICY_PACKS="base,hipaa"
+```
+
+At startup (and on reload), Guardrail merges packs in order and exposes the version via `current_rules_version()`.
