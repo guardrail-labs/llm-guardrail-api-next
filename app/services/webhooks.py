@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
 import queue
 import threading
 import time
-from hashlib import sha256
 from typing import Any, Dict, Optional, Tuple
 
 import httpx
@@ -60,9 +60,52 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(d, exist_ok=True)
 
 
-def _hmac_signature(secret: str, body: bytes) -> str:
-    mac = hmac.new(secret.encode("utf-8"), body, sha256).hexdigest()
-    return f"sha256={mac}"
+def get_webhook_signing() -> Dict[str, Any]:
+    from app.services.config_store import get_webhook_signing as fetch_signing
+
+    return fetch_signing()
+
+
+def _hmac_hex(secret: bytes, data: bytes) -> str:
+    return hmac.new(secret, data, hashlib.sha256).hexdigest()
+
+
+def _signing_headers(body: bytes, secret: bytes) -> Dict[str, str]:
+    """
+    Returns headers to attach for webhook signing based on config.
+
+    - Always returns X-Guardrail-Signature (v0) unless mode=="ts_body" and dual=False.
+    - If mode=="ts_body": also sets X-Guardrail-Timestamp and (if dual or replacing)
+      X-Guardrail-Signature-V1.
+    """
+
+    cfg = get_webhook_signing()
+    mode = cfg.get("mode")
+    dual = bool(cfg.get("dual"))
+
+    headers: Dict[str, str] = {}
+
+    # v0 (body-only)
+    v0 = _hmac_hex(secret, body)
+
+    if mode == "ts_body":
+        ts = str(int(time.time()))
+        preimage = (ts + "\n").encode("utf-8") + body
+        v1 = _hmac_hex(secret, preimage)
+        headers["X-Guardrail-Timestamp"] = ts
+
+        if dual:
+            # Emit BOTH: legacy v0 and new v1
+            headers["X-Guardrail-Signature"] = f"sha256={v0}"
+            headers["X-Guardrail-Signature-V1"] = f"sha256={v1}"
+        else:
+            # Emit ONLY v1 under a distinct header; consumers can migrate cleanly
+            headers["X-Guardrail-Signature-V1"] = f"sha256={v1}"
+    else:
+        # Default (v0 only)
+        headers["X-Guardrail-Signature"] = f"sha256={v0}"
+
+    return headers
 
 
 def _status_bucket(code: Optional[int], exc: Optional[str]) -> str:
@@ -143,10 +186,11 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
         "X-Guardrail-Idempotency-Key": (
             evt.get("incident_id") or evt.get("request_id") or ""
         ),
-        "X-Guardrail-Timestamp": str(int(time.time())),
     }
     if secret:
-        headers["X-Guardrail-Signature"] = _hmac_signature(secret, body_bytes)
+        secret_bytes = secret.encode("utf-8")
+        sig_headers = _signing_headers(body_bytes, secret_bytes)
+        headers.update(sig_headers)
 
     attempt = 0
     last_code: Optional[int] = None

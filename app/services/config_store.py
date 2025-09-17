@@ -150,6 +150,8 @@ class ConfigDict(TypedDict, total=False):
     webhook_backoff_cap_ms: int
     webhook_allow_insecure_tls: bool
     webhook_allowlist_host: str
+    webhook_signing_mode: str
+    webhook_signing_dual: bool
 
 
 _CONFIG_DEFAULTS: ConfigDict = {
@@ -169,6 +171,12 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "webhook_backoff_cap_ms": 10_000,
     "webhook_allow_insecure_tls": False,
     "webhook_allowlist_host": "",
+    # Webhook signing mode:
+    #  - "body" (v0): HMAC over raw body only (current default)
+    #  - "ts_body" (v1): HMAC over f"{timestamp}\n{raw_body}" and emit timestamp header
+    "webhook_signing_mode": "body",
+    # When mode == "ts_body": also emit legacy v0 header in parallel for migration
+    "webhook_signing_dual": True,
 }
 
 _CONFIG_ENV_MAP: Dict[str, str] = {
@@ -188,6 +196,8 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "webhook_backoff_cap_ms": "WEBHOOK_BACKOFF_CAP_MS",
     "webhook_allow_insecure_tls": "WEBHOOK_ALLOW_INSECURE_TLS",
     "webhook_allowlist_host": "WEBHOOK_ALLOWLIST_HOST",
+    "webhook_signing_mode": "WEBHOOK_SIGNING_MODE",
+    "webhook_signing_dual": "WEBHOOK_SIGNING_DUAL",
 }
 
 _CONFIG_STATE: Dict[str, Any] = {}
@@ -336,6 +346,20 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         else:
             normalized["webhook_allowlist_host"] = str(raw).strip()
 
+    if "webhook_signing_mode" in data:
+        raw = data.get("webhook_signing_mode")
+        if raw is None:
+            normalized["webhook_signing_mode"] = "body"
+        else:
+            mode = str(raw).strip().lower()
+            if mode in {"body", "ts_body"}:
+                normalized["webhook_signing_mode"] = mode
+
+    if "webhook_signing_dual" in data:
+        bool_val = _coerce_bool(data.get("webhook_signing_dual"))
+        if bool_val is not None:
+            normalized["webhook_signing_dual"] = bool_val
+
     return cast(ConfigDict, normalized)
 
 
@@ -440,6 +464,14 @@ def _env_overrides() -> ConfigDict:
                 overrides[key] = bool_val
         elif key == "webhook_allowlist_host":
             overrides[key] = str(raw).strip()
+        elif key == "webhook_signing_mode":
+            mode = str(raw).strip().lower()
+            if mode in {"body", "ts_body"}:
+                overrides[key] = mode
+        elif key == "webhook_signing_dual":
+            bool_val = _coerce_bool(raw)
+            if bool_val is not None:
+                overrides[key] = bool_val
     return cast(ConfigDict, overrides)
 
 
@@ -464,6 +496,20 @@ def get_webhook_cb_tuning() -> Dict[str, int]:
         "webhook_cb_cooldown_sec": int(cfg.get("webhook_cb_cooldown_sec", 60) or 60),
         "webhook_backoff_cap_ms": int(cfg.get("webhook_backoff_cap_ms", 10_000) or 10_000),
     }
+
+
+def get_webhook_signing() -> Dict[str, Any]:
+    cfg = get_config()
+    raw_mode = cfg.get("webhook_signing_mode", "body")
+    mode = str(raw_mode or "body").strip().lower()
+    if mode not in {"body", "ts_body"}:
+        mode = "body"
+
+    raw_dual = cfg.get("webhook_signing_dual", True)
+    bool_dual = _coerce_bool(raw_dual)
+    dual = True if bool_dual is None else bool_dual
+
+    return {"mode": mode, "dual": dual}
 
 
 def _append_audit_entry(
