@@ -1,14 +1,58 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Tuple, cast
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
-router = APIRouter()
+
+def _load_require_admin():
+    # Try known project locations for a shared admin dependency
+    for mod_name, fn_name in (
+        ("app.routes.admin_common", "require_admin"),
+        ("app.security.admin", "require_admin"),
+        ("app.security.auth", "require_admin"),
+    ):
+        try:
+            mod = __import__(mod_name, fromlist=[fn_name])
+            fn = getattr(mod, fn_name, None)
+            if callable(fn):
+                return fn
+        except Exception:
+            continue
+    return None
+
+
+def _require_admin_dep(request: Request):
+    # Prefer project-wide guard if available
+    guard = _load_require_admin()
+    if callable(guard):
+        return guard(request)
+
+    # Fallback: header key only if configured; otherwise allow (dev-friendly)
+    settings = getattr(request.app.state, "settings", None)
+    admin_settings = getattr(settings, "admin", None)
+    cfg_key = (
+        os.getenv("ADMIN_API_KEY")
+        or os.getenv("GUARDRAIL_ADMIN_KEY")
+        or getattr(admin_settings, "key", None)
+    )
+    if cfg_key:
+        supplied = request.headers.get("X-Admin-Key") or request.query_params.get("admin_key")
+        if str(supplied) != str(cfg_key):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Admin authentication required",
+            )
+    # No guard configured → allow (useful for local/dev)
+    return None
+
+
+router = APIRouter(dependencies=[Depends(_require_admin_dep)])
 templates = Jinja2Templates(directory="app/ui/templates")
 
 
