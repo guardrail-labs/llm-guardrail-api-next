@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Active Policy</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; }
+    h1 { margin: 0 0 8px 0; }
+    .muted { color: #6b7280; }
+    pre { background: #0b1020; color: #e5e7eb; padding: 16px; border-radius: 12px; overflow-x: auto; }
+    code { color: #93c5fd; }
+    .kv { display:flex; align-items:center; gap: 8px; }
+  </style>
+</head>
+<body>
+  {% include "_admin_nav.html" %}
+  <h1>Active Policy</h1>
+  <div class="kv">
+    <span class="muted">Version:</span><code>{{ policy_version }}</code>
+    <span class="muted">Format:</span><code>{{ format }}</code>
+  </div>
+  <p class="muted">Secrets (keys/tokens/passwords) are redacted.</p>
+  <pre><code>{{ body }}</code></pre>
+</body>
+</html>
