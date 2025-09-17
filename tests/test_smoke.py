@@ -15,10 +15,16 @@ def test_health_ok():
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] is True
-    assert isinstance(body["requests_total"], (int, float))
-    assert isinstance(body["decisions_total"], (int, float))
-    assert isinstance(body["rules_version"], str)
+    assert body["status"] == "ok"
+    checks = body.get("checks", {})
+    assert isinstance(checks, dict)
+    assert {
+        "policy",
+        "decisions",
+        "webhooks",
+        "ratelimit",
+        "metrics",
+    }.issubset(checks)
 
 
 def test_metrics_exposes_counters():
