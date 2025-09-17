@@ -164,6 +164,10 @@ Returns preview (as active would look) + changed diff. No changes are applied.
 Set `VERIFIER_LATENCY_BUDGET_MS` to bound verifier calls. Exceeding the budget
 returns a `timeout` outcome that policy maps to a deny decision.
 
+### Policy
+
+- **Policy Packs (scaffold):** see [`docs/policy/packs.md`](docs/policy/packs.md)
+
 ---
 
 ## Feature checklist
