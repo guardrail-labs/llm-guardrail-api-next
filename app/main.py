@@ -562,6 +562,12 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api", lifespan=lifespan)
     try:
+        from app.routes.admin_policy_packs import router as admin_policy_packs_router
+
+        app.include_router(admin_policy_packs_router)
+    except Exception:
+        pass
+    try:
         from app.routes.admin_decisions_api import router as admin_decisions_router
 
         app.include_router(admin_decisions_router)
