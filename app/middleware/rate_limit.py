@@ -59,7 +59,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         tenant, bot = _extract_identity(request)
         enforce_unknown = get_enforce_unknown(getattr(request.app.state, "settings", None))
-        if (tenant == "unknown" or bot == "unknown") and not enforce_unknown:
+        if (tenant == "unknown" and bot == "unknown") and not enforce_unknown:
             try:
                 RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc()
             except Exception:
