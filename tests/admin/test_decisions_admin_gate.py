@@ -87,3 +87,45 @@ def test_admin_gate_uses_env_override(monkeypatch):
     assert r.status_code == 200
     # ensure our guard was called
     assert calls["count"] >= 1
+
+
+def test_key_is_required_even_if_guard_is_present(monkeypatch):
+    # Fake a guard module that "imports fine" but does nothing (returns)
+    import sys
+    import types
+
+    fake = types.ModuleType("tests.fake_noop_guard")
+
+    def require_admin(request):  # no exception => would allow
+        return None
+
+    fake.require_admin = require_admin
+    sys.modules["tests.fake_noop_guard"] = fake
+
+    # Use env override so the guard definitely resolves
+    monkeypatch.setenv("ADMIN_GUARD", "tests.fake_noop_guard:require_admin")
+
+    # Also configure an admin key -> this MUST be required
+    monkeypatch.setenv("ADMIN_API_KEY", "secret123")
+
+    # Reload module to pick up env
+    from importlib import reload
+
+    from app.routes import admin_decisions_api as dec
+
+    reload(dec)
+
+    app = _app()
+    c = TestClient(app)
+
+    # Missing key -> 401 (even though guard "allowed")
+    r1 = c.get("/admin/api/decisions")
+    assert r1.status_code == 401
+
+    # Wrong key -> 401
+    r2 = c.get("/admin/api/decisions", headers={"X-Admin-Key": "nope"})
+    assert r2.status_code == 401
+
+    # Correct key -> 200
+    r3 = c.get("/admin/api/decisions", headers={"X-Admin-Key": "secret123"})
+    assert r3.status_code == 200

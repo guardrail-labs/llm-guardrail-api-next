@@ -13,19 +13,17 @@ from starlette.templating import Jinja2Templates
 
 def _load_require_admin():
     """
-    Locate the shared admin guard.
-
-    Resolution order:
-    1) ADMIN_GUARD env var as 'module.subpath:callable' (or 'module.subpath' -> require_admin)
-    2) Known project modules (rbac/auth):
-       - app.routes.admin_rbac:require_admin
-       - app.security.admin_auth:require_admin
-       - app.routes.admin_common:require_admin
-       - app.security.admin:require_admin
-       - app.security.auth:require_admin
-    Returns a callable or None.
+    Locate shared admin guard.
+    Resolution:
+      1) ADMIN_GUARD="module.subpath:callable" (or defaults to :require_admin)
+      2) Known modules (in order):
+         - app.routes.admin_rbac:require_admin
+         - app.security.admin_auth:require_admin
+         - app.routes.admin_common:require_admin
+         - app.security.admin:require_admin
+         - app.security.auth:require_admin
     """
-    # 1) Env override
+    # Env override
     env = os.getenv("ADMIN_GUARD")
     if env:
         mod_name, _, fn_name = env.partition(":")
@@ -36,9 +34,8 @@ def _load_require_admin():
             if callable(fn):
                 return fn
         except Exception:
-            pass  # fall through to known list
+            pass
 
-    # 2) Known modules in this repo
     candidates = (
         ("app.routes.admin_rbac", "require_admin"),
         ("app.security.admin_auth", "require_admin"),
@@ -58,12 +55,14 @@ def _load_require_admin():
 
 
 def _require_admin_dep(request: Request):
-    # Prefer project-wide guard if available
-    guard = _load_require_admin()
-    if callable(guard):
-        return guard(request)
-
-    # Fallback: header key only if configured; otherwise allow (dev-friendly)
+    """
+    Enforcement policy:
+      - If ADMIN_API_KEY / GUARDRAIL_ADMIN_KEY (or settings.admin.key) is configured,
+        the request MUST provide the correct key (via X-Admin-Key header or ?admin_key=).
+      - Additionally, if a repo-level require_admin guard exists, invoke it (it may raise).
+      - If no key is configured and no guard is found, allow (dev-friendly default).
+    """
+    # Gather configured key from env or settings
     settings = getattr(request.app.state, "settings", None)
     admin_settings = getattr(settings, "admin", None)
     cfg_key = (
@@ -71,6 +70,12 @@ def _require_admin_dep(request: Request):
         or os.getenv("GUARDRAIL_ADMIN_KEY")
         or getattr(admin_settings, "key", None)
     )
+    # Call repo guard if present (let it raise if unauthorized)
+    guard = _load_require_admin()
+    if callable(guard):
+        guard(request)  # if it raises, FastAPI returns 401/403
+
+    # If a key is configured, it is mandatory regardless of guard outcome
     if cfg_key:
         supplied = request.headers.get("X-Admin-Key") or request.query_params.get("admin_key")
         if str(supplied) != str(cfg_key):
@@ -78,7 +83,8 @@ def _require_admin_dep(request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Admin authentication required",
             )
-    # No guard configured → allow (useful for local/dev)
+
+    # No key configured and no guard raised: allow (dev)
     return None
 
 
