@@ -59,6 +59,7 @@ def test_retry_after_and_request_id_on_429(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
     monkeypatch.setenv("RATE_LIMIT_BURST", "2")
+    monkeypatch.setenv("RATE_LIMIT_ENFORCE_UNKNOWN", "true")
 
     client = _make_client()
     headers = {"X-API-Key": "unit-test-key"}

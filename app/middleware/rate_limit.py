@@ -10,7 +10,12 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 from app.middleware.request_id import get_request_id
-from app.services.ratelimit import RATE_LIMIT_BLOCKS, get_global
+from app.services.ratelimit import (
+    RATE_LIMIT_BLOCKS,
+    RATE_LIMIT_SKIPS,
+    get_enforce_unknown,
+    get_global,
+)
 
 _ID_SAFE = re.compile(r"[^a-zA-Z0-9_.:-]+")
 
@@ -53,6 +58,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         tenant, bot = _extract_identity(request)
+        enforce_unknown = get_enforce_unknown(getattr(request.app.state, "settings", None))
+        if (tenant == "unknown" or bot == "unknown") and not enforce_unknown:
+            try:
+                RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc()
+            except Exception:
+                pass
+            return await call_next(request)
+
         ok, retry_after, remaining = limiter.allow(tenant, bot, cost=1.0)
         if ok:
             response = await call_next(request)

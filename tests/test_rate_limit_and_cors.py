@@ -32,6 +32,7 @@ def test_rate_limit_429_after_burst(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
     monkeypatch.setenv("RATE_LIMIT_BURST", "2")
+    monkeypatch.setenv("RATE_LIMIT_ENFORCE_UNKNOWN", "true")
 
     client = _make_client()
 

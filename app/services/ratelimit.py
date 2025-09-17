@@ -33,6 +33,13 @@ TOKENS_GAUGE = _get_or_create_metric(
     labelnames=("tenant", "bot"),
 )
 
+RATE_LIMIT_SKIPS = _get_or_create_metric(
+    Counter,
+    "guardrail_rate_limit_skipped_total",
+    "Total number of requests skipped by rate limiting",
+    labelnames=("reason",),
+)
+
 
 def _now() -> float:
     return _monotonic()
@@ -149,6 +156,48 @@ def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
         burst = _float_env("RATE_LIMIT_BURST", burst_default)
 
     return enabled, RateLimiter(capacity=burst, refill_rate=rps)
+
+
+_global_enforce_unknown: Optional[bool] = None
+_global_enforce_unknown_source: Optional[str] = None
+
+
+def _enforce_unknown_from_settings(settings) -> bool:
+    """Read enforcement policy for 'unknown' identities."""
+
+    try:
+        ingress = getattr(settings, "ingress", None)
+        if ingress is not None:
+            rl = getattr(ingress, "rate_limit", None)
+            if rl is not None and hasattr(rl, "enforce_unknown"):
+                return bool(getattr(rl, "enforce_unknown"))
+    except Exception:
+        pass
+    return _bool_env("RATE_LIMIT_ENFORCE_UNKNOWN", False)
+
+
+def get_enforce_unknown(settings=None) -> bool:
+    global _global_enforce_unknown, _global_enforce_unknown_source
+
+    settings = getattr(settings, "value", settings)
+
+    if settings is not None:
+        value = _enforce_unknown_from_settings(settings)
+        _global_enforce_unknown = value
+        _global_enforce_unknown_source = "__settings__"
+        return value
+
+    current_env = os.getenv("RATE_LIMIT_ENFORCE_UNKNOWN")
+    if (
+        _global_enforce_unknown is not None
+        and _global_enforce_unknown_source == current_env
+    ):
+        return _global_enforce_unknown
+
+    value = _enforce_unknown_from_settings(settings)
+    _global_enforce_unknown = value
+    _global_enforce_unknown_source = current_env
+    return value
 
 
 _global_enabled: Optional[bool] = None
