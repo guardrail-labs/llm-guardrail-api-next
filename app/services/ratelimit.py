@@ -115,23 +115,39 @@ def _float_env(name: str, default: float) -> float:
 
 
 def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
-    enabled = True
-    rps = 5.0
-    burst = 10.0
+    """
+    Reads settings if available:
+      settings.ingress.rate_limit.enabled (bool)
+      settings.ingress.rate_limit.rps (float)
+      settings.ingress.rate_limit.burst (float)
+    Fallback env:
+      RATE_LIMIT_ENABLED (default: false)
+      RATE_LIMIT_RPS (default: 5.0)
+      RATE_LIMIT_BURST (default: 10.0)
+    """
+    enabled_default = False  # opt-in
+    rps_default = 5.0
+    burst_default = 10.0
+
+    enabled = enabled_default
+    rps = rps_default
+    burst = burst_default
+
     try:
-        ingress = getattr(getattr(settings, "ingress"), "rate_limit", None)
-        if ingress is not None:
-            enabled = bool(getattr(ingress, "enabled", enabled))
-            rps = float(getattr(ingress, "rps", rps))
-            burst = float(getattr(ingress, "burst", burst))
+        rl = getattr(getattr(settings, "ingress"), "rate_limit", None)
+        if rl is not None:
+            enabled = bool(getattr(rl, "enabled", enabled_default))
+            rps = float(getattr(rl, "rps", rps_default))
+            burst = float(getattr(rl, "burst", burst_default))
         else:
-            enabled = _bool_env("RATE_LIMIT_ENABLED", True)
-            rps = _float_env("RATE_LIMIT_RPS", 5.0)
-            burst = _float_env("RATE_LIMIT_BURST", 10.0)
+            enabled = _bool_env("RATE_LIMIT_ENABLED", enabled_default)
+            rps = _float_env("RATE_LIMIT_RPS", rps_default)
+            burst = _float_env("RATE_LIMIT_BURST", burst_default)
     except Exception:
-        enabled = _bool_env("RATE_LIMIT_ENABLED", True)
-        rps = _float_env("RATE_LIMIT_RPS", 5.0)
-        burst = _float_env("RATE_LIMIT_BURST", 10.0)
+        enabled = _bool_env("RATE_LIMIT_ENABLED", enabled_default)
+        rps = _float_env("RATE_LIMIT_RPS", rps_default)
+        burst = _float_env("RATE_LIMIT_BURST", burst_default)
+
     return enabled, RateLimiter(capacity=burst, refill_rate=rps)
 
 
