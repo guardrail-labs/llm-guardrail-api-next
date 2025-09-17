@@ -52,6 +52,11 @@
       <button id="next">Next</button>
     </div>
 
+    <div class="controls">
+      <a id="dlcsv" class="badge" href="#">Download CSV</a>
+      <a id="dljsonl" class="badge" href="#">Download JSONL</a>
+    </div>
+
     <table id="grid">
       <thead>
         <tr>
@@ -130,6 +135,27 @@
       });
 
       load();
+
+      function buildExportHref(fmt) {
+        const params = new URLSearchParams();
+        const since = "{{ since }}";
+        const tenant = "{{ tenant }}";
+        const bot = "{{ bot }}";
+        const outcome = "{{ outcome }}";
+        if (since) params.set("since", since);
+        if (tenant) params.set("tenant", tenant);
+        if (bot) params.set("bot", bot);
+        if (outcome) params.set("outcome", outcome);
+        params.set("format", fmt);
+        return "/admin/api/decisions/export?" + params.toString();
+      }
+
+      const aCsv = document.getElementById("dlcsv");
+      const aJsonl = document.getElementById("dljsonl");
+      if (aCsv && aJsonl) {
+        aCsv.href = buildExportHref("csv");
+        aJsonl.href = buildExportHref("jsonl");
+      }
     </script>
   </body>
 </html>
