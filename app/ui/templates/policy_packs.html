@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Policy Packs</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; }
+    h1 { margin: 0 0 8px 0; }
+    .muted { color: #6b7280; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 14px; }
+    th { background: #f9fafb; position: sticky; top: 0; }
+    .badge { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2ff; color: #3730a3; }
+    input { padding: 6px 8px; font-size: 14px; width: 280px; }
+    form { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  {% include "_admin_nav.html" %}
+  <h1>Policy Packs</h1>
+  <p class="muted">Active packs in effect for this node/runtime.</p>
+
+  <form method="get" action="/admin/policy/packs">
+    <input type="text" name="q" placeholder="Filter by id or source…" value="{{ q }}" />
+    <button type="submit" class="badge">Search</button>
+    <span class="muted">Total: {{ total }}</span>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Version</th>
+        <th>Source</th>
+        <th>Scope</th>
+        <th>Rules</th>
+        <th>Redact</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in items %}
+      <tr>
+        <td><code>{{ p.id }}</code></td>
+        <td><code>{{ p.version }}</code></td>
+        <td>{{ p.source or "" }}</td>
+        <td>{{ p.scope or "global" }}</td>
+        <td>{{ p.rules_total }}</td>
+        <td>{{ p.rules_redact }}</td>
+      </tr>
+      {% endfor %}
+      {% if not items %}
+      <tr><td colspan="6" class="muted">No packs detected.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</body>
+</html>
