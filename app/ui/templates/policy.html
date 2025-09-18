@@ -32,6 +32,10 @@
       <span id="statusMsg" class="muted" style="margin-left:.5rem;"></span>
     </div>
     <pre id="policy_reload_msg" class="muted" style="white-space:pre-wrap;margin-top:.5rem;"></pre>
+    <details style="margin-top:8px;">
+      <summary><strong>Policy Diff (current → candidate)</strong></summary>
+      <pre id="policy_diff" class="muted" style="white-space:pre-wrap;"></pre>
+    </details>
   </div>
 
   <div class="card" style="padding: 1rem 1.25rem; margin-top: 1.5rem;">
@@ -61,7 +65,40 @@
     const packInput = document.getElementById('pack_text');
     const validateOut = document.getElementById('validate_out');
     const reloadOut = document.getElementById('policy_reload_msg');
+    const diffOut = document.getElementById('policy_diff');
     const csrf = {{ csrf_token|tojson }};
+
+    function renderDiff(diff) {
+      if (!diffOut) return;
+      try {
+        diffOut.textContent = JSON.stringify(diff, null, 2);
+      } catch (err) {
+        diffOut.textContent = '';
+      }
+    }
+
+    async function previewDiff() {
+      if (!diffOut) return;
+      diffOut.textContent = 'Loading diff...';
+      try {
+        const headers = {};
+        const key = (adminKey && adminKey.value || '').trim();
+        if (key) headers['X-Admin-Key'] = key;
+        const res = await fetch('/admin/api/policy/diff', {
+          method: 'GET',
+          headers,
+          credentials: 'same-origin'
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          diffOut.textContent = `Failed to load diff (${res.status})`;
+          return;
+        }
+        renderDiff(data && data.diff ? data.diff : {});
+      } catch (err) {
+        diffOut.textContent = 'Failed to load diff';
+      }
+    }
 
     async function reload() {
       msg.textContent = 'Reloading...';
@@ -105,6 +142,9 @@
 
         if (!res.ok) {
           msg.textContent = `Failed (${res.status}): ${bodyText || 'error'}`;
+          if (data && data.diff) {
+            renderDiff(data.diff);
+          }
           return;
         }
 
@@ -112,6 +152,9 @@
           const resultVersion = data.version || (data.result && data.result.version);
           if (resultVersion) {
             vbox.textContent = resultVersion;
+          }
+          if (data.diff) {
+            renderDiff(data.diff);
           }
         }
 
@@ -127,6 +170,7 @@
       } catch (e) {
         msg.textContent = 'Error reloading.';
       }
+      previewDiff();
     }
 
     async function validatePack() {
@@ -156,6 +200,7 @@
 
     if (btn) btn.addEventListener('click', reload);
     if (validateBtn) validateBtn.addEventListener('click', validatePack);
+    document.addEventListener('DOMContentLoaded', previewDiff);
   })();
 </script>
 {% endblock %}
