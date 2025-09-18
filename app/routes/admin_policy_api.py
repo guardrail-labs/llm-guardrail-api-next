@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import List, Optional
 
 import yaml
@@ -11,6 +12,7 @@ from app.services import policy as pol
 from app.services.config_store import get_policy_packs
 from app.services.policy import current_rules_version, force_reload, get_pack_refs
 from app.services.policy_diff import diff_policies
+from app.services.policy_lint import lint_policy
 from app.services.policy_packs import merge_packs
 from app.services.policy_validate_enforce import validate_text_for_reload
 
@@ -98,6 +100,8 @@ def policy_reload(
     current_policy = pol.get_active_policy() or {}
     candidate_policy = merged_policy or {}
     diff = diff_policies(current_policy, candidate_policy)
+    lint_items = lint_policy(merged_policy if merged_policy is not None else {})
+    lint_dicts = [asdict(item) for item in lint_items]
     if isinstance(merged_policy, dict):
         merged_yaml_text = yaml.safe_dump(
             merged_policy, sort_keys=False, allow_unicode=True
@@ -106,20 +110,32 @@ def policy_reload(
         merged_yaml_text = str(merged_policy or "")
 
     allow_apply, validation = validate_text_for_reload(merged_yaml_text)
+    lint_block = (
+        validation.get("enforcement_mode") == "block"
+        and any(item.get("severity") == "error" for item in lint_dicts)
+    )
+    if lint_block:
+        allow_apply = False
     if not allow_apply:
         try:  # pragma: no cover - metrics optional
             from prometheus_client import Counter
 
+            reason = "lint_error" if lint_block else "validation_error"
             Counter(
                 "guardrail_policy_reload_blocked_total",
                 "Reload attempts blocked by validation",
                 ["reason"],
-            ).labels(reason="validation_error").inc()
+            ).labels(reason=reason).inc()
         except Exception:  # pragma: no cover
             pass
 
         return JSONResponse(
-            {"status": "fail", "validation": validation, "diff": diff},
+            {
+                "status": "fail",
+                "validation": validation,
+                "diff": diff,
+                "lints": lint_dicts,
+            },
             status_code=422,
         )
 
@@ -130,5 +146,6 @@ def policy_reload(
         "diff": diff,
         "result": {"version": version},
         "version": version,
+        "lints": lint_dicts,
     }
     return JSONResponse(payload)

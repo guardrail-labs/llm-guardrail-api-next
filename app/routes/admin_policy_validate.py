@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Optional
+from dataclasses import asdict
+from typing import Any, Optional
 
+import yaml
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+
+from app.services.policy_lint import lint_policy
+from app.services.policy_validate_enforce import enforcement_mode
 
 router = APIRouter()
 
@@ -74,6 +79,25 @@ async def policy_validate(payload: dict = Body(...)) -> JSONResponse:
 
     result = validate_yaml_text(str(text))
 
+    policy_obj: Any | None = payload.get("policy")
+    if policy_obj is None and text:
+        try:
+            policy_obj = yaml.safe_load(str(text))
+        except Exception:
+            policy_obj = None
+
+    lint_items = lint_policy(policy_obj) if policy_obj is not None else []
+    lint_dicts = [asdict(item) for item in lint_items]
+    result["lints"] = lint_dicts
+
+    mode = enforcement_mode()
+    result["enforcement_mode"] = mode
+    status_value = result.get("status", "ok")
+    has_lint_error = any(item.get("severity") == "error" for item in lint_dicts)
+    if mode == "block" and has_lint_error:
+        status_value = "fail"
+        result["status"] = "fail"
+
     try:
         from prometheus_client import Counter  # pragma: no cover
 
@@ -88,7 +112,7 @@ async def policy_validate(payload: dict = Body(...)) -> JSONResponse:
 
     status_code = (
         status.HTTP_200_OK
-        if result["status"] == "ok"
+        if status_value == "ok"
         else status.HTTP_422_UNPROCESSABLE_ENTITY
     )
     return JSONResponse(result, status_code=status_code)

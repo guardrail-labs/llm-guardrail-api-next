@@ -36,6 +36,10 @@
       <summary><strong>Policy Diff (current → candidate)</strong></summary>
       <pre id="policy_diff" class="muted" style="white-space:pre-wrap;"></pre>
     </details>
+    <details style="margin-top:8px;">
+      <summary><strong>Lint Results</strong> <span id="lint_summary" class="muted"></span></summary>
+      <ul id="lint_list"></ul>
+    </details>
   </div>
 
   <div class="card" style="padding: 1rem 1.25rem; margin-top: 1.5rem;">
@@ -66,7 +70,27 @@
     const validateOut = document.getElementById('validate_out');
     const reloadOut = document.getElementById('policy_reload_msg');
     const diffOut = document.getElementById('policy_diff');
+    const lintSummary = document.getElementById('lint_summary');
+    const lintList = document.getElementById('lint_list');
     const csrf = {{ csrf_token|tojson }};
+
+    function renderLints(lints) {
+      if (!lintList || !lintSummary) return;
+      const items = Array.isArray(lints) ? lints : [];
+      lintList.innerHTML = items.map((x) => {
+        const sev = x.severity || 'info';
+        const tag = sev === 'error' ? '🔴' : (sev === 'warn' ? '🟠' : '🔵');
+        const where = x.path ? ` <code>${x.path}</code>` : '';
+        const rid = x.rule_id ? ` [${x.rule_id}]` : '';
+        return `<li>${tag} <strong>${x.code}</strong>${rid}${where}: ${x.message}</li>`;
+      }).join('');
+      const counts = items.reduce((acc, lint) => {
+        const key = lint.severity || 'info';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
+      lintSummary.textContent = `errors: ${counts.error || 0}, warnings: ${counts.warn || 0}, info: ${counts.info || 0}`;
+    }
 
     function renderDiff(diff) {
       if (!diffOut) return;
@@ -121,6 +145,8 @@
           data = null;
         }
 
+        renderLints(data && data.lints ? data.lints : []);
+
         if (reloadOut) {
           if (data && data.validation) {
             const issues = Array.isArray(data.validation.issues) ? data.validation.issues : [];
@@ -169,6 +195,7 @@
         setTimeout(() => { msg.textContent = ''; }, 2000);
       } catch (e) {
         msg.textContent = 'Error reloading.';
+        renderLints([]);
       }
       previewDiff();
     }
@@ -193,14 +220,19 @@
           return `${String(i.severity || '').toUpperCase()} [${i.code}] ${loc}${i.message}`;
         });
         validateOut.textContent = `${ok ? 'OK' : 'FAIL'}\n${lines.join('\n')}`;
+        renderLints(data && data.lints ? data.lints : []);
       } catch (err) {
         validateOut.textContent = 'Validation failed.';
+        renderLints([]);
       }
     }
 
     if (btn) btn.addEventListener('click', reload);
     if (validateBtn) validateBtn.addEventListener('click', validatePack);
-    document.addEventListener('DOMContentLoaded', previewDiff);
+    document.addEventListener('DOMContentLoaded', () => {
+      renderLints([]);
+      previewDiff();
+    });
   })();
 </script>
 {% endblock %}
