@@ -18,6 +18,9 @@ _PACKS_DIRS: List[Path] = [
 ]
 
 
+project_root = Path(__file__).resolve().parent.parent.parent
+
+
 def _legacy_packs_dir() -> Path:
     base = Path(os.path.dirname(os.path.dirname(__file__))) / ".." / "policies" / "packs"
     return Path(os.path.normpath(base))
@@ -28,31 +31,34 @@ PACKS_DIR = str(_legacy_packs_dir())
 
 
 def _existing_dirs() -> List[Path]:
-    """Return the subset of known pack directories that exist."""
+    """
+    Return all existing pack directories in precedence order:
+    - For each logical root in _PACKS_DIRS:
+      1) <CWD>/<root>
+      2) <project_root>/<root>
+      3) <root> itself if absolute
+    De-duplicate by resolved path so local overrides do not mask bundled packs.
+    """
 
     dirs: List[Path] = []
     seen: set[Path] = set()
-    project_root = Path(__file__).resolve().parent.parent.parent
+
     for root in _PACKS_DIRS:
-        candidates: List[Path] = []
         if root.is_absolute():
-            candidates.append(root)
+            candidates = [root]
         else:
-            candidates.append(Path.cwd() / root)
-            project_candidate = project_root / root
-            if project_candidate not in candidates:
-                candidates.append(project_candidate)
+            candidates = [Path.cwd() / root, project_root / root]
+
         for candidate in candidates:
             try:
                 if candidate.exists() and candidate.is_dir():
                     resolved = candidate.resolve(strict=False)
-                    if resolved in seen:
-                        break
-                    seen.add(resolved)
-                    dirs.append(resolved)
-                    break
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        dirs.append(resolved)
             except Exception:
                 continue
+
     return dirs
 
 
