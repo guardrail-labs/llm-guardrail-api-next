@@ -194,15 +194,30 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
                     from starlette.responses import StreamingResponse as _StreamingResponse
 
                     passthrough = _gen(body_chunks[:], body_iterator)
-                    media_type = content_type.split(";", 1)[0]
                     new_resp = _StreamingResponse(
                         passthrough,
                         status_code=response.status_code,
-                        media_type=media_type,
                         background=response.background,
                     )
-                    for key, value in response.headers.items():
-                        new_resp.headers.setdefault(key, value)
+                    try:
+                        raw_headers = getattr(response, "raw_headers", None)
+                        if raw_headers:
+                            for key_bytes, value_bytes in raw_headers:
+                                key = key_bytes.decode("latin-1")
+                                if key.lower() == "content-length":
+                                    continue
+                                new_resp.headers.append(key, value_bytes.decode("latin-1"))
+                        else:
+                            for key, value in response.headers.items():
+                                if key.lower() == "content-length":
+                                    continue
+                                new_resp.headers.append(key, value)
+                    except Exception:
+                        for key, value in response.headers.items():
+                            if key.lower() == "content-length":
+                                continue
+                            new_resp.headers[key] = value
+                    new_resp.headers["X-Redaction-Skipped"] = "oversize"
                     return new_resp
         body = b"".join(body_chunks)
         try:
