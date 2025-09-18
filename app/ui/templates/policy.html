@@ -32,6 +32,15 @@
       <span id="statusMsg" class="muted" style="margin-left:.5rem;"></span>
     </div>
   </div>
+
+  <div class="card" style="padding: 1rem 1.25rem; margin-top: 1.5rem;">
+    <strong>Validate Pack</strong>
+    <p class="muted">Paste a YAML pack to lint before upload/activation.</p>
+    <textarea id="pack_text" rows="8" style="width:100%;"></textarea>
+    <button id="btn_validate" class="badge" style="margin-top:6px;">Validate</button>
+    <pre id="validate_out"
+         style="white-space:pre-wrap;background:#0b1020;color:#e5e7eb;padding:8px;border-radius:8px;max-height:240px;overflow:auto;"></pre>
+  </div>
 </section>
 
 <style>
@@ -47,6 +56,9 @@
     const msg = document.getElementById('statusMsg');
     const vbox = document.getElementById('versionBox');
     const adminKey = document.getElementById('adminKey');
+    const validateBtn = document.getElementById('btn_validate');
+    const packInput = document.getElementById('pack_text');
+    const validateOut = document.getElementById('validate_out');
     const csrf = {{ csrf_token|tojson }};
 
     async function reload() {
@@ -84,7 +96,33 @@
       }
     }
 
+    async function validatePack() {
+      if (!validateOut) return;
+      validateOut.textContent = 'Validating...';
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        const key = (adminKey && adminKey.value || '').trim();
+        if (key) headers['X-Admin-Key'] = key;
+        const payload = { yaml: packInput ? packInput.value : '' };
+        const res = await fetch('/admin/api/policy/validate', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        const ok = data.status === 'ok';
+        const lines = (data.issues || []).map((i) => {
+          const loc = i.path ? `${i.path}: ` : '';
+          return `${String(i.severity || '').toUpperCase()} [${i.code}] ${loc}${i.message}`;
+        });
+        validateOut.textContent = `${ok ? 'OK' : 'FAIL'}\n${lines.join('\n')}`;
+      } catch (err) {
+        validateOut.textContent = 'Validation failed.';
+      }
+    }
+
     if (btn) btn.addEventListener('click', reload);
+    if (validateBtn) validateBtn.addEventListener('click', validatePack);
   })();
 </script>
 {% endblock %}

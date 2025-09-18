@@ -731,6 +731,15 @@ def create_app() -> FastAPI:
         # keep startup resilient even if import order changes during refactors
         pass
 
+    try:
+        from app.routes.admin_policy_validate import (
+            router as admin_policy_validate_router,
+        )
+
+        app.include_router(admin_policy_validate_router)
+    except Exception:
+        pass
+
     # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
 
