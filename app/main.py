@@ -1,13 +1,14 @@
 # app/main.py
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
 import os
 import pkgutil
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
@@ -54,6 +55,37 @@ def _parse_int_env(name: str, default: int) -> int:
         return v if v >= 0 else default
     except Exception:
         return default
+
+
+_PRUNE_INTERVAL_SECONDS = _parse_int_env("DECISIONS_PRUNE_INTERVAL_SECONDS", 3600)
+
+
+async def _prune_loop() -> None:
+    interval = max(_PRUNE_INTERVAL_SECONDS, 1)
+    while True:
+        try:
+            from app.services import decisions as decisions_store
+
+            decisions_store.prune()
+        except Exception:
+            pass
+        try:
+            await asyncio.sleep(interval)
+        except Exception:
+            return
+
+
+def _start_prune_task(app: FastAPI) -> None:
+    """
+    Start the prune loop once. Safe to call from both lifespan and startup.
+    """
+    try:
+        if getattr(app.state, "prune_task", None):
+            return
+        task = asyncio.create_task(_prune_loop())
+        app.state.prune_task = task
+    except Exception:
+        pass
 
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
@@ -544,11 +576,31 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # Initialize decisions store and start prune loop (duplicate-safe)
+    try:
+        from app.services import decisions as decisions_store
+
+        decisions_store.ensure_ready()
+    except Exception:
+        pass
+
+    _start_prune_task(app)
+
     await sysmod._startup_readiness()
     try:
         yield
     finally:
         await sysmod._shutdown_readiness()
+        # Stop prune loop gracefully if running
+        try:
+            task = getattr(app.state, "prune_task", None)
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                app.state.prune_task = None
+        except Exception:
+            pass
         # Clean shutdown for tracer/exporter if present.
         try:
             from opentelemetry import trace as _trace
@@ -707,6 +759,11 @@ def create_app() -> FastAPI:
 
 build_app = create_app
 app = create_app()
+
+
+@app.on_event("startup")
+async def _start_prune() -> None:
+    _start_prune_task(app)
 
 # ---- Existing PR includes preserved below ----
 
