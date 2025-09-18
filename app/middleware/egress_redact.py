@@ -4,7 +4,7 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator
-from typing import Any, Dict
+from typing import Any, Callable, Dict, cast
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -120,6 +120,64 @@ async def _restore_body(response: Response, body: bytes) -> None:
     setattr(response, "body_iterator", _aiter())
 
 
+def _choose_encoding(headers: Dict[str, str]) -> str:
+    content_type = (headers.get("content-type") or "").lower()
+    if "charset=" in content_type:
+        try:
+            return (
+                content_type.split("charset=", 1)[1].split(";", 1)[0].strip()
+                or "utf-8"
+            )
+        except Exception:
+            return "utf-8"
+    return "utf-8"
+
+
+async def _windowed_redact_gen(
+    chunks_async_iter: AsyncIterator[Any],
+    apply_redactions: Callable[[str], tuple[str, Dict[str, int]]],
+    encoding: str,
+    window_bytes: int,
+) -> AsyncIterator[bytes]:
+    from app.observability import metrics_redaction as _metrics_redaction
+
+    carry = ""
+    first_chunk = True
+    enc = encoding or "utf-8"
+    window = max(int(window_bytes or 0), 1)
+
+    async for chunk in chunks_async_iter:
+        if isinstance(chunk, bytes):
+            chunk_bytes = chunk
+        elif isinstance(chunk, str):
+            chunk_bytes = chunk.encode(enc, errors="ignore")
+        else:
+            chunk_bytes = bytes(chunk)
+
+        _metrics_redaction.add_scanned(len(chunk_bytes))
+
+        decoded = chunk_bytes.decode(enc, errors="ignore")
+        combined = carry + decoded
+        redacted, _rule_counts = apply_redactions(combined)
+
+        if len(redacted) > window:
+            out_text = redacted[:-window]
+            carry = redacted[-window:]
+        else:
+            out_text = ""
+            carry = redacted
+
+        if not first_chunk:
+            _metrics_redaction.inc_overlap()
+        first_chunk = False
+
+        if out_text:
+            yield out_text.encode(enc)
+
+    if carry:
+        yield carry.encode(enc)
+
+
 class EgressRedactMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
@@ -136,16 +194,8 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
         if not any(token in content_type for token in ("text", "json", "html")):
             return response
 
-        try:
-            from starlette.responses import StreamingResponse as _StreamingResponse
-
-            is_streaming = isinstance(response, _StreamingResponse) or (
-                "text/event-stream" in content_type
-            )
-        except Exception:
-            is_streaming = "text/event-stream" in content_type
-
-        if is_streaming:
+        is_sse = "text/event-stream" in content_type
+        if is_sse:
             response.headers.setdefault("X-Redaction-Skipped", "streaming")
             try:
                 from app.observability import metrics_redaction as _metrics_redaction
@@ -155,7 +205,75 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
                 pass
             return response
 
+        body_iterator = getattr(response, "body_iterator", None)
         content_length_raw = response.headers.get("content-length")
+
+        if (
+            body_iterator is not None
+            and content_length_raw is None
+            and any(token in content_type for token in ("text", "json", "html"))
+        ):
+            chunks_iter = cast(AsyncIterator[Any], body_iterator)
+            tenant = request.headers.get(TENANT_HEADER, "default")
+            bot = request.headers.get(BOT_HEADER, "default")
+            kind_label = content_type.split(";", 1)[0] or "text/plain"
+
+            window_bytes_raw = os.getenv("EGRESS_REDACT_WINDOW_BYTES", "4096")
+            try:
+                window_bytes = int(window_bytes_raw)
+            except (TypeError, ValueError):
+                window_bytes = 4096
+
+            stream_counts: Dict[str, int] = {}
+            encoding = _choose_encoding(dict(response.headers))
+
+            def _apply(text: str) -> tuple[str, Dict[str, int]]:
+                redacted_text, rule_counts = redact_text(text)
+                _merge_counts(stream_counts, rule_counts)
+                return redacted_text, rule_counts
+
+            async def _redacted_stream() -> AsyncIterator[bytes]:
+                try:
+                    async for out in _windowed_redact_gen(
+                        chunks_iter, _apply, encoding, window_bytes
+                    ):
+                        yield out
+                finally:
+                    if stream_counts:
+                        _emit_metrics(stream_counts, tenant, bot, kind_label)
+                        _emit_decision_hooks(request, stream_counts)
+
+            from starlette.responses import StreamingResponse as _StreamingResponse
+
+            new_response = _StreamingResponse(
+                _redacted_stream(),
+                status_code=response.status_code,
+                media_type=response.media_type,
+                background=response.background,
+            )
+
+            try:
+                raw_headers = getattr(response, "raw_headers", None)
+                if raw_headers:
+                    for key_bytes, value_bytes in raw_headers:
+                        key = key_bytes.decode("latin-1")
+                        if key.lower() == "content-length":
+                            continue
+                        new_response.headers.append(key, value_bytes.decode("latin-1"))
+                else:
+                    for key, value in response.headers.items():
+                        if key.lower() == "content-length":
+                            continue
+                        new_response.headers.append(key, value)
+            except Exception:
+                for key, value in response.headers.items():
+                    if key.lower() == "content-length":
+                        continue
+                    new_response.headers[key] = value
+
+            new_response.headers["X-Redaction-Mode"] = "windowed"
+            return new_response
+
         if content_length_raw is None:
             return response
         try:
@@ -233,7 +351,7 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
         headers.pop("content-length", None)
 
         if "json" in content_type:
-            counts: Dict[str, int] = {}
+            json_counts: Dict[str, int] = {}
             try:
                 parsed = json.loads(text)
             except Exception:
@@ -251,14 +369,14 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
                     background=response.background,
                 )
 
-            redacted = _redact_obj(parsed, counts)
-            if not counts:
+            redacted = _redact_obj(parsed, json_counts)
+            if not json_counts:
                 await _restore_body(response, body)
                 return response
 
             payload = json.dumps(redacted, ensure_ascii=False)
-            _emit_metrics(counts, tenant, bot, "application/json")
-            _emit_decision_hooks(request, counts)
+            _emit_metrics(json_counts, tenant, bot, "application/json")
+            _emit_decision_hooks(request, json_counts)
             return Response(
                 content=payload,
                 status_code=response.status_code,
