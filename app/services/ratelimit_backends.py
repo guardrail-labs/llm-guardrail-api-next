@@ -179,11 +179,37 @@ class RedisTokenBucket(RateLimiterBackend):
     def _key(self, key: str) -> str:
         return f"{self._prefix}{key}"
 
-    def _call_script(self, k: str, now: float, rps: float, burst: float, cost: float):
-        args = [now, float(rps), float(burst), float(cost)]
-        if self._sha:
-            return self._client.evalsha(self._sha, 1, k, *args)
-        return self._client.eval(self._LUA, 1, k, *args)
+    def _ensure_sha(self) -> None:
+        try:
+            if not getattr(self, "_sha", None):
+                self._sha = self._client.script_load(self._LUA)
+        except Exception:
+            self._sha = None
+
+    def _call_script(self, redis_key: str, now: float, rps: float, burst: float, cost: float):
+        args = (redis_key, now, float(rps), float(burst), float(cost))
+
+        try:
+            self._ensure_sha()
+            if self._sha:
+                return self._client.evalsha(self._sha, 1, *args)
+        except Exception as e:
+            noscript = False
+            try:
+                from redis.exceptions import NoScriptError
+
+                noscript = isinstance(e, NoScriptError)
+            except Exception:
+                noscript = False
+            if not noscript and "NOSCRIPT" not in str(e).upper():
+                raise
+            try:
+                self._sha = self._client.script_load(self._LUA)
+                return self._client.evalsha(self._sha, 1, *args)
+            except Exception:
+                return self._client.eval(self._LUA, 1, *args)
+
+        return self._client.eval(self._LUA, 1, *args)
 
     def allow(
         self,
