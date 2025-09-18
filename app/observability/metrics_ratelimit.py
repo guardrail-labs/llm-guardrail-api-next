@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import os
+from typing import Any, Optional
 
 try:  # pragma: no cover
     from prometheus_client import Counter, Gauge
 except Exception:  # pragma: no cover
     Counter = Gauge = None  # type: ignore
+
+_reload_counter: Optional[Any]
+try:  # pragma: no cover
+    from app.observability.metrics import (
+        guardrail_ratelimit_redis_script_reload_total as _reload_counter,
+    )
+except Exception:  # pragma: no cover
+    _reload_counter = None
 
 _ENABLED = os.getenv("METRICS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
@@ -21,11 +30,14 @@ def _counters():
     if not _ENABLED or Counter is None:
         return None, None, None
     if _ctr_reload is None:
-        _ctr_reload = Counter(
-            "guardrail_ratelimit_redis_script_reload_total",
-            "Redis Lua NOSCRIPT reloads",
-            [],
-        )
+        if _reload_counter is not None:
+            _ctr_reload = _reload_counter
+        else:
+            _ctr_reload = Counter(
+                "guardrail_ratelimit_redis_script_reload_total",
+                "Redis Lua NOSCRIPT reloads",
+                [],
+            )
     if _ctr_error is None:
         _ctr_error = Counter(
             "guardrail_ratelimit_redis_errors_total",
