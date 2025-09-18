@@ -31,6 +31,7 @@
       <button id="reloadBtn" class="btn primary">Reload Policy</button>
       <span id="statusMsg" class="muted" style="margin-left:.5rem;"></span>
     </div>
+    <pre id="policy_reload_msg" class="muted" style="white-space:pre-wrap;margin-top:.5rem;"></pre>
   </div>
 
   <div class="card" style="padding: 1rem 1.25rem; margin-top: 1.5rem;">
@@ -59,6 +60,7 @@
     const validateBtn = document.getElementById('btn_validate');
     const packInput = document.getElementById('pack_text');
     const validateOut = document.getElementById('validate_out');
+    const reloadOut = document.getElementById('policy_reload_msg');
     const csrf = {{ csrf_token|tojson }};
 
     async function reload() {
@@ -74,13 +76,44 @@
           body: JSON.stringify({ csrf_token: csrf })
         });
 
+        const bodyText = await res.text();
+        let data = null;
+        try {
+          data = bodyText ? JSON.parse(bodyText) : null;
+        } catch (err) {
+          data = null;
+        }
+
+        if (reloadOut) {
+          if (data && data.validation) {
+            const issues = Array.isArray(data.validation.issues) ? data.validation.issues : [];
+            const mode = data.validation.enforcement_mode || 'warn';
+            const lines = issues.map((i) => {
+              const sev = String(i.severity || '').toUpperCase();
+              const code = i.code ? `[${i.code}]` : '';
+              const loc = i.path ? `${i.path}: ` : '';
+              return `${sev} ${code} ${loc}${i.message || ''}`.trim();
+            });
+            const summary = `${res.status} ${data.status || res.statusText || ''} (mode=${mode})`;
+            const text = [summary, ...lines.filter(Boolean)].join('\n');
+            reloadOut.textContent = text.trim();
+          } else {
+            const summary = `${res.status} ${res.statusText || ''}`;
+            reloadOut.textContent = bodyText ? `${summary}\n${bodyText}`.trim() : summary;
+          }
+        }
+
         if (!res.ok) {
-          const t = await res.text();
-          msg.textContent = `Failed (${res.status}): ${t || 'error'}`;
+          msg.textContent = `Failed (${res.status}): ${bodyText || 'error'}`;
           return;
         }
-        const data = await res.json();
-        vbox.textContent = data.version || '(unknown)';
+
+        if (data) {
+          const resultVersion = data.version || (data.result && data.result.version);
+          if (resultVersion) {
+            vbox.textContent = resultVersion;
+          }
+        }
 
         // Fetch packs/version again to keep in sync (optional)
         const vres = await fetch('/admin/api/policy/version');
