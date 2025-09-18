@@ -2,6 +2,7 @@
 # Summary: Prometheus /metrics exposition (enabled by default).
 # - Enabled unless METRICS_ROUTE_ENABLED is an explicit "off" value.
 # - Optional API key via METRICS_API_KEY (X-API-KEY or Bearer).
+# - Forces Prometheus text exposition v0.0.4 content type regardless of library defaults.
 
 from __future__ import annotations
 
@@ -16,19 +17,17 @@ router = APIRouter()
 # Prometheus is optional; degrade gracefully if unavailable.
 try:  # pragma: no cover
     from prometheus_client import (
-        CONTENT_TYPE_LATEST as PROM_CONTENT_TYPE_LATEST,
         REGISTRY as PROM_REGISTRY,
         generate_latest as prom_generate_latest,
     )
-
     REGISTRY: Any | None = PROM_REGISTRY
-    CONTENT_TYPE_LATEST: str = PROM_CONTENT_TYPE_LATEST
     generate_latest: Optional[Callable[[Any], bytes]] = prom_generate_latest
 except Exception:  # pragma: no cover
     REGISTRY = None
-    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
     generate_latest = None
 
+# Force the classic Prometheus text exposition content type.
+TEXT_EXPO_V004 = "text/plain; version=0.0.4; charset=utf-8"
 
 _OFF_VALUES = {"0", "false", "no", "off"}
 
@@ -57,7 +56,7 @@ def _auth_ok(request: Request, required: str) -> bool:
     return False
 
 
-@router.get("/metrics")
+@router.get("/metrics", include_in_schema=False)
 async def metrics(request: Request) -> Response:
     if not _enabled() or generate_latest is None or REGISTRY is None:
         # Hidden unless enabled *and* prometheus_client is present.
@@ -73,4 +72,8 @@ async def metrics(request: Request) -> Response:
     assert REGISTRY is not None
 
     payload: bytes = generate_latest(REGISTRY)
-    return Response(content=payload, media_type=CONTENT_TYPE_LATEST)
+
+    # Build a raw Response and force the exact v0.0.4 header (avoid lib defaults).
+    resp = Response(content=payload)
+    resp.headers["Content-Type"] = TEXT_EXPO_V004
+    return resp
