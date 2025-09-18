@@ -633,6 +633,14 @@ def create_app() -> FastAPI:
     except Exception:
         pass
     try:
+        from app.routes.admin_decisions_export import (
+            router as admin_decisions_export_router,
+        )
+
+        app.include_router(admin_decisions_export_router)
+    except Exception:
+        pass
+    try:
         from app.routes.admin_overview import router as admin_overview_router
 
         app.include_router(admin_overview_router)
