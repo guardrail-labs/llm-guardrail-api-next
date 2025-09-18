@@ -47,15 +47,19 @@
       </div>
     </form>
 
+    <form method="get" action="/admin/api/decisions/export.csv" style="margin-top:8px" class="controls" id="export-form">
+      <input type="text" name="since" placeholder="ISO8601 UTC (e.g., 2025-09-15T00:00:00Z)" value="{{ since }}" />
+      <input type="text" name="tenant" placeholder="tenant" value="{{ tenant }}" />
+      <input type="text" name="bot" placeholder="bot" value="{{ bot }}" />
+      <input type="text" name="outcome" placeholder="outcome" value="{{ outcome }}" />
+      <button type="submit" class="badge">Export CSV</button>
+      <button type="submit" class="badge" formaction="/admin/api/decisions/export.ndjson">NDJSON</button>
+    </form>
+
     <div class="controls">
       <button id="prev">Prev</button>
       <span class="muted">Page <span id="pg">{{ page }}</span></span>
       <button id="next">Next</button>
-    </div>
-
-    <div class="controls">
-      <a id="dlcsv" class="badge" href="#">Download CSV</a>
-      <a id="dljsonl" class="badge" href="#">Download JSONL</a>
     </div>
 
     <table id="grid">
@@ -137,26 +141,6 @@
 
       load();
 
-      function buildExportHref(fmt) {
-        const params = new URLSearchParams();
-        const since = "{{ since }}";
-        const tenant = "{{ tenant }}";
-        const bot = "{{ bot }}";
-        const outcome = "{{ outcome }}";
-        if (since) params.set("since", since);
-        if (tenant) params.set("tenant", tenant);
-        if (bot) params.set("bot", bot);
-        if (outcome) params.set("outcome", outcome);
-        params.set("format", fmt);
-        return "/admin/api/decisions/export?" + params.toString();
-      }
-
-      const aCsv = document.getElementById("dlcsv");
-      const aJsonl = document.getElementById("dljsonl");
-      if (aCsv && aJsonl) {
-        aCsv.href = buildExportHref("csv");
-        aJsonl.href = buildExportHref("jsonl");
-      }
     </script>
   </body>
 </html>
