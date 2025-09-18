@@ -1,6 +1,8 @@
 import sys
 import types
 
+from redis.exceptions import NoScriptError
+
 from app.services import ratelimit_backends as rb
 
 
@@ -42,7 +44,7 @@ def test_noscript_increments_reload(monkeypatch):
         def evalsha(self, sha, n, *args):
             self._n += 1
             if self._n == 1:
-                raise Exception("NOSCRIPT No matching script.")
+                raise NoScriptError("NOSCRIPT No matching script.")
             return ["1", "0", "0"]
 
         def eval(self, *a, **k):

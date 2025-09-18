@@ -86,6 +86,17 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
+# ---- Rate limit metrics ------------------------------------------------------
+
+guardrail_ratelimit_redis_script_reload_total = _get_or_create_counter(
+    "guardrail_ratelimit_redis_script_reload_total",
+    (
+        "Number of times the Redis rate limit Lua SHA was reloaded after "
+        "NOSCRIPT and the subsequent retry succeeded."
+    ),
+)
+
+
 def _get_or_create_histogram(
     name: str,
     doc: str,

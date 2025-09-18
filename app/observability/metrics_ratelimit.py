@@ -7,9 +7,15 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     Counter = Gauge = None  # type: ignore
 
+try:  # pragma: no cover
+    from app.observability.metrics import (
+        guardrail_ratelimit_redis_script_reload_total,
+    )
+except Exception:  # pragma: no cover
+    guardrail_ratelimit_redis_script_reload_total = None  # type: ignore
+
 _ENABLED = os.getenv("METRICS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
-_ctr_reload = None
 _ctr_error = None
 _ctr_fallback = None
 _g_backend = None
@@ -17,15 +23,9 @@ _init_done = False
 
 
 def _counters():
-    global _ctr_reload, _ctr_error, _ctr_fallback
+    global _ctr_error, _ctr_fallback
     if not _ENABLED or Counter is None:
         return None, None, None
-    if _ctr_reload is None:
-        _ctr_reload = Counter(
-            "guardrail_ratelimit_redis_script_reload_total",
-            "Redis Lua NOSCRIPT reloads",
-            [],
-        )
     if _ctr_error is None:
         _ctr_error = Counter(
             "guardrail_ratelimit_redis_errors_total",
@@ -38,7 +38,7 @@ def _counters():
             "Rate-limit fallbacks to local backend",
             ["reason"],
         )
-    return _ctr_reload, _ctr_error, _ctr_fallback
+    return guardrail_ratelimit_redis_script_reload_total, _ctr_error, _ctr_fallback
 
 
 def inc_script_reload() -> None:

@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from typing import Callable, Dict, Optional, Tuple
 
 from app.observability import metrics_ratelimit as _mrl
+
+try:  # pragma: no cover - optional dependency during import
+    from redis.exceptions import NoScriptError, RedisError
+except Exception:  # pragma: no cover
+    class NoScriptError(Exception):  # type: ignore[no-redef]
+        """Fallback NOSCRIPT error when redis-py is unavailable."""
+
+
+    class RedisError(Exception):  # type: ignore[no-redef]
+        """Fallback Redis error when redis-py is unavailable."""
+
+
+_log = logging.getLogger(__name__)
 
 
 class RateLimiterBackend:
@@ -191,26 +205,36 @@ class RedisTokenBucket(RateLimiterBackend):
     def _call_script(self, redis_key: str, now: float, rps: float, burst: float, cost: float):
         args = (redis_key, now, float(rps), float(burst), float(cost))
 
-        try:
-            self._ensure_sha()
-            if self._sha:
-                return self._client.evalsha(self._sha, 1, *args)
-        except Exception as e:
-            noscript = False
-            try:
-                from redis.exceptions import NoScriptError
+        self._ensure_sha()
+        if not self._sha:
+            return self._client.eval(self._LUA, 1, *args)
 
-                noscript = isinstance(e, NoScriptError)
-            except Exception:
-                noscript = False
-            if not noscript and "NOSCRIPT" not in str(e).upper():
-                raise
-            _mrl.inc_script_reload()
+        try:
+            return self._client.evalsha(self._sha, 1, *args)
+        except NoScriptError:
+            _log.warning("Redis NOSCRIPT for rate limit script; attempting reload.")
             try:
-                self._sha = self._client.script_load(self._LUA)
-                return self._client.evalsha(self._sha, 1, *args)
-            except Exception:
-                return self._client.eval(self._LUA, 1, *args)
+                new_sha = self._client.script_load(self._LUA)
+                self._sha = new_sha
+            except RedisError:
+                _log.exception("Redis SCRIPT LOAD failed after NOSCRIPT; denying.")
+                raise
+
+            try:
+                result = self._client.evalsha(self._sha, 1, *args)
+            except NoScriptError:
+                _log.exception(
+                    "Redis EVALSHA returned NOSCRIPT after reload; denying.",
+                )
+                raise
+            except RedisError:
+                _log.exception("Redis EVALSHA failed after reload; denying.")
+                raise
+
+            _mrl.inc_script_reload()
+            return result
+        except Exception:
+            pass
 
         return self._client.eval(self._LUA, 1, *args)
 
