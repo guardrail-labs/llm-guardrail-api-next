@@ -47,6 +47,18 @@ class DecisionHeaderMiddleware(BaseHTTPMiddleware):
             or decision.get("request_id")
         )
 
+        try:
+            if outcome:
+                from app.observability import metrics_decisions as _md
+
+                _md.inc(
+                    outcome,
+                    tenant=getattr(request.state, "tenant", None),
+                    bot=getattr(request.state, "bot", None),
+                )
+        except Exception:
+            pass
+
         if outcome and "X-Guardrail-Decision" not in response.headers:
             response.headers["X-Guardrail-Decision"] = outcome
         if mode and "X-Guardrail-Mode" not in response.headers:

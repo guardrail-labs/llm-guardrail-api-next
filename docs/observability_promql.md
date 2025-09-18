@@ -17,6 +17,21 @@ increase(guardrail_egress_redactions_total[$__rate_interval]) by (rule_id)
 sum(increase(guardrail_egress_redactions_total[15m]))
 ```
 
+## Decisions counters
+- **Total decisions by outcome:**
+
+```
+increase(guardrail_decisions_total[$__rate_interval]) by (outcome)
+```
+
+- **Redact decisions by rule:**
+
+```
+increase(guardrail_redact_decisions_total[$__rate_interval]) by (rule_id)
+```
+
+> To include tenant/bot labels, set `METRICS_DECISION_TENANT_BOT_LABELS=true`. Be mindful of cardinality.
+
 ## Rate Limiting
 - **Rate-limited by tenant/bot:**
 

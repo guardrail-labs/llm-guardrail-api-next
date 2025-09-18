@@ -91,6 +91,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request_id:
             payload["request_id"] = request_id
         try:
+            from app.observability import metrics_decisions as _md
+
+            _md.inc("rate_limit", tenant=tenant, bot=bot)
+        except Exception:
+            pass
+        try:
             request.state.guardrail_decision = {
                 "outcome": "block_input_only",
                 "mode": "Tier1",
