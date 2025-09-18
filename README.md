@@ -41,10 +41,14 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 
 ---
 
+## Try it
+
+Spin up the core stack, apply golden packs, and prove redaction end-to-end with the [Quickstart guide](docs/QUICKSTART.md).
+
 ## Quick start
 
 - **Install**: one command → stack up with API + Audit + Prom + Grafana
-  → See [`docs/Quickstart.md`](docs/Quickstart.md)
+  → See [`docs/QUICKSTART.md`](docs/QUICKSTART.md)
 - **Operate**: policies, bindings, verifier, threat feed, metrics
   → See [`docs/OperatorGuide.md`](docs/OperatorGuide.md)
 - **Integrate**: OpenAI-compatible endpoints (`/v1/*`)
