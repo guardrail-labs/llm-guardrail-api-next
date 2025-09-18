@@ -90,12 +90,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         }
         if request_id:
             payload["request_id"] = request_id
-        try:
-            from app.observability import metrics_decisions as _md
-
-            _md.inc("rate_limit", tenant=tenant, bot=bot)
-        except Exception:
-            pass
+        # NOTE: Do not emit the generic decision metric here. DecisionHeaderMiddleware
+        # will emit exactly one decision metric per request, preventing double counting.
+        # We still emit the dedicated rate-limit Prometheus metric elsewhere in this
+        # middleware (e.g., guardrail_rate_limited_total{...}).
         try:
             request.state.guardrail_decision = {
                 "outcome": "block_input_only",
