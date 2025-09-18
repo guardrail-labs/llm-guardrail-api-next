@@ -66,12 +66,19 @@
       document.getElementById("dlq_peek").textContent = JSON.stringify(data.dlq.peek || [], null, 2);
     }
 
-    // CSRF token hook: if your app sets a meta tag, pick it up; else leave blank and server fallback will enforce.
-    const meta = document.querySelector('meta[name="csrf-token"]');
-    if (meta) document.getElementById("csrf").value = meta.getAttribute("content");
+    function readCookie(name) {
+      const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()\\[\\]\\/+^])/g, '\\$1') + '=([^;]*)'));
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    function setCsrfHiddenInput() {
+      const t = readCookie('admin_csrf') || readCookie('XSRF-TOKEN') || readCookie('csrf') || readCookie('csrf_token');
+      if (t) document.getElementById('csrf').value = t;
+    }
 
     document.getElementById("replay").addEventListener("submit", async (e) => {
       e.preventDefault();
+      setCsrfHiddenInput();
       const fd = new FormData(e.target);
       if (!confirm("Are you sure you want to replay DLQ with these parameters?")) return;
       const r = await fetch(e.target.action, {method:"POST", body: fd, credentials:"same-origin"});
@@ -80,7 +87,7 @@
       load();
     });
 
-    load();
+    load().then(setCsrfHiddenInput);
   </script>
 </body>
 </html>

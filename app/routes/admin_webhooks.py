@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import os
+import secrets
 import threading
 import time
 from datetime import datetime, timezone
@@ -68,7 +69,9 @@ async def _require_csrf_dep(request: Request) -> None:
         "require_csrf",
     ) or _load_guard("app.security.admin_auth:require_csrf", "require_csrf")
     if callable(guard):
-        await _maybe_call_guard(guard, request)
+        result = guard(request)
+        if inspect.isawaitable(result):
+            await result
         return
 
     token = request.headers.get("X-CSRF-Token") or request.query_params.get("csrf")
@@ -79,8 +82,19 @@ async def _require_csrf_dep(request: Request) -> None:
             token = str(raw) if raw is not None else None
         except Exception:  # pragma: no cover - malformed body
             token = None
-    if not token:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF token required")
+
+    cookie = (
+        request.cookies.get("admin_csrf")
+        or request.cookies.get("XSRF-TOKEN")
+        or request.cookies.get("csrf")
+        or request.cookies.get("csrf_token")
+    )
+
+    if not token or not cookie or str(token) != str(cookie):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid CSRF token",
+        )
 
 
 router = APIRouter(dependencies=[Depends(_require_admin_dep)])
@@ -96,7 +110,10 @@ def _svc():
 
 
 @router.get("/admin/api/webhooks/status")
-async def webhooks_status(peek: int = Query(0, ge=0, le=100)) -> JSONResponse:
+async def webhooks_status(
+    request: Request,
+    peek: int = Query(0, ge=0, le=100),
+) -> JSONResponse:
     svc = _svc()
 
     dlq_len: Optional[int]
@@ -134,7 +151,20 @@ async def webhooks_status(peek: int = Query(0, ge=0, le=100)) -> JSONResponse:
         "breaker": breaker,
         "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
-    return JSONResponse(payload)
+    resp = JSONResponse(payload)
+
+    if not request.cookies.get("admin_csrf"):
+        token = secrets.token_urlsafe(32)
+        resp.set_cookie(
+            key="admin_csrf",
+            value=token,
+            path="/",
+            secure=True,
+            httponly=False,
+            samesite="strict",
+            max_age=3600,
+        )
+    return resp
 
 
 _REPLAY_LOCK = threading.Lock()
