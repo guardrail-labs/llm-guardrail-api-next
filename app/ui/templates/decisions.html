@@ -24,123 +24,181 @@
   </head>
   <body>
     {% include "_admin_nav.html" %}
-    <header>
-      <h1>Decision Log</h1>
-      <span class="muted">Read-only · latest first</span>
-    </header>
+    <div class="card">
+      <h3>Decisions</h3>
+      <form id="filters" onsubmit="return false" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+        <label>Since (ISO8601 UTC)
+          <input type="text" id="f_since" placeholder="2025-09-15T00:00:00Z">
+        </label>
+        <label>Tenant
+          <input type="text" id="f_tenant" placeholder="tenant">
+        </label>
+        <label>Bot
+          <input type="text" id="f_bot" placeholder="bot">
+        </label>
+        <label>Outcome
+          <input type="text" id="f_outcome" placeholder="allow|block_input_only|redact|rate_limit">
+        </label>
+        <label>Page size
+          <input type="number" id="f_pagesize" min="1" max="500" value="50">
+        </label>
+        <button id="btn_apply" class="badge">Apply</button>
+        <button id="btn_reset" class="badge muted" type="button">Reset</button>
+        <a class="badge" id="btn_csv" href="#">Export CSV</a>
+        <a class="badge" id="btn_ndjson" href="#">NDJSON</a>
+      </form>
 
-    <form class="filters" method="get" action="/admin/decisions">
-      <input type="text" name="since" placeholder="Since (ISO8601)" value="{{ since }}"/>
-      <input type="text" name="tenant" placeholder="Tenant" value="{{ tenant }}"/>
-      <input type="text" name="bot" placeholder="Bot" value="{{ bot }}"/>
-      <select name="outcome">
-        <option value="" {% if not outcome %}selected{% endif %}>Any outcome</option>
-        {% for o in ["allow","block_input_only","execute_locked","full_quarantine"] %}
-        <option value="{{ o }}" {% if outcome==o %}selected{% endif %}>{{ o }}</option>
-        {% endfor %}
-      </select>
-      <div>
-        <input type="number" name="page_size" min="1" max="500" value="{{ page_size }}" />
+      <table id="tbl" class="table" style="margin-top:8px; width:100%;">
+        <thead>
+          <tr>
+            <th data-k="ts">ts</th>
+            <th data-k="tenant">tenant</th>
+            <th data-k="bot">bot</th>
+            <th data-k="outcome">outcome</th>
+            <th data-k="policy_version">policy_version</th>
+            <th data-k="rule_id">rule_id</th>
+            <th data-k="incident_id">incident_id</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="prev" class="badge">&laquo; Prev</button>
+        <span id="pageinfo"></span>
+        <button id="next" class="badge">Next &raquo;</button>
       </div>
-      <div class="controls">
-        <button type="submit">Apply</button>
-      </div>
-    </form>
 
-    <form method="get" action="/admin/api/decisions/export.csv" style="margin-top:8px" class="controls" id="export-form">
-      <input type="text" name="since" placeholder="ISO8601 UTC (e.g., 2025-09-15T00:00:00Z)" value="{{ since }}" />
-      <input type="text" name="tenant" placeholder="tenant" value="{{ tenant }}" />
-      <input type="text" name="bot" placeholder="bot" value="{{ bot }}" />
-      <input type="text" name="outcome" placeholder="outcome" value="{{ outcome }}" />
-      <button type="submit" class="badge">Export CSV</button>
-      <button type="submit" class="badge" formaction="/admin/api/decisions/export.ndjson">NDJSON</button>
-    </form>
-
-    <div class="controls">
-      <button id="prev">Prev</button>
-      <span class="muted">Page <span id="pg">{{ page }}</span></span>
-      <button id="next">Next</button>
+      <pre id="status" class="muted" style="white-space:pre-wrap; margin-top:8px;"></pre>
     </div>
 
-    <table id="grid">
-      <thead>
-        <tr>
-          <th class="nowrap">Time (UTC)</th>
-          <th>Tenant</th>
-          <th>Bot</th>
-          <th>Outcome</th>
-          <th>Policy</th>
-          <th>Rule</th>
-          <th>Incident</th>
-          <th>ID</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-
     <script>
-      const qs = new URLSearchParams(window.location.search);
-      let page = parseInt(qs.get("page") || "{{ page }}", 10) || 1;
-      let pageSize = parseInt(qs.get("page_size") || "{{ page_size }}", 10) || 50;
+(function(){
+  const qs = new URLSearchParams(location.search);
+  const S = {
+    page: +(qs.get("page") || 1),
+    page_size: +(qs.get("page_size") || 50),
+    since: qs.get("since") || "",
+    tenant: qs.get("tenant") || "",
+    bot: qs.get("bot") || "",
+    outcome: qs.get("outcome") || "",
+    sortKey: qs.get("sort") || "ts",
+    sortDir: qs.get("dir") || "desc", // asc|desc
+  };
 
-      async function load() {
-        const params = new URLSearchParams();
-        const since = "{{ since }}";
-        const tenant = "{{ tenant }}";
-        const bot = "{{ bot }}";
-        const outcome = "{{ outcome }}";
+  const $ = (id) => document.getElementById(id);
+  const $tbody = document.querySelector("#tbl tbody");
+  const $pageinfo = $("pageinfo");
+  const $status = $("status");
 
-        if (since) params.set("since", since);
-        if (tenant) params.set("tenant", tenant);
-        if (bot) params.set("bot", bot);
-        if (outcome) params.set("outcome", outcome);
-        params.set("page", String(page));
-        params.set("page_size", String(pageSize));
+  $("f_since").value = S.since;
+  $("f_tenant").value = S.tenant;
+  $("f_bot").value = S.bot;
+  $("f_outcome").value = S.outcome;
+  $("f_pagesize").value = S.page_size;
 
-        const r = await fetch(`/admin/api/decisions?${params.toString()}`, { method: "GET", credentials: "same-origin" });
-        const data = await r.json();
+  function toParams(overrides={}) {
+    const p = new URLSearchParams({
+      page: String(S.page),
+      page_size: String(S.page_size),
+    });
+    if (S.since) p.set("since", S.since);
+    if (S.tenant) p.set("tenant", S.tenant);
+    if (S.bot) p.set("bot", S.bot);
+    if (S.outcome) p.set("outcome", S.outcome);
+    if (S.sortKey) p.set("sort", S.sortKey);
+    if (S.sortDir) p.set("dir", S.sortDir);
+    for (const [k,v] of Object.entries(overrides)) {
+      if (v === null) p.delete(k);
+      else p.set(k, v);
+    }
+    return p;
+  }
 
-        const tbody = document.querySelector("#grid tbody");
-        tbody.innerHTML = "";
-        for (const it of data.items) {
-          const tr = document.createElement("tr");
-          tr.innerHTML = `
-            <td class="nowrap">${it.ts}</td>
-            <td>${it.tenant}</td>
-            <td>${it.bot}</td>
-            <td><span class="badge outcome-${it.outcome.replaceAll(" ", "_")}">${it.outcome}</span></td>
-            <td>${it.policy_version || ""}</td>
-            <td>${it.rule_id || ""}</td>
-            <td>${it.incident_id || ""}</td>
-            <td class="muted">${it.id}</td>
-          `;
-          tbody.appendChild(tr);
-        }
+  function applyToUrl() {
+    const p = toParams();
+    history.replaceState(null, "", "?" + p.toString());
+  }
 
-        document.getElementById("pg").textContent = data.page;
-        document.getElementById("prev").disabled = (page <= 1);
-        document.getElementById("next").disabled = !data.has_more;
+  async function load() {
+    applyToUrl();
+    const p = toParams();
+    const u = "/admin/api/decisions?" + p.toString();
+    const r = await fetch(u, {credentials:"same-origin"});
+    const data = await r.json();
+    const items = (data.items || []);
+    // client-side sort for the current page (server API has fixed order)
+    items.sort((a,b) => {
+      const k = S.sortKey;
+      let va = a[k], vb = b[k];
+      if (k === "ts") { va = new Date(va).getTime(); vb = new Date(vb).getTime(); }
+      if (va < vb) return S.sortDir === "asc" ? -1 : 1;
+      if (va > vb) return S.sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    $tbody.innerHTML = items.map(row => `
+      <tr>
+        <td>${row.ts ?? ""}</td>
+        <td>${row.tenant ?? ""}</td>
+        <td>${row.bot ?? ""}</td>
+        <td>${row.outcome ?? ""}</td>
+        <td>${row.policy_version ?? ""}</td>
+        <td>${row.rule_id ?? ""}</td>
+        <td>${row.incident_id ?? ""}</td>
+      </tr>
+    `).join("");
+    const total = data.total ?? (S.page * S.page_size); // fallback
+    $pageinfo.textContent = `Page ${S.page} (size ${S.page_size})`;
+    $status.textContent = `Loaded ${items.length} / total ~${total}\n`;
+    // wire export buttons
+    const exportParams = toParams(); exportParams.delete("page"); exportParams.delete("page_size");
+    $("btn_csv").href = "/admin/api/decisions/export.csv?" + exportParams.toString();
+    $("btn_ndjson").href = "/admin/api/decisions/export.ndjson?" + exportParams.toString();
+  }
+
+  $("btn_apply").addEventListener("click", () => {
+    S.page = 1;
+    S.page_size = +$("f_pagesize").value || 50;
+    S.since = $("f_since").value.trim();
+    S.tenant = $("f_tenant").value.trim();
+    S.bot = $("f_bot").value.trim();
+    S.outcome = $("f_outcome").value.trim();
+    load();
+  });
+
+  $("btn_reset").addEventListener("click", () => {
+    S.page = 1; S.page_size = 50; S.since = ""; S.tenant=""; S.bot=""; S.outcome="";
+    $("f_since").value = $("f_tenant").value = $("f_bot").value = $("f_outcome").value = "";
+    $("f_pagesize").value = "50";
+    load();
+  });
+
+  $("prev").addEventListener("click", () => {
+    if (S.page > 1) { S.page -= 1; load(); }
+  });
+  $("next").addEventListener("click", () => {
+    S.page += 1; load();
+  });
+
+  // clickable header sorting (current page only)
+  document.querySelectorAll("#tbl th[data-k]").forEach(th => {
+    th.style.cursor = "pointer";
+    th.addEventListener("click", () => {
+      const k = th.getAttribute("data-k");
+      if (S.sortKey === k) {
+        S.sortDir = (S.sortDir === "asc" ? "desc" : "asc");
+      } else {
+        S.sortKey = k; S.sortDir = "asc";
       }
-
-      document.getElementById("prev").addEventListener("click", () => {
-        if (page > 1) {
-          page -= 1;
-          const url = new URL(window.location.href);
-          url.searchParams.set("page", String(page));
-          window.history.replaceState({}, "", url.toString());
-          load();
-        }
-      });
-      document.getElementById("next").addEventListener("click", () => {
-        page += 1;
-        const url = new URL(window.location.href);
-        url.searchParams.set("page", String(page));
-        window.history.replaceState({}, "", url.toString());
-        load();
-      });
-
       load();
+    });
+  });
 
+  // initial load with restored state from URL
+  if (qs.get("page")) S.page = +qs.get("page");
+  if (qs.get("page_size")) S.page_size = +qs.get("page_size");
+  load();
+})();
     </script>
   </body>
 </html>
