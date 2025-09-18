@@ -86,6 +86,12 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
+guardrail_ratelimit_redis_script_reload_total = _get_or_create_counter(
+    "guardrail_ratelimit_redis_script_reload_total",
+    "Successful NOSCRIPT recoveries (SCRIPT LOAD + successful retry) for rate-limit Lua.",
+)
+
+
 def _get_or_create_histogram(
     name: str,
     doc: str,

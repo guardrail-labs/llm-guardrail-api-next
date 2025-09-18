@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 from app.observability import metrics_ratelimit as _mrl
+
+if TYPE_CHECKING:  # pragma: no cover - import for typing only
+    from redis.exceptions import NoScriptError, RedisError
+else:  # pragma: no cover
+    try:
+        from redis.exceptions import NoScriptError, RedisError
+    except Exception:
+        class RedisError(Exception):
+            """Fallback RedisError when redis-py is unavailable."""
+
+
+        class NoScriptError(RedisError):
+            """Fallback NoScriptError when redis-py is unavailable."""
+
+
+_log = logging.getLogger(__name__)
 
 
 class RateLimiterBackend:
@@ -173,46 +190,78 @@ class RedisTokenBucket(RateLimiterBackend):
         self._prefix = prefix
         self._timeout = int(timeout_ms)
         self._fallback = LocalTokenBucket()
+        self._sha_lock = threading.Lock()
+        self._sha: Optional[str] = None
         try:
-            self._sha = self._client.script_load(self._LUA)
+            self._store_sha(self._client.script_load(self._LUA))
         except Exception:
             self._sha = None
 
     def _key(self, key: str) -> str:
         return f"{self._prefix}{key}"
 
-    def _ensure_sha(self) -> None:
+    def _get_sha(self) -> Optional[str]:
+        with self._sha_lock:
+            return self._sha
+
+    def _store_sha(self, sha_value) -> Optional[str]:
+        if sha_value is None:
+            return None
+        if isinstance(sha_value, bytes):
+            sha_text = sha_value.decode()
+        else:
+            sha_text = str(sha_value)
+        sha_text = sha_text.strip()
+        if not sha_text:
+            raise RedisError("SCRIPT LOAD returned empty SHA")
+        with self._sha_lock:
+            self._sha = sha_text
+        return sha_text
+
+    def _ensure_sha(self) -> str:
+        sha = self._get_sha()
+        if sha:
+            return sha
+        loaded = self._store_sha(self._client.script_load(self._LUA))
+        if not loaded:
+            raise RedisError("SCRIPT LOAD returned empty SHA")
+        return loaded
+
+    @staticmethod
+    def _is_noscript(exc: Exception) -> bool:
+        if isinstance(exc, NoScriptError):
+            return True
         try:
-            if not getattr(self, "_sha", None):
-                self._sha = self._client.script_load(self._LUA)
-        except Exception:
-            self._sha = None
+            return "NOSCRIPT" in str(exc).upper()
+        except Exception:  # pragma: no cover - defensive
+            return False
 
     def _call_script(self, redis_key: str, now: float, rps: float, burst: float, cost: float):
         args = (redis_key, now, float(rps), float(burst), float(cost))
 
+        sha = self._ensure_sha()
         try:
-            self._ensure_sha()
-            if self._sha:
-                return self._client.evalsha(self._sha, 1, *args)
-        except Exception as e:
-            noscript = False
+            return self._client.evalsha(sha, 1, *args)
+        except Exception as exc:
+            if not self._is_noscript(exc):
+                raise
+            _log.warning("NOSCRIPT on ratelimit script; reloading and retrying once.")
             try:
-                from redis.exceptions import NoScriptError
-
-                noscript = isinstance(e, NoScriptError)
-            except Exception:
-                noscript = False
-            if not noscript and "NOSCRIPT" not in str(e).upper():
+                new_sha = self._store_sha(self._client.script_load(self._LUA))
+            except Exception as reload_exc:
+                _log.exception("SCRIPT LOAD failed after NOSCRIPT.", exc_info=reload_exc)
+                raise
+            if not new_sha:
+                err = RedisError("SCRIPT LOAD returned empty SHA")
+                _log.exception("SCRIPT LOAD failed after NOSCRIPT.", exc_info=err)
+                raise err
+            try:
+                result = self._client.evalsha(new_sha, 1, *args)
+            except Exception as retry_exc:
+                _log.exception("EVALSHA failed after reload.", exc_info=retry_exc)
                 raise
             _mrl.inc_script_reload()
-            try:
-                self._sha = self._client.script_load(self._LUA)
-                return self._client.evalsha(self._sha, 1, *args)
-            except Exception:
-                return self._client.eval(self._LUA, 1, *args)
-
-        return self._client.eval(self._LUA, 1, *args)
+            return result
 
     def allow(
         self,
