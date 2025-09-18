@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -42,6 +43,62 @@ def _emit_metrics(counts: Dict[str, int], tenant: str, bot: str, kind: str) -> N
     for rule_id, count in counts.items():
         if count:
             inc_egress_redactions(tenant, bot, kind, n=int(count), rule_id=rule_id)
+
+
+def _emit_decision_hooks(request: Request, counts: Dict[str, int]) -> None:
+    total_replacements = sum(int(value or 0) for value in counts.values())
+    if not total_replacements:
+        return
+
+    tenant_state = getattr(request.state, "tenant", None)
+    bot_state = getattr(request.state, "bot", None)
+
+    try:
+        from app.observability import metrics_decisions as _md
+
+        for rule_id, count in counts.items():
+            if not count:
+                continue
+            for _ in range(int(count or 1)):
+                _md.inc_redact(
+                    rule_id,
+                    tenant=tenant_state,
+                    bot=bot_state,
+                )
+        _md.inc("redact", tenant=tenant_state, bot=bot_state)
+    except Exception:
+        pass
+
+    tenant_value = (
+        tenant_state
+        if tenant_state is not None
+        else request.headers.get(TENANT_HEADER, "unknown")
+    )
+    bot_value = (
+        bot_state
+        if bot_state is not None
+        else request.headers.get(BOT_HEADER, "unknown")
+    )
+
+    try:
+        from app.services import decisions as decisions_store
+
+        redactions = [
+            {"rule_id": rid, "count": int(ct)}
+            for rid, ct in counts.items()
+            if ct
+        ]
+        if not redactions:
+            return
+        decisions_store.record(
+            id=f"redact-{int(time.time() * 1000)}",
+            tenant=str(tenant_value or "unknown"),
+            bot=str(bot_value or "unknown"),
+            outcome="redact",
+            details={"redactions": redactions},
+        )
+    except Exception:
+        pass
 
 
 def _redact_obj(value: Any, counts: Dict[str, int]) -> Any:
@@ -128,6 +185,7 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
                     await _restore_body(response, body)
                     return response
                 _emit_metrics(rule_counts, tenant, bot, kind_label)
+                _emit_decision_hooks(request, rule_counts)
                 return PlainTextResponse(
                     new_text,
                     status_code=response.status_code,
@@ -143,6 +201,7 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
 
             payload = json.dumps(redacted, ensure_ascii=False)
             _emit_metrics(counts, tenant, bot, "application/json")
+            _emit_decision_hooks(request, counts)
             return Response(
                 content=payload,
                 status_code=response.status_code,
@@ -157,6 +216,7 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
             return response
 
         _emit_metrics(rule_counts, tenant, bot, kind_label)
+        _emit_decision_hooks(request, rule_counts)
         return PlainTextResponse(
             new_text,
             status_code=response.status_code,
