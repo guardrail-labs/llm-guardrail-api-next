@@ -19,8 +19,14 @@ def test_replay_requires_csrf(monkeypatch) -> None:
     fake = types.ModuleType("fake_webhooks_replay")
     setattr(fake, "replay_dlq", lambda **_: 0)
     monkeypatch.setitem(sys.modules, "app.services.webhooks", fake)
+    monkeypatch.setenv("ADMIN_CSRF_GUARD", "fake:guard")
+    monkeypatch.setitem(
+        sys.modules,
+        "app.security.admin_auth",
+        types.ModuleType("fake_admin_auth"),
+    )
     app = _app()
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://testserver")
     resp = client.post("/admin/api/webhooks/replay", data={"max_batch": "10"})
     assert resp.status_code in (400, 401, 403)
 
@@ -37,14 +43,26 @@ def test_replay_limits_and_cooldown(monkeypatch) -> None:
     setattr(fake, "replay_dlq", replay_dlq)
     setattr(fake, "dlq_peek", lambda n: [{"id": "y"}])
     monkeypatch.setitem(sys.modules, "app.services.webhooks", fake)
+    monkeypatch.setenv("ADMIN_CSRF_GUARD", "fake:guard")
+    monkeypatch.setitem(
+        sys.modules,
+        "app.security.admin_auth",
+        types.ModuleType("fake_admin_auth"),
+    )
 
     monkeypatch.setenv("WEBHOOK_REPLAY_MAX_BATCH", "100")
     monkeypatch.setenv("WEBHOOK_REPLAY_COOLDOWN_SEC", "2")
 
     app = _app()
-    client = TestClient(app)
-    ok = client.post("/admin/api/webhooks/replay", data={"max_batch": "10", "csrf": "t"})
+    client = TestClient(app, base_url="https://testserver")
+    monkeypatch.setattr("app.routes.admin_webhooks._LAST_REPLAY_AT", 0.0, raising=False)
+    status = client.get("/admin/api/webhooks/status")
+    assert status.status_code == 200
+    token = client.cookies.get("admin_csrf")
+    assert token
+
+    ok = client.post("/admin/api/webhooks/replay", data={"max_batch": "10", "csrf": token})
     assert ok.status_code == 200
-    again = client.post("/admin/api/webhooks/replay", data={"max_batch": "10", "csrf": "t"})
+    again = client.post("/admin/api/webhooks/replay", data={"max_batch": "10", "csrf": token})
     assert again.status_code == 429
     assert calls["n"] == 1
