@@ -86,3 +86,19 @@ def test_reload_succeeds_but_retry_noscript_again_fall_back_to_eval_no_counter_i
     assert remaining == 9.0
     assert bucket._get_sha() == "sha2"
     assert _metric_value() == before
+
+
+def test_reload_succeeds_but_retry_non_noscript_propagates_without_eval_or_counter():
+    client = _make_client()
+    client.script_load.side_effect = ["sha1", "sha2"]
+    client.evalsha.side_effect = [rb.NoScriptError("NOSCRIPT"), rb.RedisError("OOM")]
+
+    bucket = rb.RedisTokenBucket(client, prefix="test:")
+
+    before = _metric_value()
+    redis_key = bucket._key("key")
+    with pytest.raises(rb.RedisError):
+        bucket._call_script(redis_key, now=123.456, rps=5.0, burst=10.0, cost=1.0)
+
+    client.eval.assert_not_called()
+    assert _metric_value() == before

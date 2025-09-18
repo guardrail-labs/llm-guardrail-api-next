@@ -249,31 +249,37 @@ class RedisTokenBucket(RateLimiterBackend):
             if not self._is_noscript(exc):
                 raise
 
-        # 2) NOSCRIPT recovery: reload + retry once
+        # 2) NOSCRIPT recovery: reload
         try:
             new_sha = self._client.script_load(self._LUA)
-            # Persist & cache new SHA for subsequent calls
-            try:
-                self._store_sha(new_sha)
-            except Exception:
-                pass
+        except Exception:
+            # Reload (SCRIPT LOAD) failed → single EVAL fallback; if that fails, let it raise
+            return self._client.eval(self._LUA, 1, *args)
+
+        # Persist & cache for subsequent calls (best-effort store)
+        stored_sha = None
+        try:
+            stored_sha = self._store_sha(new_sha)
+        except Exception:
+            stored_sha = None
+        if stored_sha:
+            new_sha = stored_sha
+        else:
             self._sha = new_sha
 
-            try:
-                result = self._client.evalsha(new_sha, 1, *args)
-                # Count only on successful reload+retry
-                _mrl.inc_script_reload()
-                return result
-            except Exception as retry_exc:
-                # 3) Still failing after reload (e.g., another NOSCRIPT): direct EVAL once
-                if self._is_noscript(retry_exc) or "NOSCRIPT" in str(retry_exc).upper():
-                    return self._client.eval(self._LUA, 1, *args)
-                # Non-NOSCRIPT failure after reload → bubble up
-                raise
+        # 3) Retry with the new SHA
+        try:
+            result = self._client.evalsha(new_sha, 1, *args)
+        except Exception as retry_exc:
+            # Only NOSCRIPT leads to EVAL fallback
+            if self._is_noscript(retry_exc) or "NOSCRIPT" in str(retry_exc).upper():
+                return self._client.eval(self._LUA, 1, *args)
+            # Non-NOSCRIPT failure after reload must propagate (do NOT fall back to EVAL)
+            raise
 
-        except Exception:
-            # 4) Reload failed (SCRIPT LOAD error): direct EVAL once; if that fails, let it raise
-            return self._client.eval(self._LUA, 1, *args)
+        # 4) Successful reload + retry → increment metric and return
+        _mrl.inc_script_reload()
+        return result
 
     def allow(
         self,
