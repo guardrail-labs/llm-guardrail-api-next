@@ -773,6 +773,22 @@ def create_app() -> FastAPI:
         pass
     install_json_logging(app)
 
+    # ---- Ensure only our /metrics is registered and uses v0.0.4 ----
+    try:
+        from starlette.routing import Route
+        app.router.routes = [
+            r for r in app.router.routes
+            if not (isinstance(r, Route) and getattr(r, "path", "") == "/metrics")
+        ]
+    except Exception:
+        pass
+    try:
+        from app.routes.metrics import router as _metrics_router
+        app.include_router(_metrics_router)
+    except Exception:
+        # Keep startup resilient if prometheus_client isn't installed
+        pass
+
     return app
 
 
