@@ -1,130 +1,86 @@
-{% extends "base.html" %}
-{% block title %}Guardrail Admin · Webhooks{% endblock %}
-
-{% block content %}
-<section class="container" style="max-width: 920px; margin: 2rem auto;">
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Webhooks</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  {% if csrf_token %}<meta name="csrf-token" content="{{ csrf_token }}"/>{% endif %}
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; }
+    h1 { margin: 0 0 8px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; }
+    .muted { color: #6b7280; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 6px 8px; font-size: 13px; text-align: left; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
+    .badge { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2ff; color: #3730a3; }
+  </style>
+</head>
+<body>
+  {% include "_admin_nav.html" %}
   <h1>Webhooks</h1>
-  <p class="muted">
-    Configure webhook delivery and run maintenance actions. Changes take effect immediately.
-  </p>
+  <p class="muted">Breaker status &amp; DLQ controls</p>
 
-  <!-- CSRF: double-submit token (cookie + hidden field) -->
-  <form id="webhook-config-form" method="POST" action="/admin/webhook/config" style="margin-top: 1.5rem;">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
-
-    <fieldset class="card" style="padding: 1rem 1.25rem;">
-      <legend style="font-weight:600;">Configuration</legend>
-
-      <div class="grid-2">
-        <label>
-          <span>Enable</span>
-          <select name="webhook_enable">
-            <option value="true"  {% if cfg.webhook_enable %}selected{% endif %}>true</option>
-            <option value="false" {% if not cfg.webhook_enable %}selected{% endif %}>false</option>
-          </select>
-        </label>
-
-        <label>
-          <span>Timeout (ms)</span>
-          <input type="number" name="webhook_timeout_ms" min="100" step="100"
-                 value="{{ cfg.webhook_timeout_ms }}">
-        </label>
-
-        <label>
-          <span>Max Retries</span>
-          <input type="number" name="webhook_max_retries" min="0" step="1"
-                 value="{{ cfg.webhook_max_retries }}">
-        </label>
-
-        <label>
-          <span>Backoff (ms)</span>
-          <input type="number" name="webhook_backoff_ms" min="50" step="50"
-                 value="{{ cfg.webhook_backoff_ms }}">
-        </label>
-
-        <label>
-          <span>Allow Insecure TLS</span>
-          <select name="webhook_allow_insecure_tls">
-            <option value="false" {% if not cfg.webhook_allow_insecure_tls %}selected{% endif %}>false</option>
-            <option value="true"  {% if cfg.webhook_allow_insecure_tls %}selected{% endif %}>true</option>
-          </select>
-        </label>
-
-        <label class="span-2">
-          <span>URL</span>
-          <input type="url" name="webhook_url" placeholder="https://receiver.example.com/hook"
-                 value="{{ cfg.webhook_url or '' }}">
-        </label>
-
-        <label class="span-2">
-          <span>Secret (HMAC-SHA256)</span>
-          <div style="display:flex; gap:.5rem;">
-            <input id="secretField" type="password" name="webhook_secret" autocomplete="new-password"
-                   placeholder="••••••••" value="{{ cfg.webhook_secret or '' }}" style="flex:1;">
-            <button type="button" id="toggleSecret" class="btn secondary">Show</button>
-          </div>
-        </label>
-
-        <label class="span-2">
-          <span>Host Allowlist (comma-separated)</span>
-          <input type="text" name="webhook_allowlist_host" placeholder="receiver.example.com,api.partner.com"
-                 value="{{ cfg.webhook_allowlist_host or '' }}">
-        </label>
-      </div>
-
-      <div style="margin-top: 1rem; display:flex; gap:.75rem;">
-        <button type="submit" class="btn primary">Save Configuration</button>
-      </div>
-    </fieldset>
-  </form>
-
-  <div class="card" style="padding: 1rem 1.25rem; margin-top: 1rem;">
-    <h2 style="margin-top:0;">Maintenance</h2>
-    <div style="display:flex; gap:1rem; flex-wrap:wrap;">
-      <form method="POST" action="/admin/webhook/test">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
-        <button type="submit" class="btn">Send Test Event</button>
-      </form>
-
-      <form method="POST" action="/admin/webhook/replay" style="display:flex; gap:.5rem; align-items:center;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"/>
-        <label><span style="font-size:.9rem;">Limit</span>
-          <input type="number" name="limit" min="1" step="1" value="100" style="width:100px;">
-        </label>
-        <button type="submit" class="btn danger">Replay DLQ</button>
-      </form>
+  <div class="grid">
+    <div class="card">
+      <strong>Breaker</strong>
+      <table id="breaker"><thead><tr><th>Host</th><th>State</th><th>Failures</th><th>Opened</th></tr></thead><tbody></tbody></table>
     </div>
-    <p class="muted" style="margin:.5rem 0 0;">
-      Use DLQ replay after fixing the receiver. Replays are lock-synchronized to avoid races.
-    </p>
+
+    <div class="card">
+      <strong>DLQ</strong>
+      <div>Length: <code id="dlq_len">?</code></div>
+      <details style="margin-top:6px;">
+        <summary>Peek</summary>
+        <pre id="dlq_peek" style="white-space:pre-wrap;background:#0b1020;color:#e5e7eb;padding:8px;border-radius:8px;max-height:240px;overflow:auto;"></pre>
+      </details>
+    </div>
+
+    <div class="card">
+      <strong>Replay</strong>
+      <form id="replay" method="post" action="/admin/api/webhooks/replay">
+        <label>Max batch <input type="number" name="max_batch" min="1" value="100"/></label><br/>
+        <label>Since seconds <input type="number" name="since_seconds" min="0" placeholder="e.g. 3600"/></label><br/>
+        <label><input type="checkbox" name="dry_run" value="true"/> Dry run</label><br/>
+        <input type="hidden" name="csrf" id="csrf" />
+        <button class="badge" type="submit">Replay</button>
+      </form>
+      <div class="muted" id="replay_msg"></div>
+    </div>
   </div>
-</section>
 
-<style>
-  .grid-2 { display:grid; grid-template-columns: repeat(2, 1fr); gap: .75rem; }
-  .span-2 { grid-column: 1 / span 2; }
-  .btn { padding:.5rem .85rem; border-radius:.5rem; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; }
-  .btn.primary { background:#2563eb; border-color:#2563eb; color:white; }
-  .btn.secondary { background:#e5e7eb; }
-  .btn.danger { background:#ef4444; border-color:#ef4444; color:white; }
-  .card { border:1px solid #e5e7eb; border-radius:.75rem; background:white; }
-  .container .muted { color:#666; }
-  label span { display:block; font-size:.9rem; color:#555; margin-bottom:.25rem; }
-  input, select { width:100%; padding:.45rem .6rem; border:1px solid #d1d5db; border-radius:.5rem; }
-</style>
+  <script>
+    async function load() {
+      const r = await fetch("/admin/api/webhooks/status?peek=5", {credentials:"same-origin"});
+      const data = await r.json();
 
-<script>
-  // Secret show/hide
-  (function () {
-    const btn = document.getElementById('toggleSecret');
-    const fld = document.getElementById('secretField');
-    if (btn && fld) {
-      btn.addEventListener('click', () => {
-        const show = fld.type === 'password';
-        fld.type = show ? 'text' : 'password';
-        btn.textContent = show ? 'Hide' : 'Show';
-      });
+      document.getElementById("dlq_len").textContent = data.dlq.length ?? "n/a";
+      const tbody = document.querySelector("#breaker tbody");
+      tbody.innerHTML = "";
+      for (const [host, info] of Object.entries(data.breaker || {})) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${host}</td><td>${info.state || "?"}</td><td>${info.failures || 0}</td><td>${info.opened_at || ""}</td>`;
+        tbody.appendChild(tr);
+      }
+      document.getElementById("dlq_peek").textContent = JSON.stringify(data.dlq.peek || [], null, 2);
     }
-  })();
-</script>
-{% endblock %}
+
+    // CSRF token hook: if your app sets a meta tag, pick it up; else leave blank and server fallback will enforce.
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) document.getElementById("csrf").value = meta.getAttribute("content");
+
+    document.getElementById("replay").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      if (!confirm("Are you sure you want to replay DLQ with these parameters?")) return;
+      const r = await fetch(e.target.action, {method:"POST", body: fd, credentials:"same-origin"});
+      const txt = await r.text();
+      document.getElementById("replay_msg").textContent = `${r.status}: ${txt}`;
+      load();
+    });
+
+    load();
+  </script>
+</body>
+</html>
