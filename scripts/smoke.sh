@@ -22,13 +22,23 @@ curl -fsS -X PUT -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json
 }' >/dev/null
 echo "ok"
 
-echo "== reload =="
-curl -fsS -X POST -H "X-Admin-Key: $ADMIN_KEY" "$BASE/admin/api/policy/reload" | jq -e '.status=="ok"' >/dev/null
+echo "== reload (CSRF) =="
+CSRF="$(openssl rand -hex 16 2>/dev/null || uuidgen 2>/dev/null || date +%s)"
+curl -fsS -X POST \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: csrf=$CSRF" \
+  -H "X-CSRF-Token: $CSRF" \
+  -d "{\"csrf_token\":\"$CSRF\"}" \
+  "$BASE/admin/api/policy/reload" | jq -e '.status=="ok"' >/dev/null
 echo "ok"
 
-echo "== egress demo =="
-OUT="$(curl -fsS -H 'X-Tenant-Id: demo' -H 'X-Bot-Id: site' \
-  "$BASE/echo" -d 'Email a.b+z@example.co.uk JWT eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxx.yyy')"
+echo "== egress redaction demo via /admin/echo =="
+DEMO='Email a.b+z@example.co.uk JWT eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxx.yyy'
+OUT="$(curl -fsS -G \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  --data-urlencode "text=$DEMO" \
+  "$BASE/admin/echo")"
 echo "$OUT" | grep -qi "example.co.uk" && { echo "expected redaction, saw plaintext"; exit 1; }
 echo "ok"
 

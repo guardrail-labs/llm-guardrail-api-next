@@ -702,6 +702,7 @@ def create_app() -> FastAPI:
             admin_config,
             admin_config_history,
             admin_decisions,
+            admin_echo,
             admin_policies,
             admin_rulepacks,
             admin_ui,
@@ -719,6 +720,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_webhook.router)
         app.include_router(admin_webhook_replay.router)
         app.include_router(admin_webhooks.router)
+        app.include_router(admin_echo.router)
     except Exception:
         pass
 

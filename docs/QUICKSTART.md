@@ -44,15 +44,24 @@ curl -sS -X PUT -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json"
 
 ## 5) Validate & reload policy
 ```bash
-curl -sS -X POST -H "X-Admin-Key: $ADMIN_KEY" localhost:8080/admin/api/policy/reload | jq .
+CSRF=$(openssl rand -hex 16 2>/dev/null || uuidgen 2>/dev/null || date +%s)
+curl -sS -X POST \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: csrf=$CSRF" \
+  -H "X-CSRF-Token: $CSRF" \
+  -d "{\"csrf_token\":\"$CSRF\"}" \
+  localhost:8080/admin/api/policy/reload | jq .
 ```
 
 ## 6) Prove redaction end-to-end
 
-Send a response through egress with demo content (replace with your endpoint if different):
+Send demo content through the admin echo endpoint (redaction middleware applies to its response):
 ```bash
-curl -sS -H 'X-Tenant-Id: demo' -H 'X-Bot-Id: site' \
-  localhost:8080/echo -d 'Email a.b+z@example.co.uk, JWT eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxx.yyy'
+curl -sS -G \
+  -H "X-Admin-Key: $ADMIN_KEY" \
+  --data-urlencode "text=Email a.b+z@example.co.uk, JWT eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxx.yyy" \
+  localhost:8080/admin/echo
 ```
 
 Expected: email/JWT are redacted and response contains `X-Redaction-Mode: windowed` (or skip headers if streaming).
