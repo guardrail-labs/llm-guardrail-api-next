@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -10,29 +11,60 @@ router = APIRouter()
 
 
 def _load_require_admin():
+    """
+    Try known modules for a shared admin guard.
+    """
     for mod_name, fn_name in (
         ("app.routes.admin_rbac", "require_admin"),
         ("app.security.admin_auth", "require_admin"),
         ("app.routes.admin_common", "require_admin"),
+        ("app.security.admin", "require_admin"),
+        ("app.security.auth", "require_admin"),
     ):
         try:
             mod = importlib.import_module(mod_name)
             fn = getattr(mod, fn_name, None)
             if callable(fn):
                 return fn
-        except Exception:  # pragma: no cover - best effort fallback
+        except Exception:
             continue
     return None
 
 
+def _settings_admin_key(request: Request) -> Optional[str]:
+    """
+    Best-effort read of the settings-based admin key used by other admin routes.
+    """
+    try:
+        settings = getattr(request.app.state, "settings", None)
+        admin = getattr(settings, "admin", None)
+        key = getattr(admin, "key", None)
+        if key:
+            return str(key)
+    except Exception:
+        pass
+    return None
+
+
 def _require_admin_dep(request: Request):
+    """
+    Enforce admin auth for policy validation:
+    - Prefer project-wide require_admin() if present.
+    - Else require X-Admin-Key matching settings.admin.key or env ADMIN_API_KEY/GUARDRAIL_ADMIN_KEY.
+    """
     guard = _load_require_admin()
     if callable(guard):
         guard(request)
         return
-    key = os.getenv("ADMIN_API_KEY") or os.getenv("GUARDRAIL_ADMIN_KEY")
-    if key and (request.headers.get("X-Admin-Key") != key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+    cfg_key = _settings_admin_key(request)
+    env_key = os.getenv("ADMIN_API_KEY") or os.getenv("GUARDRAIL_ADMIN_KEY")
+    required = cfg_key or env_key
+    if required:
+        supplied = request.headers.get("X-Admin-Key")
+        if str(supplied) != str(required):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    # If no key configured anywhere, allow (matches legacy behavior).  # noqa: E265
 
 
 @router.post("/admin/api/policy/validate", dependencies=[Depends(_require_admin_dep)])
