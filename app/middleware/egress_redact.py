@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Dict
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, Response, StreamingResponse
+from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp
 
 from app.observability.metrics import inc_egress_redactions
 from app.services.egress import redact_text
 from app.shared.headers import BOT_HEADER, TENANT_HEADER
-
-STREAM_LIKE_CT = ("text/event-stream",)
 
 
 def _redact_enabled(request: Request) -> bool:
@@ -137,14 +136,23 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
         if not any(token in content_type for token in ("text", "json", "html")):
             return response
 
-        transfer_encoding = (response.headers.get("transfer-encoding") or "").lower()
+        try:
+            from starlette.responses import StreamingResponse as _StreamingResponse
 
-        # Preserve streaming semantics by skipping known streaming types/content
-        if (
-            isinstance(response, StreamingResponse)
-            or any(token in content_type for token in STREAM_LIKE_CT)
-            or "chunked" in transfer_encoding
-        ):
+            is_streaming = isinstance(response, _StreamingResponse) or (
+                "text/event-stream" in content_type
+            )
+        except Exception:
+            is_streaming = "text/event-stream" in content_type
+
+        if is_streaming:
+            response.headers.setdefault("X-Redaction-Skipped", "streaming")
+            try:
+                from app.observability import metrics_redaction as _metrics_redaction
+
+                _metrics_redaction.inc_skipped("streaming")
+            except Exception:
+                pass
             return response
 
         content_length_raw = response.headers.get("content-length")
@@ -157,11 +165,45 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
 
         kind_label = content_type.split(";", 1)[0] or "text/plain"
 
+        max_bytes = int(os.getenv("EGRESS_REDACT_MAX_BYTES", str(1024 * 1024)))
         body_chunks: list[bytes] = []
         body_iterator = getattr(response, "body_iterator", None)
         if body_iterator is not None:
+            total = 0
             async for chunk in body_iterator:
-                body_chunks.append(bytes(chunk))
+                b = bytes(chunk)
+                body_chunks.append(b)
+                total += len(b)
+                if total > max_bytes:
+                    response.headers.setdefault("X-Redaction-Skipped", "oversize")
+                    try:
+                        from app.observability import metrics_redaction as _metrics_redaction
+
+                        _metrics_redaction.inc_skipped("oversize")
+                    except Exception:
+                        pass
+
+                    async def _gen(
+                        prefix: list[bytes], rest: AsyncIterator[bytes]
+                    ) -> AsyncIterator[bytes]:
+                        for p in prefix:
+                            yield p
+                        async for ch in rest:
+                            yield ch
+
+                    from starlette.responses import StreamingResponse as _StreamingResponse
+
+                    passthrough = _gen(body_chunks[:], body_iterator)
+                    media_type = content_type.split(";", 1)[0]
+                    new_resp = _StreamingResponse(
+                        passthrough,
+                        status_code=response.status_code,
+                        media_type=media_type,
+                        background=response.background,
+                    )
+                    for key, value in response.headers.items():
+                        new_resp.headers.setdefault(key, value)
+                    return new_resp
         body = b"".join(body_chunks)
         try:
             charset = response.charset or "utf-8"
