@@ -5,6 +5,8 @@ import threading
 import time
 from typing import Callable, Dict, Optional, Tuple
 
+from app.observability import metrics_ratelimit as _mrl
+
 
 class RateLimiterBackend:
     """Interface for rate limit backends."""
@@ -203,6 +205,7 @@ class RedisTokenBucket(RateLimiterBackend):
                 noscript = False
             if not noscript and "NOSCRIPT" not in str(e).upper():
                 raise
+            _mrl.inc_script_reload()
             try:
                 self._sha = self._client.script_load(self._LUA)
                 return self._client.evalsha(self._sha, 1, *args)
@@ -227,13 +230,17 @@ class RedisTokenBucket(RateLimiterBackend):
             retry_after = float(result[1])
             remaining = float(result[2])
             return allowed, retry_after, remaining
-        except Exception:
+        except Exception as e:
+            kind = type(e).__name__ if isinstance(e, Exception) else "other"
+            _mrl.inc_error(kind)
+            _mrl.inc_fallback("redis_error")
             return self._fallback.allow(key, cost=cost, rps=rps, burst=burst)
 
 
 def build_backend() -> RateLimiterBackend:
     backend = (os.getenv("RATE_LIMIT_BACKEND") or "local").strip().lower()
     if backend != "redis":
+        _mrl.set_backend_in_use("local")
         return LocalTokenBucket()
 
     url = os.getenv("RATE_LIMIT_REDIS_URL", "redis://localhost:6379/0")
@@ -248,7 +255,10 @@ def build_backend() -> RateLimiterBackend:
         import redis
 
         client = redis.Redis.from_url(url, socket_timeout=timeout_ms / 1000.0)
-        return RedisTokenBucket(client, prefix=prefix, timeout_ms=timeout_ms)
+        backend_obj = RedisTokenBucket(client, prefix=prefix, timeout_ms=timeout_ms)
+        _mrl.set_backend_in_use("redis")
+        return backend_obj
     except Exception:
+        _mrl.set_backend_in_use("local")
         return LocalTokenBucket()
 
