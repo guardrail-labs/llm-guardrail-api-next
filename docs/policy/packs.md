@@ -16,3 +16,17 @@ will be loaded.
 3. Verify via `/admin/api/decisions` and your Grafana redaction panels.
 
 > These packs are conservative by default. Tune patterns for your data and risk profile.
+
+### Secrets Redact (`policy/packs/secrets_redact.yaml`)
+Covers (conservative patterns):
+- GitHub PATs (`secret.github_pat_*`), GitLab (`secret.gitlab_pat`)
+- Slack tokens & webhooks (`secret.slack_token`, `secret.slack_webhook`)
+- Discord webhooks (`secret.discord_webhook`)
+- Stripe secret keys (`secret.stripe_key`)
+- Twilio SID/Auth Token (`secret.twilio_sid`, `secret.twilio_auth_token`)
+- Google API Key (`secret.google_api_key`)
+- GCP private key block (`secret.gcp_private_key_block`)
+- AWS Access Key IDs + contextual Secret Access Key
+- Generic `token_/api_/key_/secret_` fallbacks
+
+> Patterns are scoped with boundaries/lengths or context words to reduce false positives. Tune as needed for your data.
