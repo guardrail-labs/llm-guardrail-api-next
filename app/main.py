@@ -1,6 +1,7 @@
 # app/main.py
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib
 import json
@@ -187,6 +188,21 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
                     if "Origin" not in [v.strip() for v in vary.split(",") if v]:
                         resp.headers["Vary"] = f"{vary}, Origin" if vary else "Origin"
         return resp
+
+
+async def _prune_loop() -> None:
+    await asyncio.sleep(10)
+    try:
+        from app.services import decisions as decisions_store
+
+        while True:
+            try:
+                decisions_store.prune()
+            except Exception:
+                pass
+            await asyncio.sleep(24 * 60 * 60)
+    except Exception:
+        return
 
 
 def _include_all_route_modules(app: FastAPI) -> int:
@@ -563,6 +579,12 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="llm-guardrail-api", lifespan=lifespan)
     try:
+        from app.services import decisions as decisions_store
+
+        decisions_store.ensure_ready()
+    except Exception:
+        pass
+    try:
         from app.routes.health import router as health_router
 
         app.include_router(health_router)
@@ -701,6 +723,13 @@ def create_app() -> FastAPI:
     except Exception:
         pass
     install_json_logging(app)
+
+    @app.on_event("startup")
+    async def _start_prune() -> None:
+        try:
+            asyncio.create_task(_prune_loop())
+        except Exception:
+            pass
 
     return app
 

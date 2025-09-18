@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from typing import Tuple
 
@@ -96,6 +97,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "mode": "Tier1",
                 "incident_id": payload.get("incident_id") or f"rl-{tenant}-{bot}",
             }
+        except Exception:
+            pass
+        try:
+            from app.services import decisions as decisions_store
+
+            raw_incident = payload.get("incident_id")
+            incident = (
+                raw_incident
+                if isinstance(raw_incident, str) and raw_incident
+                else f"rl-{tenant}-{bot}"
+            )
+            decisions_store.record(
+                id=f"{incident}-{int(time.time() * 1000)}",
+                tenant=tenant,
+                bot=bot,
+                outcome="block_input_only",
+                policy_version=None,
+                rule_id=None,
+                incident_id=incident,
+                mode="Tier1",
+                details={
+                    "reason": "rate_limit",
+                    "path": path,
+                    "shadow_action": None,
+                    "shadow_rule_ids": [],
+                },
+            )
         except Exception:
             pass
         return JSONResponse(
