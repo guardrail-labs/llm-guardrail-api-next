@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import importlib
+import inspect
 import io
 import json
 import os
@@ -26,6 +27,119 @@ SORT_KEYS: Tuple[SortKey, ...] = (
 )
 ProviderResult = Tuple[List[Dict[str, Any]], Optional[int]]
 DecisionProvider = Callable[..., ProviderResult]
+
+
+def _normalize_provider_result(result: Any) -> ProviderResult:
+    if isinstance(result, tuple) and len(result) == 2:
+        items_raw, total_raw = result
+        items_list = list(cast(Iterable[Dict[str, Any]], items_raw))
+        total_norm = cast(Optional[int], total_raw)
+        return items_list, total_norm
+    items_iter = list(cast(Iterable[Dict[str, Any]], result))
+    return items_iter, None
+
+
+def _call_decisions_provider(
+    fn: Callable[..., Any],
+    *,
+    since: Optional[datetime],
+    tenant: Optional[str],
+    bot: Optional[str],
+    outcome: Optional[str],
+    page: int,
+    page_size: int,
+    sort_key: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+) -> ProviderResult:
+    base: Dict[str, Any] = dict(since=since, tenant=tenant, bot=bot, outcome=outcome)
+    if sort_key is not None:
+        base["sort_key"] = sort_key
+    if sort_dir is not None:
+        base["sort_dir"] = sort_dir
+
+    try:
+        sig = inspect.signature(fn)
+        params = sig.parameters
+        if all(param in params for param in ("page", "page_size")):
+            return _normalize_provider_result(
+                fn(page=page, page_size=page_size, **base)
+            )
+    except Exception:
+        pass
+
+    try:
+        return _normalize_provider_result(fn(page=page, page_size=page_size, **base))
+    except TypeError:
+        limit = page_size
+        offset = max((page - 1) * page_size, 0)
+        try:
+            return _normalize_provider_result(
+                fn(limit=limit, offset=offset, **base)
+            )
+        except TypeError:
+            try:
+                return _normalize_provider_result(
+                    fn(
+                        since,
+                        tenant,
+                        bot,
+                        outcome,
+                        limit,
+                        offset,
+                        base.get("sort_key"),
+                        base.get("sort_dir"),
+                    )
+                )
+            except TypeError:
+                return _normalize_provider_result(
+                    fn(since, tenant, bot, outcome, limit, offset)
+                )
+
+
+def _wrap_decisions_provider(*functions: Callable[..., Any]) -> DecisionProvider:
+    candidates = [*functions]
+    if not candidates:
+        raise ValueError("at least one provider function is required")
+
+    def provider(
+        since: Optional[datetime],
+        tenant: Optional[str],
+        bot: Optional[str],
+        outcome: Optional[str],
+        limit: int,
+        offset: int,
+        sort_key: SortKey = "ts",
+        sort_dir: SortDir = "desc",
+        _candidates=candidates,
+    ) -> ProviderResult:
+        page_size = max(int(limit) if limit is not None else 0, 0) or 1
+        page = max(int(offset) // page_size + 1, 1)
+        last_exc: Optional[TypeError] = None
+        for idx, underlying in enumerate(list(_candidates)):
+            try:
+                result = _call_decisions_provider(
+                    underlying,
+                    since=since,
+                    tenant=tenant,
+                    bot=bot,
+                    outcome=outcome,
+                    page=page,
+                    page_size=page_size,
+                    sort_key=sort_key,
+                    sort_dir=sort_dir,
+                )
+            except TypeError as exc:
+                last_exc = exc
+                continue
+            else:
+                if idx != 0:
+                    _candidates.insert(0, _candidates.pop(idx))
+                return result
+        if last_exc is not None:
+            raise last_exc
+        raise TypeError("no compatible decisions provider")
+
+    return provider
 
 
 def _load_require_admin():
@@ -135,7 +249,7 @@ _provider: Optional[DecisionProvider] = None
 
 def set_decision_provider(fn: DecisionProvider) -> None:
     global _provider
-    _provider = fn
+    _provider = _wrap_decisions_provider(fn)
 
 
 def _auto_detect_provider() -> Optional[DecisionProvider]:
@@ -146,58 +260,19 @@ def _auto_detect_provider() -> Optional[DecisionProvider]:
     ):
         try:
             mod = __import__(mod_name, fromlist=["*"])
-            for fn_name in ("list_decisions", "query", "list", "search"):
-                fn = getattr(mod, fn_name, None)
-                if callable(fn):
-                    def provider(
-                        since: Optional[datetime],
-                        tenant: Optional[str],
-                        bot: Optional[str],
-                        outcome: Optional[str],
-                        limit: int,
-                        offset: int,
-                        sort_key: SortKey = "ts",
-                        sort_dir: SortDir = "desc",
-                        _fn=fn,
-                    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-                        try:
-                            res = _fn(
-                                since=since,
-                                tenant=tenant,
-                                bot=bot,
-                                outcome=outcome,
-                                limit=limit,
-                                offset=offset,
-                                sort_key=sort_key,
-                                sort_dir=sort_dir,
-                            )
-                        except TypeError:
-                            try:
-                                res = _fn(
-                                    since,
-                                    tenant,
-                                    bot,
-                                    outcome,
-                                    limit,
-                                    offset,
-                                    sort_key,
-                                    sort_dir,
-                                )
-                            except TypeError:
-                                res = _fn(
-                                    since,
-                                    tenant,
-                                    bot,
-                                    outcome,
-                                    limit,
-                                    offset,
-                                )
-                        if isinstance(res, tuple) and len(res) == 2:
-                            return cast(Tuple[List[Dict[str, Any]], Optional[int]], res)
-                        items = list(cast(Iterable[Dict[str, Any]], res))
-                        return items, None
-
-                    return provider
+            functions = [
+                getattr(mod, fn_name, None)
+                for fn_name in (
+                    "list_decisions",
+                    "query_decisions",
+                    "query",
+                    "list",
+                    "search",
+                )
+            ]
+            callables = [fn for fn in functions if callable(fn)]
+            if callables:
+                return _wrap_decisions_provider(*callables)
         except Exception:
             continue
     return None
@@ -310,7 +385,23 @@ async def get_decisions(
                 sort_dir_safe,
             )
         except TypeError:
-            items_raw, total = prov(since_dt, tenant, bot, outcome, page_size, offset)
+            try:
+                items_raw, total = prov(
+                    since_dt,
+                    tenant,
+                    bot,
+                    outcome,
+                    page_size,
+                    offset,
+                )
+            except TypeError as final_exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="decisions provider error",
+                ) from final_exc
+        else:
+            # If positional call succeeded after keyword failure, keep result.
+            pass
     items = [_norm_item(x) for x in items_raw]
     if total is not None:
         has_more = (offset + len(items)) < total
