@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib
 import io
 import json
 from datetime import datetime, timezone
@@ -10,7 +11,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
 try:  # pragma: no cover - fallback handled in tests via monkeypatch
-    from app.routes.admin_decisions_api import _get_provider, _require_admin_dep
+    deps = importlib.import_module("app.routes.admin_decisions_api")
+    _get_provider = deps._get_provider
+    _require_admin_dep = deps._require_admin_dep
 except Exception as exc:  # pragma: no cover - import error reported when endpoint hit
     raise ImportError("admin decisions dependencies unavailable") from exc
 
@@ -53,18 +56,30 @@ def _iter_rows(
             break
 
 
-def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    norm = dict(row)
-    ts_value = norm.get("ts")
-    if isinstance(ts_value, datetime):
-        norm["ts"] = ts_value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    details = norm.get("details")
-    if details is not None and not isinstance(details, str):
-        norm["details"] = json.dumps(details, ensure_ascii=False, separators=(",", ":"))
-    return norm
+def _normalize_row(row: Dict[str, Any], *, dump_details: bool) -> Dict[str, Any]:
+    out = dict(row)
+
+    ts = out.get("ts")
+    if isinstance(ts, datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        out["ts"] = ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    details = out.get("details", None)
+    if dump_details:
+        if details is not None and not isinstance(details, str):
+            out["details"] = json.dumps(details, ensure_ascii=False, separators=(",", ":"))
+    else:
+        if isinstance(details, str):
+            try:
+                out["details"] = json.loads(details)
+            except Exception:
+                pass
+
+    return out
 
 
-def _csv_stream(rows: Iterable[Dict[str, Any]]) -> Iterator[bytes]:
+def _csv_stream(rows: Iterable[Dict[str, Any]]) -> Iterable[bytes]:
     header = [
         "id",
         "ts",
@@ -84,7 +99,7 @@ def _csv_stream(rows: Iterable[Dict[str, Any]]) -> Iterator[bytes]:
     buffer.seek(0)
     buffer.truncate(0)
     for row in rows:
-        writer.writerow(_normalize_row(row))
+        writer.writerow(_normalize_row(row, dump_details=True))
         yield buffer.getvalue().encode("utf-8")
         buffer.seek(0)
         buffer.truncate(0)
@@ -93,7 +108,11 @@ def _csv_stream(rows: Iterable[Dict[str, Any]]) -> Iterator[bytes]:
 def _ndjson_stream(rows: Iterable[Dict[str, Any]]) -> Iterator[bytes]:
     for row in rows:
         yield (
-            json.dumps(_normalize_row(row), ensure_ascii=False, separators=(",", ":"))
+            json.dumps(
+                _normalize_row(row, dump_details=False),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
             + "\n"
         ).encode("utf-8")
 
