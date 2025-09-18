@@ -240,28 +240,40 @@ class RedisTokenBucket(RateLimiterBackend):
         args = (redis_key, now, float(rps), float(burst), float(cost))
 
         sha = self._ensure_sha()
+
+        # 1) Try cached SHA fast path
         try:
             return self._client.evalsha(sha, 1, *args)
         except Exception as exc:
+            # Non-NOSCRIPT errors should bubble out immediately
             if not self._is_noscript(exc):
                 raise
-            _log.warning("NOSCRIPT on ratelimit script; reloading and retrying once.")
+
+        # 2) NOSCRIPT recovery: reload + retry once
+        try:
+            new_sha = self._client.script_load(self._LUA)
+            # Persist & cache new SHA for subsequent calls
             try:
-                new_sha = self._store_sha(self._client.script_load(self._LUA))
-            except Exception as reload_exc:
-                _log.exception("SCRIPT LOAD failed after NOSCRIPT.", exc_info=reload_exc)
-                raise
-            if not new_sha:
-                err = RedisError("SCRIPT LOAD returned empty SHA")
-                _log.exception("SCRIPT LOAD failed after NOSCRIPT.", exc_info=err)
-                raise err
+                self._store_sha(new_sha)
+            except Exception:
+                pass
+            self._sha = new_sha
+
             try:
                 result = self._client.evalsha(new_sha, 1, *args)
+                # Count only on successful reload+retry
+                _mrl.inc_script_reload()
+                return result
             except Exception as retry_exc:
-                _log.exception("EVALSHA failed after reload.", exc_info=retry_exc)
+                # 3) Still failing after reload (e.g., another NOSCRIPT): direct EVAL once
+                if self._is_noscript(retry_exc) or "NOSCRIPT" in str(retry_exc).upper():
+                    return self._client.eval(self._LUA, 1, *args)
+                # Non-NOSCRIPT failure after reload → bubble up
                 raise
-            _mrl.inc_script_reload()
-            return result
+
+        except Exception:
+            # 4) Reload failed (SCRIPT LOAD error): direct EVAL once; if that fails, let it raise
+            return self._client.eval(self._LUA, 1, *args)
 
     def allow(
         self,
