@@ -15,6 +15,12 @@ def _mode() -> str:
     return "block" if val == "block" else "warn"
 
 
+def enforcement_mode() -> str:
+    """Expose the current enforcement mode."""
+
+    return _mode()
+
+
 def validate_text_for_reload(yaml_text: str) -> Tuple[bool, Dict[str, Any]]:
     """Validate ``yaml_text`` and decide whether to allow applying the policy."""
 
@@ -26,4 +32,4 @@ def validate_text_for_reload(yaml_text: str) -> Tuple[bool, Dict[str, Any]]:
     return allow, enriched
 
 
-__all__ = ["validate_text_for_reload"]
+__all__ = ["enforcement_mode", "validate_text_for_reload"]
