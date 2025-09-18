@@ -560,11 +560,31 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # Initialize decisions store and start prune loop under lifespan
+    try:
+        from app.services import decisions as decisions_store
+        decisions_store.ensure_ready()
+    except Exception:
+        pass
+
+    prune_task: Optional[asyncio.Task] = None
+    try:
+        prune_task = asyncio.create_task(_prune_loop())
+    except Exception:
+        prune_task = None
+
     await sysmod._startup_readiness()
     try:
         yield
     finally:
         await sysmod._shutdown_readiness()
+        # Stop prune loop gracefully
+        if prune_task:
+            try:
+                prune_task.cancel()
+                await prune_task
+            except Exception:
+                pass
         # Clean shutdown for tracer/exporter if present.
         try:
             from opentelemetry import trace as _trace
@@ -724,12 +744,7 @@ def create_app() -> FastAPI:
         pass
     install_json_logging(app)
 
-    @app.on_event("startup")
-    async def _start_prune() -> None:
-        try:
-            asyncio.create_task(_prune_loop())
-        except Exception:
-            pass
+    # NOTE: startup event hook intentionally removed; custom lifespan handles prune loop.
 
     return app
 
@@ -761,9 +776,6 @@ cors_fb_mod.install_cors_fallback(app)
 
 csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
-
-comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
-comp_mod.install_compression(app)
 
 try:
     from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
