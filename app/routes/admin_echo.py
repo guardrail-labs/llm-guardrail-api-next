@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import os
 from typing import Awaitable, Callable, Optional, cast
 
@@ -114,14 +115,15 @@ def _load_require_admin(request: Request) -> Optional[GuardCallable]:
 
 
 async def _maybe_call_guard(guard: GuardCallable, request: Request) -> None:
-    """Call sync or async guards uniformly; propagate any HTTPException they raise."""
+    """
+    Call the guard exactly once; if the return value is awaitable, await it.
+    This supports plain async defs, decorated/partial callables, and objects with async __call__.
+    """
 
-    if asyncio.iscoroutinefunction(guard):
-        async_guard = cast(Callable[[Request], Awaitable[object]], guard)
-        await async_guard(request)
-    else:
-        sync_guard = cast(Callable[[Request], object], guard)
-        sync_guard(request)
+    result = guard(request)
+    if inspect.isawaitable(result):
+        await cast(Awaitable[object], result)
+    # If not awaitable, the guard has already run synchronously.
 
 
 def _require_admin_dep(request: Request) -> None:
@@ -133,15 +135,9 @@ def _require_admin_dep(request: Request) -> None:
 
     guard = _load_require_admin(request)
     if callable(guard):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = None
-        if loop and loop.is_running():
-            fut = asyncio.run_coroutine_threadsafe(_maybe_call_guard(guard, request), loop)
-            fut.result()
-        else:
-            asyncio.run(_maybe_call_guard(guard, request))  # safe even if guard is sync
+        # This dependency runs in FastAPI's threadpool (no event loop),
+        # so we can safely drive async guards with asyncio.run.
+        asyncio.run(_maybe_call_guard(guard, request))
         return
 
     # Fallback: header key from ENV first, then settings (align with other admin routes)
