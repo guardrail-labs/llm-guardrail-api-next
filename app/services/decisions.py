@@ -118,6 +118,18 @@ def _to_item(row: Any) -> Dict[str, Any]:
     }
 
 
+# Map API sort keys to SQLAlchemy columns
+_SORT_MAP = {
+    "ts": decisions.c.ts,
+    "tenant": decisions.c.tenant,
+    "bot": decisions.c.bot,
+    "outcome": decisions.c.outcome,
+    "policy_version": decisions.c.policy_version,
+    "rule_id": decisions.c.rule_id,
+    "incident_id": decisions.c.incident_id,
+}
+
+
 # -----------------------------------------------------------------------------
 # Public API (auto-detected by admin_decisions_api)
 # -----------------------------------------------------------------------------
@@ -128,9 +140,11 @@ def query(
     outcome: Optional[str],
     limit: int,
     offset: int,
+    sort_key: str = "ts",
+    sort_dir: str = "desc",
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     """
-    Return (items, total). Sorted by ts DESC.
+    Return (items, total). Server-side sorting with whitelist.
     Compatible with the provider signature expected by admin_decisions_api.
     """
     eng = _get_engine()
@@ -148,7 +162,11 @@ def query(
     base_select = select(decisions)
     if where_clauses:
         base_select = base_select.where(and_(*where_clauses))
-    stmt = base_select.order_by(decisions.c.ts.desc()).offset(offset).limit(limit)
+    sort_col = _SORT_MAP.get(str(sort_key or "").lower(), decisions.c.ts)
+    sort_dir_norm = str(sort_dir or "desc").lower()
+    primary_order = sort_col.asc() if sort_dir_norm == "asc" else sort_col.desc()
+    order_by = [primary_order, decisions.c.id.asc()]
+    stmt = base_select.order_by(*order_by).offset(offset).limit(limit)
 
     total_stmt = select(func.count()).select_from(decisions)
     if where_clauses:
@@ -159,6 +177,30 @@ def query(
         total = cx.execute(total_stmt).scalar_one()
 
     return [_to_item(r) for r in rows], int(total)
+
+
+def list_decisions(
+    *,
+    since: Optional[datetime] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    outcome: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    sort_key: str = "ts",
+    sort_dir: str = "desc",
+) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    offset = max(page - 1, 0) * page_size
+    return query(
+        since=since,
+        tenant=tenant,
+        bot=bot,
+        outcome=outcome,
+        limit=page_size,
+        offset=offset,
+        sort_key=sort_key,
+        sort_dir=sort_dir,
+    )
 
 
 def record(
@@ -208,4 +250,15 @@ def ensure_ready() -> None:
     """
     Initialize the engine/tables on startup if autocreate is enabled.
     """
-    _get_engine()
+    eng = _get_engine()
+    stmts = (
+        "CREATE INDEX IF NOT EXISTS decisions_ts_idx ON decisions(ts)",
+        "CREATE INDEX IF NOT EXISTS decisions_tenant_bot_idx ON decisions(tenant, bot)",
+        "CREATE INDEX IF NOT EXISTS decisions_outcome_idx ON decisions(outcome)",
+    )
+    with eng.begin() as conn:
+        for raw in stmts:
+            try:
+                conn.execute(text(raw))
+            except Exception:
+                continue
