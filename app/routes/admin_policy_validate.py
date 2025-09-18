@@ -4,7 +4,7 @@ import importlib
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Request, Body, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
@@ -50,21 +50,21 @@ def _require_admin_dep(request: Request):
     """
     Enforce admin auth for policy validation:
     - Prefer project-wide require_admin() if present.
-    - Else require X-Admin-Key matching settings.admin.key or env ADMIN_API_KEY/GUARDRAIL_ADMIN_KEY.
+    - Else require X-Admin-Key matching ENV first, then settings.admin.key (env has priority).
     """
     guard = _load_require_admin()
     if callable(guard):
         guard(request)
         return
 
-    cfg_key = _settings_admin_key(request)
     env_key = os.getenv("ADMIN_API_KEY") or os.getenv("GUARDRAIL_ADMIN_KEY")
-    required = cfg_key or env_key
+    cfg_key = _settings_admin_key(request)
+    required = env_key or cfg_key
     if required:
         supplied = request.headers.get("X-Admin-Key")
         if str(supplied) != str(required):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    # If no key configured anywhere, allow (matches legacy behavior).  # noqa: E265
+    # If no key configured anywhere, allow (legacy behavior).
 
 
 @router.post("/admin/api/policy/validate", dependencies=[Depends(_require_admin_dep)])
