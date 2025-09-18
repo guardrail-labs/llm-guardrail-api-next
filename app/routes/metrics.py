@@ -15,9 +15,9 @@ router = APIRouter()
 
 # Prometheus is optional; degrade gracefully if unavailable.
 try:  # pragma: no cover
-    from prometheus_client import REGISTRY as PROM_REGISTRY
-    from prometheus_client.exposition import (
+    from prometheus_client import (
         CONTENT_TYPE_LATEST as PROM_CONTENT_TYPE_LATEST,
+        REGISTRY as PROM_REGISTRY,
         generate_latest as prom_generate_latest,
     )
 
