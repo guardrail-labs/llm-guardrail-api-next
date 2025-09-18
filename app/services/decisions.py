@@ -154,7 +154,7 @@ def query(
     if where_clauses:
         total_stmt = total_stmt.where(and_(*where_clauses))
 
-    with _get_engine().begin() as cx:
+    with eng.begin() as cx:
         rows = list(cx.execute(stmt).mappings())
         total = cx.execute(total_stmt).scalar_one()
 
