@@ -4,7 +4,7 @@ import importlib
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Request, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
