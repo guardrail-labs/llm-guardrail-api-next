@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import inspect
 import os
 from typing import Awaitable, Callable, Optional, cast
 
@@ -34,9 +33,11 @@ def _rbac_enabled(request: Request) -> bool:
     """
     Determine if RBAC is enabled using (in order):
     - settings.admin.rbac_enabled (bool) if present
-    - env flags commonly used in this repo
+    - persisted config store: {"admin_rbac_enabled": bool}
+    - env flags: ADMIN_RBAC_ENABLED / RBAC_ENABLED
     """
 
+    # settings
     try:
         settings = getattr(request.app.state, "settings", None)
         admin = getattr(settings, "admin", None)
@@ -45,9 +46,36 @@ def _rbac_enabled(request: Request) -> bool:
             return val
     except Exception:
         pass
+
+    # persisted config (config_store)
+    try:
+        from app.services import config_store as _cfg
+
+        cfg_obj = None
+        for attr in ("get_config", "current", "current_config", "read", "get"):
+            try:
+                fn = getattr(_cfg, attr, None)
+                if callable(fn):
+                    cfg_obj = fn()
+                    break
+                obj = getattr(_cfg, attr, None)
+                if isinstance(obj, dict):
+                    cfg_obj = obj
+                    break
+            except Exception:
+                continue
+        if isinstance(cfg_obj, dict):
+            v = cfg_obj.get("admin_rbac_enabled")
+            if isinstance(v, bool):
+                return v
+    except Exception:
+        pass
+
+    # env fallbacks
     for name in ("ADMIN_RBAC_ENABLED", "RBAC_ENABLED"):
         if _truthy(os.getenv(name, "false")):
             return True
+
     return False
 
 
@@ -88,9 +116,12 @@ def _load_require_admin(request: Request) -> Optional[GuardCallable]:
 async def _maybe_call_guard(guard: GuardCallable, request: Request) -> None:
     """Call sync or async guards uniformly; propagate any HTTPException they raise."""
 
-    result = guard(request)
-    if inspect.isawaitable(result):
-        await cast(Awaitable[object], result)
+    if asyncio.iscoroutinefunction(guard):
+        async_guard = cast(Callable[[Request], Awaitable[object]], guard)
+        await async_guard(request)
+    else:
+        sync_guard = cast(Callable[[Request], object], guard)
+        sync_guard(request)
 
 
 def _require_admin_dep(request: Request) -> None:
@@ -113,6 +144,7 @@ def _require_admin_dep(request: Request) -> None:
             asyncio.run(_maybe_call_guard(guard, request))  # safe even if guard is sync
         return
 
+    # Fallback: header key from ENV first, then settings (align with other admin routes)
     env_key = os.getenv("ADMIN_API_KEY") or os.getenv("GUARDRAIL_ADMIN_KEY")
     cfg_key = _settings_admin_key(request)
     required = env_key or cfg_key
