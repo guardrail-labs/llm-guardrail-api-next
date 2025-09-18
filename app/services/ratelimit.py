@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import math
 import os
-import threading
 from time import monotonic as _monotonic
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from prometheus_client import REGISTRY, Counter, Gauge
+
+try:  # pragma: no cover - defensive import, exercised in tests
+    from app.services.ratelimit_backends import (
+        LocalTokenBucket,
+        RateLimiterBackend,
+        build_backend,
+    )
+except Exception:  # pragma: no cover
+    LocalTokenBucket = None  # type: ignore
+    RateLimiterBackend = None  # type: ignore
+    build_backend = None  # type: ignore
+
+def _now() -> float:
+    return _monotonic()
 
 
 def _get_or_create_metric(factory, name: str, documentation: str, **kwargs):
@@ -41,69 +54,49 @@ RATE_LIMIT_SKIPS = _get_or_create_metric(
 )
 
 
-def _now() -> float:
-    return _monotonic()
-
-
-class TokenBucket:
-    __slots__ = ("capacity", "refill_rate", "tokens", "last", "lock")
-
-    def __init__(self, capacity: float, refill_rate: float) -> None:
-        self.capacity = float(capacity)
-        self.refill_rate = float(refill_rate)
-        self.tokens = float(capacity)
-        self.last = _now()
-        self.lock = threading.Lock()
-
-    def _refill(self, t: float) -> None:
-        if t <= self.last:
-            return
-        delta = t - self.last
-        self.tokens = min(self.capacity, self.tokens + delta * self.refill_rate)
-        self.last = t
-
-    def allow(self, cost: float = 1.0) -> Tuple[bool, Optional[int], float]:
-        with self.lock:
-            t = _now()
-            self._refill(t)
-            if self.tokens >= cost:
-                self.tokens -= cost
-                return True, None, self.tokens
-            need = max(0.0, cost - self.tokens)
-            if self.refill_rate <= 0:
-                return False, 1, self.tokens
-            wait = need / self.refill_rate
-            retry_after = max(1, int(math.ceil(wait)))
-            return False, retry_after, self.tokens
-
-
 class RateLimiter:
-    def __init__(self, capacity: float, refill_rate: float) -> None:
+    def __init__(
+        self,
+        capacity: float,
+        refill_rate: float,
+        backend: Optional[RateLimiterBackend] = None,
+    ) -> None:
         self.capacity = float(capacity)
         self.refill_rate = float(refill_rate)
-        self._buckets: Dict[Tuple[str, str], TokenBucket] = {}
-        self._lock = threading.Lock()
-
-    def _bucket_for(self, tenant: str, bot: str) -> TokenBucket:
-        key = (tenant, bot)
-        bucket = self._buckets.get(key)
-        if bucket is not None:
-            return bucket
-        with self._lock:
-            bucket = self._buckets.get(key)
-            if bucket is None:
-                bucket = TokenBucket(self.capacity, self.refill_rate)
-                self._buckets[key] = bucket
-            return bucket
+        if backend is None:
+            if LocalTokenBucket is not None:
+                backend = LocalTokenBucket()
+            else:  # pragma: no cover - fallback for import failures
+                raise RuntimeError("LocalTokenBucket backend unavailable")
+        if hasattr(backend, "set_now"):
+            try:
+                backend.set_now(_now)
+            except Exception:  # pragma: no cover - defensive
+                pass
+        self._backend = backend
 
     def allow(self, tenant: str, bot: str, cost: float = 1.0) -> Tuple[bool, Optional[int], float]:
-        bucket = self._bucket_for(tenant, bot)
-        ok, retry_after, remaining = bucket.allow(cost)
-        try:
-            TOKENS_GAUGE.labels(tenant=tenant, bot=bot).set(max(0.0, remaining))
-        except Exception:
-            pass
-        return ok, retry_after, remaining
+        key = f"{tenant}:{bot}"
+        allowed, retry_after_seconds, remaining = self._backend.allow(
+            key,
+            cost=cost,
+            rps=self.refill_rate,
+            burst=self.capacity,
+        )
+
+        retry_after: Optional[int]
+        if allowed or retry_after_seconds <= 0:
+            retry_after = None
+        else:
+            retry_after = max(1, int(math.ceil(retry_after_seconds)))
+
+        if remaining is not None:
+            try:
+                TOKENS_GAUGE.labels(tenant=tenant, bot=bot).set(max(0.0, remaining))
+            except Exception:
+                pass
+
+        return allowed, retry_after, float(remaining or 0.0)
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -155,7 +148,18 @@ def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
         rps = _float_env("RATE_LIMIT_RPS", rps_default)
         burst = _float_env("RATE_LIMIT_BURST", burst_default)
 
-    return enabled, RateLimiter(capacity=burst, refill_rate=rps)
+    backend_instance: Optional[RateLimiterBackend] = None
+    if build_backend is not None:
+        try:
+            backend_instance = build_backend()
+        except Exception:
+            backend_instance = None
+
+    return enabled, RateLimiter(
+        capacity=burst,
+        refill_rate=rps,
+        backend=backend_instance,
+    )
 
 
 _global_enforce_unknown: Optional[bool] = None
