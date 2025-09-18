@@ -8,7 +8,7 @@
 - `GET /admin/api/policy/packs` → list discoverable packs
 - `POST /admin/api/policy/validate` {yaml} → lint-only
 - `POST /admin/api/policy/reload` → merge + validate + apply (warn|block mode)
-- `GET /admin/api/decisions` → filters: `since`, `tenant`, `bot`, `outcome`, `page`, `page_size`
+- `GET /admin/api/decisions` → filters: `since`, `tenant`, `bot`, `outcome`, `page`, `page_size`; supports server-side sort via `sort` (`ts|tenant|bot|outcome|policy_version|rule_id|incident_id`) and `dir` (`asc|desc`, default `desc` on `ts`)
 - `GET /admin/api/decisions/export.csv|export.ndjson` → exports
 
 ## Public

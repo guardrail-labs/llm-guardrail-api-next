@@ -127,15 +127,6 @@
     const r = await fetch(u, {credentials:"same-origin"});
     const data = await r.json();
     const items = (data.items || []);
-    // client-side sort for the current page (server API has fixed order)
-    items.sort((a,b) => {
-      const k = S.sortKey;
-      let va = a[k], vb = b[k];
-      if (k === "ts") { va = new Date(va).getTime(); vb = new Date(vb).getTime(); }
-      if (va < vb) return S.sortDir === "asc" ? -1 : 1;
-      if (va > vb) return S.sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
     $tbody.innerHTML = items.map(row => `
       <tr>
         <td>${row.ts ?? ""}</td>
@@ -190,6 +181,7 @@
       } else {
         S.sortKey = k; S.sortDir = "asc";
       }
+      S.page = 1;
       load();
     });
   });

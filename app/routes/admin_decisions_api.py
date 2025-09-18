@@ -6,12 +6,26 @@ import io
 import json
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Protocol, Tuple, cast
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Tuple, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
+
+SortKey = Literal["ts", "tenant", "bot", "outcome", "policy_version", "rule_id", "incident_id"]
+SortDir = Literal["asc", "desc"]
+SORT_KEYS: Tuple[SortKey, ...] = (
+    "ts",
+    "tenant",
+    "bot",
+    "outcome",
+    "policy_version",
+    "rule_id",
+    "incident_id",
+)
+ProviderResult = Tuple[List[Dict[str, Any]], Optional[int]]
+DecisionProvider = Callable[..., ProviderResult]
 
 
 def _load_require_admin():
@@ -116,18 +130,6 @@ class DecisionPage(BaseModel):
     total: Optional[int] = None
 
 
-class DecisionProvider(Protocol):
-    def __call__(
-        self,
-        since: Optional[datetime],
-        tenant: Optional[str],
-        bot: Optional[str],
-        outcome: Optional[str],
-        limit: int,
-        offset: int,
-    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-        ...
-
 _provider: Optional[DecisionProvider] = None
 
 
@@ -144,7 +146,7 @@ def _auto_detect_provider() -> Optional[DecisionProvider]:
     ):
         try:
             mod = __import__(mod_name, fromlist=["*"])
-            for fn_name in ("query", "list", "search"):
+            for fn_name in ("list_decisions", "query", "list", "search"):
                 fn = getattr(mod, fn_name, None)
                 if callable(fn):
                     def provider(
@@ -154,16 +156,42 @@ def _auto_detect_provider() -> Optional[DecisionProvider]:
                         outcome: Optional[str],
                         limit: int,
                         offset: int,
+                        sort_key: SortKey = "ts",
+                        sort_dir: SortDir = "desc",
                         _fn=fn,
                     ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-                        res = _fn(
-                            since=since,
-                            tenant=tenant,
-                            bot=bot,
-                            outcome=outcome,
-                            limit=limit,
-                            offset=offset,
-                        )
+                        try:
+                            res = _fn(
+                                since=since,
+                                tenant=tenant,
+                                bot=bot,
+                                outcome=outcome,
+                                limit=limit,
+                                offset=offset,
+                                sort_key=sort_key,
+                                sort_dir=sort_dir,
+                            )
+                        except TypeError:
+                            try:
+                                res = _fn(
+                                    since,
+                                    tenant,
+                                    bot,
+                                    outcome,
+                                    limit,
+                                    offset,
+                                    sort_key,
+                                    sort_dir,
+                                )
+                            except TypeError:
+                                res = _fn(
+                                    since,
+                                    tenant,
+                                    bot,
+                                    outcome,
+                                    limit,
+                                    offset,
+                                )
                         if isinstance(res, tuple) and len(res) == 2:
                             return cast(Tuple[List[Dict[str, Any]], Optional[int]], res)
                         items = list(cast(Iterable[Dict[str, Any]], res))
@@ -188,6 +216,8 @@ def _get_provider() -> DecisionProvider:
             outcome: Optional[str],
             limit: int,
             offset: int,
+            sort_key: SortKey = "ts",
+            sort_dir: SortDir = "desc",
         ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
             return [], 0
 
@@ -246,10 +276,16 @@ async def get_decisions(
     outcome: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
+    sort: str = "ts",
+    dir: str = "desc",
 ) -> JSONResponse:
     prov = _get_provider()
     since_dt = _parse_since(since)
     offset = (page - 1) * page_size
+    sort_lower = (sort or "").lower()
+    sort_key_safe: SortKey = cast(SortKey, sort_lower) if sort_lower in SORT_KEYS else "ts"
+    dir_lower = (dir or "").lower()
+    sort_dir_safe: SortDir = "asc" if dir_lower == "asc" else "desc"
     try:
         items_raw, total = prov(
             since=since_dt,
@@ -258,9 +294,23 @@ async def get_decisions(
             outcome=outcome,
             limit=page_size,
             offset=offset,
+            sort_key=sort_key_safe,
+            sort_dir=sort_dir_safe,
         )
     except TypeError:
-        items_raw, total = prov(since_dt, tenant, bot, outcome, page_size, offset)
+        try:
+            items_raw, total = prov(
+                since_dt,
+                tenant,
+                bot,
+                outcome,
+                page_size,
+                offset,
+                sort_key_safe,
+                sort_dir_safe,
+            )
+        except TypeError:
+            items_raw, total = prov(since_dt, tenant, bot, outcome, page_size, offset)
     items = [_norm_item(x) for x in items_raw]
     if total is not None:
         has_more = (offset + len(items)) < total
