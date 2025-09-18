@@ -5,6 +5,10 @@ This repository ships two default packs for quick adoption:
 - **PII Redact** (`policy/packs/pii_redact.yaml`) — emails, US phone, SSN, common card formats.
 - **Secrets Redact** (`policy/packs/secrets_redact.yaml`) — JWTs, AWS keys, generic tokens, `sk-…`.
 
+The loader automatically searches both `policies/packs` (preferred) and `policy/packs`
+directories. If a pack exists in both locations, the version under `policies/packs`
+will be loaded.
+
 ## Usage
 
 1. Bind the packs to your tenant/bot via Admin > Bindings (or the fallback API).
