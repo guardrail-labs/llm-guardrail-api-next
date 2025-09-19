@@ -126,16 +126,11 @@ def _event_rule_ids(evt: Dict[str, Any]) -> set[str]:
     return values
 
 
-def _event_ts(evt: Dict[str, Any]) -> int:
-    raw = evt.get("ts")
-    if isinstance(raw, (int, float)):
-        return int(raw)
-    if isinstance(raw, str):
-        try:
-            return int(raw.strip())
-        except Exception:
-            return 0
-    return 0
+def _event_ts(evt: Dict[str, Any]) -> float:
+    try:
+        return float(evt.get("ts", 0))
+    except Exception:
+        return 0.0
 
 
 def iter_decisions(
@@ -157,12 +152,8 @@ def iter_decisions(
     with _lock:
         rows = list(_buf)
 
-    if sort == "ts_asc":
-        iterable = rows
-    else:
-        iterable = list(reversed(rows))
-
-    for evt in iterable:
+    filtered: list[Dict[str, Any]] = []
+    for evt in rows:
         if tenant_norm and _norm_str(evt.get("tenant")) != tenant_norm:
             continue
         if bot_norm and _norm_str(evt.get("bot")) != bot_norm:
@@ -171,15 +162,24 @@ def iter_decisions(
             evt_decision = _event_decision(evt)
             if evt_decision != decision_norm:
                 continue
-        if from_ts is not None:
-            if _event_ts(evt) < from_ts:
-                continue
-        if to_ts is not None:
-            if _event_ts(evt) >= to_ts:
-                continue
-        if rule_id_norm:
-            if rule_id_norm not in _event_rule_ids(evt):
-                continue
+
+        ts_value = _event_ts(evt)
+        if from_ts is not None and ts_value < from_ts:
+            continue
+        if to_ts is not None and ts_value >= to_ts:
+            continue
+
+        if rule_id_norm and rule_id_norm not in _event_rule_ids(evt):
+            continue
+
+        filtered.append(evt)
+
+    if sort == "ts_asc":
+        filtered.sort(key=_event_ts)
+    else:
+        filtered.sort(key=_event_ts, reverse=True)
+
+    for evt in filtered:
         yield evt
 
 
