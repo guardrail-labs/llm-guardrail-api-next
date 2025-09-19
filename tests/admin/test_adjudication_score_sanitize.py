@@ -57,7 +57,7 @@ def test_admin_adjudications_sanitize_nonfinite_scores(
     assert items[0]["score"] is None
 
     export = admin_client.get(
-        "/admin/adjudications/export.ndjson", headers=_admin_headers()
+        "/admin/adjudications.ndjson", headers=_admin_headers()
     )
     assert export.status_code == 200
     lines = [json.loads(line) for line in export.text.splitlines() if line.strip()]

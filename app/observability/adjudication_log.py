@@ -6,7 +6,7 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Deque, Iterable, Iterator, List, Optional
+from typing import Deque, Iterable, Iterator, List, Optional, Sequence, Union
 
 
 def _now_ts() -> str:
@@ -59,12 +59,22 @@ class AdjudicationRecord:
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        mitigation_forced = getattr(self, "mitigation_forced", None)
+        if mitigation_forced is not None:
+            data["mitigation_forced"] = mitigation_forced
         return data
 
 
 _CAP = _coerce_cap(os.getenv("ADJUDICATION_LOG_CAP"))
 _BUFFER: Deque[AdjudicationRecord] = deque(maxlen=_CAP)
 _LOCK = threading.Lock()
+
+
+def _ts_sort_key(record: AdjudicationRecord) -> datetime:
+    parsed = _parse_ts(record.ts)
+    if parsed is None:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    return parsed
 
 
 def _matches(
@@ -76,6 +86,8 @@ def _matches(
     bot: Optional[str],
     provider: Optional[str],
     request_id: Optional[str],
+    decision: Optional[str],
+    mitigation_forced: Optional[str],
 ) -> bool:
     if tenant and record.tenant != tenant:
         return False
@@ -85,11 +97,21 @@ def _matches(
         return False
     if request_id and record.request_id != request_id:
         return False
+    if decision and record.decision != decision:
+        return False
+    if mitigation_forced is not None:
+        record_forced = getattr(record, "mitigation_forced", None)
+        if mitigation_forced:
+            if record_forced != mitigation_forced:
+                return False
+        else:
+            if record_forced not in (None, ""):
+                return False
 
     ts_dt = _parse_ts(record.ts)
     if start and ts_dt and ts_dt < start:
         return False
-    if end and ts_dt and ts_dt > end:
+    if end and ts_dt and ts_dt >= end:
         return False
     return True
 
@@ -114,6 +136,104 @@ def clear() -> None:
         return
 
 
+def _iter_filtered(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    provider: Optional[str] = None,
+    request_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
+    sort: str = "ts_desc",
+) -> Iterator[AdjudicationRecord]:
+    with _LOCK:
+        snapshot: Sequence[AdjudicationRecord] = list(_BUFFER)
+
+    reverse = sort != "ts_asc"
+    ordered = sorted(
+        enumerate(snapshot),
+        key=lambda item: (_ts_sort_key(item[1]), item[0]),
+        reverse=reverse,
+    )
+
+    for _, rec in ordered:
+        if _matches(
+            rec,
+            start=start,
+            end=end,
+            tenant=tenant,
+            bot=bot,
+            provider=provider,
+            request_id=request_id,
+            decision=decision,
+            mitigation_forced=mitigation_forced,
+        ):
+            yield rec
+
+
+def iter_records(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    provider: Optional[str] = None,
+    request_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
+    sort: str = "ts_desc",
+) -> Iterator[AdjudicationRecord]:
+    yield from _iter_filtered(
+        start=start,
+        end=end,
+        tenant=tenant,
+        bot=bot,
+        provider=provider,
+        request_id=request_id,
+        decision=decision,
+        mitigation_forced=mitigation_forced,
+        sort=sort,
+    )
+
+
+def paged_query(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    provider: Optional[str] = None,
+    request_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort: str = "ts_desc",
+) -> tuple[List[AdjudicationRecord], int]:
+    items: List[AdjudicationRecord] = []
+    total = 0
+    max_index = offset + limit
+
+    for rec in _iter_filtered(
+        start=start,
+        end=end,
+        tenant=tenant,
+        bot=bot,
+        provider=provider,
+        request_id=request_id,
+        decision=decision,
+        mitigation_forced=mitigation_forced,
+        sort=sort,
+    ):
+        if offset <= total < max_index:
+            items.append(rec)
+        total += 1
+
+    return items, total
+
+
 def query(
     *,
     start: Optional[str] = None,
@@ -122,7 +242,10 @@ def query(
     bot: Optional[str] = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
     limit: int = 100,
+    sort: str = "ts_desc",
 ) -> List[AdjudicationRecord]:
     try:
         limit_val = int(limit)
@@ -136,56 +259,79 @@ def query(
     start_dt = _parse_ts(start) if start else None
     end_dt = _parse_ts(end) if end else None
 
-    with _LOCK:
-        items: Iterable[AdjudicationRecord] = list(_BUFFER)
-
-    out: List[AdjudicationRecord] = []
-    for rec in reversed(list(items)):
-        if _matches(
-            rec,
-            start=start_dt,
-            end=end_dt,
-            tenant=tenant,
-            bot=bot,
-            provider=provider,
-            request_id=request_id,
-        ):
-            out.append(rec)
-            if len(out) >= limit_val:
-                break
-    return out
-
-
-def stream(
-    *,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
-    tenant: Optional[str] = None,
-    bot: Optional[str] = None,
-    provider: Optional[str] = None,
-    request_id: Optional[str] = None,
-    limit: int = 100,
-) -> Iterator[str]:
-    records = query(
-        start=start,
-        end=end,
+    items, _ = paged_query(
+        start=start_dt,
+        end=end_dt,
         tenant=tenant,
         bot=bot,
         provider=provider,
         request_id=request_id,
-        limit=limit,
+        decision=decision,
+        mitigation_forced=mitigation_forced,
+        limit=limit_val,
+        offset=0,
+        sort=sort,
     )
-    for rec in records:
+    return items
+
+
+def stream(
+    *,
+    start: Optional[Union[str, datetime]] = None,
+    end: Optional[Union[str, datetime]] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    provider: Optional[str] = None,
+    request_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
+    limit: Optional[int] = 100,
+    sort: str = "ts_desc",
+) -> Iterator[str]:
+    if isinstance(start, datetime):
+        start_dt: Optional[datetime] = start.astimezone(timezone.utc)
+    else:
+        start_dt = _parse_ts(start) if start else None
+    if isinstance(end, datetime):
+        end_dt: Optional[datetime] = end.astimezone(timezone.utc)
+    else:
+        end_dt = _parse_ts(end) if end else None
+
+    if limit is None:
+        limit_val: Optional[int] = None
+    else:
+        try:
+            limit_val = max(int(limit), 0)
+        except Exception:
+            limit_val = 0
+
+    count = 0
+    for rec in _iter_filtered(
+        start=start_dt,
+        end=end_dt,
+        tenant=tenant,
+        bot=bot,
+        provider=provider,
+        request_id=request_id,
+        decision=decision,
+        mitigation_forced=mitigation_forced,
+        sort=sort,
+    ):
+        if limit_val is not None and count >= limit_val:
+            break
         try:
             yield json.dumps(rec.to_dict(), separators=(",", ":")) + "\n"
         except Exception:
             continue
+        count += 1
 
 
 __all__ = [
     "AdjudicationRecord",
     "append",
     "clear",
+    "iter_records",
+    "paged_query",
     "query",
     "stream",
     "_now_ts",
