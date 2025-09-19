@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import importlib
 import json
 import os
@@ -29,6 +28,11 @@ from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.routes.egress import router as egress_router
+from app.services.bindings.utils import (
+    compute_version_for_path as _compute_version_for_path,
+    propagate_bindings as _propagate_bindings,
+    read_policy_version as _read_policy_version,
+)
 from app.telemetry.tracing import TracingMiddleware
 
 # Prometheus (optional; tests expect metrics but we guard imports)
@@ -315,74 +319,6 @@ def _include_all_route_modules(app: FastAPI) -> int:
 _BINDINGS: Dict[Tuple[str, str], Dict[str, str]] = {}
 
 
-def _compute_version_for_path(p: str) -> str:
-    try:
-        fp = Path(p)
-        if fp.is_file():
-            data = fp.read_bytes()
-            return hashlib.sha256(data).hexdigest()[:16]
-    except Exception:
-        pass
-    return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
-
-
-def _read_policy_version(p: str) -> Optional[str]:
-    try:
-        import yaml
-    except Exception:
-        return None
-    try:
-        loaded = yaml.safe_load(Path(p).read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            for key in ("policy_version", "version"):
-                v = loaded.get(key)
-                if isinstance(v, (str, int, float)):
-                    return str(v)
-    except Exception:
-        return None
-    return None
-
-
-def _propagate_bindings(bindings: List[Dict[str, str]]) -> None:
-    """
-    Try to update whichever internal registry exists so the rest of the app
-    respects the bindings (best effort; ignore failures).
-    """
-    module_candidates = [
-        "app.services.rulepacks.bindings",
-        "app.services.rulepacks_bindings",
-        "app.services.bindings",
-        "app.policy.bindings",
-        "app.services.rulepacks_engine",
-    ]
-    func_candidates: List[str] = [
-        "set_bindings",
-        "apply_bindings",
-        "update_bindings",
-        "install_bindings",
-    ]
-    for mod_name in module_candidates:
-        try:
-            mod = importlib.import_module(mod_name)
-        except Exception:
-            continue
-        for fn_name in func_candidates:
-            fn = getattr(mod, fn_name, None)
-            if fn and callable(fn):
-                try:
-                    fn(bindings)
-                    return
-                except Exception:
-                    pass
-        for attr in ("BINDINGS", "_BINDINGS"):
-            if hasattr(mod, attr):
-                try:
-                    setattr(mod, attr, bindings)
-                    return
-                except Exception:
-                    pass
-
-
 def _install_bindings_fallback(app: FastAPI) -> None:
     admin = APIRouter(prefix="/admin", tags=["admin-bindings-fallback"])
 
@@ -561,6 +497,8 @@ class _BindingsGuardMiddleware(BaseHTTPMiddleware):
 # ------------------------ Error helpers & app factory -------------------------
 
 def _status_code_to_code(status: int) -> str:
+    if status == 400:
+        return "bad_request"
     if status == 401:
         return "unauthorized"
     if status == 404:
@@ -676,6 +614,14 @@ def create_app() -> FastAPI:
         from app.routes.admin_overview import router as admin_overview_router
 
         app.include_router(admin_overview_router)
+    except Exception:
+        pass
+    try:
+        from app.routes.admin_apply_golden import (
+            router as admin_apply_golden_router,
+        )
+
+        app.include_router(admin_apply_golden_router)
     except Exception:
         pass
     app.add_middleware(RequestIDMiddleware)
