@@ -114,11 +114,11 @@ def test_guardrail_non_block_flags_surface_modes(disable_webhooks) -> None:
         json={"prompt": "a friendly prompt"},
         headers=headers,
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 422
     data = resp.json()
-    assert data["decision"] == "allow"
+    assert data["decision"] == "clarify"
     assert data["mitigation_modes"] == modes
-    assert data.get("mitigation_forced") in (None, "")
+    assert data["mitigation_forced"] == "clarify"
 
 
 def test_guardrail_defaults_present(disable_webhooks) -> None:

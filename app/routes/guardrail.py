@@ -220,6 +220,7 @@ def _log_adjudication(
     prompt_sha256: Optional[str],
     provider: Optional[str],
     score: Optional[float],
+    mitigation_forced: Optional[str] = None,
 ) -> None:
     try:
         record = _adj_log.AdjudicationRecord(
@@ -236,6 +237,7 @@ def _log_adjudication(
             rules_path=str(rules_path) if rules_path else None,
             sampled=bool(sampled),
             prompt_sha256=prompt_sha256,
+            mitigation_forced=mitigation_forced,
         )
         _adj_log.append(record)
     except Exception:
@@ -564,6 +566,49 @@ def _rule_ids_from_hits(rule_hits: Any) -> List[str]:
     return []
 
 
+def _normalize_decision_label(decision: str) -> str:
+    value = str(decision or "").strip().lower()
+    if value in {"block", "deny"}:
+        return "block"
+    if value == "clarify":
+        return "clarify"
+    if value == "redact":
+        return "redact"
+    return "allow"
+
+
+def _apply_mitigation_overrides(
+    modes: Mapping[str, bool],
+    decision: str,
+    *,
+    allow_redact_on_clarify: bool = False,
+) -> Tuple[str, Optional[str]]:
+    forced: Optional[str] = None
+    normalized = _normalize_decision_label(decision)
+
+    if modes.get("block"):
+        if normalized != "block":
+            forced = "block"
+        return "block", forced
+
+    if modes.get("clarify_first"):
+        if normalized not in {"block", "clarify"}:
+            forced = "clarify"
+            return "clarify", forced
+        return normalized, None
+
+    if modes.get("redact"):
+        if normalized == "clarify" and allow_redact_on_clarify:
+            forced = "redact"
+            return "redact", forced
+        if normalized not in {"block", "clarify", "redact"}:
+            forced = "redact"
+            return "redact", forced
+        return normalized, None
+
+    return normalized, None
+
+
 def _shadow_policy_evaluator(
     payload: Mapping[str, Any], *, policy: Mapping[str, Any]
 ) -> Mapping[str, Any]:
@@ -819,6 +864,7 @@ def _augment_json_response(
     *,
     forced: Optional[str] = None,
     decision: Optional[str] = None,
+    extra: Optional[Mapping[str, Any]] = None,
 ) -> None:
     raw_body = getattr(response, "body", b"")
     data: Any
@@ -839,8 +885,11 @@ def _augment_json_response(
     data["mitigation_modes"] = dict(modes)
     if forced:
         data["mitigation_forced"] = forced
-    if decision and "decision" not in data:
+    if decision:
         data["decision"] = decision
+    if extra:
+        for key, value in extra.items():
+            data[key] = value
     response.body = response.render(data)
 
 
@@ -1401,10 +1450,11 @@ async def guardrail_legacy(
         or ""
     ).strip()
     mitigation_modes = get_mitigation_modes(raw_tenant, raw_bot)
-    mitigation_forced: Optional[str] = None
-    if mitigation_modes.get("block"):
+    final_decision, mitigation_forced = _apply_mitigation_overrides(
+        mitigation_modes, action
+    )
+    if final_decision == "block":
         action = "block"
-        mitigation_forced = "block"
 
     redacted, redaction_hits, redactions, _red_spans = _apply_redactions(
         prompt, direction="ingress"
@@ -1426,11 +1476,15 @@ async def guardrail_legacy(
         rule_hits.setdefault(k, []).extend(v)
     _normalize_wildcards(rule_hits, is_deny=(action == "block"))
 
+    audit_decision = final_decision
+    if audit_decision not in {"allow", "block", "clarify"}:
+        audit_decision = "block" if action == "block" else "allow"
+
     _audit(
         "ingress",
         prompt,
         redacted,
-        "block" if action == "block" else "allow",
+        audit_decision,
         tenant,
         bot,
         request_id,
@@ -1438,15 +1492,16 @@ async def guardrail_legacy(
         redactions,
         debug_sources=None,
     )
+    metric_action = audit_decision
     _bump_family(
         "ingress",
         "guardrail_legacy",
-        "allow" if action == "allow" else "deny",
+        metric_action,
         tenant,
         bot,
     )
 
-    if action == "block":
+    if final_decision == "block":
         _record_actor_metric(request, "block")
         resp = _respond_legacy_block(
             request_id,
@@ -1475,8 +1530,36 @@ async def guardrail_legacy(
             prompt_sha256=prompt_hash_val,
             provider="core",
             score=None,
+            mitigation_forced=mitigation_forced,
         )
         return resp
+    if final_decision == "clarify":
+        _record_actor_metric(request, "clarify")
+        clar_resp = respond_with_clarify()
+        _augment_json_response(
+            clar_resp,
+            mitigation_modes,
+            forced=mitigation_forced,
+            decision="clarify",
+            extra={"rule_hits": rule_hits},
+        )
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        _log_adjudication(
+            request_id=request_id,
+            tenant=tenant,
+            bot=bot,
+            decision="clarify",
+            rule_ids=_rule_ids_from_hits(rule_hits),
+            latency_ms=latency_ms,
+            policy_version=policy_version,
+            rules_path=rules_path_hint,
+            sampled=False,
+            prompt_sha256=prompt_hash_val,
+            provider="core",
+            score=None,
+            mitigation_forced=mitigation_forced,
+        )
+        return clar_resp
     _record_actor_metric(request, "allow")
     resp = _respond_legacy_allow(
         redacted,
@@ -1489,14 +1572,14 @@ async def guardrail_legacy(
         resp,
         mitigation_modes,
         forced=mitigation_forced,
-        decision="allow",
+        decision=final_decision,
     )
     latency_ms = int((time.perf_counter() - t_start) * 1000)
     _log_adjudication(
         request_id=request_id,
         tenant=tenant,
         bot=bot,
-        decision="allow",
+        decision=final_decision,
         rule_ids=_rule_ids_from_hits(rule_hits),
         latency_ms=latency_ms,
         policy_version=policy_version,
@@ -1505,6 +1588,7 @@ async def guardrail_legacy(
         prompt_sha256=prompt_hash_val,
         provider="core",
         score=None,
+        mitigation_forced=mitigation_forced,
     )
     return resp
 
@@ -1599,11 +1683,20 @@ async def guardrail_evaluate(request: Request):
             final_rule_ids = [str(x) for x in rule_ids]
 
         live_action_val = ""
+        decision_hint: Optional[str] = None
         if policy_result is not None:
+            try:
+                raw_decision = policy_result.get("decision")
+                if isinstance(raw_decision, str) and raw_decision.strip():
+                    decision_hint = raw_decision.strip()
+            except Exception:
+                decision_hint = None
             try:
                 live_action_val = str(policy_result.get("action") or "")
             except Exception:
                 live_action_val = ""
+        if decision_hint:
+            live_action_val = decision_hint
         if not live_action_val:
             live_action_val = str(decision_family or "")
         live_action_norm = str(live_action_val or "").strip().lower()
@@ -1711,6 +1804,7 @@ async def guardrail_evaluate(request: Request):
 
         provider_hint = adjudication_provider
         score_val: Optional[float] = None
+        mitigation_forced_val: Optional[str] = None
         if isinstance(policy_result, Mapping):
             score_val = _coerce_score(policy_result.get("score"))
             provider_candidate: Optional[str] = None
@@ -1723,6 +1817,9 @@ async def guardrail_evaluate(request: Request):
                     vprov = raw_verifier.get("provider")
                     if isinstance(vprov, str) and vprov.strip():
                         provider_candidate = vprov.strip()
+            raw_forced = policy_result.get("mitigation_forced")
+            if isinstance(raw_forced, str) and raw_forced.strip():
+                mitigation_forced_val = raw_forced.strip()
             if not provider_hint and provider_candidate:
                 provider_hint = provider_candidate
 
@@ -1752,6 +1849,7 @@ async def guardrail_evaluate(request: Request):
             prompt_sha256=prompt_hash_val,
             provider=provider_hint,
             score=score_val,
+            mitigation_forced=mitigation_forced_val,
         )
 
         return resp
@@ -1802,24 +1900,26 @@ async def guardrail_evaluate(request: Request):
                 },
             )
         elif mode_cfg == "clarify":
-            forced_block = bool(mitigation_modes.get("block"))
-            try:
-                from app.services.audit_forwarder import emit_audit_event
+            rulepack_decision, rulepack_forced = _apply_mitigation_overrides(
+                mitigation_modes,
+                "clarify",
+                allow_redact_on_clarify=True,
+            )
+            if rulepack_decision == "block":
+                try:
+                    from app.services.audit_forwarder import emit_audit_event
 
-                emit_audit_event(
-                    {
-                        "event": "decision",
-                        "data": {
-                            "decision": (
-                                "block_input_only" if forced_block else "clarify"
-                            ),
-                            "reason": "ingress_rulepack",
-                        },
-                    }
-                )
-            except Exception:
-                pass
-            if forced_block:
+                    emit_audit_event(
+                        {
+                            "event": "decision",
+                            "data": {
+                                "decision": "block_input_only",
+                                "reason": "ingress_rulepack",
+                            },
+                        }
+                    )
+                except Exception:
+                    pass
                 _record_actor_metric(request, "block_input_only")
                 resp = JSONResponse(
                     status_code=200,
@@ -1840,7 +1940,7 @@ async def guardrail_evaluate(request: Request):
                     resp,
                     mitigation_modes,
                     decision="block",
-                    forced="block",
+                    forced=rulepack_forced,
                 )
                 return finalize_response(
                     resp,
@@ -1849,22 +1949,53 @@ async def guardrail_evaluate(request: Request):
                     policy_result={
                         "action": "block_input_only",
                         "rule_ids": [str(h) for h in hits if str(h)],
+                        "mitigation_forced": rulepack_forced,
+                        "decision": "block",
                     },
                 )
-            _record_actor_metric(request, "clarify")
-            clar_resp = respond_with_clarify(
-                extra={"rulepack": "ingress_block", "matches": ",".join(hits)}
-            )
-            _augment_json_response(clar_resp, mitigation_modes, decision="clarify")
-            return finalize_response(
-                clar_resp,
-                decision_family="deny",
-                rule_ids=hits,
-                policy_result={
-                    "action": "clarify",
-                    "rule_ids": [str(h) for h in hits if str(h)],
-                },
-            )
+            if rulepack_decision == "clarify":
+                try:
+                    from app.services.audit_forwarder import emit_audit_event
+
+                    emit_audit_event(
+                        {
+                            "event": "decision",
+                            "data": {
+                                "decision": "clarify",
+                                "reason": "ingress_rulepack",
+                            },
+                        }
+                    )
+                except Exception:
+                    pass
+                _record_actor_metric(request, "clarify")
+                clarify_meta = {
+                    "rulepack": "ingress_block",
+                    "matches": ",".join(hits),
+                }
+                clar_resp = respond_with_clarify(extra=clarify_meta)
+                extra_fields: Dict[str, Any] = {
+                    "rule_hits": {"ingress_rulepack": list(hits)},
+                }
+                _augment_json_response(
+                    clar_resp,
+                    mitigation_modes,
+                    decision="clarify",
+                    forced=rulepack_forced,
+                    extra=extra_fields,
+                )
+                return finalize_response(
+                    clar_resp,
+                    decision_family="deny",
+                    rule_ids=hits,
+                    policy_result={
+                        "action": "clarify",
+                        "rule_ids": [str(h) for h in hits if str(h)],
+                        "mitigation_forced": rulepack_forced,
+                        "decision": "clarify",
+                    },
+                )
+            # annotate only → continue (redact or allow handled later)
         else:
             # annotate only → continue
             pass
@@ -1877,45 +2008,64 @@ async def guardrail_evaluate(request: Request):
     else:
         action = classifier_outcome
 
-    if action == "clarify" and not mitigation_modes.get("block"):
-        _audit(
-            "ingress",
-            combined_text,
-            "",
-            "clarify",
-            tenant,
-            bot,
-            request_id,
-            policy_hits,
-            0,
+    dbg: Optional[Dict[str, Any]] = None
+    if action == "clarify":
+        clarify_decision, clarify_forced = _apply_mitigation_overrides(
+            mitigation_modes, "clarify"
         )
-        _bump_family("ingress", "ingress_evaluate", "clarify", tenant, bot)
-        try:
-            from app.services.audit_forwarder import emit_audit_event
-        except Exception:  # pragma: no cover
-            def emit_audit_event(*args, **kwargs):  # type: ignore
-                return None
+        if clarify_decision == "clarify":
+            _audit(
+                "ingress",
+                combined_text,
+                "",
+                "clarify",
+                tenant,
+                bot,
+                request_id,
+                policy_hits,
+                0,
+            )
+            _bump_family("ingress", "ingress_evaluate", "clarify", tenant, bot)
+            try:
+                from app.services.audit_forwarder import emit_audit_event
+            except Exception:  # pragma: no cover
 
-        emit_audit_event(
-            {
-                "event": "decision",
-                "phase": "ingress",
-                "decision": "clarify",
-                "reason": f"classifier_outcome={classifier_outcome}",
-            }
-        )
-        _record_actor_metric(request, "clarify")
-        clar_resp = respond_with_clarify()
-        _augment_json_response(clar_resp, mitigation_modes, decision="clarify")
-        return finalize_response(
-            clar_resp,
-            decision_family="deny",
-            rule_ids=_rule_ids_from_hits(policy_hits),
-            policy_result={
-                "action": "clarify",
-                "rule_ids": _rule_ids_from_hits(policy_hits),
-            },
-        )
+                def emit_audit_event(*args, **kwargs):  # type: ignore
+                    return None
+
+            emit_audit_event(
+                {
+                    "event": "decision",
+                    "phase": "ingress",
+                    "decision": "clarify",
+                    "reason": f"classifier_outcome={classifier_outcome}",
+                }
+            )
+            _record_actor_metric(request, "clarify")
+            clar_resp = respond_with_clarify()
+            clarify_extra: Dict[str, Any] = {"rule_hits": policy_hits}
+            if dbg is not None:
+                clarify_extra["debug"] = dbg
+            _augment_json_response(
+                clar_resp,
+                mitigation_modes,
+                decision="clarify",
+                forced=clarify_forced,
+                extra=clarify_extra,
+            )
+            return finalize_response(
+                clar_resp,
+                decision_family="deny",
+                rule_ids=_rule_ids_from_hits(policy_hits),
+                policy_result={
+                    "action": "clarify",
+                    "rule_ids": _rule_ids_from_hits(policy_hits),
+                    "mitigation_forced": clarify_forced,
+                    "decision": "clarify",
+                },
+            )
+        if clarify_decision == "block":
+            action = "deny"
     (
         redacted,
         redaction_hits,
@@ -1937,7 +2087,6 @@ async def guardrail_evaluate(request: Request):
     _normalize_wildcards(policy_hits, is_deny=(action == "deny"))
 
     dbg_sources: List[SourceDebug] = []
-    dbg: Optional[Dict[str, Any]] = None
     if want_debug:
         matches = [{"tag": k, "patterns": list(v)} for k, v in policy_hits.items()]
 
@@ -2003,32 +2152,55 @@ async def guardrail_evaluate(request: Request):
     v_action: Optional[str] = None
     if hv_action in {"timeout", "error", "uncertain"}:
         v_action = map_verifier_outcome_to_action(hv_action)  # type: ignore[arg-type]
-    if v_action == "clarify" and not mitigation_modes.get("block"):
-        try:
-            from app.services.audit_forwarder import emit_audit_event
-        except Exception:  # pragma: no cover
-            def emit_audit_event(*args, **kwargs):  # type: ignore
-                return None
+    verifier_info: Optional[Dict[str, Any]] = None
+    if v_action == "clarify":
+        verifier_decision, verifier_forced = _apply_mitigation_overrides(
+            mitigation_modes, "clarify"
+        )
+        if verifier_decision == "clarify" and not mitigation_modes.get("block"):
+            try:
+                from app.services.audit_forwarder import emit_audit_event
+            except Exception:  # pragma: no cover
 
-        emit_audit_event(
-            {
-                "event": "decision",
-                "phase": "ingress",
-                "decision": "clarify",
-                "reason": f"verifier_outcome={hv_action}",
-            }
-        )
-        _record_actor_metric(request, "clarify")
-        clar_resp = respond_with_clarify()
-        _augment_json_response(clar_resp, mitigation_modes, decision="clarify")
-        return _finalize_ingress_response(
-            clar_resp,
-            request_id=request_id,
-            fingerprint_value=fingerprint_value,
-            decision_family="deny",
-            rule_ids=_rule_ids_from_hits(policy_hits),
-            policy_result={"action": "clarify"},
-        )
+                def emit_audit_event(*args, **kwargs):  # type: ignore
+                    return None
+
+            emit_audit_event(
+                {
+                    "event": "decision",
+                    "phase": "ingress",
+                    "decision": "clarify",
+                    "reason": f"verifier_outcome={hv_action}",
+                }
+            )
+            _record_actor_metric(request, "clarify")
+            clar_resp = respond_with_clarify()
+            verifier_extra: Dict[str, Any] = {"rule_hits": policy_hits}
+            if dbg is not None:
+                verifier_extra["debug"] = dbg
+            elif verifier_info is not None:
+                verifier_extra["debug"] = {"verifier": verifier_info}
+            _augment_json_response(
+                clar_resp,
+                mitigation_modes,
+                decision="clarify",
+                forced=verifier_forced,
+                extra=verifier_extra,
+            )
+            return _finalize_ingress_response(
+                clar_resp,
+                request_id=request_id,
+                fingerprint_value=fingerprint_value,
+                decision_family="deny",
+                rule_ids=_rule_ids_from_hits(policy_hits),
+                policy_result={
+                    "action": "clarify",
+                    "mitigation_forced": verifier_forced,
+                    "decision": "clarify",
+                },
+            )
+        if verifier_decision == "block":
+            action = "deny"
 
     action = _apply_hardened_override(action, hv_action)
     if hv_action is None and hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback":
@@ -2081,15 +2253,44 @@ async def guardrail_evaluate(request: Request):
     )
 
     adjudication_sampled = verifier_sampled
-    mitigation_forced: Optional[str] = None
+    final_decision_label, mitigation_forced = _apply_mitigation_overrides(
+        mitigation_modes, action
+    )
     decision_override: Optional[str] = None
-    if mitigation_modes.get("block"):
-        action = "deny"
-        mitigation_forced = "block"
+    response_action = action
+
+    base_decision["mitigation_forced"] = mitigation_forced
+    base_decision["decision"] = final_decision_label
+
+    if final_decision_label == "clarify":
+        base_decision["action"] = "clarify"
+        clar_resp = respond_with_clarify()
+        final_clarify_extra: Dict[str, Any] = {"rule_hits": policy_hits}
+        if dbg is not None:
+            final_clarify_extra["debug"] = dbg
+        _augment_json_response(
+            clar_resp,
+            mitigation_modes,
+            forced=mitigation_forced,
+            decision="clarify",
+            extra=final_clarify_extra,
+        )
+        return finalize_response(
+            clar_resp,
+            decision_family="deny",
+            rule_ids=_rule_ids_from_hits(policy_hits),
+            policy_result=base_decision,
+        )
+
+    if final_decision_label == "block":
+        response_action = "deny"
         decision_override = "block"
-    base_decision["action"] = action
+    elif final_decision_label == "redact":
+        decision_override = "redact"
+
+    base_decision["action"] = response_action
     resp = _respond_action(
-        action,
+        response_action,
         redacted,
         request_id,
         policy_hits,
@@ -2105,7 +2306,7 @@ async def guardrail_evaluate(request: Request):
     )
     return finalize_response(
         resp,
-        decision_family=_decision_family(action),
+        decision_family=_decision_family(response_action),
         rule_ids=_rule_ids_from_hits(policy_hits),
         policy_result=base_decision,
     )
@@ -2295,15 +2496,46 @@ async def guardrail_evaluate_multipart(request: Request):
     )
 
     adjudication_sampled = verifier_sampled
-    mitigation_forced: Optional[str] = None
+    final_decision_label, mitigation_forced = _apply_mitigation_overrides(
+        mitigation_modes, action
+    )
     decision_override: Optional[str] = None
-    if mitigation_modes.get("block"):
-        action = "deny"
-        mitigation_forced = "block"
+    response_action = action
+
+    base_decision["mitigation_forced"] = mitigation_forced
+    base_decision["decision"] = final_decision_label
+
+    if final_decision_label == "clarify":
+        base_decision["action"] = "clarify"
+        clar_resp = respond_with_clarify()
+        extra_fields: Dict[str, Any] = {"rule_hits": policy_hits}
+        if dbg is not None:
+            extra_fields["debug"] = dbg
+        _augment_json_response(
+            clar_resp,
+            mitigation_modes,
+            forced=mitigation_forced,
+            decision="clarify",
+            extra=extra_fields,
+        )
+        return _finalize_ingress_response(
+            clar_resp,
+            request_id=request_id,
+            fingerprint_value=fingerprint_value,
+            decision_family="deny",
+            rule_ids=_rule_ids_from_hits(policy_hits),
+            policy_result=base_decision,
+        )
+
+    if final_decision_label == "block":
+        response_action = "deny"
         decision_override = "block"
-    base_decision["action"] = action
+    elif final_decision_label == "redact":
+        decision_override = "redact"
+
+    base_decision["action"] = response_action
     resp = _respond_action(
-        action,
+        response_action,
         redacted,
         request_id,
         policy_hits,
@@ -2321,7 +2553,7 @@ async def guardrail_evaluate_multipart(request: Request):
         resp,
         request_id=request_id,
         fingerprint_value=fingerprint_value,
-        decision_family=_decision_family(action),
+        decision_family=_decision_family(response_action),
         rule_ids=_rule_ids_from_hits(policy_hits),
         policy_result=base_decision,
     )
@@ -2351,11 +2583,11 @@ async def guardrail_evaluate_multipart(request: Request):
     policy_version_hint = finalized.headers.get("X-Guardrail-Policy-Version")
     rules_path = finalized.headers.get("X-Guardrail-Rules-Path") or rules_path_hint
 
-    decision_val = action
+    decision_val = final_decision_label or response_action
     if isinstance(base_decision, Mapping):
         raw_action = base_decision.get("action")
         if isinstance(raw_action, str) and raw_action.strip():
-            decision_val = raw_action.strip()
+            decision_val = final_decision_label or raw_action.strip()
 
     score_val = None
     if isinstance(base_decision, Mapping):
@@ -2374,6 +2606,7 @@ async def guardrail_evaluate_multipart(request: Request):
         prompt_sha256=prompt_hash_val,
         provider=provider_hint,
         score=score_val,
+        mitigation_forced=mitigation_forced,
     )
 
     return finalized

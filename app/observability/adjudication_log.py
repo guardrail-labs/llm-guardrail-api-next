@@ -56,6 +56,7 @@ class AdjudicationRecord:
     rules_path: Optional[str]
     sampled: bool
     prompt_sha256: Optional[str]
+    mitigation_forced: Optional[str] = None
 
     def to_dict(self) -> dict:
         data = asdict(self)

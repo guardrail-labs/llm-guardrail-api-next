@@ -23,7 +23,7 @@ def test_injection_blocks_by_default(monkeypatch):
     assert r.status_code == 200
     body = r.json()
 
-    assert body["action"] == "block"
+    assert body["decision"] == "block"
     assert any(
         k.startswith("injection:") or k.startswith("jailbreak:")
         for k in (body.get("rule_hits", {}) or {}).keys()
@@ -35,7 +35,7 @@ def test_injection_can_clarify_when_overridden(monkeypatch):
     reload(policy)
 
     r = client.post("/guardrail/evaluate", json={"text": _trigger_text()})
-    assert r.status_code == 200
+    assert r.status_code == 422
     body = r.json()
 
     assert body["action"] == "clarify"

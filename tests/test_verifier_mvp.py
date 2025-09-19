@@ -18,7 +18,7 @@ def test_verifier_mock_block_on_bad_terms(monkeypatch):
     r = client.post("/guardrail/evaluate", json={"text": text}, headers={"X-Debug": "1"})
     assert r.status_code == 200
     body = r.json()
-    assert body["action"] in ("block", "clarify")
+    assert body["decision"] in ("block", "clarify")
     assert "debug" in body and "verifier" in body["debug"]
 
 
@@ -38,4 +38,4 @@ def test_verifier_fallback_on_error(monkeypatch):
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["action"] in ("block", "clarify")
+    assert body["decision"] in ("block", "clarify")
