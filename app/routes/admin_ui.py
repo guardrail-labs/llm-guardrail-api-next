@@ -8,9 +8,10 @@ import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from app.routes.admin_apply_golden import apply_golden_packs as apply_golden_action
 from app.services.config_store import get_config, get_policy_packs
 from app.services.policy import current_rules_version, reload_rules
 
@@ -146,11 +147,28 @@ def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         bindings = list_bindings()
     except Exception:  # pragma: no cover - underlying store failure
         bindings = []
+    tenant = req.query_params.get("tenant", "")
+    bot = req.query_params.get("bot", "")
     resp = templates.TemplateResponse(
-        "bindings.html", {"request": req, "bindings": bindings}
+        "bindings.html",
+        {
+            "request": req,
+            "bindings": bindings,
+            "tenant": tenant,
+            "bot": bot,
+        },
     )
     issue_csrf(resp)
     return resp
+
+
+@router.get("/admin/ui/bindings/data", response_class=JSONResponse)
+def ui_bindings_data(_: None = Depends(require_auth)) -> JSONResponse:
+    try:
+        bindings = list_bindings()
+    except Exception:  # pragma: no cover - underlying store failure
+        bindings = []
+    return JSONResponse({"bindings": bindings})
 
 
 @router.get("/admin/ui/decisions", response_class=HTMLResponse)
@@ -264,5 +282,55 @@ def export_decisions(
         buf,
         media_type="application/x-ndjson",
         headers={"Content-Disposition": "attachment; filename=decisions.ndjson"},
+    )
+
+
+@router.post("/admin/ui/bindings/apply_golden", response_class=JSONResponse)
+def ui_apply_golden(
+    req: Request, payload: Dict[str, Any], _: None = Depends(require_auth)
+) -> JSONResponse:
+    cookie = req.cookies.get("ui_csrf", "")
+    token = str(payload.get("csrf_token", ""))
+    if not (
+        cookie
+        and token
+        and _csrf_ok(token)
+        and _csrf_ok(cookie)
+        and hmac.compare_digest(cookie, token)
+    ):
+        raise HTTPException(status_code=400, detail="CSRF failed")
+
+    tenant = str(payload.get("tenant", "")).strip()
+    bot = str(payload.get("bot", "")).strip()
+    if not tenant or not bot:
+        raise HTTPException(status_code=400, detail="tenant and bot are required.")
+
+    try:
+        result = apply_golden_action({"tenant": tenant, "bot": bot})
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - unexpected failure
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    try:
+        bindings = list_bindings()
+    except Exception:  # pragma: no cover - underlying store failure
+        bindings = []
+
+    if result.get("applied"):
+        message = f"Golden Packs applied to {tenant}/{bot}."
+        status = "success"
+    else:
+        message = "Already using Golden Packs."
+        status = "info"
+
+    return JSONResponse(
+        {
+            "message": message,
+            "status": status,
+            "applied": bool(result.get("applied")),
+            "binding": result,
+            "bindings": bindings,
+        }
     )
 
