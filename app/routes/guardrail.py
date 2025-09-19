@@ -1802,19 +1802,55 @@ async def guardrail_evaluate(request: Request):
                 },
             )
         elif mode_cfg == "clarify":
+            forced_block = bool(mitigation_modes.get("block"))
             try:
                 from app.services.audit_forwarder import emit_audit_event
+
                 emit_audit_event(
                     {
                         "event": "decision",
                         "data": {
-                            "decision": "clarify",
+                            "decision": (
+                                "block_input_only" if forced_block else "clarify"
+                            ),
                             "reason": "ingress_rulepack",
                         },
                     }
                 )
             except Exception:
                 pass
+            if forced_block:
+                _record_actor_metric(request, "block_input_only")
+                resp = JSONResponse(
+                    status_code=200,
+                    content={
+                        "action": "block_input_only",
+                        "reason": "ingress_rulepack",
+                        "matches": hits,
+                    },
+                )
+                resp.headers[INCIDENT_HEADER] = "rpb"
+                attach_guardrail_headers(
+                    resp,
+                    decision="block",
+                    ingress_action="block_input_only",
+                    egress_action="allow",
+                )
+                _augment_json_response(
+                    resp,
+                    mitigation_modes,
+                    decision="block",
+                    forced="block",
+                )
+                return finalize_response(
+                    resp,
+                    decision_family="deny",
+                    rule_ids=hits,
+                    policy_result={
+                        "action": "block_input_only",
+                        "rule_ids": [str(h) for h in hits if str(h)],
+                    },
+                )
             _record_actor_metric(request, "clarify")
             clar_resp = respond_with_clarify(
                 extra={"rulepack": "ingress_block", "matches": ",".join(hits)}

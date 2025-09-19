@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services import mitigation_modes, webhooks
+from app.services import mitigation_modes, rulepacks_engine, webhooks
 
 client = TestClient(app)
 
@@ -140,3 +140,57 @@ def test_guardrail_defaults_present(disable_webhooks) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["mitigation_modes"] == expected_modes
+
+
+def test_ingress_rulepack_clarify_forced_block(
+    disable_webhooks, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RULEPACKS_ENFORCE", "1")
+    monkeypatch.setenv("RULEPACKS_ACTIVE", "gdpr")
+    monkeypatch.setenv("RULEPACKS_INGRESS_MODE", "clarify")
+    rulepacks_engine.compile_active_rulepacks(force=True)
+
+    tenant = "mit-rulepack-block"
+    bot = "bot-rulepack-block"
+    _admin_put(tenant, bot, {"block": True, "redact": False, "clarify_first": False})
+
+    headers = {"X-API-Key": "k", "X-Tenant-ID": tenant, "X-Bot-ID": bot}
+    resp = client.post(
+        "/v1/guardrail/evaluate",
+        json={"text": "Please DROP TABLE customers;"},
+        headers=headers,
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["decision"] == "block"
+    assert data["mitigation_modes"]["block"] is True
+    assert data["mitigation_forced"] == "block"
+    assert data["mitigation_modes"]["clarify_first"] is False
+    assert data["mitigation_modes"]["redact"] is False
+
+
+def test_ingress_rulepack_clarify_without_block_override(
+    disable_webhooks, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RULEPACKS_ENFORCE", "1")
+    monkeypatch.setenv("RULEPACKS_ACTIVE", "gdpr")
+    monkeypatch.setenv("RULEPACKS_INGRESS_MODE", "clarify")
+    rulepacks_engine.compile_active_rulepacks(force=True)
+
+    tenant = "mit-rulepack-clarify"
+    bot = "bot-rulepack-clarify"
+    _admin_put(tenant, bot, {"block": False, "redact": False, "clarify_first": False})
+
+    headers = {"X-API-Key": "k", "X-Tenant-ID": tenant, "X-Bot-ID": bot}
+    resp = client.post(
+        "/v1/guardrail/evaluate",
+        json={"text": "DROP TABLE employees;"},
+        headers=headers,
+    )
+
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data.get("decision") == "clarify"
+    assert data["mitigation_modes"]["block"] is False
+    assert "mitigation_forced" not in data or data["mitigation_forced"] in (None, "")
