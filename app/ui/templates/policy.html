@@ -40,10 +40,9 @@
       <summary><strong>Lint Results</strong> <span id="lint_summary" class="muted"></span></summary>
       <div class="lint-panel">
         <div class="lint-toolbar" role="toolbar" aria-label="Lint severity filter">
-          <button id="filter-all" class="lint-filter-btn" type="button" aria-pressed="true">All</button>
-          <button id="filter-error" class="lint-filter-btn" type="button" aria-pressed="false">Errors</button>
-          <button id="filter-warn" class="lint-filter-btn" type="button" aria-pressed="false">Warnings</button>
-          <button id="filter-info" class="lint-filter-btn" type="button" aria-pressed="false">Info</button>
+          <button id="filter-error" class="lint-filter-btn" type="button" aria-pressed="true">Errors</button>
+          <button id="filter-warn" class="lint-filter-btn" type="button" aria-pressed="true">Warnings</button>
+          <button id="filter-info" class="lint-filter-btn" type="button" aria-pressed="true">Info</button>
           <button id="copy-lints-json" class="lint-copy-btn" type="button">Copy as JSON</button>
           <span id="copy-toast" class="lint-toast muted" role="status" aria-live="polite" style="display:none;"></span>
         </div>
@@ -108,7 +107,6 @@
     const lintsList = document.getElementById('lints-list');
     const lintDataScript = document.getElementById('lints-data');
     const filterButtons = {
-      all: document.getElementById('filter-all'),
       error: document.getElementById('filter-error'),
       warn: document.getElementById('filter-warn'),
       info: document.getElementById('filter-info'),
@@ -119,7 +117,7 @@
     let toastTimer = null;
     const lintState = {
       items: [],
-      filter: 'all',
+      filters: { error: true, warn: true, info: true },
     };
 
     function parseInitialLints() {
@@ -256,16 +254,34 @@
       if (!lintsList) return;
       const rows = lintsList.querySelectorAll('.lint-row');
       if (!rows.length) return;
+      let visibleCount = 0;
       rows.forEach((row) => {
         const sev = row.getAttribute('data-severity') || 'info';
-        row.style.display = lintState.filter === 'all' || sev === lintState.filter ? '' : 'none';
+        const show = Boolean(lintState.filters[sev]);
+        row.style.display = show ? '' : 'none';
+        if (show) {
+          visibleCount += 1;
+        }
       });
+      let emptyFilter = lintsList.querySelector('.lint-empty-filter');
+      if (visibleCount === 0) {
+        if (!emptyFilter) {
+          emptyFilter = document.createElement('div');
+          emptyFilter.className = 'lint-empty lint-empty-filter muted';
+          emptyFilter.setAttribute('role', 'note');
+          emptyFilter.textContent = 'No lints match the selected filters.';
+          lintsList.appendChild(emptyFilter);
+        }
+        emptyFilter.style.display = 'block';
+      } else if (emptyFilter) {
+        emptyFilter.style.display = 'none';
+      }
     }
 
     function renderLintRows() {
       if (!lintsList) return;
       if (!lintState.items.length) {
-        lintsList.innerHTML = '<div class="lint-empty muted" role="note">No lints reported.</div>';
+        lintsList.innerHTML = '<div class="lint-empty muted" role="note">No lints found.</div>';
         return;
       }
       lintsList.innerHTML = lintState.items.map((lint) => lintRowTemplate(lint)).join('');
@@ -277,14 +293,27 @@
       updateSummary();
       updateScriptTag();
       renderLintRows();
+      if (copyBtn) {
+        const hasLints = lintState.items.length > 0;
+        copyBtn.disabled = !hasLints;
+        copyBtn.setAttribute('aria-disabled', hasLints ? 'false' : 'true');
+      }
     }
 
-    function setFilter(next) {
-      lintState.filter = next;
+    function updateFilterButtons() {
       Object.entries(filterButtons).forEach(([key, button]) => {
         if (!button) return;
-        button.setAttribute('aria-pressed', key === next ? 'true' : 'false');
+        const active = Boolean(lintState.filters[key]);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
       });
+    }
+
+    function toggleFilter(key) {
+      if (!lintState.filters.hasOwnProperty(key)) {
+        return;
+      }
+      lintState.filters[key] = !lintState.filters[key];
+      updateFilterButtons();
       applyFilter();
     }
 
@@ -334,7 +363,7 @@
       } finally {
         copyBtn.disabled = false;
       }
-      showToast(success ? 'Copied' : 'Copy failed');
+      showToast(success ? 'Lints copied' : 'Copy failed');
     }
 
     const initialLints = parseInitialLints();
@@ -476,16 +505,16 @@
 
     if (btn) btn.addEventListener('click', reload);
     if (validateBtn) validateBtn.addEventListener('click', validatePack);
-    if (filterButtons.all) filterButtons.all.addEventListener('click', () => setFilter('all'));
-    if (filterButtons.error) filterButtons.error.addEventListener('click', () => setFilter('error'));
-    if (filterButtons.warn) filterButtons.warn.addEventListener('click', () => setFilter('warn'));
-    if (filterButtons.info) filterButtons.info.addEventListener('click', () => setFilter('info'));
+    if (filterButtons.error) filterButtons.error.addEventListener('click', () => toggleFilter('error'));
+    if (filterButtons.warn) filterButtons.warn.addEventListener('click', () => toggleFilter('warn'));
+    if (filterButtons.info) filterButtons.info.addEventListener('click', () => toggleFilter('info'));
     if (copyBtn) copyBtn.addEventListener('click', () => {
       copyJson();
     });
     document.addEventListener('DOMContentLoaded', () => {
       renderLints(initialLints);
-      setFilter('all');
+      updateFilterButtons();
+      applyFilter();
       previewDiff();
     });
   })();

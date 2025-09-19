@@ -56,7 +56,6 @@ def test_policy_page_lints_controls_present() -> None:
     html = r.text
     assert 'id="lints-data"' in html
     assert 'id="lints-list"' in html
-    assert 'id="filter-all"' in html
     assert 'id="filter-error"' in html
     assert 'id="filter-warn"' in html
     assert 'id="filter-info"' in html
