@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Iterable, Optional, cast
 
@@ -130,19 +131,23 @@ def _eligible_path(path: str) -> bool:
     return normalized in {"/v1/guardrail"}
 
 
+_HOP_BY_HOP_HEADER_NAMES = {
+    "content-length",
+    "transfer-encoding",
+    "date",
+    "server",
+}
+
+
 def _preserved_headers(source: Iterable[tuple[str, str]]) -> Dict[str, str]:
-    keep = {
-        "content-type",
-        "x-request-id",
-        "x-ratelimit-limit",
-        "x-ratelimit-remaining",
-        "x-ratelimit-reset",
-    }
-    out: Dict[str, str] = {}
+    preserved: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
     for key, value in source:
-        if key.lower() in keep:
-            out[key] = value
-    return out
+        lower = key.lower()
+        if lower in _HOP_BY_HOP_HEADER_NAMES:
+            continue
+        if lower not in preserved:
+            preserved[lower] = (key, value)
+    return {original: val for original, val in preserved.values()}
 
 
 _STORE_SINGLETON: _InMemoryStore | _RedisStore | None = None
@@ -196,9 +201,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         fingerprint = self._fingerprint(request, key, body)
         cached = self._store.get(fingerprint)
         if cached is not None:
-            headers = dict(cached.headers)
-            headers["Idempotency-Replayed"] = "true"
-            return Response(content=cached.body, status_code=cached.status, headers=headers)
+            replay = Response(content=cached.body, status_code=cached.status)
+            for name, value in cached.headers.items():
+                replay.headers[name] = value
+            replay.headers["Idempotency-Replayed"] = "true"
+            return replay
 
         response = await call_next(request)
         if "Idempotency-Replayed" not in response.headers:
@@ -245,7 +252,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         cached_record = _CachedResponse(
             status=status,
             body=bytes(body_bytes),
-            headers=headers,
+            headers=dict(headers),
         )
         self._store.set(fingerprint, cached_record, self._ttl)
 

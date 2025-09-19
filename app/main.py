@@ -163,6 +163,33 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
     return out
 
 
+def _ensure_idempotency_inner(app: FastAPI, *, finalize: bool = False) -> None:
+    try:
+        middleware = list(app.user_middleware)
+    except Exception:
+        return
+
+    kept: list[Any] = []
+    moved: list[Any] = []
+    for entry in middleware:
+        if getattr(entry, "cls", None) is IdempotencyMiddleware:
+            moved.append(entry)
+        else:
+            kept.append(entry)
+
+    if not moved:
+        return
+
+    try:
+        app.user_middleware[:] = [*kept, *moved]
+        if finalize:
+            app.middleware_stack = app.build_middleware_stack()
+        elif getattr(app, "middleware_stack", None) is not None:
+            app.middleware_stack = None
+    except Exception:
+        pass
+
+
 class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: StarletteRequest, call_next: RequestHandler
@@ -790,6 +817,7 @@ def create_app() -> FastAPI:
     except Exception:
         pass
     install_json_logging(app)
+    _ensure_idempotency_inner(app)
 
     # ---- Ensure only our /metrics is registered and uses v0.0.4 ----
     try:
@@ -855,3 +883,5 @@ try:
         )
 except Exception:
     pass
+
+_ensure_idempotency_inner(app, finalize=True)
