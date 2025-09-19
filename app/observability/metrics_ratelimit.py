@@ -9,12 +9,15 @@ except Exception:  # pragma: no cover
     Counter = Gauge = None  # type: ignore
 
 _reload_counter: Optional[Any]
+_reload_helper: Optional[Any]
 try:  # pragma: no cover
     from app.observability.metrics import (
-        guardrail_ratelimit_redis_script_reload_total as _reload_counter,
+        GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL as _reload_counter,
+        inc_ratelimit_script_reload as _reload_helper,
     )
 except Exception:  # pragma: no cover
     _reload_counter = None
+    _reload_helper = None
 
 _ENABLED = os.getenv("METRICS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
@@ -54,6 +57,13 @@ def _counters():
 
 
 def inc_script_reload() -> None:
+    if _reload_helper is not None:
+        try:
+            _reload_helper()
+            return
+        except Exception:
+            pass
+
     counter, _, _ = _counters()
     if counter:
         try:

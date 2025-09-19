@@ -86,10 +86,17 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
-guardrail_ratelimit_redis_script_reload_total = _get_or_create_counter(
+GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL = _get_or_create_counter(
     "guardrail_ratelimit_redis_script_reload_total",
-    "Successful NOSCRIPT recoveries (SCRIPT LOAD + successful retry) for rate-limit Lua.",
+    "Count of Redis rate-limit Lua reloads triggered by NOSCRIPT.",
 )
+
+
+def inc_ratelimit_script_reload() -> None:
+    try:
+        GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc()
+    except Exception:
+        pass
 
 
 def _get_or_create_histogram(

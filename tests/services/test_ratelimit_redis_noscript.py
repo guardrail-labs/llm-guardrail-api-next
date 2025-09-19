@@ -2,18 +2,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.observability.metrics import guardrail_ratelimit_redis_script_reload_total
+from app.observability.metrics import GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL
 from app.services import ratelimit_backends as rb
 
 
 def _metric_value() -> float:
-    samples = list(guardrail_ratelimit_redis_script_reload_total.collect())
+    samples = list(GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.collect())
     if not samples:
         return 0.0
     sample = samples[0].samples
     if not sample:
         return 0.0
-    return sample[0].value
+    return float(sample[0].value)
 
 
 def _make_client():
