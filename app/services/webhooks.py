@@ -31,9 +31,9 @@ _DLQ_PATH: Optional[str] = None
 
 # Worker state
 _lock = threading.RLock()
-_q: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
+_q: "queue.Queue[Any]" = queue.Queue()
 _worker_thread: Optional[threading.Thread] = None
-_worker_stopping = False
+_stop_event = threading.Event()
 _STOP = object()
 
 # Stats (simple counters for /admin and tests)
@@ -43,6 +43,7 @@ _stats: Dict[str, Any] = {
     "dropped": 0,
     "last_status": "",
     "last_error": "",
+    "worker_running": False,
 }
 
 
@@ -164,7 +165,19 @@ def _dlq_write(evt: Dict[str, Any], reason: str) -> None:
         pass
 
 
-def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
+def _deliver(
+    evt: Dict[str, Any],
+) -> Tuple[str, str]:
+    outcome, status, _, _ = _deliver_with_client(evt, client=None, client_conf=None)
+    return outcome, status
+
+
+def _deliver_with_client(
+    evt: Dict[str, Any],
+    *,
+    client: Optional[httpx.Client],
+    client_conf: Tuple[int, bool] | None,
+) -> Tuple[str, str, Optional[httpx.Client], Tuple[int, bool] | None]:
     """
     Deliver a single event with retries.
     Returns (outcome, status_bucket).
@@ -181,14 +194,14 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
     allow_host = str(cfg.get("webhook_allowlist_host") or "")
 
     if not url:
-        return "failed", "error"
+        return "failed", "error", client, client_conf
     if not _allow_host(url, allow_host):
-        return "failed", "error"
+        return "failed", "error", client, client_conf
 
     reg = get_cb_registry()
     if reg.should_dlq_now(url):
         _dlq_write(evt, reason="cb_open")
-        return "cb_open", "-"
+        return "cb_open", "-", client, client_conf
 
     body_bytes = json.dumps(evt).encode("utf-8")
     headers = {
@@ -206,27 +219,36 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
     last_code: Optional[int] = None
     last_exc: Optional[str] = None
 
+    desired_conf = (timeout_ms, insecure_tls)
+    if client is None or client_conf != desired_conf:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass
+        client = httpx.Client(
+            timeout=timeout_ms / 1000.0,
+            verify=not insecure_tls,
+        )
+        client_conf = desired_conf
+
     while True:
         if attempt > 0 and reg.should_dlq_now(url):
             # If the breaker opened after the previous attempt, stop retrying immediately.
             _dlq_write(evt, reason="cb_open")
-            return "cb_open", "-"
+            return "cb_open", "-", client, client_conf
 
         attempt += 1
         t0 = time.perf_counter()
         try:
-            with httpx.Client(
-                timeout=timeout_ms / 1000.0,
-                verify=not insecure_tls,
-            ) as cli:
-                resp = cli.post(url, content=body_bytes, headers=headers)
-                last_code = resp.status_code
-                last_exc = None
-                WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
-                if 200 <= resp.status_code < 300:
-                    reg.on_success(url)
-                    return "sent", _status_bucket(last_code, None)
-                reg.on_failure(url)
+            resp = client.post(url, content=body_bytes, headers=headers)
+            last_code = resp.status_code
+            last_exc = None
+            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            if 200 <= resp.status_code < 300:
+                reg.on_success(url)
+                return "sent", _status_bucket(last_code, None), client, client_conf
+            reg.on_failure(url)
         except httpx.TimeoutException:
             last_exc = "timeout"
             reg.on_failure(url)
@@ -237,21 +259,31 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
             WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
 
         if attempt > max_retries:
-            _dlq_write(evt, reason=_status_bucket(last_code, last_exc))
-            return "dlq", _status_bucket(last_code, last_exc)
+            bucket = _status_bucket(last_code, last_exc)
+            _dlq_write(evt, reason=bucket)
+            return "dlq", bucket, client, client_conf
 
         sleep_ms = compute_backoff_ms(backoff_ms, attempt - 1)
         time.sleep(sleep_ms / 1000.0)
 
 
 def _worker() -> None:
+    client: Optional[httpx.Client] = None
+    client_conf: Tuple[int, bool] | None = None
     try:
         while True:
-            evt = _q.get()
+            if _stop_event.is_set() and _q.empty():
+                break
+            try:
+                evt = _q.get(timeout=0.1)
+            except queue.Empty:
+                continue
             if evt is _STOP:
                 break
             try:
-                outcome, status = _deliver(evt)
+                outcome, status, client, client_conf = _deliver_with_client(
+                    evt, client=client, client_conf=client_conf
+                )
                 with _lock:
                     _stats["processed"] += 1
                     _stats["last_status"] = status
@@ -269,31 +301,36 @@ def _worker() -> None:
                 WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
                 WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
     finally:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass
         with _lock:
-            global _worker_thread, _worker_stopping
+            global _worker_thread
             if _worker_thread is threading.current_thread():
                 _worker_thread = None
-            _worker_stopping = False
+            _stats["worker_running"] = False
+        _stop_event.clear()
 
 
 def _ensure_worker(*, require_enabled: bool) -> None:
     global _worker_thread
     thread_to_start: Optional[threading.Thread] = None
     with _lock:
-        global _worker_stopping
-        if _worker_stopping:
-            return
         thread = _worker_thread
         if thread is not None and thread.is_alive():
             return
-        if thread is not None and not thread.is_alive():
-            _worker_thread = None
         if require_enabled and not _worker_enabled():
             return
+        _stop_event.clear()
         thread_to_start = threading.Thread(
-            target=_worker, name="webhook-worker", daemon=True
+            target=_worker,
+            name="webhook-worker",
+            daemon=True,
         )
         _worker_thread = thread_to_start
+        _stats["worker_running"] = True
     if thread_to_start is not None:
         thread_to_start.start()
 
@@ -311,15 +348,13 @@ def shutdown(timeout: float = 0.5) -> None:
     global _worker_thread
     thread: Optional[threading.Thread]
     with _lock:
-        global _worker_stopping
         thread = _worker_thread
         if thread is None or not thread.is_alive():
+            _stats["worker_running"] = False
             return
-        if _worker_stopping:
-            return
-        _worker_stopping = True
+        _stop_event.set()
         try:
-            _q.put(_STOP)
+            _q.put_nowait(_STOP)
         except Exception:
             pass
     try:
@@ -330,7 +365,7 @@ def shutdown(timeout: float = 0.5) -> None:
         if _worker_thread is thread and not thread.is_alive():
             _worker_thread = None
         if not thread.is_alive():
-            _worker_stopping = False
+            _stats["worker_running"] = False
 
 
 def enqueue(evt: Dict[str, Any]) -> None:
@@ -344,20 +379,21 @@ def enqueue(evt: Dict[str, Any]) -> None:
 
 def configure(*, reset: bool = False) -> None:
     """Test helper: reset counters/queue and restart worker on next enqueue."""
-    global _q, _worker_thread, _worker_stopping
+    global _q, _worker_thread, _stop_event
 
     if reset:
         shutdown()
 
     with _lock:
         if reset:
-            _q = queue.SimpleQueue()
+            _q = queue.Queue()
             _worker_thread = None
-            _worker_stopping = False
+            _stop_event = threading.Event()
             for k in ("queued", "processed", "dropped"):
                 _stats[k] = 0
             _stats["last_status"] = ""
             _stats["last_error"] = ""
+            _stats["worker_running"] = False
             try:
                 WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]
             except AttributeError:
