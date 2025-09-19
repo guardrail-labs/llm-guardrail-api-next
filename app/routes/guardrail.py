@@ -6,6 +6,7 @@ import random
 import re
 import uuid
 import time
+import math
 from typing import (
     Any,
     Callable,
@@ -195,9 +196,12 @@ def _coerce_score(val: Any) -> Optional[float]:
     if isinstance(val, bool):
         return float(val)
     try:
-        return float(val)
+        coerced = float(val)
     except Exception:
         return None
+    if not math.isfinite(coerced):
+        return None
+    return coerced
 
 
 def _log_adjudication(
