@@ -287,6 +287,24 @@ def configure(*, reset: bool = False) -> None:
                 _stats[k] = 0
             _stats["last_status"] = ""
             _stats["last_error"] = ""
+            try:
+                WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]
+            except AttributeError:
+                try:
+                    WEBHOOK_EVENTS_TOTAL._children.clear()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            try:
+                WEBHOOK_DELIVERIES_TOTAL._metrics.clear()  # type: ignore[attr-defined]
+            except AttributeError:
+                try:
+                    WEBHOOK_DELIVERIES_TOTAL._children.clear()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            try:
+                get_cb_registry()._ct.clear()
+            except Exception:
+                pass
 
     # Always sync the DLQ gauge to the current backlog so restarts immediately reflect
     # reality. Previously this only ran for reset=True which left the gauge stale on
