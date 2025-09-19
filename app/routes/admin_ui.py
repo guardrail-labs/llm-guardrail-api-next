@@ -23,6 +23,12 @@ except Exception:  # pragma: no cover - import error fallback
         return []
 
 try:  # pragma: no cover - optional dependency
+    from app.services.mitigation_modes import get_modes as get_mitigation_modes
+except Exception:  # pragma: no cover - mitigation store unavailable
+    def get_mitigation_modes(tenant: str, bot: str) -> Dict[str, bool]:
+        return {"block": False, "redact": False, "clarify_first": False}
+
+try:  # pragma: no cover - optional dependency
     from app.services.audit_forwarder import fetch_recent_decisions  # type: ignore
 except Exception:  # pragma: no cover - missing audit store
     def fetch_recent_decisions(n: int = 50) -> List[Dict[str, Any]]:
@@ -149,6 +155,10 @@ def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         bindings = []
     tenant = req.query_params.get("tenant", "")
     bot = req.query_params.get("bot", "")
+    if tenant and bot:
+        mitigation_modes = get_mitigation_modes(tenant, bot)
+    else:
+        mitigation_modes = {"block": False, "redact": False, "clarify_first": False}
     resp = templates.TemplateResponse(
         "bindings.html",
         {
@@ -156,6 +166,7 @@ def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             "bindings": bindings,
             "tenant": tenant,
             "bot": bot,
+            "mitigation_modes": mitigation_modes,
         },
     )
     issue_csrf(resp)

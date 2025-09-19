@@ -31,6 +31,60 @@
   </table>
   <p id="bindings-empty" class="muted" {% if bindings and bindings|length > 0 %}style="display:none"{% endif %}>No bindings found.</p>
 </div>
+
+<div
+  class="card"
+  id="mitigation-modes-card"
+  data-tenant="{{ tenant or '' }}"
+  data-bot="{{ bot or '' }}"
+>
+  <h3 style="margin-top:0;">Mitigation modes</h3>
+  <p class="muted" id="mitigation-context"></p>
+  <div id="mitigation-error" class="banner error" role="alert" hidden></div>
+  <div
+    id="mitigation-toast"
+    class="banner success"
+    role="status"
+    aria-live="polite"
+    hidden
+  ></div>
+  <div class="toggle-list">
+    <label class="toggle-item">
+      <input
+        type="checkbox"
+        id="mitigation-mode-block"
+        {% if mitigation_modes.block %}checked{% endif %}
+      />
+      <span class="toggle-copy">
+        <strong>Block</strong>
+        <span class="muted">Enforced in decision path.</span>
+      </span>
+    </label>
+    <label class="toggle-item">
+      <input
+        type="checkbox"
+        id="mitigation-mode-redact"
+        {% if mitigation_modes.redact %}checked{% endif %}
+      />
+      <span class="toggle-copy">
+        <strong>Redact</strong>
+        <span class="muted">Stored &amp; returned; observability-focused.</span>
+      </span>
+    </label>
+    <label class="toggle-item">
+      <input
+        type="checkbox"
+        id="mitigation-mode-clarify"
+        {% if mitigation_modes.clarify_first %}checked{% endif %}
+      />
+      <span class="toggle-copy">
+        <strong>Clarify-first</strong>
+        <span class="muted">Stored &amp; returned; observability-focused.</span>
+      </span>
+    </label>
+  </div>
+  <p id="mitigation-saving" class="muted" hidden></p>
+</div>
 <script>
   (function () {
     function getCookie(name) {
@@ -131,6 +185,219 @@
         .catch(function () {
           // no-op
         });
+    }
+
+    const mitigationCard = document.getElementById('mitigation-modes-card');
+    if (mitigationCard) {
+      const tenant = mitigationCard.getAttribute('data-tenant') || '';
+      const bot = mitigationCard.getAttribute('data-bot') || '';
+      const context = document.getElementById('mitigation-context');
+      const errorBanner = document.getElementById('mitigation-error');
+      const toastBanner = document.getElementById('mitigation-toast');
+      const savingNote = document.getElementById('mitigation-saving');
+      const blockToggle = document.getElementById('mitigation-mode-block');
+      const redactToggle = document.getElementById('mitigation-mode-redact');
+      const clarifyToggle = document.getElementById('mitigation-mode-clarify');
+      const toggles = [blockToggle, redactToggle, clarifyToggle].filter(Boolean);
+      const hasPair = Boolean(tenant && bot);
+      let toastTimer = null;
+
+      if (context) {
+        context.textContent = hasPair
+          ? tenant + '/' + bot
+          : 'Provide tenant and bot to manage mitigation modes.';
+      }
+
+      function setControlsDisabled(disabled) {
+        toggles.forEach(function (input) {
+          if (!input) {
+            return;
+          }
+          input.disabled = !hasPair || disabled;
+        });
+      }
+
+      function setSavingIndicator(message) {
+        if (!savingNote) {
+          return;
+        }
+        if (!message) {
+          savingNote.hidden = true;
+          savingNote.textContent = '';
+        } else {
+          savingNote.hidden = false;
+          savingNote.textContent = message;
+        }
+      }
+
+      function setError(message) {
+        if (!errorBanner) {
+          return;
+        }
+        if (!message) {
+          errorBanner.hidden = true;
+          errorBanner.textContent = '';
+        } else {
+          errorBanner.textContent = message;
+          errorBanner.hidden = false;
+        }
+      }
+
+      function clearToastTimer() {
+        if (toastTimer) {
+          clearTimeout(toastTimer);
+          toastTimer = null;
+        }
+      }
+
+      function setToast(message) {
+        if (!toastBanner) {
+          return;
+        }
+        clearToastTimer();
+        if (!message) {
+          toastBanner.hidden = true;
+          toastBanner.textContent = '';
+          return;
+        }
+        toastBanner.textContent = message;
+        toastBanner.hidden = false;
+        toastTimer = setTimeout(function () {
+          toastBanner.hidden = true;
+          toastBanner.textContent = '';
+        }, 3500);
+      }
+
+      function applyModes(modes) {
+        if (!modes) {
+          return;
+        }
+        if (blockToggle) {
+          blockToggle.checked = Boolean(modes.block);
+        }
+        if (redactToggle) {
+          redactToggle.checked = Boolean(modes.redact);
+        }
+        if (clarifyToggle) {
+          clarifyToggle.checked = Boolean(modes.clarify_first);
+        }
+      }
+
+      function currentModes() {
+        return {
+          block: Boolean(blockToggle && blockToggle.checked),
+          redact: Boolean(redactToggle && redactToggle.checked),
+          clarify_first: Boolean(clarifyToggle && clarifyToggle.checked)
+        };
+      }
+
+      function fetchModes() {
+        if (!hasPair) {
+          setControlsDisabled(true);
+          return;
+        }
+        setControlsDisabled(true);
+        setSavingIndicator('Loading…');
+        setError('');
+        fetch(
+          '/admin/mitigation_modes?tenant=' +
+            encodeURIComponent(tenant) +
+            '&bot=' +
+            encodeURIComponent(bot),
+          { credentials: 'same-origin' }
+        )
+          .then(function (res) {
+            return res
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (body) {
+                return { ok: res.ok, body: body };
+              });
+          })
+          .then(function (result) {
+            if (!result.ok) {
+              const detail =
+                result.body && (result.body.detail || result.body.error || result.body.message);
+              setError(detail || 'Failed to load mitigation modes.');
+              return;
+            }
+            setError('');
+            if (result.body && result.body.modes) {
+              applyModes(result.body.modes);
+            }
+          })
+          .catch(function () {
+            setError('Failed to load mitigation modes.');
+          })
+          .finally(function () {
+            setSavingIndicator('');
+            setControlsDisabled(false);
+          });
+      }
+
+      function saveModes() {
+        if (!hasPair) {
+          return;
+        }
+        setControlsDisabled(true);
+        setSavingIndicator('Saving…');
+        setError('');
+        const payload = {
+          tenant: tenant,
+          bot: bot,
+          modes: currentModes()
+        };
+        fetch('/admin/mitigation_modes', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(payload)
+        })
+          .then(function (res) {
+            return res
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (body) {
+                return { ok: res.ok, body: body };
+              });
+          })
+          .then(function (result) {
+            if (!result.ok) {
+              const detail =
+                result.body && (result.body.detail || result.body.error || result.body.message);
+              setError(detail || 'Failed to save mitigation modes.');
+              return;
+            }
+            setError('');
+            if (result.body && result.body.modes) {
+              applyModes(result.body.modes);
+            }
+            setSavingIndicator('');
+            setToast('Saved mitigation modes for ' + tenant + '/' + bot);
+          })
+          .catch(function () {
+            setError('Failed to save mitigation modes.');
+          })
+          .finally(function () {
+            setControlsDisabled(false);
+          });
+      }
+
+      if (!hasPair) {
+        setControlsDisabled(true);
+        setSavingIndicator('');
+      } else {
+        toggles.forEach(function (input) {
+          input.addEventListener('change', function () {
+            saveModes();
+          });
+        });
+        fetchModes();
+      }
     }
 
     button.addEventListener('click', function () {
