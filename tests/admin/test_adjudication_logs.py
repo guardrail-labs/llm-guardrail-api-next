@@ -255,7 +255,7 @@ def test_adjudication_ndjson_export(admin_client: TestClient) -> None:
     ).json()["items"]
 
     response = admin_client.get(
-        "/admin/adjudications/export.ndjson",
+        "/admin/adjudications.ndjson",
         params={"tenant": "tenant-z"},
         headers=_admin_headers(),
     )
