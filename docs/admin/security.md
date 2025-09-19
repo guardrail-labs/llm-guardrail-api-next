@@ -7,15 +7,17 @@ access any `/admin` route. Two cookies are issued:
 - `admin_csrf` – the double-submit CSRF token surfaced to the browser.
 
 Both cookies are bound to the `/admin` path, marked `SameSite=Strict`, and
-inherit the default TTL of 30 minutes (`ADMIN_SESSION_TTL_SECONDS`). When the
-session cookie is missing or expires, a new pair is minted and the CSRF token is
-rotated alongside it.
+inherit the default TTL of 20 minutes (`ADMIN_SESSION_TTL_SECONDS`, defaults to
+`1200`). When the session cookie is missing or expires, a new pair is minted and
+the CSRF token is rotated alongside it.
 
-For production, cookies are sent with the `Secure` attribute by default. Local
-workflows that rely on HTTP can opt out by setting `ADMIN_SECURE_COOKIES=0`; all
-other attributes remain unchanged. Cookie names and the admin path are also
-configurable via `ADMIN_SESSION_COOKIE`, `ADMIN_CSRF_COOKIE`, and
-`ADMIN_COOKIE_PATH`.
+For production, the middleware sets strict attributes on every session: the
+session cookie is `Secure`, `HttpOnly`, and `SameSite=Strict`, while the CSRF
+cookie is `Secure`, `SameSite=Strict`, and readable by client-side JavaScript.
+Both share the same TTL. Local HTTP development flows can opt out of the `Secure`
+flag by setting `ADMIN_COOKIE_INSECURE=1`; all other attributes remain
+unchanged. Cookie names and the admin path are also configurable via
+`ADMIN_SESSION_COOKIE`, `ADMIN_CSRF_COOKIE`, and `ADMIN_COOKIE_PATH`.
 
 ## Adjudication logs API
 
