@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, 
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from app.routes.admin_apply_demo_defaults import apply_demo_defaults as apply_demo_action
 from app.routes.admin_apply_golden import apply_golden_packs as apply_golden_action
+from app.routes.admin_apply_strict_secrets import apply_strict_secrets as apply_strict_action
 from app.services.config_store import get_config, get_policy_packs
 from app.services.policy import current_rules_version, reload_rules
 
@@ -259,19 +261,25 @@ def policy_page(
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
+
+
+def _require_ui_csrf(req: Request, token: str) -> None:
+    cookie = req.cookies.get("ui_csrf", "")
+    if not (
+        cookie
+        and token
+        and _csrf_ok(token)
+        and _csrf_ok(cookie)
+        and hmac.compare_digest(cookie, token)
+    ):
+        raise HTTPException(status_code=400, detail="CSRF failed")
+
+
 @router.post("/admin/ui/reload", response_class=PlainTextResponse)
 def ui_reload(
     req: Request, csrf_token: str = Form(...), _: None = Depends(require_auth)
 ) -> PlainTextResponse:
-    cookie = req.cookies.get("ui_csrf", "")
-    if not (
-        cookie
-        and csrf_token
-        and _csrf_ok(csrf_token)
-        and _csrf_ok(cookie)
-        and hmac.compare_digest(cookie, csrf_token)
-    ):
-        raise HTTPException(status_code=400, detail="CSRF failed")
+    _require_ui_csrf(req, csrf_token)
     try:
         reload_rules()
         return PlainTextResponse("ok")
@@ -300,16 +308,8 @@ def export_decisions(
 def ui_apply_golden(
     req: Request, payload: Dict[str, Any], _: None = Depends(require_auth)
 ) -> JSONResponse:
-    cookie = req.cookies.get("ui_csrf", "")
     token = str(payload.get("csrf_token", ""))
-    if not (
-        cookie
-        and token
-        and _csrf_ok(token)
-        and _csrf_ok(cookie)
-        and hmac.compare_digest(cookie, token)
-    ):
-        raise HTTPException(status_code=400, detail="CSRF failed")
+    _require_ui_csrf(req, token)
 
     tenant = str(payload.get("tenant", "")).strip()
     bot = str(payload.get("bot", "")).strip()
@@ -333,6 +333,90 @@ def ui_apply_golden(
         status = "success"
     else:
         message = "Already using Golden Packs."
+        status = "info"
+
+    return JSONResponse(
+        {
+            "message": message,
+            "status": status,
+            "applied": bool(result.get("applied")),
+            "binding": result,
+            "bindings": bindings,
+        }
+    )
+
+
+@router.post("/admin/ui/bindings/apply_strict_secrets", response_class=JSONResponse)
+def ui_apply_strict_secrets(
+    req: Request, payload: Dict[str, Any], _: None = Depends(require_auth)
+) -> JSONResponse:
+    token = str(payload.get("csrf_token", ""))
+    _require_ui_csrf(req, token)
+
+    tenant = str(payload.get("tenant", "")).strip()
+    bot = str(payload.get("bot", "")).strip()
+    if not tenant or not bot:
+        raise HTTPException(status_code=400, detail="tenant and bot are required.")
+
+    try:
+        result = apply_strict_action({"tenant": tenant, "bot": bot})
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - unexpected failure
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    try:
+        bindings = list_bindings()
+    except Exception:  # pragma: no cover - underlying store failure
+        bindings = []
+
+    if result.get("applied"):
+        message = f"Applied to {tenant}/{bot}."
+        status = "success"
+    else:
+        message = "Already applied; refreshed caches."
+        status = "info"
+
+    return JSONResponse(
+        {
+            "message": message,
+            "status": status,
+            "applied": bool(result.get("applied")),
+            "binding": result,
+            "bindings": bindings,
+        }
+    )
+
+
+@router.post("/admin/ui/bindings/apply_demo_defaults", response_class=JSONResponse)
+def ui_apply_demo_defaults(
+    req: Request, payload: Dict[str, Any], _: None = Depends(require_auth)
+) -> JSONResponse:
+    token = str(payload.get("csrf_token", ""))
+    _require_ui_csrf(req, token)
+
+    tenant = str(payload.get("tenant", "")).strip()
+    bot = str(payload.get("bot", "")).strip()
+    if not tenant or not bot:
+        raise HTTPException(status_code=400, detail="tenant and bot are required.")
+
+    try:
+        result = apply_demo_action({"tenant": tenant, "bot": bot})
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - unexpected failure
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    try:
+        bindings = list_bindings()
+    except Exception:  # pragma: no cover - underlying store failure
+        bindings = []
+
+    if result.get("applied"):
+        message = f"Applied to {tenant}/{bot}."
+        status = "success"
+    else:
+        message = "Already applied; refreshed caches."
         status = "info"
 
     return JSONResponse(

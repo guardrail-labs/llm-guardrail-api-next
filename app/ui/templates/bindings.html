@@ -1,11 +1,22 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="card">
+<div
+  class="card"
+  id="bindings-card"
+  data-tenant="{{ tenant or '' }}"
+  data-bot="{{ bot or '' }}"
+>
   <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;">
     <h2 style="margin:0;">Bindings</h2>
-    <button type="button" id="apply-golden-button">Apply Golden Packs</button>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:flex-end;">
+      <button type="button" id="apply-golden-button">Apply Golden Packs</button>
+      <button type="button" id="apply-strict-button">Apply Strict Secrets Pack</button>
+      <button type="button" id="apply-demo-button">Apply Demo Defaults</button>
+    </div>
   </div>
   <div id="apply-golden-alert" class="banner info" role="status" aria-live="polite" hidden></div>
+  <div id="apply-strict-alert" class="banner info" role="status" aria-live="polite" hidden></div>
+  <div id="apply-demo-alert" class="banner info" role="status" aria-live="polite" hidden></div>
   <div id="apply-golden-panel" class="confirm-panel" hidden>
     <p style="margin-top:0;">Apply the Golden policy pack (PII + Secrets) to the selected tenant and bot.</p>
     <div style="display:grid; gap:0.75rem; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));">
@@ -105,18 +116,22 @@
     const tbody = document.getElementById('bindings-table-body');
     const emptyState = document.getElementById('bindings-empty');
 
-    function setAlert(kind, message) {
-      if (!alertBox) {
+    function setBanner(element, kind, message) {
+      if (!element) {
         return;
       }
       if (!message) {
-        alertBox.hidden = true;
-        alertBox.textContent = '';
+        element.hidden = true;
+        element.textContent = '';
         return;
       }
-      alertBox.className = 'banner ' + kind;
-      alertBox.textContent = message;
-      alertBox.hidden = false;
+      element.className = 'banner ' + kind;
+      element.textContent = message;
+      element.hidden = false;
+    }
+
+    function setAlert(kind, message) {
+      setBanner(alertBox, kind, message);
     }
 
     function setLoading(isLoading) {
@@ -186,6 +201,129 @@
           // no-op
         });
     }
+
+    const bindingsCard = document.getElementById('bindings-card');
+    const strictButton = document.getElementById('apply-strict-button');
+    const demoButton = document.getElementById('apply-demo-button');
+    const strictAlert = document.getElementById('apply-strict-alert');
+    const demoAlert = document.getElementById('apply-demo-alert');
+    const contextTenant = bindingsCard
+      ? bindingsCard.getAttribute('data-tenant') || ''
+      : '';
+    const contextBot = bindingsCard ? bindingsCard.getAttribute('data-bot') || '' : '';
+    const canApplyQuick = Boolean(contextTenant && contextBot);
+
+    function setQuickButtonsLoading(isLoading) {
+      if (strictButton) {
+        strictButton.disabled = isLoading || !canApplyQuick;
+      }
+      if (demoButton) {
+        demoButton.disabled = isLoading || !canApplyQuick;
+      }
+    }
+
+    setQuickButtonsLoading(false);
+
+    function bindQuickAction(options) {
+      const buttonEl = options.button;
+      const alertEl = options.alert;
+      if (!buttonEl || !alertEl) {
+        return;
+      }
+      buttonEl.addEventListener('click', function () {
+        if (!canApplyQuick) {
+          return;
+        }
+        const confirmMessage =
+          typeof options.confirmMessage === 'function'
+            ? options.confirmMessage(contextTenant, contextBot)
+            : options.confirmMessage;
+        if (confirmMessage && !window.confirm(confirmMessage)) {
+          return;
+        }
+        setBanner(alertEl, 'info', options.pendingMessage);
+        setQuickButtonsLoading(true);
+
+        fetch(options.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            tenant: contextTenant,
+            bot: contextBot,
+            csrf_token: getCookie('ui_csrf') || ''
+          })
+        })
+          .then(function (res) {
+            return res
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (body) {
+                return { ok: res.ok, body: body };
+              });
+          })
+          .then(function (result) {
+            if (!result.ok) {
+              const detail =
+                result.body &&
+                (result.body.detail || result.body.message || result.body.error || result.body.error_message);
+              setBanner(alertEl, 'error', detail || options.errorMessage);
+              return;
+            }
+            const status =
+              result.body.status || (result.body.applied ? options.successStatus || 'success' : 'info');
+            const message =
+              result.body.message ||
+              (result.body.applied
+                ? options.successMessage(contextTenant, contextBot)
+                : options.alreadyMessage);
+            setBanner(alertEl, status, message);
+            if (result.body && result.body.bindings) {
+              updateBindings(result.body.bindings);
+            } else {
+              refreshBindings();
+            }
+          })
+          .catch(function () {
+            setBanner(alertEl, 'error', options.errorMessage);
+          })
+          .finally(function () {
+            setQuickButtonsLoading(false);
+          });
+      });
+    }
+
+    bindQuickAction({
+      button: strictButton,
+      alert: strictAlert,
+      endpoint: '/admin/ui/bindings/apply_strict_secrets',
+      pendingMessage: 'Applying Strict Secrets Pack…',
+      confirmMessage: function (tenant, bot) {
+        return 'Apply Strict Secrets Pack to ' + tenant + '/' + bot + '?';
+      },
+      successMessage: function (tenant, bot) {
+        return 'Applied to ' + tenant + '/' + bot + '.';
+      },
+      alreadyMessage: 'Already applied; refreshed caches.',
+      errorMessage: 'Failed to apply Strict Secrets Pack.'
+    });
+
+    bindQuickAction({
+      button: demoButton,
+      alert: demoAlert,
+      endpoint: '/admin/ui/bindings/apply_demo_defaults',
+      pendingMessage: 'Applying Demo Defaults…',
+      confirmMessage: function (tenant, bot) {
+        return 'Apply Demo Defaults to ' + tenant + '/' + bot + '?';
+      },
+      successMessage: function (tenant, bot) {
+        return 'Applied to ' + tenant + '/' + bot + '.';
+      },
+      alreadyMessage: 'Already applied; refreshed caches.',
+      errorMessage: 'Failed to apply Demo Defaults.'
+    });
 
     const mitigationCard = document.getElementById('mitigation-modes-card');
     if (mitigationCard) {
