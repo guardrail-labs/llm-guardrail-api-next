@@ -23,6 +23,7 @@ from starlette.responses import Response as StarletteResponse
 from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
+from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
@@ -206,6 +207,9 @@ class _CompatHeadersMiddleware(BaseHTTPMiddleware):
         pp = os.getenv("SEC_HEADERS_PERMISSIONS_POLICY")
         if pp:
             resp.headers["Permissions-Policy"] = pp
+        path = request.url.path
+        if path.startswith("/guardrail") and not path.startswith("/v1/"):
+            resp.headers.setdefault("Deprecation", "true")
         if _truthy(os.getenv("CORS_ENABLED", "0")):
             origin = request.headers.get("origin") or request.headers.get("Origin")
             if origin:
@@ -671,6 +675,7 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
     app.add_middleware(HttpStatusMetricsMiddleware)
+    app.add_middleware(IdempotencyMiddleware)
 
     # --- Admin bindings: prefer real router, else fallback ---
     admin_router = None
@@ -746,6 +751,17 @@ def create_app() -> FastAPI:
 
     # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
+
+    try:
+        from app.routes import guardrail as guardrail_routes
+
+        app.include_router(
+            guardrail_routes.router,
+            prefix="/v1",
+            tags=["guardrail", "v1"],
+        )
+    except Exception:
+        pass
 
     # --- Public egress route once ---
     app.include_router(egress_router)

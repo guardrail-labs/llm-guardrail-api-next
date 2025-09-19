@@ -349,8 +349,17 @@ async def get_decisions(
     tenant: Optional[str] = Query(None),
     bot: Optional[str] = Query(None),
     outcome: Optional[str] = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
+    page: int = Query(
+        1,
+        ge=1,
+        description="1-based page number (ignored when limit/offset query params are provided)",
+    ),
+    page_size: int = Query(
+        50,
+        ge=1,
+        le=500,
+        description="Items per page when using page/page_size (overridden by limit/offset)",
+    ),
     sort: str = "ts",
     dir: str = "desc",
 ) -> JSONResponse:
@@ -424,8 +433,17 @@ async def decisions_page(
     tenant: Optional[str] = None,
     bot: Optional[str] = None,
     outcome: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 50,
+    page: int = Query(
+        1,
+        ge=1,
+        description="1-based page number (ignored when limit/offset query params are provided)",
+    ),
+    page_size: int = Query(
+        50,
+        ge=1,
+        le=500,
+        description="Items per page when using page/page_size (overridden by limit/offset)",
+    ),
 ) -> Response:
     accept = (request.headers.get("accept") or "").lower()
     wants_html = "text/html" in accept or "application/xhtml+xml" in accept
