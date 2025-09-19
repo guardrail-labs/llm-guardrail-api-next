@@ -220,6 +220,7 @@ def policy_page(
             "csrf_token": csrf_token,
             "version": version,
             "packs": packs,
+            "lints": [],
         },
     )
     issue_csrf(resp, csrf_token)
