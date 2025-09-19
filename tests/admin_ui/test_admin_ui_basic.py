@@ -48,3 +48,24 @@ def test_export_ndjson_auth() -> None:
     assert r.status_code == 200
     assert r.headers.get("content-type", "").startswith("application/x-ndjson")
 
+
+def test_policy_page_lints_controls_present() -> None:
+    c = _client()
+    r = c.get("/admin/policy", headers={"Authorization": "Bearer secret"})
+    assert r.status_code == 200
+    html = r.text
+    assert 'id="lints-data"' in html
+    assert 'id="lints-list"' in html
+    assert 'id="filter-all"' in html
+    assert 'id="filter-error"' in html
+    assert 'id="filter-warn"' in html
+    assert 'id="filter-info"' in html
+    assert 'data-severity="' in html
+
+
+def test_policy_page_has_copy_button() -> None:
+    c = _client()
+    r = c.get("/admin/policy", headers={"Authorization": "Bearer secret"})
+    assert r.status_code == 200
+    assert 'id="copy-lints-json"' in r.text
+

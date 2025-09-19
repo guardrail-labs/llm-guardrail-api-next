@@ -38,7 +38,18 @@
     </details>
     <details style="margin-top:8px;">
       <summary><strong>Lint Results</strong> <span id="lint_summary" class="muted"></span></summary>
-      <ul id="lint_list"></ul>
+      <div class="lint-panel">
+        <div class="lint-toolbar" role="toolbar" aria-label="Lint severity filter">
+          <button id="filter-all" class="lint-filter-btn" type="button" aria-pressed="true">All</button>
+          <button id="filter-error" class="lint-filter-btn" type="button" aria-pressed="false">Errors</button>
+          <button id="filter-warn" class="lint-filter-btn" type="button" aria-pressed="false">Warnings</button>
+          <button id="filter-info" class="lint-filter-btn" type="button" aria-pressed="false">Info</button>
+          <button id="copy-lints-json" class="lint-copy-btn" type="button">Copy as JSON</button>
+          <span id="copy-toast" class="lint-toast muted" role="status" aria-live="polite" style="display:none;"></span>
+        </div>
+        <div id="lints-list" class="lint-list" role="list"></div>
+      </div>
+      <script id="lints-data" type="application/json">{{ lints | default([]) | tojson }}</script>
     </details>
   </div>
 
@@ -57,6 +68,29 @@
   .btn.primary { background:#2563eb; border-color:#2563eb; color:white; }
   .muted { color:#666; }
   .card { border:1px solid #e5e7eb; border-radius:.75rem; background:white; }
+  .lint-panel { margin-top:.75rem; border:1px solid #e5e7eb; border-radius:.75rem; padding:.75rem; background:#f9fafb; }
+  .lint-toolbar { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin-bottom:.75rem; }
+  .lint-filter-btn { background:white; border:1px solid #d1d5db; border-radius:9999px; padding:.35rem .9rem; font-size:.9rem; }
+  .lint-filter-btn[aria-pressed="true"] { background:#1d4ed8; color:white; border-color:#1d4ed8; }
+  .lint-copy-btn { margin-left:auto; background:#065f46; color:#fff; border-color:#065f46; padding:.35rem .9rem; border-radius:9999px; font-size:.9rem; }
+  .lint-copy-btn:disabled { opacity:.6; cursor:not-allowed; }
+  .lint-toast { margin-left:.5rem; font-size:.9rem; }
+  .lint-list { display:flex; flex-direction:column; gap:.5rem; }
+  .lint-row { display:flex; gap:.75rem; align-items:flex-start; padding:.5rem .75rem; background:white; border-radius:.5rem; border:1px solid #e5e7eb; }
+  .lint-row[data-severity="error"] { border-color:#b91c1c; }
+  .lint-row[data-severity="warn"] { border-color:#f59e0b; }
+  .lint-row[data-severity="info"] { border-color:#2563eb; }
+  .lint-badge { display:inline-block; min-width:3.5rem; text-align:center; padding:.2rem .5rem; border-radius:9999px; font-weight:600; font-size:.8rem; text-transform:uppercase; letter-spacing:.03em; }
+  .lint-badge-error { background:#991b1b; color:#fff; }
+  .lint-badge-warn { background:#f59e0b; color:#111827; }
+  .lint-badge-info { background:#2563eb; color:#fff; }
+  .lint-body { flex:1; min-width:0; }
+  .lint-header { display:flex; flex-wrap:wrap; gap:.5rem; font-size:.85rem; margin-bottom:.25rem; }
+  .lint-header code { background:#f3f4f6; padding:.1rem .35rem; border-radius:.35rem; }
+  .lint-message { font-size:.95rem; margin-bottom:.25rem; }
+  .lint-meta { font-size:.8rem; color:#4b5563; display:flex; flex-wrap:wrap; gap:.5rem; }
+  .lint-meta-label { font-weight:600; }
+  .lint-empty { font-size:.9rem; }
 </style>
 
 <script>
@@ -71,26 +105,239 @@
     const reloadOut = document.getElementById('policy_reload_msg');
     const diffOut = document.getElementById('policy_diff');
     const lintSummary = document.getElementById('lint_summary');
-    const lintList = document.getElementById('lint_list');
+    const lintsList = document.getElementById('lints-list');
+    const lintDataScript = document.getElementById('lints-data');
+    const filterButtons = {
+      all: document.getElementById('filter-all'),
+      error: document.getElementById('filter-error'),
+      warn: document.getElementById('filter-warn'),
+      info: document.getElementById('filter-info'),
+    };
+    const copyBtn = document.getElementById('copy-lints-json');
+    const copyToast = document.getElementById('copy-toast');
     const csrf = {{ csrf_token|tojson }};
+    let toastTimer = null;
+    const lintState = {
+      items: [],
+      filter: 'all',
+    };
 
-    function renderLints(lints) {
-      if (!lintList || !lintSummary) return;
-      const items = Array.isArray(lints) ? lints : [];
-      lintList.innerHTML = items.map((x) => {
-        const sev = x.severity || 'info';
-        const tag = sev === 'error' ? '🔴' : (sev === 'warn' ? '🟠' : '🔵');
-        const where = x.path ? ` <code>${x.path}</code>` : '';
-        const rid = x.rule_id ? ` [${x.rule_id}]` : '';
-        return `<li>${tag} <strong>${x.code}</strong>${rid}${where}: ${x.message}</li>`;
-      }).join('');
-      const counts = items.reduce((acc, lint) => {
-        const key = lint.severity || 'info';
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-      }, {});
+    function parseInitialLints() {
+      if (!lintDataScript) {
+        return [];
+      }
+      try {
+        const raw = lintDataScript.textContent || '[]';
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    function getSeverity(lint) {
+      const raw = lint && (lint.severity || lint.level || lint.type);
+      const value = typeof raw === 'string' ? raw.toLowerCase() : '';
+      if (value === 'error') return 'error';
+      if (value === 'warn' || value === 'warning') return 'warn';
+      if (value === 'info' || value === 'information') return 'info';
+      return 'info';
+    }
+
+    function escapeHtml(value) {
+      if (value === undefined || value === null) return '';
+      return String(value).replace(/[&<>"']/g, (ch) => {
+        switch (ch) {
+          case '&':
+            return '&amp;';
+          case '<':
+            return '&lt;';
+          case '>':
+            return '&gt;';
+          case '"':
+            return '&quot;';
+          case '\'':
+            return '&#39;';
+          default:
+            return ch;
+        }
+      });
+    }
+
+    function severityBadge(severity) {
+      const sev = severity || 'info';
+      const classes = {
+        error: 'lint-badge lint-badge-error',
+        warn: 'lint-badge lint-badge-warn',
+        info: 'lint-badge lint-badge-info',
+      };
+      const cls = classes[sev] || 'lint-badge';
+      const label = sev === 'warn' ? 'warning' : sev;
+      return `<span class="${cls}" aria-label="severity: ${escapeHtml(label)}">${escapeHtml(label.toUpperCase())}</span>`;
+    }
+
+    function lintIdentifiers(lint) {
+      const bits = [];
+      const rule = lint && (lint.rule_id || lint.ruleId || lint.ruleID);
+      const code = lint && (lint.code || lint.id);
+      if (rule) {
+        bits.push(`<code>${escapeHtml(rule)}</code>`);
+      }
+      if (code && code !== rule) {
+        bits.push(`<code>${escapeHtml(code)}</code>`);
+      }
+      return bits.join(' ');
+    }
+
+    function lintMeta(lint) {
+      const parts = [];
+      const path = lint && (lint.path || lint.pointer);
+      const line = lint && (lint.line ?? lint.line_number ?? lint.lineno);
+      const column = lint && (lint.column ?? lint.col ?? lint.column_number);
+      const offset = lint && (lint.offset ?? lint.position);
+      if (path) {
+        parts.push(`<span class="lint-meta-label">Path:</span> <code>${escapeHtml(path)}</code>`);
+      }
+      const extras = [];
+      if (line !== undefined && line !== null) {
+        extras.push(`line ${escapeHtml(String(line))}`);
+      }
+      if (column !== undefined && column !== null) {
+        extras.push(`col ${escapeHtml(String(column))}`);
+      }
+      if (offset !== undefined && offset !== null) {
+        extras.push(`offset ${escapeHtml(String(offset))}`);
+      }
+      if (extras.length) {
+        parts.push(`<span class="lint-meta-label">Position:</span> ${escapeHtml(extras.join(', '))}`);
+      }
+      if (!parts.length) {
+        return '';
+      }
+      return `<div class="lint-meta">${parts.join(' · ')}</div>`;
+    }
+
+    function lintRowTemplate(lint) {
+      const severity = getSeverity(lint);
+      const message = lint && (lint.message || lint.msg) ? lint.message || lint.msg : '';
+      const segments = [];
+      const identifiers = lintIdentifiers(lint);
+      if (identifiers) {
+        segments.push(`<div class="lint-header">${identifiers}</div>`);
+      }
+      segments.push(`<div class="lint-message">${escapeHtml(message)}</div>`);
+      const meta = lintMeta(lint);
+      if (meta) {
+        segments.push(meta);
+      }
+      return `<div class="lint-row" data-severity="${escapeHtml(severity)}" role="listitem">${severityBadge(severity)}<div class="lint-body">${segments.join('')}</div></div>`;
+    }
+
+    function updateSummary() {
+      if (!lintSummary) return;
+      const counts = { error: 0, warn: 0, info: 0 };
+      lintState.items.forEach((lint) => {
+        const sev = getSeverity(lint);
+        if (counts[sev] === undefined) {
+          counts[sev] = 0;
+        }
+        counts[sev] += 1;
+      });
       lintSummary.textContent = `errors: ${counts.error || 0}, warnings: ${counts.warn || 0}, info: ${counts.info || 0}`;
     }
+
+    function updateScriptTag() {
+      if (lintDataScript) {
+        lintDataScript.textContent = JSON.stringify(lintState.items, null, 2);
+      }
+    }
+
+    function applyFilter() {
+      if (!lintsList) return;
+      const rows = lintsList.querySelectorAll('.lint-row');
+      if (!rows.length) return;
+      rows.forEach((row) => {
+        const sev = row.getAttribute('data-severity') || 'info';
+        row.style.display = lintState.filter === 'all' || sev === lintState.filter ? '' : 'none';
+      });
+    }
+
+    function renderLintRows() {
+      if (!lintsList) return;
+      if (!lintState.items.length) {
+        lintsList.innerHTML = '<div class="lint-empty muted" role="note">No lints reported.</div>';
+        return;
+      }
+      lintsList.innerHTML = lintState.items.map((lint) => lintRowTemplate(lint)).join('');
+      applyFilter();
+    }
+
+    function renderLints(lints) {
+      lintState.items = Array.isArray(lints) ? lints : [];
+      updateSummary();
+      updateScriptTag();
+      renderLintRows();
+    }
+
+    function setFilter(next) {
+      lintState.filter = next;
+      Object.entries(filterButtons).forEach(([key, button]) => {
+        if (!button) return;
+        button.setAttribute('aria-pressed', key === next ? 'true' : 'false');
+      });
+      applyFilter();
+    }
+
+    function showToast(message) {
+      if (!copyToast) return;
+      copyToast.textContent = message;
+      copyToast.style.display = 'inline-block';
+      if (toastTimer) {
+        clearTimeout(toastTimer);
+      }
+      toastTimer = setTimeout(() => {
+        copyToast.style.display = 'none';
+      }, 2000);
+    }
+
+    function fallbackCopy(text) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'absolute';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    async function copyJson() {
+      if (!copyBtn) return;
+      const text = JSON.stringify(lintState.items, null, 2);
+      let success = false;
+      copyBtn.disabled = true;
+      try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          success = true;
+        } else {
+          success = fallbackCopy(text);
+        }
+      } catch (err) {
+        success = fallbackCopy(text);
+      } finally {
+        copyBtn.disabled = false;
+      }
+      showToast(success ? 'Copied' : 'Copy failed');
+    }
+
+    const initialLints = parseInitialLints();
 
     function renderDiff(diff) {
       if (!diffOut) return;
@@ -229,8 +476,16 @@
 
     if (btn) btn.addEventListener('click', reload);
     if (validateBtn) validateBtn.addEventListener('click', validatePack);
+    if (filterButtons.all) filterButtons.all.addEventListener('click', () => setFilter('all'));
+    if (filterButtons.error) filterButtons.error.addEventListener('click', () => setFilter('error'));
+    if (filterButtons.warn) filterButtons.warn.addEventListener('click', () => setFilter('warn'));
+    if (filterButtons.info) filterButtons.info.addEventListener('click', () => setFilter('info'));
+    if (copyBtn) copyBtn.addEventListener('click', () => {
+      copyJson();
+    });
     document.addEventListener('DOMContentLoaded', () => {
-      renderLints([]);
+      renderLints(initialLints);
+      setFilter('all');
       previewDiff();
     });
   })();
