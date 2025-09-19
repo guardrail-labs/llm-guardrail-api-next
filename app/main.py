@@ -21,6 +21,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from app.metrics.route_label import route_label
+from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
@@ -658,6 +659,7 @@ def create_app() -> FastAPI:
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(EgressRedactMiddleware)
     app.add_middleware(TenantBotMiddleware)
+    app.add_middleware(AdminSessionMiddleware)
 
     # Max body size (intercepts early)
     try:
