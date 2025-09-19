@@ -81,6 +81,78 @@ def test_apply_golden_idempotent(monkeypatch, tmp_path):
     assert data["rules_path"] == str(golden_path)
 
 
+def test_apply_golden_refreshes_when_path_unchanged(monkeypatch, tmp_path):
+    golden_path = _make_golden(monkeypatch, tmp_path, content='policy_version: "1"\n')
+
+    first = client.post(
+        "/admin/bindings/apply_golden",
+        json={"tenant": "acme", "bot": "support"},
+    )
+    assert first.status_code == 200
+    assert first.json()["applied"] is True
+
+    calls = []
+
+    def _record(payload):
+        calls.append(payload)
+
+    monkeypatch.setattr(
+        "app.routes.admin_apply_golden.propagate_bindings",
+        _record,
+    )
+
+    golden_path.write_text('policy_version: "42"\n', encoding="utf-8")
+
+    second = client.post(
+        "/admin/bindings/apply_golden",
+        json={"tenant": "acme", "bot": "support"},
+    )
+    assert second.status_code == 200
+    data = second.json()
+    assert data["applied"] is False
+    assert len(calls) == 1
+
+    from app import main as main_mod
+
+    record = main_mod._BINDINGS.get(("acme", "support"))
+    assert record is not None
+    assert record["rules_path"] == str(golden_path)
+    assert record["version"] == data["version"]
+    assert record["policy_version"] == data["policy_version"]
+
+
+def test_apply_golden_policy_version_updates(monkeypatch, tmp_path):
+    golden_path = _make_golden(monkeypatch, tmp_path, content='policy_version: "1"\n')
+
+    first = client.post(
+        "/admin/bindings/apply_golden",
+        json={"tenant": "acme", "bot": "support"},
+    )
+    assert first.status_code == 200
+    assert first.json()["policy_version"] == "1"
+
+    golden_path.write_text('policy_version: "2"\n', encoding="utf-8")
+
+    second = client.post(
+        "/admin/bindings/apply_golden",
+        json={"tenant": "acme", "bot": "support"},
+    )
+    assert second.status_code == 200
+    data = second.json()
+    assert data["applied"] is False
+    assert data["policy_version"] == "2"
+
+    bindings_resp = client.get("/admin/bindings")
+    assert bindings_resp.status_code == 200
+    doc = bindings_resp.json()
+    assert any(
+        b["tenant"] == "acme"
+        and b["bot"] == "support"
+        and b.get("policy_version") == "2"
+        for b in doc["bindings"]
+    )
+
+
 def test_apply_golden_overwrites_existing(monkeypatch, tmp_path):
     other_path = tmp_path / "other.yaml"
     other_path.write_text("policy_version: other\n", encoding="utf-8")

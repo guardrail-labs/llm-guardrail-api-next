@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.services import config_store
+from app.services.bindings.utils import compute_version_for_path, read_policy_version
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -23,10 +24,28 @@ def _require_admin_key(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
 
+def _augment_bindings(bindings: List[config_store.Binding]) -> List[Dict[str, str]]:
+    enriched: List[Dict[str, str]] = []
+    for binding in bindings:
+        rules_path = binding["rules_path"]
+        version = compute_version_for_path(rules_path)
+        policy_version = read_policy_version(rules_path) or version
+        enriched.append(
+            {
+                "tenant": binding["tenant"],
+                "bot": binding["bot"],
+                "rules_path": rules_path,
+                "version": version,
+                "policy_version": policy_version,
+            }
+        )
+    return enriched
+
+
 @router.get("/bindings")
 async def get_bindings(_request: Request) -> Dict[str, Any]:
     doc = config_store.load_bindings()
-    return {"version": doc.version, "bindings": doc.bindings}
+    return {"version": doc.version, "bindings": _augment_bindings(doc.bindings)}
 
 
 @router.put("/bindings")
@@ -43,7 +62,7 @@ async def put_bindings(request: Request, payload: Dict[str, Any]) -> Dict[str, A
             if p:
                 doc = config_store.upsert_binding(t, b, p)
                 out = doc.bindings
-        return {"ok": True, "bindings": out}
+        return {"ok": True, "bindings": _augment_bindings(out)}
     else:
         t = str(payload.get("tenant", "")).strip() or "default"
         b = str(payload.get("bot", "")).strip() or "default"
@@ -51,7 +70,7 @@ async def put_bindings(request: Request, payload: Dict[str, Any]) -> Dict[str, A
         if not p:
             raise HTTPException(400, "rules_path required")
         doc = config_store.upsert_binding(t, b, p)
-        return {"ok": True, "bindings": doc.bindings}
+        return {"ok": True, "bindings": _augment_bindings(doc.bindings)}
 
 
 @router.delete("/bindings")
@@ -60,4 +79,4 @@ async def delete_bindings(
 ) -> Dict[str, Any]:
     _require_admin_key(request)
     doc = config_store.delete_binding(tenant=tenant, bot=bot)
-    return {"ok": True, "bindings": doc.bindings}
+    return {"ok": True, "bindings": _augment_bindings(doc.bindings)}
