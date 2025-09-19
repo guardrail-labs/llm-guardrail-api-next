@@ -59,26 +59,57 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
         if not self._is_admin_path(path):
             return response
 
-        session_value = request.cookies.get(self._session_cookie)
-        csrf_value = request.cookies.get(self._csrf_cookie)
+        def _response_has_cookie(resp: Response, name: str) -> bool:
+            try:
+                raw_headers = getattr(resp, "raw_headers", None) or []
+                for (k, v) in raw_headers:
+                    if k.lower() != b"set-cookie":
+                        continue
+                    try:
+                        serialized = v.decode("latin-1", errors="ignore")
+                    except Exception:
+                        continue
+                    if serialized.lstrip().startswith(f"{name}="):
+                        return True
+            except Exception:
+                pass
+            return False
 
-        if not session_value:
-            session_value = secrets.token_urlsafe(32)
-            csrf_value = secrets.token_urlsafe(32)
-        elif not csrf_value:
-            csrf_value = secrets.token_urlsafe(32)
+        req_session = request.cookies.get(self._session_cookie)
+        req_csrf = request.cookies.get(self._csrf_cookie)
+
+        resp_sets_session = _response_has_cookie(response, self._session_cookie)
+        resp_sets_csrf = _response_has_cookie(response, self._csrf_cookie)
+
+        new_session = not bool(req_session)
+
+        session_value = req_session
+        if new_session:
+            session_value = session_value or secrets.token_urlsafe(32)
+
+        csrf_value: Optional[str] = None
+        if not resp_sets_csrf:
+            if req_csrf:
+                csrf_value = req_csrf
+            elif new_session:
+                csrf_value = secrets.token_urlsafe(32)
+            elif not req_csrf:
+                csrf_value = secrets.token_urlsafe(32)
 
         max_age = self._ttl
-        response.set_cookie(
-            key=self._session_cookie,
-            value=session_value,
-            max_age=max_age,
-            path=self._cookie_path,
-            secure=self._secure,
-            httponly=True,
-            samesite="strict",
-        )
-        if csrf_value:
+
+        if not resp_sets_session and session_value:
+            response.set_cookie(
+                key=self._session_cookie,
+                value=session_value,
+                max_age=max_age,
+                path=self._cookie_path,
+                secure=self._secure,
+                httponly=True,
+                samesite="strict",
+            )
+
+        if not resp_sets_csrf and csrf_value:
             response.set_cookie(
                 key=self._csrf_cookie,
                 value=csrf_value,
@@ -88,4 +119,5 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
                 httponly=False,
                 samesite="strict",
             )
+
         return response
