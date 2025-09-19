@@ -78,23 +78,20 @@ def apply_golden_packs(payload: Dict[str, Any]) -> Dict[str, Any]:
     rules_path = _resolved_golden_path()
 
     doc = config_store.load_bindings()
+    existing_binding = None
     for binding in doc.bindings:
         if binding["tenant"] == tenant and binding["bot"] == bot:
-            if binding["rules_path"] == rules_path:
-                version = compute_version_for_path(rules_path)
-                policy_version = read_policy_version(rules_path) or version
-                return {
-                    "tenant": tenant,
-                    "bot": bot,
-                    "rules_path": rules_path,
-                    "applied": False,
-                    "version": version,
-                    "policy_version": policy_version,
-                }
+            existing_binding = binding
             break
 
-    updated_doc = config_store.upsert_binding(tenant, bot, rules_path)
-    serialized = [_serialize_binding(b) for b in updated_doc.bindings]
+    if existing_binding and existing_binding["rules_path"] == rules_path:
+        applied = False
+        bindings_doc = doc
+    else:
+        bindings_doc = config_store.upsert_binding(tenant, bot, rules_path)
+        applied = True
+
+    serialized = [_serialize_binding(b) for b in bindings_doc.bindings]
 
     try:
         propagate_bindings(serialized)
@@ -109,7 +106,7 @@ def apply_golden_packs(payload: Dict[str, Any]) -> Dict[str, Any]:
         "tenant": tenant,
         "bot": bot,
         "rules_path": rules_path,
-        "applied": True,
+        "applied": applied,
         "version": version,
         "policy_version": policy_version,
     }
