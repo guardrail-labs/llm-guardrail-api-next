@@ -1,19 +1,207 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <h2>Bindings</h2>
-  {% if not bindings or bindings|length == 0 %}
-    <p class="muted">No bindings found.</p>
-  {% else %}
-    <table>
-      <thead><tr><th>Tenant</th><th>Bot</th><th>Policy</th></tr></thead>
-      <tbody>
-        {% for b in bindings %}
-          <tr><td>{{ b.tenant }}</td><td>{{ b.bot }}</td><td>{{ b.policy_version or '—' }}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap;">
+    <h2 style="margin:0;">Bindings</h2>
+    <button type="button" id="apply-golden-button">Apply Golden Packs</button>
+  </div>
+  <div id="apply-golden-alert" class="banner info" role="status" aria-live="polite" hidden></div>
+  <div id="apply-golden-panel" class="confirm-panel" hidden>
+    <p style="margin-top:0;">Apply the Golden policy pack (PII + Secrets) to the selected tenant and bot.</p>
+    <div style="display:grid; gap:0.75rem; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));">
+      <label>Tenant
+        <input type="text" id="apply-golden-tenant" value="{{ tenant or '' }}" autocomplete="off" />
+      </label>
+      <label>Bot
+        <input type="text" id="apply-golden-bot" value="{{ bot or '' }}" autocomplete="off" />
+      </label>
+    </div>
+    <div class="confirm-actions">
+      <button type="button" id="apply-golden-confirm">Confirm</button>
+      <button type="button" id="apply-golden-cancel">Cancel</button>
+    </div>
+  </div>
+  <table id="bindings-table" {% if not bindings or bindings|length == 0 %}style="display:none"{% endif %}>
+    <thead><tr><th>Tenant</th><th>Bot</th><th>Policy</th></tr></thead>
+    <tbody id="bindings-table-body">
+      {% for b in bindings %}
+      <tr><td>{{ b.tenant }}</td><td>{{ b.bot }}</td><td>{{ b.policy_version or '—' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p id="bindings-empty" class="muted" {% if bindings and bindings|length > 0 %}style="display:none"{% endif %}>No bindings found.</p>
 </div>
+<script>
+  (function () {
+    function getCookie(name) {
+      return (document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)') || [])[2];
+    }
+
+    const button = document.getElementById('apply-golden-button');
+    if (!button) {
+      return;
+    }
+    const panel = document.getElementById('apply-golden-panel');
+    const alertBox = document.getElementById('apply-golden-alert');
+    const tenantInput = document.getElementById('apply-golden-tenant');
+    const botInput = document.getElementById('apply-golden-bot');
+    const confirmButton = document.getElementById('apply-golden-confirm');
+    const cancelButton = document.getElementById('apply-golden-cancel');
+    const table = document.getElementById('bindings-table');
+    const tbody = document.getElementById('bindings-table-body');
+    const emptyState = document.getElementById('bindings-empty');
+
+    function setAlert(kind, message) {
+      if (!alertBox) {
+        return;
+      }
+      if (!message) {
+        alertBox.hidden = true;
+        alertBox.textContent = '';
+        return;
+      }
+      alertBox.className = 'banner ' + kind;
+      alertBox.textContent = message;
+      alertBox.hidden = false;
+    }
+
+    function setLoading(isLoading) {
+      button.disabled = isLoading;
+      confirmButton.disabled = isLoading;
+    }
+
+    function showPanel() {
+      panel.hidden = false;
+      if (tenantInput) {
+        tenantInput.focus();
+      }
+    }
+
+    function hidePanel() {
+      panel.hidden = true;
+    }
+
+    function updateBindings(list) {
+      if (!tbody) {
+        return;
+      }
+      while (tbody.firstChild) {
+        tbody.removeChild(tbody.firstChild);
+      }
+      if (list && list.length) {
+        list.forEach(function (item) {
+          const tr = document.createElement('tr');
+          const tdTenant = document.createElement('td');
+          tdTenant.textContent = item.tenant || '';
+          const tdBot = document.createElement('td');
+          tdBot.textContent = item.bot || '';
+          const tdPolicy = document.createElement('td');
+          tdPolicy.textContent = item.policy_version || '—';
+          tr.appendChild(tdTenant);
+          tr.appendChild(tdBot);
+          tr.appendChild(tdPolicy);
+          tbody.appendChild(tr);
+        });
+        if (table) {
+          table.style.display = '';
+        }
+        if (emptyState) {
+          emptyState.style.display = 'none';
+        }
+      } else {
+        if (table) {
+          table.style.display = 'none';
+        }
+        if (emptyState) {
+          emptyState.style.display = '';
+        }
+      }
+    }
+
+    function refreshBindings() {
+      return fetch('/admin/ui/bindings/data', { credentials: 'same-origin' })
+        .then(function (res) {
+          return res.json();
+        })
+        .then(function (data) {
+          if (data && data.bindings) {
+            updateBindings(data.bindings);
+          }
+        })
+        .catch(function () {
+          // no-op
+        });
+    }
+
+    button.addEventListener('click', function () {
+      setAlert('info', '');
+      showPanel();
+    });
+
+    cancelButton.addEventListener('click', function () {
+      hidePanel();
+    });
+
+    confirmButton.addEventListener('click', function () {
+      const tenant = (tenantInput && tenantInput.value ? tenantInput.value : '').trim();
+      const bot = (botInput && botInput.value ? botInput.value : '').trim();
+      if (!tenant || !bot) {
+        setAlert('error', 'Tenant and bot are required.');
+        return;
+      }
+      setAlert('info', 'Applying Golden Packs…');
+      setLoading(true);
+
+      fetch('/admin/ui/bindings/apply_golden', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          tenant: tenant,
+          bot: bot,
+          csrf_token: getCookie('ui_csrf') || ''
+        })
+      })
+        .then(function (res) {
+          return res
+            .json()
+            .catch(function () {
+              return {};
+            })
+            .then(function (body) {
+              return { ok: res.ok, body: body };
+            });
+        })
+        .then(function (result) {
+          if (!result.ok) {
+            const detail = result.body && (result.body.detail || result.body.message);
+            setAlert('error', detail || 'Failed to apply Golden Packs.');
+            return;
+          }
+          const status = result.body.status || (result.body.applied ? 'success' : 'info');
+          const message =
+            result.body.message ||
+            (result.body.applied
+              ? 'Golden Packs applied to ' + tenant + '/' + bot + '.'
+              : 'Already using Golden Packs.');
+          setAlert(status, message);
+          if (result.body && result.body.bindings) {
+            updateBindings(result.body.bindings);
+          } else {
+            refreshBindings();
+          }
+          hidePanel();
+        })
+        .catch(function () {
+          setAlert('error', 'Failed to apply Golden Packs.');
+        })
+        .finally(function () {
+          setLoading(false);
+        });
+    });
+
+    updateBindings({{ (bindings or []) | tojson }});
+  })();
+</script>
 {% endblock %}
 
