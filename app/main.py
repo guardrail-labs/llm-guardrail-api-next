@@ -525,6 +525,8 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
 async def lifespan(app: FastAPI):
     from app.routes import system as sysmod
 
+    _webhooks_module = None
+
     # Ensure latency histogram is registered once.
     _get_or_create_latency_histogram()
 
@@ -556,11 +558,28 @@ async def lifespan(app: FastAPI):
 
     _start_prune_task(app)
 
+    try:
+        from app.services import webhooks as _wh_mod
+
+        _wh_mod.ensure_started()
+        _webhooks_module = _wh_mod
+    except Exception:
+        _webhooks_module = None
+
     await sysmod._startup_readiness()
     try:
         yield
     finally:
         await sysmod._shutdown_readiness()
+        try:
+            if _webhooks_module is not None:
+                _webhooks_module.shutdown()
+            else:
+                from app.services import webhooks as _wh_mod
+
+                _wh_mod.shutdown()
+        except Exception:
+            pass
         # Stop prune loop gracefully if running
         try:
             task = getattr(app.state, "prune_task", None)

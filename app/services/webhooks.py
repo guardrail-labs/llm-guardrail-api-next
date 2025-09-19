@@ -31,8 +31,10 @@ _DLQ_PATH: Optional[str] = None
 
 # Worker state
 _lock = threading.RLock()
-_q: "queue.SimpleQueue[Dict[str, Any]]" = queue.SimpleQueue()
-_worker_started = False
+_q: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
+_worker_thread: Optional[threading.Thread] = None
+_worker_stopping = False
+_STOP = object()
 
 # Stats (simple counters for /admin and tests)
 _stats: Dict[str, Any] = {
@@ -42,6 +44,14 @@ _stats: Dict[str, Any] = {
     "last_status": "",
     "last_error": "",
 }
+
+
+def _worker_enabled() -> bool:
+    try:
+        cfg = get_config()
+    except Exception:
+        return False
+    return bool(cfg.get("webhook_enable")) and bool(cfg.get("webhook_url"))
 
 
 def _dlq_path() -> str:
@@ -235,36 +245,92 @@ def _deliver(evt: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _worker() -> None:
-    while True:
-        evt = _q.get()
-        try:
-            outcome, status = _deliver(evt)
-            with _lock:
-                _stats["processed"] += 1
-                _stats["last_status"] = status
-                _stats["last_error"] = "" if outcome == "sent" else status
-            # Delivery outcome metric
-            WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
-            # Ensure "enqueued" shows up in flaky CI paths for failure outcomes
-            if outcome != "sent":
+    try:
+        while True:
+            evt = _q.get()
+            if evt is _STOP:
+                break
+            try:
+                outcome, status = _deliver(evt)
+                with _lock:
+                    _stats["processed"] += 1
+                    _stats["last_status"] = status
+                    _stats["last_error"] = "" if outcome == "sent" else status
+                # Delivery outcome metric
+                WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
+                # Ensure "enqueued" shows up in flaky CI paths for failure outcomes
+                if outcome != "sent":
+                    WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+            except Exception as e:  # pragma: no cover
+                with _lock:
+                    _stats["processed"] += 1
+                    _stats["last_status"] = "error"
+                    _stats["last_error"] = str(e)
+                WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
                 WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
-        except Exception as e:  # pragma: no cover
-            with _lock:
-                _stats["processed"] += 1
-                _stats["last_status"] = "error"
-                _stats["last_error"] = str(e)
-            WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
-            WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+    finally:
+        with _lock:
+            global _worker_thread, _worker_stopping
+            if _worker_thread is threading.current_thread():
+                _worker_thread = None
+            _worker_stopping = False
 
 
-def _ensure_worker() -> None:
-    global _worker_started
+def _ensure_worker(*, require_enabled: bool) -> None:
+    global _worker_thread
+    thread_to_start: Optional[threading.Thread] = None
     with _lock:
-        if _worker_started:
+        global _worker_stopping
+        if _worker_stopping:
             return
-        t = threading.Thread(target=_worker, name="webhook-worker", daemon=True)
-        t.start()
-        _worker_started = True
+        thread = _worker_thread
+        if thread is not None and thread.is_alive():
+            return
+        if thread is not None and not thread.is_alive():
+            _worker_thread = None
+        if require_enabled and not _worker_enabled():
+            return
+        thread_to_start = threading.Thread(
+            target=_worker, name="webhook-worker", daemon=True
+        )
+        _worker_thread = thread_to_start
+    if thread_to_start is not None:
+        thread_to_start.start()
+
+
+def ensure_started() -> None:
+    """Best-effort start of the delivery worker if webhooks are enabled."""
+    try:
+        _ensure_worker(require_enabled=True)
+    except Exception:
+        pass
+
+
+def shutdown(timeout: float = 0.5) -> None:
+    """Signal the worker to stop and wait briefly for exit."""
+    global _worker_thread
+    thread: Optional[threading.Thread]
+    with _lock:
+        global _worker_stopping
+        thread = _worker_thread
+        if thread is None or not thread.is_alive():
+            return
+        if _worker_stopping:
+            return
+        _worker_stopping = True
+        try:
+            _q.put(_STOP)
+        except Exception:
+            pass
+    try:
+        thread.join(timeout=timeout)
+    except Exception:
+        pass
+    with _lock:
+        if _worker_thread is thread and not thread.is_alive():
+            _worker_thread = None
+        if not thread.is_alive():
+            _worker_stopping = False
 
 
 def enqueue(evt: Dict[str, Any]) -> None:
@@ -272,17 +338,22 @@ def enqueue(evt: Dict[str, Any]) -> None:
     with _lock:
         _stats["queued"] += 1
     WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
-    _ensure_worker()
+    _ensure_worker(require_enabled=False)
     _q.put(evt)
 
 
 def configure(*, reset: bool = False) -> None:
     """Test helper: reset counters/queue and restart worker on next enqueue."""
-    global _q, _worker_started
+    global _q, _worker_thread, _worker_stopping
+
+    if reset:
+        shutdown()
+
     with _lock:
         if reset:
             _q = queue.SimpleQueue()
-            _worker_started = False  # force a new worker for the fresh queue
+            _worker_thread = None
+            _worker_stopping = False
             for k in ("queued", "processed", "dropped"):
                 _stats[k] = 0
             _stats["last_status"] = ""
@@ -358,7 +429,7 @@ def requeue_from_dlq(limit: int) -> int:
                 return 0
 
             # Ensure worker consumes the current _q
-            _ensure_worker()
+            _ensure_worker(require_enabled=False)
 
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
