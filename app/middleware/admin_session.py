@@ -31,17 +31,17 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
     def _parse_ttl(raw: Optional[str]) -> Optional[int]:
         raw = (raw or "").strip()
         if not raw:
-            return 1800
+            return 1200
         try:
             value = int(raw)
         except Exception:
-            return 1800
+            return 1200
         return value if value > 0 else None
 
     @staticmethod
     def _secure_cookies_enabled() -> bool:
-        raw = (os.getenv("ADMIN_SECURE_COOKIES") or "").strip().lower()
-        return raw not in {"0", "false", "off", "no"}
+        raw = (os.getenv("ADMIN_COOKIE_INSECURE") or "").strip().lower()
+        return raw not in {"1", "true", "on", "yes"}
 
     def _is_admin_path(self, path: str) -> bool:
         base = self._cookie_path.rstrip("/") or "/"
@@ -89,11 +89,11 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
 
         csrf_value: Optional[str] = None
         if not resp_sets_csrf:
-            if req_csrf:
-                csrf_value = req_csrf
-            elif new_session:
+            if new_session:
                 csrf_value = secrets.token_urlsafe(32)
-            elif not req_csrf:
+            elif req_csrf:
+                csrf_value = req_csrf
+            else:
                 csrf_value = secrets.token_urlsafe(32)
 
         max_age = self._ttl
