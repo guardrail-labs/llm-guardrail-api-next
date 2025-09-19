@@ -643,6 +643,14 @@ def create_app() -> FastAPI:
         app.include_router(admin_apply_golden_router)
     except Exception:
         pass
+    try:
+        from app.routes.admin_apply_strict_secrets import (
+            router as admin_apply_strict_secrets_router,
+        )
+
+        app.include_router(admin_apply_strict_secrets_router)
+    except Exception:
+        pass
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)

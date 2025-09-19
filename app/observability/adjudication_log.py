@@ -6,7 +6,7 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Deque, Iterable, Iterator, List, Optional, Sequence, Union
+from typing import Deque, Iterator, List, Optional, Sequence, Union
 
 
 def _now_ts() -> str:
