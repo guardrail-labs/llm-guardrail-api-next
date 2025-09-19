@@ -47,6 +47,7 @@ from app.telemetry.metrics import (
 )
 
 router = APIRouter(prefix="/guardrail", tags=["guardrail"])
+v1_router = APIRouter(prefix="/v1/batch", tags=["guardrail", "v1"])
 
 
 # ---------------------------
@@ -325,6 +326,29 @@ async def batch_evaluate(
         response.headers["X-Guardrail-Hidden-Text"] = f"fmt=html;reasons={','.join(uniq)}"
 
     return BatchOut(items=out_items, count=len(out_items))
+
+
+@v1_router.post("/egress_batch", response_model=BatchOut)
+async def egress_batch_v1(
+    request: Request,
+    body: BatchIn,
+    response: Response,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+) -> BatchOut:
+    return await egress_batch(request, body, response, x_debug)
+
+
+@v1_router.post("/batch_evaluate", response_model=BatchOut)
+async def batch_evaluate_v1(
+    request: Request,
+    body: BatchIn,
+    response: Response,
+    x_debug: Optional[str] = Header(default=None, alias="X-Debug", convert_underscores=False),
+    x_force_unclear: Optional[str] = Header(
+        default=None, alias="X-Force-Unclear", convert_underscores=False
+    ),
+) -> BatchOut:
+    return await batch_evaluate(request, body, response, x_debug, x_force_unclear)
 
 
 @router.post("/egress_batch", response_model=BatchOut)
