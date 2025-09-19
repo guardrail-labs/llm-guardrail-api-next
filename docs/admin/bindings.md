@@ -22,3 +22,15 @@ The policy file is resolved from the `STRICT_SECRETS_POLICY_PATH` environment
 variable. If the variable is unset, the service defaults to
 `rules/policies/secrets/strict.yaml`. The request fails with `404` when the
 resolved file cannot be read.
+
+## Demo defaults binding
+
+`POST /admin/bindings/apply_demo_defaults` applies the built-in Demo Defaults
+policy pack to a specific tenant and bot. The endpoint mirrors the Golden and
+Strict Secrets flows and refreshes the in-memory binding cache even when the
+binding already targets the demo policy.
+
+The policy file is resolved from the `DEMO_POLICY_PATH` environment variable.
+If the variable is unset, the service defaults to
+`rules/policies/demo/default.yaml`. The request fails with `404` when the
+resolved file cannot be read.
