@@ -59,6 +59,7 @@ from app.services.config_sanitizer import (
 )
 from app.services.config_store import get_config
 from app.telemetry import metrics as m
+from app.observability import adjudication_log as _adj_log
 from app.telemetry.metrics import (
     inc_actor_decisions_total,
     inc_mode,
@@ -164,6 +165,93 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(
         text.encode("utf-8", errors="ignore")
     ).hexdigest()
+
+
+def _prompt_hash(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    try:
+        return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        return None
+
+
+def _coerce_rule_hits(rule_ids: Optional[Iterable[str]]) -> List[str]:
+    hits: List[str] = []
+    if not rule_ids:
+        return hits
+    for rid in rule_ids:
+        if rid is None:
+            continue
+        rid_str = str(rid).strip()
+        if rid_str:
+            hits.append(rid_str)
+    return hits
+
+
+def _coerce_score(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return float(val)
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def _log_adjudication(
+    *,
+    request_id: str,
+    tenant: Optional[str],
+    bot: Optional[str],
+    decision: str,
+    rule_ids: Optional[Iterable[str]],
+    latency_ms: int,
+    policy_version: Optional[str],
+    rules_path: Optional[str],
+    sampled: bool,
+    prompt_sha256: Optional[str],
+    provider: Optional[str],
+    score: Optional[float],
+) -> None:
+    try:
+        record = _adj_log.AdjudicationRecord(
+            ts=_adj_log._now_ts(),
+            request_id=str(request_id or ""),
+            tenant=str(tenant or "unknown"),
+            bot=str(bot or "unknown"),
+            provider=str(provider or "core"),
+            decision=str(decision or "unknown"),
+            rule_hits=_coerce_rule_hits(rule_ids),
+            score=score,
+            latency_ms=int(max(latency_ms, 0)),
+            policy_version=str(policy_version) if policy_version else None,
+            rules_path=str(rules_path) if rules_path else None,
+            sampled=bool(sampled),
+            prompt_sha256=prompt_sha256,
+        )
+        _adj_log.append(record)
+    except Exception:
+        pass
+
+
+def _resolve_rules_path_hint(tenant: str, bot: str) -> Optional[str]:
+    try:
+        from app.services import config_store as _cfg_store
+
+        resolver = getattr(_cfg_store, "resolve_rules_path", None)
+        if callable(resolver):
+            resolved_path = resolver(tenant, bot)
+            if isinstance(resolved_path, str) and resolved_path.strip():
+                return resolved_path.strip()
+            if isinstance(resolved_path, Mapping):
+                rp_val = resolved_path.get("rules_path")
+                if isinstance(rp_val, str) and rp_val.strip():
+                    return rp_val.strip()
+    except Exception:
+        return None
+    return None
 
 
 def _tenant_bot(t: Optional[str], b: Optional[str]) -> Tuple[str, str]:
@@ -1221,6 +1309,7 @@ async def guardrail_legacy(
     x_api_key: Optional[str] = Header(default=None),
     authorization: Optional[str] = Header(default=None),
 ):
+    t_start = time.perf_counter()
     m.inc_requests_total("guardrail_legacy")
     m.set_policy_version(current_rules_version())
     if not _has_api_key(x_api_key, authorization):
@@ -1229,6 +1318,7 @@ async def guardrail_legacy(
     payload = await request.json()
     prompt = str(payload.get("prompt") or "")
     request_id = _req_id(str(payload.get("request_id") or ""))
+    prompt_hash_val = _prompt_hash(prompt)
 
     try:
         max_chars = int(runtime_flags.get("max_prompt_chars"))
@@ -1250,6 +1340,7 @@ async def guardrail_legacy(
 
     policy_blob = _get_policy()
     policy_version = str(policy_blob.version)
+    rules_path_hint = getattr(policy_blob, "path", None)
 
     action, legacy_hits_list = _legacy_policy(prompt)
 
@@ -1295,17 +1386,50 @@ async def guardrail_legacy(
 
     if action == "block":
         _record_actor_metric(request, "block")
-        return _respond_legacy_block(
+        resp = _respond_legacy_block(
             request_id, rule_hits, redacted, policy_version, redactions
         )
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        _log_adjudication(
+            request_id=request_id,
+            tenant=tenant,
+            bot=bot,
+            decision="block",
+            rule_ids=_rule_ids_from_hits(rule_hits),
+            latency_ms=latency_ms,
+            policy_version=policy_version,
+            rules_path=rules_path_hint,
+            sampled=False,
+            prompt_sha256=prompt_hash_val,
+            provider="core",
+            score=None,
+        )
+        return resp
     _record_actor_metric(request, "allow")
-    return _respond_legacy_allow(
+    resp = _respond_legacy_allow(
         redacted, request_id, rule_hits, policy_version, redactions
     )
+    latency_ms = int((time.perf_counter() - t_start) * 1000)
+    _log_adjudication(
+        request_id=request_id,
+        tenant=tenant,
+        bot=bot,
+        decision="allow",
+        rule_ids=_rule_ids_from_hits(rule_hits),
+        latency_ms=latency_ms,
+        policy_version=policy_version,
+        rules_path=rules_path_hint,
+        sampled=False,
+        prompt_sha256=prompt_hash_val,
+        provider="core",
+        score=None,
+    )
+    return resp
 
 
 @router.post("/guardrail/evaluate")
 async def guardrail_evaluate(request: Request):
+    t_start = time.perf_counter()
     headers = request.headers
     tenant, bot = _tenant_bot(
         headers.get("X-Tenant") or headers.get("X-Tenant-ID"),
@@ -1323,10 +1447,16 @@ async def guardrail_evaluate(request: Request):
     request_payload_dict: Dict[str, Any] = {}
     req_header_request_id = headers.get(REQ_ID_HEADER)
     fingerprint_value: Optional[str]
+    prompt_hash_val: Optional[str] = None
+    adjudication_provider: Optional[str] = None
+    adjudication_sampled = False
+    rules_path_hint: Optional[str] = None
     try:
         fingerprint_value = fingerprint(request)
     except Exception:
         fingerprint_value = ""
+
+    rules_path_hint = _resolve_rules_path_hint(tenant, bot)
 
     if content_type.startswith("application/json"):
         payload = await request.json()
@@ -1341,6 +1471,8 @@ async def guardrail_evaluate(request: Request):
             request, decode_pdf=False
         )
         request_payload_dict = {"text": combined_text}
+
+    prompt_hash_val = _prompt_hash(combined_text)
 
     request_id = _req_id(explicit_request_id or req_header_request_id)
 
@@ -1491,6 +1623,51 @@ async def guardrail_evaluate(request: Request):
             from app.services import webhooks as wh
 
             wh.enqueue(event_payload)
+
+        provider_hint = adjudication_provider
+        score_val: Optional[float] = None
+        if isinstance(policy_result, Mapping):
+            score_val = _coerce_score(policy_result.get("score"))
+            provider_candidate: Optional[str] = None
+            raw_provider = policy_result.get("provider")
+            if isinstance(raw_provider, str) and raw_provider.strip():
+                provider_candidate = raw_provider.strip()
+            else:
+                raw_verifier = policy_result.get("verifier")
+                if isinstance(raw_verifier, Mapping):
+                    vprov = raw_verifier.get("provider")
+                    if isinstance(vprov, str) and vprov.strip():
+                        provider_candidate = vprov.strip()
+            if not provider_hint and provider_candidate:
+                provider_hint = provider_candidate
+
+        header_provider = resp.headers.get("X-Guardrail-Verifier")
+        if not provider_hint and header_provider:
+            provider_hint = header_provider
+
+        sampled_flag = adjudication_sampled
+        header_sampled = resp.headers.get("X-Guardrail-Verifier-Sampled")
+        if header_sampled is not None:
+            sampled_flag = sampled_flag or header_sampled == "1"
+
+        latency_ms = int((time.perf_counter() - t_start) * 1000)
+        policy_version_hint = resp.headers.get("X-Guardrail-Policy-Version")
+        rules_path = resp.headers.get("X-Guardrail-Rules-Path") or rules_path_hint
+
+        _log_adjudication(
+            request_id=request_id,
+            tenant=tenant,
+            bot=bot,
+            decision=live_action_norm,
+            rule_ids=final_rule_ids or [],
+            latency_ms=latency_ms,
+            policy_version=policy_version_hint,
+            rules_path=rules_path,
+            sampled=sampled_flag,
+            prompt_sha256=prompt_hash_val,
+            provider=provider_hint,
+            score=score_val,
+        )
 
         return resp
 
@@ -1740,6 +1917,8 @@ async def guardrail_evaluate(request: Request):
             "decision": action,
             "latency_ms": latency_ms,
         }
+        if isinstance(provider, str) and provider.strip():
+            adjudication_provider = provider.strip()
         m.inc_verifier_attempt(provider)
         retries = 0
         try:
@@ -1776,6 +1955,7 @@ async def guardrail_evaluate(request: Request):
         "rule_ids", _rule_ids_from_hits(base_decision.get("rule_hits"))
     )
 
+    adjudication_sampled = verifier_sampled
     resp = _respond_action(
         action,
         redacted,
@@ -1798,6 +1978,7 @@ async def guardrail_evaluate(request: Request):
 
 @router.post("/guardrail/evaluate_multipart")
 async def guardrail_evaluate_multipart(request: Request):
+    t_start = time.perf_counter()
     headers = request.headers
     tenant, bot = _tenant_bot(
         headers.get("X-Tenant") or headers.get("X-Tenant-ID"),
@@ -1812,11 +1993,16 @@ async def guardrail_evaluate_multipart(request: Request):
         fingerprint_value = fingerprint(request)
     except Exception:
         fingerprint_value = ""
+    prompt_hash_val: Optional[str] = None
+    adjudication_provider: Optional[str] = None
+    adjudication_sampled = False
+    rules_path_hint = _resolve_rules_path_hint(tenant, bot)
 
     combined_text, mods, sources, docx_results = await _read_form_and_merge(
         request, decode_pdf=True
     )
     request_id = _req_id(req_header_request_id)
+    prompt_hash_val = _prompt_hash(combined_text)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(
         combined_text, want_debug
@@ -1932,6 +2118,8 @@ async def guardrail_evaluate_multipart(request: Request):
             "decision": action,
             "latency_ms": latency_ms,
         }
+        if isinstance(provider, str) and provider.strip():
+            adjudication_provider = provider.strip()
         m.inc_verifier_attempt(provider)
         retries = 0
         try:
@@ -1968,6 +2156,7 @@ async def guardrail_evaluate_multipart(request: Request):
         "rule_ids", _rule_ids_from_hits(base_decision.get("rule_hits"))
     )
 
+    adjudication_sampled = verifier_sampled
     resp = _respond_action(
         action,
         redacted,
@@ -1980,7 +2169,7 @@ async def guardrail_evaluate_multipart(request: Request):
         direction="ingress",
         extra_headers=hv_headers,
     )
-    return _finalize_ingress_response(
+    finalized = _finalize_ingress_response(
         resp,
         request_id=request_id,
         fingerprint_value=fingerprint_value,
@@ -1988,6 +2177,58 @@ async def guardrail_evaluate_multipart(request: Request):
         rule_ids=_rule_ids_from_hits(policy_hits),
         policy_result=base_decision,
     )
+
+    provider_hint = adjudication_provider
+    if isinstance(base_decision, Mapping):
+        raw_provider = base_decision.get("provider")
+        if isinstance(raw_provider, str) and raw_provider.strip():
+            provider_hint = provider_hint or raw_provider.strip()
+        else:
+            raw_verifier = base_decision.get("verifier")
+            if isinstance(raw_verifier, Mapping):
+                vprov = raw_verifier.get("provider")
+                if isinstance(vprov, str) and vprov.strip():
+                    provider_hint = provider_hint or vprov.strip()
+
+    header_provider = finalized.headers.get("X-Guardrail-Verifier")
+    if not provider_hint and header_provider:
+        provider_hint = header_provider
+
+    sampled_flag = adjudication_sampled
+    header_sampled = finalized.headers.get("X-Guardrail-Verifier-Sampled")
+    if header_sampled is not None:
+        sampled_flag = sampled_flag or header_sampled == "1"
+
+    latency_ms = int((time.perf_counter() - t_start) * 1000)
+    policy_version_hint = finalized.headers.get("X-Guardrail-Policy-Version")
+    rules_path = finalized.headers.get("X-Guardrail-Rules-Path") or rules_path_hint
+
+    decision_val = action
+    if isinstance(base_decision, Mapping):
+        raw_action = base_decision.get("action")
+        if isinstance(raw_action, str) and raw_action.strip():
+            decision_val = raw_action.strip()
+
+    score_val = None
+    if isinstance(base_decision, Mapping):
+        score_val = _coerce_score(base_decision.get("score"))
+
+    _log_adjudication(
+        request_id=request_id,
+        tenant=tenant,
+        bot=bot,
+        decision=str(decision_val or "unknown"),
+        rule_ids=_rule_ids_from_hits(policy_hits),
+        latency_ms=latency_ms,
+        policy_version=policy_version_hint,
+        rules_path=rules_path,
+        sampled=sampled_flag,
+        prompt_sha256=prompt_hash_val,
+        provider=provider_hint,
+        score=score_val,
+    )
+
+    return finalized
 
 
 @router.post("/guardrail/egress_evaluate")

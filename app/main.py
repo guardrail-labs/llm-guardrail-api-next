@@ -733,6 +733,7 @@ def create_app() -> FastAPI:
 
     try:
         from app.routes import (
+            admin_adjudications,
             admin_config,
             admin_config_history,
             admin_decisions,
@@ -755,6 +756,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_webhook_replay.router)
         app.include_router(admin_webhooks.router)
         app.include_router(admin_echo.router)
+        app.include_router(admin_adjudications.router)
     except Exception:
         pass
 
