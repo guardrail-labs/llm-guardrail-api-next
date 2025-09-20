@@ -6,6 +6,25 @@ import pytest
 from app.services import webhooks as W
 
 
+def _counter_total(counter) -> float:
+    metrics = getattr(counter, "_metrics", None)
+    if isinstance(metrics, dict):
+        return float(sum(float(sample._value.get()) for sample in metrics.values()))
+    value = getattr(counter, "_value", None)
+    return float(value.get()) if value is not None else 0.0
+
+
+def _counter_value(counter, *labels: str) -> float:
+    metrics = getattr(counter, "_metrics", None)
+    if isinstance(metrics, dict):
+        child = metrics.get(tuple(labels))
+        if child is None:
+            return 0.0
+        return float(child._value.get())
+    value = getattr(counter, "_value", None)
+    return float(value.get()) if value is not None else 0.0
+
+
 class FakeClock:
     def __init__(self) -> None:
         self._t = 0.0
@@ -85,10 +104,16 @@ def test_abort_on_4xx_no_retries(monkeypatch):
     monkeypatch.setenv("WEBHOOK_MAX_ATTEMPTS", "10")
     importlib.reload(W)
 
+    import app.observability.metrics as metrics
+
     _with_clock(monkeypatch)
     send_once = _make_send_always_4xx()
+    abort_before = _counter_value(metrics.webhook_abort_total, "4xx")
+    retry_before = _counter_total(metrics.webhook_retry_total)
     ok = W._deliver_with_backoff(send_once)
     assert ok is False
+    assert _counter_value(metrics.webhook_abort_total, "4xx") - abort_before == 1
+    assert _counter_total(metrics.webhook_retry_total) - retry_before == 0
 
 
 def test_horizon_abort(monkeypatch):
@@ -98,13 +123,17 @@ def test_horizon_abort(monkeypatch):
     monkeypatch.setenv("WEBHOOK_MAX_ATTEMPTS", "50")
     importlib.reload(W)
 
+    import app.observability.metrics as metrics
+
     clk = _with_clock(monkeypatch)
     monkeypatch.setattr(W.random, "uniform", lambda a, b: (a + b) / 2.0)
 
     send_once, _ = _make_send_once_fail_then_succeed(100, status=503)
+    abort_before = _counter_value(metrics.webhook_abort_total, "horizon")
     ok = W._deliver_with_backoff(send_once)
     assert ok is False
     assert clk.monotonic() * 1000 >= 500
+    assert _counter_value(metrics.webhook_abort_total, "horizon") - abort_before == 1
 
 
 def test_retry_counters_increment(monkeypatch):
@@ -119,23 +148,15 @@ def test_retry_counters_increment(monkeypatch):
 
     send_once, calls = _make_send_network_then_timeout()
 
-    retry_before = sum(
-        sample._value.get() for sample in metrics.webhook_retry_total._metrics.values()
-    )
-    abort_before = sum(
-        sample._value.get() for sample in metrics.webhook_abort_total._metrics.values()
-    )
+    retry_before = _counter_total(metrics.webhook_retry_total)
+    abort_before = _counter_total(metrics.webhook_abort_total)
 
     ok = W._deliver_with_backoff(send_once)
     assert ok is True
     assert calls["n"] == 3
 
-    retry_after = sum(
-        sample._value.get() for sample in metrics.webhook_retry_total._metrics.values()
-    )
-    abort_after = sum(
-        sample._value.get() for sample in metrics.webhook_abort_total._metrics.values()
-    )
+    retry_after = _counter_total(metrics.webhook_retry_total)
+    abort_after = _counter_total(metrics.webhook_abort_total)
 
     assert retry_after - retry_before >= 2
     assert abort_after - abort_before == 0
@@ -145,10 +166,17 @@ def test_attempts_cap_abort(monkeypatch):
     monkeypatch.setenv("WEBHOOK_MAX_ATTEMPTS", "3")
     importlib.reload(W)
 
+    import app.observability.metrics as metrics
+
     _with_clock(monkeypatch)
     monkeypatch.setattr(W.random, "uniform", lambda a, b: (a + b) / 2.0)
 
     send_once, calls = _make_send_once_fail_then_succeed(50, status=500)
+    abort_before = _counter_value(metrics.webhook_abort_total, "attempts")
+    retry_before = _counter_total(metrics.webhook_retry_total)
     ok = W._deliver_with_backoff(send_once)
     assert ok is False
     assert calls["n"] == 3
+    assert _counter_value(metrics.webhook_abort_total, "attempts") - abort_before == 1
+    # Two failures should produce two retries before hitting the cap.
+    assert _counter_total(metrics.webhook_retry_total) - retry_before == 2

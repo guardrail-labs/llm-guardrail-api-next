@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import os
-from time import monotonic as _monotonic
+import time
 from typing import Optional, Tuple
 
 from prometheus_client import REGISTRY, Counter, Gauge
@@ -18,8 +18,11 @@ except Exception:  # pragma: no cover
     RateLimiterBackend = None  # type: ignore
     build_backend = None  # type: ignore
 
+_NOW = time.monotonic
+
+
 def _now() -> float:
-    return _monotonic()
+    return _NOW()
 
 
 def _get_or_create_metric(factory, name: str, documentation: str, **kwargs):
