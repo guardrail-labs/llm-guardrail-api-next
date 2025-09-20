@@ -43,10 +43,79 @@
           <button id="filter-error" class="lint-filter-btn" type="button" aria-pressed="true">Errors</button>
           <button id="filter-warn" class="lint-filter-btn" type="button" aria-pressed="true">Warnings</button>
           <button id="filter-info" class="lint-filter-btn" type="button" aria-pressed="true">Info</button>
-          <button id="copy-lints-json" class="lint-copy-btn" type="button">Copy as JSON</button>
+          <button id="copy-lints-json" class="lint-copy-btn" type="button" {% if not lints %}disabled aria-disabled="true"{% else %}aria-disabled="false"{% endif %}>Copy as JSON</button>
           <span id="copy-toast" class="lint-toast muted" role="status" aria-live="polite" style="display:none;"></span>
         </div>
-        <div id="lints-list" class="lint-list" role="list"></div>
+        <div id="lints-list" class="lint-list" role="list">
+          {% if lints and lints|length %}
+            {% for lint in lints %}
+              {% set raw_severity = (lint.get('severity') or lint.get('level') or lint.get('type') or 'info')|string %}
+              {% set severity = raw_severity|lower %}
+              {% if severity == 'warning' %}
+                {% set severity = 'warn' %}
+              {% elif severity not in ['error', 'warn', 'info'] %}
+                {% set severity = 'info' %}
+              {% endif %}
+              {% set badge_label = 'warning' if severity == 'warn' else severity %}
+              {% set rule = lint.get('rule_id') or lint.get('ruleId') or lint.get('ruleID') %}
+              {% set code = lint.get('code') or lint.get('id') %}
+              {% set message = lint.get('message') or lint.get('msg') or '' %}
+              {% set path = lint.get('path') or lint.get('pointer') %}
+              {% set line = lint.get('line') %}
+              {% if line is none %}
+                {% set line = lint.get('line_number') %}
+              {% endif %}
+              {% if line is none %}
+                {% set line = lint.get('lineno') %}
+              {% endif %}
+              {% set column = lint.get('column') %}
+              {% if column is none %}
+                {% set column = lint.get('col') %}
+              {% endif %}
+              {% if column is none %}
+                {% set column = lint.get('column_number') %}
+              {% endif %}
+              {% set offset = lint.get('offset') %}
+              {% if offset is none %}
+                {% set offset = lint.get('position') %}
+              {% endif %}
+              {% set meta = namespace(items=[]) %}
+              {% if path %}
+                {% set meta.items = meta.items + ['<span class="lint-meta-label">Path:</span> <code>' ~ path|e ~ '</code>'] %}
+              {% endif %}
+              {% set pos_parts = [] %}
+              {% if line is not none %}
+                {% set pos_parts = pos_parts + ['line ' ~ line] %}
+              {% endif %}
+              {% if column is not none %}
+                {% set pos_parts = pos_parts + ['col ' ~ column] %}
+              {% endif %}
+              {% if offset is not none %}
+                {% set pos_parts = pos_parts + ['offset ' ~ offset] %}
+              {% endif %}
+              {% if pos_parts %}
+                {% set meta.items = meta.items + ['<span class="lint-meta-label">Position:</span> ' ~ pos_parts|join(', ')] %}
+              {% endif %}
+              <div class="lint-row" data-severity="{{ severity }}" role="listitem">
+                <span class="lint-badge {{ 'lint-badge-error' if severity == 'error' else 'lint-badge-warn' if severity == 'warn' else 'lint-badge-info' }}" aria-label="severity: {{ badge_label|e }}">{{ badge_label|upper }}</span>
+                <div class="lint-body">
+                  {% if rule or (code and code != rule) %}
+                    <div class="lint-header">
+                      {% if rule %}<code>{{ rule }}</code>{% endif %}
+                      {% if code and code != rule %}<code>{{ code }}</code>{% endif %}
+                    </div>
+                  {% endif %}
+                  <div class="lint-message">{{ message|e }}</div>
+                  {% if meta.items %}
+                    <div class="lint-meta">{{ meta.items|join(' · ')|safe }}</div>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="lint-empty muted" role="note">No lints found.</div>
+          {% endif %}
+        </div>
       </div>
       <script id="lints-data" type="application/json">{{ lints | default([]) | tojson }}</script>
     </details>
@@ -278,10 +347,21 @@
       }
     }
 
+    function getFilteredLints() {
+      if (!Array.isArray(lintState.items)) {
+        return [];
+      }
+      return lintState.items.filter((lint) => {
+        const sev = getSeverity(lint);
+        return Boolean(lintState.filters[sev]);
+      });
+    }
+
     function renderLintRows() {
       if (!lintsList) return;
       if (!lintState.items.length) {
         lintsList.innerHTML = '<div class="lint-empty muted" role="note">No lints found.</div>';
+        updateCopyAvailability();
         return;
       }
       lintsList.innerHTML = lintState.items.map((lint) => lintRowTemplate(lint)).join('');
@@ -293,11 +373,7 @@
       updateSummary();
       updateScriptTag();
       renderLintRows();
-      if (copyBtn) {
-        const hasLints = lintState.items.length > 0;
-        copyBtn.disabled = !hasLints;
-        copyBtn.setAttribute('aria-disabled', hasLints ? 'false' : 'true');
-      }
+      updateCopyAvailability();
     }
 
     function updateFilterButtons() {
@@ -315,6 +391,13 @@
       lintState.filters[key] = !lintState.filters[key];
       updateFilterButtons();
       applyFilter();
+    }
+
+    function updateCopyAvailability() {
+      if (!copyBtn) return;
+      const hasLints = lintState.items.length > 0;
+      copyBtn.disabled = !hasLints;
+      copyBtn.setAttribute('aria-disabled', hasLints ? 'false' : 'true');
     }
 
     function showToast(message) {
@@ -348,7 +431,8 @@
 
     async function copyJson() {
       if (!copyBtn) return;
-      const text = JSON.stringify(lintState.items, null, 2);
+      const filtered = getFilteredLints();
+      const text = JSON.stringify(filtered);
       let success = false;
       copyBtn.disabled = true;
       try {
@@ -362,8 +446,9 @@
         success = fallbackCopy(text);
       } finally {
         copyBtn.disabled = false;
+        updateCopyAvailability();
       }
-      showToast(success ? 'Lints copied' : 'Copy failed');
+      showToast(success ? `Copied ${filtered.length} lints` : 'Copy failed');
     }
 
     const initialLints = parseInitialLints();
