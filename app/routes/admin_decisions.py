@@ -28,6 +28,7 @@ class _Filters(TypedDict):
     tenant: Optional[str]
     bot: Optional[str]
     rule_id: Optional[str]
+    request_id: Optional[str]
     decision: Optional[str]
     from_ts: Optional[int]
     to_ts: Optional[int]
@@ -148,6 +149,7 @@ def _parse_filters(
     tenant: Optional[str],
     bot: Optional[str],
     rule_id: Optional[str],
+    request_id: Optional[str],
     decision: Optional[str],
     from_ts: Optional[str],
     to_ts: Optional[str],
@@ -173,6 +175,7 @@ def _parse_filters(
             "tenant": _normalize_optional(tenant),
             "bot": _normalize_optional(bot),
             "rule_id": _normalize_optional(rule_id),
+            "request_id": _normalize_optional(request_id),
             "decision": decision_norm,
             "from_ts": from_val,
             "to_ts": to_val,
@@ -190,6 +193,7 @@ def _parse_filters_no_pagination(
     tenant: Optional[str],
     bot: Optional[str],
     rule_id: Optional[str],
+    request_id: Optional[str],
     decision: Optional[str],
     from_ts: Optional[str],
     to_ts: Optional[str],
@@ -199,6 +203,7 @@ def _parse_filters_no_pagination(
         tenant=tenant,
         bot=bot,
         rule_id=rule_id,
+        request_id=request_id,
         decision=decision,
         from_ts=from_ts,
         to_ts=to_ts,
@@ -221,6 +226,7 @@ def get_decisions(
     tenant: Optional[str] = Query(default=None),
     bot: Optional[str] = Query(default=None),
     rule_id: Optional[str] = Query(default=None),
+    request_id: Optional[str] = Query(default=None),
     decision: Optional[str] = Query(default=None),
     from_ts: Optional[str] = Query(default=None),
     to_ts: Optional[str] = Query(default=None),
@@ -233,6 +239,7 @@ def get_decisions(
         tenant=tenant,
         bot=bot,
         rule_id=rule_id,
+        request_id=request_id,
         decision=decision,
         from_ts=from_ts,
         to_ts=to_ts,
@@ -248,6 +255,7 @@ def get_decisions(
         tenant=filters["tenant"],
         bot=filters["bot"],
         rule_id=filters["rule_id"],
+        request_id=filters["request_id"],
         decision=filters["decision"],
         from_ts=filters["from_ts"],
         to_ts=filters["to_ts"],
@@ -273,6 +281,7 @@ def _ndjson_stream(filters: _Filters) -> Iterator[str]:
         tenant=filters["tenant"],
         bot=filters["bot"],
         rule_id=filters["rule_id"],
+        request_id=filters["request_id"],
         decision=filters["decision"],
         from_ts=filters["from_ts"],
         to_ts=filters["to_ts"],
@@ -286,6 +295,7 @@ def export_decisions_ndjson(
     tenant: Optional[str] = Query(default=None),
     bot: Optional[str] = Query(default=None),
     rule_id: Optional[str] = Query(default=None),
+    request_id: Optional[str] = Query(default=None),
     decision: Optional[str] = Query(default=None),
     from_ts: Optional[str] = Query(default=None),
     to_ts: Optional[str] = Query(default=None),
@@ -296,6 +306,7 @@ def export_decisions_ndjson(
         tenant=tenant,
         bot=bot,
         rule_id=rule_id,
+        request_id=request_id,
         decision=decision,
         from_ts=from_ts,
         to_ts=to_ts,

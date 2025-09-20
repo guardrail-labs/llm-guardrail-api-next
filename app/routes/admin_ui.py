@@ -355,6 +355,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         "tenant": query.get("tenant", ""),
         "bot": query.get("bot", ""),
         "rule_id": query.get("rule_id", ""),
+        "request_id": query.get("request_id", ""),
         "decision": query.get("decision", ""),
         "from_ts": query.get("from_ts", ""),
         "to_ts": query.get("to_ts", ""),
@@ -369,6 +370,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         tenant=raw_filters["tenant"],
         bot=raw_filters["bot"],
         rule_id=raw_filters["rule_id"],
+        request_id=raw_filters["request_id"],
         decision=raw_filters["decision"],
         from_ts=raw_filters["from_ts"],
         to_ts=raw_filters["to_ts"],
@@ -394,6 +396,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             tenant=filters["tenant"],
             bot=filters["bot"],
             rule_id=filters["rule_id"],
+            request_id=filters["request_id"],
             decision=filters["decision"],
             from_ts=filters["from_ts"],
             to_ts=filters["to_ts"],
@@ -408,6 +411,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             "tenant": filters["tenant"] or "",
             "bot": filters["bot"] or "",
             "rule_id": filters["rule_id"] or "",
+            "request_id": filters["request_id"] or "",
             "decision": filters["decision"] or "",
             "from_ts": filters["from_ts"],
             "to_ts": filters["to_ts"],
@@ -420,6 +424,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             "tenant": (raw_filters["tenant"] or "").strip(),
             "bot": (raw_filters["bot"] or "").strip(),
             "rule_id": (raw_filters["rule_id"] or "").strip(),
+            "request_id": (raw_filters["request_id"] or "").strip(),
             "decision": (raw_filters["decision"] or "").strip(),
             "from_ts": _coerce_epoch(raw_filters["from_ts"]),
             "to_ts": _coerce_epoch(raw_filters["to_ts"]),
@@ -448,13 +453,14 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         "tenant": filters_state.get("tenant", ""),
         "bot": filters_state.get("bot", ""),
         "rule_id": filters_state.get("rule_id", ""),
+        "request_id": filters_state.get("request_id", ""),
         "decision": filters_state.get("decision", ""),
         "from_ts": _epoch_to_iso(filters_state.get("from_ts")),
         "to_ts": _epoch_to_iso(filters_state.get("to_ts")),
     }
 
     ndjson_params: Dict[str, str] = {}
-    for key in ("tenant", "bot", "rule_id", "decision"):
+    for key in ("tenant", "bot", "rule_id", "request_id", "decision"):
         value = filters_state.get(key)
         if value:
             ndjson_params[key] = str(value)
@@ -502,6 +508,7 @@ def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLRespo
     raw_filters: Dict[str, Optional[str]] = {
         "tenant": _none_if_blank(query.get("tenant")),
         "bot": _none_if_blank(query.get("bot")),
+        "request_id": _none_if_blank(query.get("request_id")),
         "decision": _none_if_blank(query.get("decision")),
         "mitigation_forced": _none_if_blank(query.get("mitigation_forced")),
         "from_ts": _none_if_blank(query.get("from_ts")),
@@ -517,7 +524,7 @@ def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLRespo
         tenant=raw_filters["tenant"],
         bot=raw_filters["bot"],
         provider=None,
-        request_id=None,
+        request_id=raw_filters["request_id"],
         decision=raw_filters["decision"],
         mitigation_forced=raw_filters["mitigation_forced"],
         start=None,
@@ -559,6 +566,7 @@ def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLRespo
         filters_state = {
             "tenant": filters["tenant"] or "",
             "bot": filters["bot"] or "",
+            "request_id": filters["request_id"] or "",
             "decision": filters["decision"] or "",
             "mitigation_forced": filters["mitigation_forced"]
             if filters["mitigation_forced"] is not None
@@ -573,6 +581,7 @@ def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLRespo
         filters_state = {
             "tenant": (raw_filters["tenant"] or "").strip(),
             "bot": (raw_filters["bot"] or "").strip(),
+            "request_id": (raw_filters["request_id"] or "").strip(),
             "decision": (raw_filters["decision"] or "").strip(),
             "mitigation_forced": (raw_filters["mitigation_forced"] or "").strip(),
             "from_ts": _coerce_epoch(raw_filters["from_ts"]),
@@ -601,6 +610,7 @@ def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLRespo
     filter_inputs = {
         "tenant": filters_state.get("tenant", ""),
         "bot": filters_state.get("bot", ""),
+        "request_id": filters_state.get("request_id", ""),
         "decision": filters_state.get("decision", ""),
         "mitigation_forced": filters_state.get("mitigation_forced", ""),
         "from_ts": _epoch_to_iso(filters_state.get("from_ts")),
@@ -608,7 +618,7 @@ def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLRespo
     }
 
     ndjson_params: Dict[str, str] = {}
-    for key in ("tenant", "bot", "decision", "mitigation_forced"):
+    for key in ("tenant", "bot", "request_id", "decision", "mitigation_forced"):
         value = filters_state.get(key)
         if value:
             ndjson_params[key] = str(value)
