@@ -95,7 +95,7 @@ def test_csrf_rotates_only_on_new_session():
 
 
 def test_no_secure_when_dev_toggle_off(monkeypatch):
-    monkeypatch.setenv("ADMIN_COOKIE_INSECURE", "1")
+    monkeypatch.setenv("ADMIN_COOKIE_SECURE", "0")
     app = create_app()
     router = APIRouter()
 

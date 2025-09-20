@@ -25,23 +25,37 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
             path = f"/{path}"
         self._cookie_path = path
         self._ttl = self._parse_ttl(os.getenv("ADMIN_SESSION_TTL_SECONDS"))
-        self._secure = self._secure_cookies_enabled()
+        self._secure = self._parse_secure_flag(os.getenv("ADMIN_COOKIE_SECURE"))
 
     @staticmethod
-    def _parse_ttl(raw: Optional[str]) -> Optional[int]:
-        raw = (raw or "").strip()
-        if not raw:
-            return 1200
+    def _parse_ttl(raw: Optional[str]) -> int:
+        raw_value = (raw or "").strip()
+        default = 1800
+        if not raw_value:
+            return default
         try:
-            value = int(raw)
+            parsed = int(raw_value)
         except Exception:
-            return 1200
-        return value if value > 0 else None
+            return default
+
+        minimum = 300
+        maximum = 86400
+        if parsed < minimum:
+            return minimum
+        if parsed > maximum:
+            return maximum
+        return parsed
 
     @staticmethod
-    def _secure_cookies_enabled() -> bool:
-        raw = (os.getenv("ADMIN_COOKIE_INSECURE") or "").strip().lower()
-        return raw not in {"1", "true", "on", "yes"}
+    def _parse_secure_flag(raw: Optional[str]) -> bool:
+        raw_value = (raw or "").strip().lower()
+        if not raw_value:
+            return True
+        if raw_value in {"0", "false", "off", "no"}:
+            return False
+        if raw_value in {"1", "true", "on", "yes"}:
+            return True
+        return True
 
     def _is_admin_path(self, path: str) -> bool:
         base = self._cookie_path.rstrip("/") or "/"
@@ -85,15 +99,13 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
 
         session_value = req_session
         if new_session:
-            session_value = session_value or secrets.token_urlsafe(32)
+            session_value = secrets.token_urlsafe(32)
 
         csrf_value: Optional[str] = None
         if not resp_sets_csrf:
             if new_session:
                 csrf_value = secrets.token_urlsafe(32)
-            elif req_csrf:
-                csrf_value = req_csrf
-            else:
+            elif not req_csrf:
                 csrf_value = secrets.token_urlsafe(32)
 
         max_age = self._ttl
