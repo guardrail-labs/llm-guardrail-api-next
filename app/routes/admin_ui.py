@@ -7,19 +7,21 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
-from app.routes import admin_decisions
 from app.routes.admin_apply_demo_defaults import apply_demo_defaults as apply_demo_action
 from app.routes.admin_apply_golden import apply_golden_packs as apply_golden_action
 from app.routes.admin_apply_strict_secrets import apply_strict_secrets as apply_strict_action
 from app.services.config_store import get_config, get_policy_packs
 from app.services.policy import current_rules_version, reload_rules
+
+if TYPE_CHECKING:
+    from app.routes import admin_decisions as _admin_decisions_mod  # noqa: F401
 
 # Best-effort helpers that may not exist in all deployments
 try:  # pragma: no cover - optional dependency
@@ -87,6 +89,12 @@ def require_auth(req: Request) -> None:
         detail="Auth required",
         headers=headers,
     )
+
+
+def _decisions_mod():
+    from app.routes import admin_decisions as _admin_decisions
+
+    return _admin_decisions
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +304,9 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         "sort": query.get("sort", ""),
     }
 
-    filters, error = admin_decisions._parse_filters(
+    decisions_mod = _decisions_mod()
+
+    filters, error = decisions_mod._parse_filters(
         tenant=raw_filters["tenant"],
         bot=raw_filters["bot"],
         rule_id=raw_filters["rule_id"],
@@ -321,7 +331,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     items: List[Dict[str, Any]] = []
     total = 0
     if filters is not None:
-        records = admin_decisions.list_decisions(
+        records = decisions_mod.list_decisions(
             tenant=filters["tenant"],
             bot=filters["bot"],
             rule_id=filters["rule_id"],
@@ -334,7 +344,7 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
         start = filters["offset"]
         end = start + filters["limit"]
         slice_items = records[start:end]
-        items = admin_decisions._serialize_items(slice_items)
+        items = decisions_mod._serialize_items(slice_items)
         filters_state = {
             "tenant": filters["tenant"] or "",
             "bot": filters["bot"] or "",
@@ -522,7 +532,7 @@ def export_decisions(
     n: int = 1000, _: None = Depends(require_auth)
 ) -> StreamingResponse:
     buf = io.StringIO()
-    records = admin_decisions.list_decisions(sort="ts_desc")[: max(int(n), 0)]
+    records = _decisions_mod().list_decisions(sort="ts_desc")[: max(int(n), 0)]
     for item in records:
         import json
 
