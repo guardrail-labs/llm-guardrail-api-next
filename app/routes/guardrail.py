@@ -222,6 +222,9 @@ def _log_adjudication(
     score: Optional[float],
 ) -> None:
     try:
+        hits = _coerce_rule_hits(rule_ids)
+        primary_rule_id = next((h for h in (hits or []) if h), None)
+
         record = _adj_log.AdjudicationRecord(
             ts=_adj_log._now_ts(),
             request_id=str(request_id or ""),
@@ -229,7 +232,8 @@ def _log_adjudication(
             bot=str(bot or "unknown"),
             provider=str(provider or "core"),
             decision=str(decision or "unknown"),
-            rule_hits=_coerce_rule_hits(rule_ids),
+            rule_hits=hits,
+            rule_id=primary_rule_id,
             score=score,
             latency_ms=int(max(latency_ms, 0)),
             policy_version=str(policy_version) if policy_version else None,

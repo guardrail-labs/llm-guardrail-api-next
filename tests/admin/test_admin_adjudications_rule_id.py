@@ -23,6 +23,7 @@ def _append_record(
     dt: datetime,
     request_id: str,
     rule_id: str | None,
+    rule_hits: list[str] | None = None,
 ) -> None:
     record = adjudication_log.AdjudicationRecord(
         ts=_ts(dt),
@@ -31,7 +32,8 @@ def _append_record(
         bot="bot-1",
         provider="core",
         decision="block",
-        rule_hits=["rule:test"],
+        rule_id=rule_id,
+        rule_hits=list(rule_hits) if rule_hits is not None else ["rule:test"],
         score=None,
         latency_ms=15,
         policy_version="v1",
@@ -39,8 +41,6 @@ def _append_record(
         sampled=False,
         prompt_sha256=None,
     )
-    if rule_id is not None:
-        setattr(record, "rule_id", rule_id)
     adjudication_log.append(record)
 
 
@@ -88,3 +88,78 @@ def test_rule_id_filter_applies_to_ndjson(admin_client: TestClient) -> None:
     parsed = [json.loads(line) for line in lines]
     assert [entry["rule_id"] for entry in parsed] == ["r-7", "r-7"]
     assert [entry["request_id"] for entry in parsed] == ["match-new", "match-old"]
+
+
+def test_rule_id_filter_matches_when_only_rule_hits_present(
+    admin_client: TestClient,
+) -> None:
+    now = datetime.now(timezone.utc)
+    _append_record(
+        dt=now,
+        request_id="legacy-1",
+        rule_id=None,
+        rule_hits=["rA", "rB"],
+    )
+
+    response = admin_client.get(
+        "/admin/adjudications",
+        params={"rule_id": "rB"},
+        headers=_admin_headers(),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [item.get("request_id") for item in payload["items"]] == ["legacy-1"]
+    assert ["rule_id" in item for item in payload["items"]] == [False]
+
+
+def test_rule_id_filter_matches_multi_hit_records(admin_client: TestClient) -> None:
+    now = datetime.now(timezone.utc)
+    _append_record(
+        dt=now,
+        request_id="multi-1",
+        rule_id="r1",
+        rule_hits=["r1", "r2"],
+    )
+    _append_record(dt=now - timedelta(seconds=1), request_id="skip", rule_id="r3")
+
+    response = admin_client.get(
+        "/admin/adjudications",
+        params={"rule_id": "r2"},
+        headers=_admin_headers(),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert [item.get("request_id") for item in payload["items"]] == ["multi-1"]
+    assert [item.get("rule_id") for item in payload["items"]] == ["r1"]
+
+
+def test_rule_id_filter_ndjson_matches_when_only_rule_hits_present(
+    admin_client: TestClient,
+) -> None:
+    base = datetime.now(timezone.utc)
+    _append_record(
+        dt=base - timedelta(seconds=1),
+        request_id="legacy-old",
+        rule_id=None,
+        rule_hits=["rZ"],
+    )
+    _append_record(
+        dt=base,
+        request_id="legacy-new",
+        rule_id=None,
+        rule_hits=["rZ", "r-other"],
+    )
+
+    response = admin_client.get(
+        "/admin/adjudications.ndjson",
+        params={"rule_id": "rZ"},
+        headers=_admin_headers(),
+    )
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert lines, "expected ndjson output"
+    parsed = [json.loads(line) for line in lines]
+    assert [entry.get("request_id") for entry in parsed] == ["legacy-new", "legacy-old"]
+    assert all("rule_id" not in entry for entry in parsed)
