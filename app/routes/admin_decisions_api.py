@@ -521,6 +521,12 @@ async def get_decisions(
             )
         pagination_dir = cast(Literal["next", "prev"], query_dir)
 
+    since_ts_ms: Optional[int] = None
+    if since:
+        parsed_since = _parse_since(since)
+        if parsed_since is not None:
+            since_ts_ms = int(parsed_since.timestamp() * 1000)
+
     try:
         items_raw, next_cursor, prev_cursor = list_with_cursor(
             tenant=tenant,
@@ -528,6 +534,8 @@ async def get_decisions(
             limit=effective_limit,
             cursor=cursor,
             dir=pagination_dir,
+            since_ts_ms=since_ts_ms,
+            outcome=outcome,
         )
     except CursorError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

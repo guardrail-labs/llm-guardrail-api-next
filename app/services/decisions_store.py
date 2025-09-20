@@ -29,6 +29,8 @@ def list_with_cursor(
     limit: int = 50,
     cursor: Optional[str] = None,
     dir: Dir = "next",
+    since_ts_ms: Optional[int] = None,
+    outcome: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
     """Return a page of decisions ordered by ``(ts_ms DESC, id DESC)``."""
 
@@ -43,9 +45,12 @@ def list_with_cursor(
         limit=safe_limit + 1,
         cursor=decoded,
         dir=dir,
+        since_ts_ms=since_ts_ms,
+        outcome=outcome,
     )
 
-    items = _apply_cursor_window(raw_items, decoded, dir)
+    filtered_items = _apply_filters(raw_items, since_ts_ms=since_ts_ms, outcome=outcome)
+    items = _apply_cursor_window(filtered_items, decoded, dir)
     page = items[:safe_limit]
     if not page:
         return [], None, None
@@ -92,6 +97,25 @@ def _apply_cursor_window(
     return [item for item in normalized_items if after(item)]
 
 
+def _apply_filters(
+    items: List[Dict[str, Any]],
+    *,
+    since_ts_ms: Optional[int],
+    outcome: Optional[str],
+) -> List[Dict[str, Any]]:
+    if since_ts_ms is None and outcome is None:
+        return items
+
+    filtered = items
+    if since_ts_ms is not None:
+        filtered = [
+            item for item in filtered if int(_ensure_ts_ms(item)["ts_ms"]) >= int(since_ts_ms)
+        ]
+    if outcome is not None:
+        filtered = [item for item in filtered if item.get("outcome") == outcome]
+    return filtered
+
+
 def _ensure_ts_ms(item: Dict[str, Any]) -> Dict[str, Any]:
     if "ts_ms" in item:
         return item
@@ -113,6 +137,8 @@ def _fetch_decisions_sorted_desc(
     limit: int,
     cursor: Optional[Tuple[int, str]],
     dir: Dir,
+    since_ts_ms: Optional[int] = None,
+    outcome: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if select is None or decisions_service is None:
         raise RuntimeError("SQLAlchemy is required for decisions cursor pagination")
@@ -123,6 +149,11 @@ def _fetch_decisions_sorted_desc(
         conditions.append(table.c.tenant == tenant)
     if bot:
         conditions.append(table.c.bot == bot)
+    if since_ts_ms is not None:
+        since_dt = datetime.fromtimestamp(since_ts_ms / 1000, tz=timezone.utc)
+        conditions.append(table.c.ts >= since_dt)
+    if outcome:
+        conditions.append(table.c.outcome == outcome)
     if cursor is not None:
         ts_ms, cursor_id = cursor
         cursor_dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
