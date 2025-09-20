@@ -6,7 +6,9 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Deque, Iterator, List, Optional, Sequence, Union
+from typing import Deque, Iterator, List, Literal, Optional, Sequence, Tuple, Union
+
+from app.utils.cursor import decode_cursor, encode_cursor
 
 
 def _now_ts() -> str:
@@ -249,6 +251,137 @@ def paged_query(
     return items, total
 
 
+
+
+def _record_ts_ms(record: AdjudicationRecord) -> int:
+    parsed = _parse_ts(record.ts)
+    if parsed is None:
+        return 0
+    return int(parsed.timestamp() * 1000)
+
+
+def _record_cursor_id(index: int, record: AdjudicationRecord) -> str:
+    parts = [
+        getattr(record, "request_id", "") or "",
+        getattr(record, "rule_id", "") or "",
+        getattr(record, "provider", "") or "",
+        getattr(record, "decision", "") or "",
+        getattr(record, "policy_version", "") or "",
+        getattr(record, "prompt_sha256", "") or "",
+    ]
+    base = "|".join(parts)
+    return f"{base}|{index:08d}"
+
+
+def _iter_filtered_with_index(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    provider: Optional[str] = None,
+    request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
+    sort: str = "ts_desc",
+) -> Iterator[Tuple[int, AdjudicationRecord]]:
+    with _LOCK:
+        snapshot: Sequence[AdjudicationRecord] = list(_BUFFER)
+
+    reverse = sort != "ts_asc"
+    ordered = sorted(
+        enumerate(snapshot),
+        key=lambda item: (_ts_sort_key(item[1]), item[0]),
+        reverse=reverse,
+    )
+
+    for idx, rec in ordered:
+        if _matches(
+            rec,
+            start=start,
+            end=end,
+            tenant=tenant,
+            bot=bot,
+            provider=provider,
+            request_id=request_id,
+            rule_id=rule_id,
+            decision=decision,
+            mitigation_forced=mitigation_forced,
+        ):
+            yield idx, rec
+
+
+def list_with_cursor(
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    provider: Optional[str] = None,
+    request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    mitigation_forced: Optional[str] = None,
+    limit: int = 50,
+    cursor: Optional[str] = None,
+    dir: Literal["next", "prev"] = "next",
+    sort: str = "ts_desc",
+) -> Tuple[List[AdjudicationRecord], Optional[str], Optional[str]]:
+    safe_limit = max(1, min(int(limit), 500))
+    decoded: Optional[Tuple[int, str]] = None
+    if cursor:
+        decoded = decode_cursor(cursor)
+
+    entries: List[Tuple[AdjudicationRecord, int, str]] = []
+    for idx, rec in _iter_filtered_with_index(
+        start=start,
+        end=end,
+        tenant=tenant,
+        bot=bot,
+        provider=provider,
+        request_id=request_id,
+        rule_id=rule_id,
+        decision=decision,
+        mitigation_forced=mitigation_forced,
+        sort="ts_desc",
+    ):
+        ts_ms = _record_ts_ms(rec)
+        key = _record_cursor_id(idx, rec)
+        if decoded is not None:
+            bound_ts, bound_id = decoded
+            if dir == "next":
+                if (ts_ms, key) >= (bound_ts, bound_id):
+                    continue
+            else:
+                if (ts_ms, key) <= (bound_ts, bound_id):
+                    continue
+        entries.append((rec, ts_ms, key))
+        if len(entries) > safe_limit:
+            break
+
+    if not entries:
+        return [], None, None
+
+    has_more = len(entries) > safe_limit
+    page_entries = entries[:safe_limit]
+    first_rec, first_ts, first_key = page_entries[0]
+    last_rec, last_ts, last_key = page_entries[-1]
+
+    next_cursor_token: Optional[str] = encode_cursor(last_ts, last_key)
+    prev_cursor_token: Optional[str] = encode_cursor(first_ts, first_key)
+    if dir == "next":
+        if cursor is None:
+            prev_cursor_token = None
+        if not has_more:
+            next_cursor_token = None
+    else:
+        if not has_more:
+            prev_cursor_token = None
+
+    records = [rec for rec, _ts, _key in page_entries]
+    return records, next_cursor_token, prev_cursor_token
+
 def query(
     *,
     start: Optional[str] = None,
@@ -351,6 +484,7 @@ __all__ = [
     "clear",
     "iter_records",
     "paged_query",
+    "list_with_cursor",
     "query",
     "stream",
     "_now_ts",
