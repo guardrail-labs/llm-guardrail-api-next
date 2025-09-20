@@ -5,14 +5,16 @@ import hmac
 import json
 import os
 import queue
+import random
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import httpx
 
 import app.telemetry.metrics as telemetry_metrics
 from app.observability.metrics import (
+    webhook_abort_total,
     webhook_dlq_length_dec,
     webhook_dlq_length_inc,
     webhook_dlq_length_set,
@@ -20,9 +22,118 @@ from app.observability.metrics import (
     webhook_pending_set,
     webhook_processed_inc,
     webhook_retried_inc,
+    webhook_retry_total,
 )
 from app.services.config_store import get_config
-from app.services.webhooks_cb import compute_backoff_ms, get_cb_registry
+from app.services.webhooks_cb import get_cb_registry
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+_BACKOFF_BASE_MS = _int_env("WEBHOOK_BACKOFF_BASE_MS", 250)
+_BACKOFF_MAX_MS = _int_env("WEBHOOK_BACKOFF_MAX_MS", 900_000)
+_MAX_ATTEMPTS = _int_env("WEBHOOK_MAX_ATTEMPTS", 12)
+_MAX_HORIZON_MS = _int_env("WEBHOOK_MAX_HORIZON_MS", 900_000)
+
+# Type signature for a one-shot attempt. Return (ok, status_code, err_kind)
+# err_kind in {"network","timeout","5xx","4xx", "cb_open", None}
+SendOnce = Callable[[], Tuple[bool, int | None, str | None]]
+
+
+def _sleep_ms(ms: int) -> None:
+    time.sleep(ms / 1000.0)
+
+
+def _decorrelated_jitter_sleep_ms(prev_sleep_ms: int, base_ms: int, max_ms: int) -> int:
+    """AWS-style decorrelated jitter backoff."""
+
+    low = base_ms
+    high = max(base_ms, prev_sleep_ms * 3)
+    return min(max_ms, int(random.uniform(low, high)))
+
+
+def _should_retry(status_code: int | None, err_kind: str | None) -> Tuple[bool, str | None]:
+    if err_kind in ("network", "timeout"):
+        return True, err_kind
+    if err_kind == "cb_open":
+        return False, "cb_open"
+    if status_code is None:
+        return True, "network"
+    if 500 <= status_code <= 599:
+        return True, "5xx"
+    if 400 <= status_code <= 499:
+        return False, "4xx"
+    return False, None
+
+
+def _deliver_with_backoff(
+    send_once: SendOnce,
+    *,
+    state: Optional[Dict[str, Any]] = None,
+    base_ms: int = _BACKOFF_BASE_MS,
+    max_ms: int = _BACKOFF_MAX_MS,
+    max_attempts: int = _MAX_ATTEMPTS,
+    max_horizon_ms: int = _MAX_HORIZON_MS,
+) -> bool:
+    """Attempt delivery using decorrelated jitter backoff."""
+
+    attempts = 0
+    start = time.monotonic()
+    base_ms = max(1, int(base_ms))
+    max_ms = max(base_ms, int(max_ms))
+    max_attempts = max(1, int(max_attempts))
+    max_horizon_ms = max(0, int(max_horizon_ms))
+    sleep_ms = base_ms
+
+    while True:
+        attempts += 1
+        ok, status, err = send_once()
+        if state is not None:
+            state["last_status"] = status
+            state["last_error"] = err
+            state["attempts"] = attempts
+        if ok:
+            if state is not None:
+                state["abort_reason"] = None
+            return True
+
+        retry, reason = _should_retry(status, err)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        if not retry:
+            if state is not None:
+                state["abort_reason"] = reason
+            if reason == "4xx":
+                webhook_abort_total.labels("4xx").inc()
+            elif reason in ("cb_open", None):
+                pass
+            else:
+                webhook_abort_total.labels("4xx").inc()
+            return False
+
+        if attempts >= max_attempts:
+            if state is not None:
+                state["abort_reason"] = "attempts"
+            webhook_abort_total.labels("attempts").inc()
+            return False
+
+        if max_horizon_ms and elapsed_ms >= max_horizon_ms:
+            if state is not None:
+                state["abort_reason"] = "horizon"
+            webhook_abort_total.labels("horizon").inc()
+            return False
+
+        webhook_retry_total.labels(reason or "network").inc()
+        webhook_retried_inc()
+
+        next_sleep = _decorrelated_jitter_sleep_ms(sleep_ms, base_ms, max_ms)
+        _sleep_ms(next_sleep)
+        sleep_ms = next_sleep
 
 # Default dead-letter file path (overridable)
 _DEFAULT_DLQ_PATH = "var/webhook_deadletter.jsonl"
@@ -201,8 +312,6 @@ def _deliver_with_client(
     url = str(cfg.get("webhook_url") or "")
     secret = str(cfg.get("webhook_secret") or "")
     timeout_ms = int(cfg.get("webhook_timeout_ms") or 2000)
-    max_retries = int(cfg.get("webhook_max_retries") or 5)
-    backoff_ms = int(cfg.get("webhook_backoff_ms") or 500)
     insecure_tls = bool(cfg.get("webhook_allow_insecure_tls") or False)
     allow_host = str(cfg.get("webhook_allowlist_host") or "")
 
@@ -228,7 +337,6 @@ def _deliver_with_client(
         sig_headers = _signing_headers(body_bytes, secret_bytes)
         headers.update(sig_headers)
 
-    attempt = 0
     last_code: Optional[int] = None
     last_exc: Optional[str] = None
 
@@ -245,13 +353,27 @@ def _deliver_with_client(
         )
         client_conf = desired_conf
 
-    while True:
-        if attempt > 0 and reg.should_dlq_now(url):
-            # If the breaker opened after the previous attempt, stop retrying immediately.
-            _dlq_write(evt, reason="cb_open")
-            return "cb_open", "-", client, client_conf
+    try:
+        base_override = int(cfg.get("webhook_backoff_ms") or _BACKOFF_BASE_MS)
+    except Exception:
+        base_override = _BACKOFF_BASE_MS
+    base_override = max(1, base_override)
+    max_sleep_ms = max(base_override, _BACKOFF_MAX_MS)
 
-        attempt += 1
+    max_attempts_cfg = cfg.get("webhook_max_retries")
+    max_attempts_override = _MAX_ATTEMPTS
+    if max_attempts_cfg is not None:
+        try:
+            max_attempts_override = max(1, int(max_attempts_cfg) + 1)
+        except Exception:
+            max_attempts_override = _MAX_ATTEMPTS
+    max_attempts_override = min(_MAX_ATTEMPTS, max_attempts_override)
+
+    abort_state: Dict[str, Any] = {}
+
+    def _send_once() -> Tuple[bool, int | None, str | None]:
+        nonlocal last_code, last_exc
+
         t0 = time.perf_counter()
         try:
             resp = client.post(url, content=body_bytes, headers=headers)
@@ -261,26 +383,50 @@ def _deliver_with_client(
             if 200 <= resp.status_code < 300:
                 reg.on_success(url)
                 webhook_processed_inc()
-                return "sent", _status_bucket(last_code, None), client, client_conf
+                return True, resp.status_code, None
             reg.on_failure(url)
+            err_kind: str | None = None
         except httpx.TimeoutException:
+            last_code = None
             last_exc = "timeout"
             reg.on_failure(url)
             telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            err_kind = "timeout"
         except Exception:
+            last_code = None
             last_exc = "error"
             reg.on_failure(url)
             telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            err_kind = "network"
+        else:
+            err_kind = None
 
-        if attempt > max_retries:
-            bucket = _status_bucket(last_code, last_exc)
-            _dlq_write(evt, reason=bucket)
-            webhook_failed_inc()
-            return "dlq", bucket, client, client_conf
+        if reg.should_dlq_now(url):
+            abort_state["abort_reason"] = "cb_open"
+            return False, last_code, "cb_open"
 
-        webhook_retried_inc()
-        sleep_ms = compute_backoff_ms(backoff_ms, attempt - 1)
-        time.sleep(sleep_ms / 1000.0)
+        return False, last_code, err_kind
+
+    ok = _deliver_with_backoff(
+        _send_once,
+        state=abort_state,
+        base_ms=base_override,
+        max_ms=max_sleep_ms,
+        max_attempts=max_attempts_override,
+        max_horizon_ms=_MAX_HORIZON_MS,
+    )
+    if ok:
+        return "sent", _status_bucket(last_code, None), client, client_conf
+
+    abort_reason = abort_state.get("abort_reason")
+    if abort_reason == "cb_open" or reg.should_dlq_now(url):
+        _dlq_write(evt, reason="cb_open")
+        return "cb_open", "-", client, client_conf
+
+    bucket = _status_bucket(last_code, last_exc)
+    _dlq_write(evt, reason=bucket)
+    webhook_failed_inc()
+    return "dlq", bucket, client, client_conf
 
 
 def _worker() -> None:
