@@ -5,6 +5,7 @@ import importlib
 import inspect
 import io
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Tuple, cast
@@ -13,6 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
+
+from app.services.decisions_store import list_with_cursor
+from app.utils.cursor import CursorError
 
 SortKey = Literal["ts", "tenant", "bot", "outcome", "policy_version", "rule_id", "incident_id"]
 SortDir = Literal["asc", "desc"]
@@ -219,6 +223,8 @@ def _require_admin_dep(request: Request):
     return None
 
 
+log = logging.getLogger(__name__)
+
 router = APIRouter(dependencies=[Depends(_require_admin_dep)])
 templates = Jinja2Templates(directory="app/ui/templates")
 
@@ -238,10 +244,14 @@ class DecisionItem(BaseModel):
 
 class DecisionPage(BaseModel):
     items: List[DecisionItem]
-    page: int
-    page_size: int
-    has_more: bool
+    page: Optional[int] = None
+    page_size: Optional[int] = None
+    has_more: Optional[bool] = None
     total: Optional[int] = None
+    next_cursor: Optional[str] = None
+    prev_cursor: Optional[str] = None
+    limit: Optional[int] = None
+    dir: Optional[Literal["next", "prev"]] = None
 
 
 _provider: Optional[DecisionProvider] = None
@@ -342,34 +352,25 @@ def _norm_item(d: Dict[str, Any]) -> DecisionItem:
     )
 
 
-@router.get("/admin/api/decisions", response_model=DecisionPage)
-async def get_decisions(
-    request: Request,
-    since: Optional[str] = Query(None, description="ISO8601 timestamp (UTC)"),
-    tenant: Optional[str] = Query(None),
-    bot: Optional[str] = Query(None),
-    outcome: Optional[str] = Query(None),
-    page: int = Query(
-        1,
-        ge=1,
-        description="1-based page number (ignored when limit/offset query params are provided)",
-    ),
-    page_size: int = Query(
-        50,
-        ge=1,
-        le=500,
-        description="Items per page when using page/page_size (overridden by limit/offset)",
-    ),
-    sort: str = "ts",
-    dir: str = "desc",
+
+def _list_decisions_offset_path(
+    *,
+    since: Optional[str],
+    tenant: Optional[str],
+    bot: Optional[str],
+    outcome: Optional[str],
+    page: int,
+    page_size: int,
+    sort: str,
+    sort_dir: str,
+    limit: int,
+    offset: int,
 ) -> JSONResponse:
     prov = _get_provider()
     since_dt = _parse_since(since)
-    offset = (page - 1) * page_size
     sort_lower = (sort or "").lower()
     sort_key_safe: SortKey = cast(SortKey, sort_lower) if sort_lower in SORT_KEYS else "ts"
-    dir_lower = (dir or "").lower()
-    sort_dir_safe: SortDir = "asc" if dir_lower == "asc" else "desc"
+    sort_dir_safe: SortDir = "asc" if sort_dir == "asc" else "desc"
     try:
         items_raw, total = prov(
             since=since_dt,
@@ -408,9 +409,6 @@ async def get_decisions(
                     status_code=500,
                     detail="decisions provider error",
                 ) from final_exc
-        else:
-            # If positional call succeeded after keyword failure, keep result.
-            pass
     items = [_norm_item(x) for x in items_raw]
     if total is not None:
         has_more = (offset + len(items)) < total
@@ -422,6 +420,144 @@ async def get_decisions(
         page_size=page_size,
         has_more=has_more,
         total=total,
+        next_cursor=None,
+        prev_cursor=None,
+        limit=limit,
+        dir="next",
+    )
+    return JSONResponse(payload.model_dump())
+
+
+@router.get("/admin/api/decisions", response_model=DecisionPage)
+async def get_decisions(
+    request: Request,
+    since: Optional[str] = Query(None, description="ISO8601 timestamp (UTC)"),
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    page: int = Query(
+        1,
+        ge=1,
+        description="1-based page number (ignored when limit/offset query params are provided)",
+    ),
+    page_size: int = Query(
+        50,
+        ge=1,
+        le=500,
+        description="Items per page when using page/page_size (overridden by limit/offset)",
+    ),
+    sort: str = "ts",
+    sort_dir: Optional[str] = Query(None, alias="sort_dir"),
+    limit: int = Query(50, ge=1, le=500),
+    cursor: Optional[str] = Query(None),
+    page_dir: Literal["next", "prev"] = Query("next", alias="cursor_dir"),
+    offset: Optional[int] = Query(None),
+) -> JSONResponse:
+    query_dir_raw = request.query_params.get("dir")
+    query_dir = query_dir_raw.lower() if query_dir_raw else None
+
+    sort_dir_value = (sort_dir or "").lower() if sort_dir else None
+    if not sort_dir_value and query_dir and query_dir not in {"next", "prev"}:
+        sort_dir_value = query_dir
+    if sort_dir_value not in {"asc", "desc"}:
+        sort_dir_value = "desc"
+
+    requested_page_size = max(int(page_size), 1)
+    effective_limit = max(int(limit), 1)
+    page_size_param = request.query_params.get("page_size")
+    if page_size_param is not None:
+        try:
+            requested_page_size = max(int(page_size_param), 1)
+        except ValueError:
+            requested_page_size = max(int(page_size), 1)
+    limit_param = request.query_params.get("limit")
+    if limit_param is not None:
+        try:
+            effective_limit = max(int(limit_param), 1)
+        except ValueError:
+            effective_limit = max(int(limit), 1)
+    effective_offset = (
+        int(offset)
+        if offset is not None
+        else max((int(page) - 1) * requested_page_size, 0)
+    )
+
+    if cursor is None and query_dir and query_dir not in {"next", "prev"}:
+        log.warning("Offset pagination is deprecated; prefer cursor.")
+        return _list_decisions_offset_path(
+            since=since,
+            tenant=tenant,
+            bot=bot,
+            outcome=outcome,
+            page=max(int(page), 1),
+            page_size=requested_page_size,
+            sort=sort,
+            sort_dir=sort_dir_value,
+            limit=requested_page_size,
+            offset=effective_offset,
+        )
+
+    if offset is not None and cursor is None:
+        log.warning("Offset pagination is deprecated; prefer cursor.")
+        return _list_decisions_offset_path(
+            since=since,
+            tenant=tenant,
+            bot=bot,
+            outcome=outcome,
+            page=max(int(page), 1),
+            page_size=requested_page_size,
+            sort=sort,
+            sort_dir=sort_dir_value,
+            limit=requested_page_size,
+            offset=effective_offset,
+        )
+
+    pagination_dir = page_dir
+    if cursor and query_dir:
+        if query_dir not in {"next", "prev"}:
+            raise HTTPException(
+                status_code=400,
+                detail="dir must be 'next' or 'prev' when using cursor pagination.",
+            )
+        pagination_dir = cast(Literal["next", "prev"], query_dir)
+
+    try:
+        items_raw, next_cursor, prev_cursor = list_with_cursor(
+            tenant=tenant,
+            bot=bot,
+            limit=effective_limit,
+            cursor=cursor,
+            dir=pagination_dir,
+        )
+    except CursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        log.warning("Cursor pagination unavailable (%s); falling back to offset path.", exc)
+        return _list_decisions_offset_path(
+            since=since,
+            tenant=tenant,
+            bot=bot,
+            outcome=outcome,
+            page=max(int(page), 1),
+            page_size=requested_page_size,
+            sort=sort,
+            sort_dir=sort_dir_value,
+            limit=requested_page_size,
+            offset=effective_offset,
+        )
+
+    items = [_norm_item(x) for x in items_raw]
+    has_more = bool(next_cursor if pagination_dir == "next" else prev_cursor)
+    payload = DecisionPage(
+        items=items,
+        page=None,
+        page_size=effective_limit,
+        has_more=has_more,
+        total=None,
+        next_cursor=next_cursor,
+        prev_cursor=prev_cursor,
+        limit=effective_limit,
+        dir=pagination_dir,
     )
     return JSONResponse(payload.model_dump())
 

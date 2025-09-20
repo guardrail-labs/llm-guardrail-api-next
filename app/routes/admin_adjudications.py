@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterator, Optional, Tuple, TypedDict
+from typing import Dict, Iterator, Literal, Optional, Tuple, TypedDict
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.observability import adjudication_log
+from app.utils.cursor import CursorError
 
 try:
     from app.routes import admin_decisions_api as _admin_decisions
 except Exception as exc:  # pragma: no cover - surface import error when used
     raise ImportError("admin dependencies unavailable") from exc
 
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(_admin_decisions._require_admin_dep)])
 
@@ -223,6 +227,7 @@ def _parse_filters_no_pagination(
     return filters, error
 
 
+
 @router.get("/adjudications")
 async def list_adjudications(
     tenant: Optional[str] = Query(default=None),
@@ -239,6 +244,8 @@ async def list_adjudications(
     limit: Optional[str] = Query(default=None),
     offset: Optional[str] = Query(default=None),
     sort: Optional[str] = Query(default=None),
+    cursor: Optional[str] = Query(default=None),
+    dir: Literal["next", "prev"] = Query(default="next"),
 ) -> JSONResponse:
     filters, error = _parse_filters(
         tenant=tenant,
@@ -260,7 +267,71 @@ async def list_adjudications(
         return error
     assert filters is not None
 
-    records, total = adjudication_log.paged_query(
+    limit_val = filters["limit"]
+    offset_val = filters["offset"]
+    sort_val = filters["sort"]
+    dir_value = dir
+
+    use_offset = False
+    if cursor is None:
+        if offset is not None:
+            use_offset = True
+        elif offset_val:
+            use_offset = True
+        elif sort_val != "ts_desc":
+            use_offset = True
+
+    if use_offset:
+        if sort_val != "ts_desc":
+            log.warning("Cursor pagination requires ts_desc sort; falling back to offset.")
+        if offset is not None or offset_val:
+            log.warning("Offset pagination is deprecated; prefer cursor.")
+        records, total = adjudication_log.paged_query(
+            start=filters["from_dt"],
+            end=filters["to_dt"],
+            tenant=filters["tenant"],
+            bot=filters["bot"],
+            provider=filters["provider"],
+            request_id=filters["request_id"],
+            rule_id=filters["rule_id"],
+            decision=filters["decision"],
+            mitigation_forced=filters["mitigation_forced"],
+            limit=limit_val,
+            offset=offset_val,
+            sort=sort_val,
+        )
+        payload = {
+            "items": [_serialize_record(rec) for rec in records],
+            "total": total,
+            "limit": limit_val,
+            "offset": offset_val,
+            "sort": sort_val,
+            "next_cursor": None,
+            "prev_cursor": None,
+            "dir": dir_value,
+        }
+        return JSONResponse(payload)
+
+    try:
+        records, next_cursor, prev_cursor = adjudication_log.list_with_cursor(
+            start=filters["from_dt"],
+            end=filters["to_dt"],
+            tenant=filters["tenant"],
+            bot=filters["bot"],
+            provider=filters["provider"],
+            request_id=filters["request_id"],
+            rule_id=filters["rule_id"],
+            decision=filters["decision"],
+            mitigation_forced=filters["mitigation_forced"],
+            limit=limit_val,
+            cursor=cursor,
+            dir=dir_value,
+            sort=sort_val,
+        )
+    except CursorError as exc:
+        return _json_error(str(exc), status_code=400)
+
+    _, total_count = adjudication_log.paged_query(
         start=filters["from_dt"],
         end=filters["to_dt"],
         tenant=filters["tenant"],
@@ -270,16 +341,20 @@ async def list_adjudications(
         rule_id=filters["rule_id"],
         decision=filters["decision"],
         mitigation_forced=filters["mitigation_forced"],
-        limit=filters["limit"],
-        offset=filters["offset"],
-        sort=filters["sort"],
+        limit=limit_val,
+        offset=0,
+        sort=sort_val,
     )
+
     payload = {
         "items": [_serialize_record(rec) for rec in records],
-        "total": total,
-        "limit": filters["limit"],
-        "offset": filters["offset"],
-        "sort": filters["sort"],
+        "total": total_count,
+        "limit": limit_val,
+        "offset": 0,
+        "sort": sort_val,
+        "next_cursor": next_cursor,
+        "prev_cursor": prev_cursor,
+        "dir": dir_value,
     }
     return JSONResponse(payload)
 
