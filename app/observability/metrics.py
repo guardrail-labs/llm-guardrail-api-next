@@ -277,6 +277,9 @@ GUARDRAIL_MITIGATION_OVERRIDE_TOTAL = _get_or_create_counter(
     ("mode",),
 )
 
+# Alias for newer code paths that expect an explicitly named counter.
+mitigation_override_counter = GUARDRAIL_MITIGATION_OVERRIDE_TOTAL
+
 
 def inc_clarify(phase: str = "ingress") -> None:
     GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()

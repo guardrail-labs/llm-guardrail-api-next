@@ -20,6 +20,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import and_, func
 
+from app.observability.metrics import mitigation_override_counter
+from app.services.mitigation_prefs import Mode, resolve_mode, validate_mode
+
 # Import SQLAlchemy types only during type checking to avoid runtime/type-assign errors
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -262,3 +265,53 @@ def ensure_ready() -> None:
                 conn.execute(text(raw))
             except Exception:
                 continue
+
+
+def is_force_block_enabled_for_tenant(tenant: str) -> bool:
+    """Return True when the global FORCE_BLOCK toggle applies to a tenant."""
+
+    toggle = (os.getenv("FORCE_BLOCK") or "").strip().lower()
+    if toggle in {"1", "true", "yes", "on"}:
+        return True
+
+    allow_list = os.getenv("FORCE_BLOCK_TENANTS")
+    if not allow_list:
+        return False
+
+    entries = {item.strip() for item in allow_list.split(",") if item.strip()}
+    if not entries:
+        return False
+    if "*" in entries:
+        return True
+    return tenant.strip() in entries
+
+
+def _default_mode(raw: Any) -> Mode:
+    text = str(raw or "").strip() or "clarify"
+    try:
+        return validate_mode(text)
+    except ValueError:
+        return "clarify"
+
+
+def _finalize_decision(result: Any, *, tenant: str, bot: str) -> Any:
+    """Apply mitigation overrides for the given tenant/bot pair."""
+
+    default_mode = _default_mode(getattr(result, "mitigation", None))
+    selected_mode, source = resolve_mode(
+        tenant=tenant,
+        bot=bot,
+        policy_default=default_mode,
+    )
+
+    if is_force_block_enabled_for_tenant(tenant):
+        if selected_mode != "block":
+            mitigation_override_counter.labels(mode="block").inc()
+        result.mitigation = "block"
+        return result
+
+    if source == "explicit" and selected_mode != default_mode:
+        mitigation_override_counter.labels(mode=selected_mode).inc()
+
+    result.mitigation = selected_mode
+    return result
