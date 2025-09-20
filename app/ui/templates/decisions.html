@@ -1,196 +1,598 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8"/>
-    <title>Guardrail Decisions</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1"/>
-    <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; }
-      header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-      form.filters { display: grid; grid-template-columns: repeat(5, minmax(160px, 1fr)); gap: 8px; margin-bottom: 12px; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 14px; }
-      th { background: #f9fafb; position: sticky; top: 0; }
-      .controls { display: flex; gap: 8px; align-items: center; margin: 12px 0; }
-      input, select { padding: 6px 8px; font-size: 14px; }
-      button { padding: 6px 10px; font-size: 14px; cursor: pointer; }
-      .muted { color: #6b7280; }
-      .badge { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2ff; color: #3730a3; }
-      .outcome-allow { background: #ecfdf5; color: #065f46; }
-      .outcome-block_input_only { background: #fff7ed; color: #9a3412; }
-      .outcome-execute_locked, .outcome-full_quarantine { background: #fee2e2; color: #991b1b; }
-      .nowrap { white-space: nowrap; }
-    </style>
-  </head>
-  <body>
-    {% include "_admin_nav.html" %}
-    <div class="card">
-      <h3>Decisions</h3>
-      <form id="filters" onsubmit="return false" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
-        <label>Since (ISO8601 UTC)
-          <input type="text" id="f_since" placeholder="2025-09-15T00:00:00Z">
-        </label>
-        <label>Tenant
-          <input type="text" id="f_tenant" placeholder="tenant">
-        </label>
-        <label>Bot
-          <input type="text" id="f_bot" placeholder="bot">
-        </label>
-        <label>Outcome
-          <input type="text" id="f_outcome" placeholder="allow|block_input_only|redact|rate_limit">
-        </label>
-        <label>Page size
-          <input type="number" id="f_pagesize" min="1" max="500" value="50">
-        </label>
-        <button id="btn_apply" class="badge">Apply</button>
-        <button id="btn_reset" class="badge muted" type="button">Reset</button>
-        <a class="badge" id="btn_csv" href="#">Export CSV</a>
-        <a class="badge" id="btn_ndjson" href="#">NDJSON</a>
-      </form>
-
-      <table id="tbl" class="table" style="margin-top:8px; width:100%;">
-        <thead>
-          <tr>
-            <th data-k="ts">ts</th>
-            <th data-k="tenant">tenant</th>
-            <th data-k="bot">bot</th>
-            <th data-k="outcome">outcome</th>
-            <th data-k="policy_version">policy_version</th>
-            <th data-k="rule_id">rule_id</th>
-            <th data-k="incident_id">incident_id</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button id="prev" class="badge">&laquo; Prev</button>
-        <span id="pageinfo"></span>
-        <button id="next" class="badge">Next &raquo;</button>
-      </div>
-
-      <pre id="status" class="muted" style="white-space:pre-wrap; margin-top:8px;"></pre>
+{% extends "base.html" %}
+{% block content %}
+{% set filters = filter_inputs if filter_inputs is defined else {'tenant': '', 'bot': '', 'rule_id': '', 'decision': '', 'from_ts': '', 'to_ts': ''} %}
+{% set items = rendered_items if rendered_items is defined else [] %}
+{% set limit_value = current_limit if current_limit is defined else 50 %}
+{% set offset_value = current_offset if current_offset is defined else 0 %}
+{% set sort_value = current_sort if current_sort is defined else 'ts_desc' %}
+{% set range_start = display_range.start if display_range is defined else 0 %}
+{% set range_end = display_range.end if display_range is defined else 0 %}
+{% set total_value = total_count if total_count is defined else 0 %}
+{% set disable_next_value = disable_next if disable_next is defined else true %}
+{% set error_text = error_message if error_message is defined else '' %}
+{% set ndjson_link = ndjson_url if ndjson_url is defined else '/admin/decisions.ndjson' %}
+{% set bootstrap = bootstrap_state if bootstrap_state is defined else {'filters': {}, 'items': [], 'total': 0, 'error': None} %}
+{% include "_admin_nav.html" %}
+<div class="card" id="decisions-card">
+  <h2 style="margin-top:0;">Decisions log</h2>
+  <form id="decisions-filters" class="decisions-filters" style="display:grid; gap:0.75rem; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); align-items:end;">
+    <label>Tenant
+      <input type="text" id="filter-tenant" name="tenant" value="{{ filters.tenant }}" autocomplete="off" />
+    </label>
+    <label>Bot
+      <input type="text" id="filter-bot" name="bot" value="{{ filters.bot }}" autocomplete="off" />
+    </label>
+    <label>Rule ID
+      <input type="text" id="filter-rule-id" name="rule_id" value="{{ filters.rule_id }}" autocomplete="off" />
+    </label>
+    <label>Decision
+      <select id="filter-decision" name="decision">
+        <option value="" {% if not filters.decision %}selected{% endif %}></option>
+        <option value="allow" {% if filters.decision == 'allow' %}selected{% endif %}>allow</option>
+        <option value="block" {% if filters.decision == 'block' %}selected{% endif %}>block</option>
+        <option value="clarify" {% if filters.decision == 'clarify' %}selected{% endif %}>clarify</option>
+        <option value="redact" {% if filters.decision == 'redact' %}selected{% endif %}>redact</option>
+      </select>
+    </label>
+    <label>From (UTC ISO)
+      <input type="text" id="filter-from" name="from_ts" value="{{ filters.from_ts }}" placeholder="2024-01-31T00:00:00Z" autocomplete="off" />
+    </label>
+    <label>To (UTC ISO)
+      <input type="text" id="filter-to" name="to_ts" value="{{ filters.to_ts }}" placeholder="2024-01-31T23:59:59Z" autocomplete="off" />
+    </label>
+    <label>Sort
+      <select id="filter-sort" name="sort">
+        <option value="ts_desc" {% if sort_value == 'ts_desc' %}selected{% endif %}>Newest first</option>
+        <option value="ts_asc" {% if sort_value == 'ts_asc' %}selected{% endif %}>Oldest first</option>
+      </select>
+    </label>
+    <label>Limit
+      <input type="number" id="filter-limit" value="{{ limit_value }}" name="limit" min="1" max="500" />
+    </label>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+      <button type="submit" id="decisions-apply">Apply filters</button>
+      <button type="reset" id="decisions-reset">Reset</button>
+      <a id="decisions-download" href="{{ ndjson_link|safe }}" target="_blank" rel="noopener">Download NDJSON</a>
     </div>
-
-    <script>
-(function(){
-  const qs = new URLSearchParams(location.search);
-  const S = {
-    page: +(qs.get("page") || 1),
-    page_size: +(qs.get("page_size") || 50),
-    since: qs.get("since") || "",
-    tenant: qs.get("tenant") || "",
-    bot: qs.get("bot") || "",
-    outcome: qs.get("outcome") || "",
-    sortKey: qs.get("sort") || "ts",
-    sortDir: qs.get("dir") || "desc", // asc|desc
-  };
-
-  const $ = (id) => document.getElementById(id);
-  const $tbody = document.querySelector("#tbl tbody");
-  const $pageinfo = $("pageinfo");
-  const $status = $("status");
-
-  $("f_since").value = S.since;
-  $("f_tenant").value = S.tenant;
-  $("f_bot").value = S.bot;
-  $("f_outcome").value = S.outcome;
-  $("f_pagesize").value = S.page_size;
-
-  function toParams(overrides={}) {
-    const p = new URLSearchParams({
-      page: String(S.page),
-      page_size: String(S.page_size),
-    });
-    if (S.since) p.set("since", S.since);
-    if (S.tenant) p.set("tenant", S.tenant);
-    if (S.bot) p.set("bot", S.bot);
-    if (S.outcome) p.set("outcome", S.outcome);
-    if (S.sortKey) p.set("sort", S.sortKey);
-    if (S.sortDir) p.set("dir", S.sortDir);
-    for (const [k,v] of Object.entries(overrides)) {
-      if (v === null) p.delete(k);
-      else p.set(k, v);
-    }
-    return p;
-  }
-
-  function applyToUrl() {
-    const p = toParams();
-    history.replaceState(null, "", "?" + p.toString());
-  }
-
-  async function load() {
-    applyToUrl();
-    const p = toParams();
-    const u = "/admin/api/decisions?" + p.toString();
-    const r = await fetch(u, {credentials:"same-origin"});
-    const data = await r.json();
-    const items = (data.items || []);
-    $tbody.innerHTML = items.map(row => `
+  </form>
+  <div
+    id="decisions-error"
+    class="banner error"
+    role="alert"
+    {% if not error_text %}hidden{% endif %}
+  >{{ error_text or '' }}</div>
+  <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-top:0.75rem;">
+    <p class="muted" id="decisions-count">Showing {{ range_start }}–{{ range_end }} of {{ total_value }}</p>
+    <div style="display:flex; gap:0.5rem;">
+      <button type="button" id="decisions-prev" {% if offset_value <= 0 %}disabled{% endif %}>&laquo; Prev</button>
+      <button type="button" id="decisions-next" {% if disable_next_value %}disabled{% endif %}>Next &raquo;</button>
+    </div>
+  </div>
+  <table id="decisions-table" {% if not items %}style="display:none;"{% endif %}>
+    <thead>
       <tr>
-        <td>${row.ts ?? ""}</td>
-        <td>${row.tenant ?? ""}</td>
-        <td>${row.bot ?? ""}</td>
-        <td>${row.outcome ?? ""}</td>
-        <td>${row.policy_version ?? ""}</td>
-        <td>${row.rule_id ?? ""}</td>
-        <td>${row.incident_id ?? ""}</td>
+        <th scope="col">ts</th>
+        <th scope="col">tenant</th>
+        <th scope="col">bot</th>
+        <th scope="col">decision</th>
+        <th scope="col">rule_id</th>
+        <th scope="col">mitigation_forced</th>
+        <th scope="col">message</th>
       </tr>
-    `).join("");
-    const total = data.total ?? (S.page * S.page_size); // fallback
-    $pageinfo.textContent = `Page ${S.page} (size ${S.page_size})`;
-    $status.textContent = `Loaded ${items.length} / total ~${total}\n`;
-    // wire export buttons
-    const exportParams = toParams(); exportParams.delete("page"); exportParams.delete("page_size");
-    $("btn_csv").href = "/admin/api/decisions/export.csv?" + exportParams.toString();
-    $("btn_ndjson").href = "/admin/api/decisions/export.ndjson?" + exportParams.toString();
-  }
+    </thead>
+    <tbody id="decisions-tbody">
+      {% for row in items %}
+      <tr>
+        <td>{{ row.ts }}</td>
+        <td>{{ row.tenant }}</td>
+        <td>{{ row.bot }}</td>
+        <td>{{ row.decision }}</td>
+        <td>{{ row.rule_id }}</td>
+        <td>{{ row.mitigation_forced }}</td>
+        <td>{{ row.snippet }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" id="decisions-empty" {% if items %}hidden{% endif %}>No decisions found.</p>
+</div>
+<script id="decisions-bootstrap" type="application/json">{{ bootstrap | tojson }}</script>
+<script>
+  (function () {
+    const bootstrapEl = document.getElementById('decisions-bootstrap');
+    let bootstrap = {};
+    try {
+      bootstrap = JSON.parse(bootstrapEl.textContent || '{}');
+    } catch (err) {
+      bootstrap = {};
+    }
 
-  $("btn_apply").addEventListener("click", () => {
-    S.page = 1;
-    S.page_size = +$("f_pagesize").value || 50;
-    S.since = $("f_since").value.trim();
-    S.tenant = $("f_tenant").value.trim();
-    S.bot = $("f_bot").value.trim();
-    S.outcome = $("f_outcome").value.trim();
-    load();
-  });
+    const state = {
+      tenant: '',
+      bot: '',
+      ruleId: '',
+      decision: '',
+      fromTs: '',
+      toTs: '',
+      sort: 'ts_desc',
+      limit: 50,
+      offset: 0,
+      total: 0,
+      items: Array.isArray(bootstrap.items) ? bootstrap.items : [],
+    };
 
-  $("btn_reset").addEventListener("click", () => {
-    S.page = 1; S.page_size = 50; S.since = ""; S.tenant=""; S.bot=""; S.outcome="";
-    $("f_since").value = $("f_tenant").value = $("f_bot").value = $("f_outcome").value = "";
-    $("f_pagesize").value = "50";
-    load();
-  });
+    const filtersForm = document.getElementById('decisions-filters');
+    const tenantInput = document.getElementById('filter-tenant');
+    const botInput = document.getElementById('filter-bot');
+    const ruleInput = document.getElementById('filter-rule-id');
+    const decisionSelect = document.getElementById('filter-decision');
+    const fromInput = document.getElementById('filter-from');
+    const toInput = document.getElementById('filter-to');
+    const sortSelect = document.getElementById('filter-sort');
+    const limitInput = document.getElementById('filter-limit');
+    const applyButton = document.getElementById('decisions-apply');
+    const resetButton = document.getElementById('decisions-reset');
+    const downloadLink = document.getElementById('decisions-download');
+    const errorBanner = document.getElementById('decisions-error');
+    const countEl = document.getElementById('decisions-count');
+    const prevButton = document.getElementById('decisions-prev');
+    const nextButton = document.getElementById('decisions-next');
+    const table = document.getElementById('decisions-table');
+    const tbody = document.getElementById('decisions-tbody');
+    const emptyState = document.getElementById('decisions-empty');
 
-  $("prev").addEventListener("click", () => {
-    if (S.page > 1) { S.page -= 1; load(); }
-  });
-  $("next").addEventListener("click", () => {
-    S.page += 1; load();
-  });
-
-  // clickable header sorting (current page only)
-  document.querySelectorAll("#tbl th[data-k]").forEach(th => {
-    th.style.cursor = "pointer";
-    th.addEventListener("click", () => {
-      const k = th.getAttribute("data-k");
-      if (S.sortKey === k) {
-        S.sortDir = (S.sortDir === "asc" ? "desc" : "asc");
-      } else {
-        S.sortKey = k; S.sortDir = "asc";
+    function clampLimit(raw) {
+      const value = parseInt(raw, 10);
+      if (Number.isNaN(value) || !Number.isFinite(value)) {
+        return 50;
       }
-      S.page = 1;
-      load();
-    });
-  });
+      if (value < 1) {
+        return 1;
+      }
+      if (value > 500) {
+        return 500;
+      }
+      return value;
+    }
 
-  // initial load with restored state from URL
-  if (qs.get("page")) S.page = +qs.get("page");
-  if (qs.get("page_size")) S.page_size = +qs.get("page_size");
-  load();
-})();
-    </script>
-  </body>
-</html>
+    function clampOffset(raw) {
+      const value = parseInt(raw, 10);
+      if (Number.isNaN(value) || !Number.isFinite(value) || value < 0) {
+        return 0;
+      }
+      return value;
+    }
+
+    function epochToIso(raw) {
+      if (raw === null || raw === undefined) {
+        return '';
+      }
+      const text = String(raw).trim();
+      if (!text) {
+        return '';
+      }
+      if (/^-?\d+$/.test(text)) {
+        const num = Number(text);
+        if (Number.isFinite(num)) {
+          try {
+            return new Date(num * 1000).toISOString();
+          } catch (err) {
+            return text;
+          }
+        }
+      }
+      const parsed = new Date(text);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+      return text;
+    }
+
+    function isoToEpoch(raw) {
+      if (!raw) {
+        return null;
+      }
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        return null;
+      }
+      let parsed = new Date(trimmed);
+      if (Number.isNaN(parsed.getTime()) && !trimmed.endsWith('Z')) {
+        parsed = new Date(trimmed + 'Z');
+      }
+      if (Number.isNaN(parsed.getTime())) {
+        return null;
+      }
+      return Math.floor(parsed.getTime() / 1000);
+    }
+
+    function firstNonEmpty(values) {
+      for (let idx = 0; idx < values.length; idx += 1) {
+        const val = values[idx];
+        if (val === null || val === undefined) {
+          continue;
+        }
+        const text = String(val).trim();
+        if (text) {
+          return text;
+        }
+      }
+      return '';
+    }
+
+    function formatTimestamp(value) {
+      if (value === null || value === undefined) {
+        return '';
+      }
+      if (typeof value === 'number') {
+        try {
+          return new Date(value * 1000).toISOString();
+        } catch (err) {
+          return String(value);
+        }
+      }
+      const text = String(value);
+      if (/^-?\d+$/.test(text)) {
+        const num = Number(text);
+        if (Number.isFinite(num)) {
+          try {
+            return new Date(num * 1000).toISOString();
+          } catch (err) {
+            return text;
+          }
+        }
+      }
+      const parsed = new Date(text);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+      return text;
+    }
+
+    function renderTable(items) {
+      while (tbody.firstChild) {
+        tbody.removeChild(tbody.firstChild);
+      }
+      if (!items || !items.length) {
+        if (table) {
+          table.style.display = 'none';
+        }
+        if (emptyState) {
+          emptyState.hidden = false;
+        }
+        return;
+      }
+      if (table) {
+        table.style.display = '';
+      }
+      if (emptyState) {
+        emptyState.hidden = true;
+      }
+      items.forEach(function (item) {
+        const tr = document.createElement('tr');
+        const tsCell = document.createElement('td');
+        tsCell.textContent = formatTimestamp(item.ts);
+        const tenantCell = document.createElement('td');
+        tenantCell.textContent = item.tenant || '';
+        const botCell = document.createElement('td');
+        botCell.textContent = item.bot || '';
+        const decisionCell = document.createElement('td');
+        decisionCell.textContent = item.decision || '';
+        const ruleCell = document.createElement('td');
+        ruleCell.textContent = item.rule_id || '';
+        const forcedCell = document.createElement('td');
+        forcedCell.textContent = item.mitigation_forced || '';
+        const snippetCell = document.createElement('td');
+        const details = item.details && typeof item.details === 'object' ? item.details : {};
+        snippetCell.textContent = firstNonEmpty([
+          item.summary,
+          item.message,
+          details.summary,
+          details.message,
+          details.prompt,
+          details.text,
+        ]);
+        tr.appendChild(tsCell);
+        tr.appendChild(tenantCell);
+        tr.appendChild(botCell);
+        tr.appendChild(decisionCell);
+        tr.appendChild(ruleCell);
+        tr.appendChild(forcedCell);
+        tr.appendChild(snippetCell);
+        tbody.appendChild(tr);
+      });
+    }
+
+    function updateCount(itemCount) {
+      const total = state.total || 0;
+      const offset = state.offset || 0;
+      const length = itemCount || 0;
+      const start = total === 0 || length === 0 ? 0 : offset + 1;
+      const end = total === 0 ? offset + length : Math.min(offset + length, total);
+      if (countEl) {
+        countEl.textContent = 'Showing ' + start + '–' + end + ' of ' + total;
+      }
+    }
+
+    function updateButtons(isLoading) {
+      if (prevButton) {
+        prevButton.disabled = isLoading || state.offset <= 0;
+      }
+      if (nextButton) {
+        const total = state.total || 0;
+        const disableNext = isLoading || (total > 0 && state.offset + state.limit >= total);
+        nextButton.disabled = disableNext;
+      }
+    }
+
+    function setLoading(isLoading) {
+      if (filtersForm) {
+        Array.prototype.forEach.call(filtersForm.elements, function (el) {
+          el.disabled = isLoading;
+        });
+      }
+      if (applyButton) {
+        applyButton.disabled = isLoading;
+      }
+      if (resetButton) {
+        resetButton.disabled = isLoading;
+      }
+      updateButtons(isLoading);
+    }
+
+    function buildQueryParams() {
+      const params = new URLSearchParams();
+      if (state.tenant) {
+        params.set('tenant', state.tenant);
+      }
+      if (state.bot) {
+        params.set('bot', state.bot);
+      }
+      if (state.ruleId) {
+        params.set('rule_id', state.ruleId);
+      }
+      if (state.decision) {
+        params.set('decision', state.decision);
+      }
+      const fromEpoch = isoToEpoch(state.fromTs);
+      if (fromEpoch !== null) {
+        params.set('from_ts', String(fromEpoch));
+      }
+      const toEpoch = isoToEpoch(state.toTs);
+      if (toEpoch !== null) {
+        params.set('to_ts', String(toEpoch));
+      }
+      if (state.sort) {
+        params.set('sort', state.sort);
+      }
+      params.set('limit', String(state.limit));
+      params.set('offset', String(state.offset));
+      return params;
+    }
+
+    function updateDownloadLink() {
+      if (!downloadLink) {
+        return;
+      }
+      const params = buildQueryParams();
+      params.delete('limit');
+      params.delete('offset');
+      const query = params.toString();
+      downloadLink.href = '/admin/decisions.ndjson' + (query ? '?' + query : '');
+    }
+
+    function syncHistory(push) {
+      const params = buildQueryParams();
+      const query = params.toString();
+      const url = query ? '?' + query : window.location.pathname;
+      if (push) {
+        window.history.pushState(null, '', url);
+      } else {
+        window.history.replaceState(null, '', url);
+      }
+    }
+
+    function showError(message) {
+      if (!errorBanner) {
+        return;
+      }
+      if (!message) {
+        errorBanner.hidden = true;
+        errorBanner.textContent = '';
+        return;
+      }
+      errorBanner.hidden = false;
+      errorBanner.textContent = message;
+    }
+
+    function readInputs() {
+      state.tenant = tenantInput ? tenantInput.value.trim() : '';
+      state.bot = botInput ? botInput.value.trim() : '';
+      state.ruleId = ruleInput ? ruleInput.value.trim() : '';
+      state.decision = decisionSelect ? decisionSelect.value : '';
+      state.fromTs = fromInput ? fromInput.value.trim() : '';
+      state.toTs = toInput ? toInput.value.trim() : '';
+      state.sort = sortSelect ? (sortSelect.value || 'ts_desc') : 'ts_desc';
+      state.limit = clampLimit(limitInput ? limitInput.value : state.limit);
+      if (limitInput) {
+        limitInput.value = String(state.limit);
+      }
+    }
+
+    function writeInputs() {
+      if (tenantInput) {
+        tenantInput.value = state.tenant;
+      }
+      if (botInput) {
+        botInput.value = state.bot;
+      }
+      if (ruleInput) {
+        ruleInput.value = state.ruleId;
+      }
+      if (decisionSelect) {
+        decisionSelect.value = state.decision;
+      }
+      if (fromInput) {
+        fromInput.value = state.fromTs;
+      }
+      if (toInput) {
+        toInput.value = state.toTs;
+      }
+      if (sortSelect) {
+        sortSelect.value = state.sort;
+      }
+      if (limitInput) {
+        limitInput.value = String(state.limit);
+      }
+    }
+
+    async function fetchData(options) {
+      const opts = options || {};
+      const shouldPush = Boolean(opts.pushHistory);
+      const updateUrl = opts.updateUrl !== false;
+      setLoading(true);
+      showError('');
+      try {
+        const params = buildQueryParams();
+        const response = await fetch('/admin/decisions?' + params.toString(), {
+          credentials: 'same-origin',
+        });
+        if (!response.ok) {
+          const message = 'Failed to load decisions (' + response.status + ').';
+          showError(message);
+          return;
+        }
+        const data = await response.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        state.items = items;
+        state.total = typeof data.total === 'number' ? data.total : 0;
+        renderTable(items);
+        updateCount(items.length);
+        updateButtons(false);
+        updateDownloadLink();
+        if (updateUrl) {
+          syncHistory(shouldPush);
+        }
+      } catch (err) {
+        showError('Failed to load decisions.');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function onFiltersChanged() {
+      readInputs();
+      state.offset = 0;
+      updateButtons(false);
+      updateDownloadLink();
+      fetchData({ pushHistory: true });
+    }
+
+    if (filtersForm) {
+      filtersForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        onFiltersChanged();
+      });
+      filtersForm.addEventListener('reset', function (event) {
+        event.preventDefault();
+        if (tenantInput) tenantInput.value = '';
+        if (botInput) botInput.value = '';
+        if (ruleInput) ruleInput.value = '';
+        if (decisionSelect) decisionSelect.value = '';
+        if (fromInput) fromInput.value = '';
+        if (toInput) toInput.value = '';
+        if (sortSelect) sortSelect.value = 'ts_desc';
+        if (limitInput) limitInput.value = '50';
+        onFiltersChanged();
+      });
+    }
+
+    if (decisionSelect) {
+      decisionSelect.addEventListener('change', onFiltersChanged);
+    }
+    if (sortSelect) {
+      sortSelect.addEventListener('change', onFiltersChanged);
+    }
+    if (limitInput) {
+      limitInput.addEventListener('change', onFiltersChanged);
+    }
+    if (tenantInput) {
+      tenantInput.addEventListener('change', onFiltersChanged);
+    }
+    if (botInput) {
+      botInput.addEventListener('change', onFiltersChanged);
+    }
+    if (ruleInput) {
+      ruleInput.addEventListener('change', onFiltersChanged);
+    }
+    if (fromInput) {
+      fromInput.addEventListener('change', onFiltersChanged);
+    }
+    if (toInput) {
+      toInput.addEventListener('change', onFiltersChanged);
+    }
+
+    if (prevButton) {
+      prevButton.addEventListener('click', function () {
+        state.offset = Math.max(0, state.offset - state.limit);
+        updateButtons(false);
+        fetchData({ pushHistory: true });
+      });
+    }
+    if (nextButton) {
+      nextButton.addEventListener('click', function () {
+        state.offset += state.limit;
+        updateButtons(false);
+        fetchData({ pushHistory: true });
+      });
+    }
+
+    window.addEventListener('popstate', function () {
+      const params = new URLSearchParams(window.location.search);
+      state.tenant = params.get('tenant') || '';
+      state.bot = params.get('bot') || '';
+      state.ruleId = params.get('rule_id') || '';
+      state.decision = params.get('decision') || '';
+      state.fromTs = epochToIso(params.get('from_ts'));
+      state.toTs = epochToIso(params.get('to_ts'));
+      state.sort = params.get('sort') === 'ts_asc' ? 'ts_asc' : 'ts_desc';
+      state.limit = clampLimit(params.get('limit') || state.limit);
+      state.offset = clampOffset(params.get('offset'));
+      writeInputs();
+      fetchData({ pushHistory: false, updateUrl: false });
+    });
+
+    (function initialiseState() {
+      const params = new URLSearchParams(window.location.search);
+      state.tenant = params.get('tenant') || '';
+      state.bot = params.get('bot') || '';
+      state.ruleId = params.get('rule_id') || '';
+      state.decision = params.get('decision') || '';
+      const fromParam = params.get('from_ts');
+      const toParam = params.get('to_ts');
+      state.fromTs = epochToIso(fromParam || (bootstrap.filters && bootstrap.filters.from_ts));
+      state.toTs = epochToIso(toParam || (bootstrap.filters && bootstrap.filters.to_ts));
+      const sortParam = params.get('sort');
+      if (sortParam === 'ts_asc' || sortParam === 'ts_desc') {
+        state.sort = sortParam;
+      } else if (bootstrap.filters && bootstrap.filters.sort) {
+        state.sort = bootstrap.filters.sort;
+      }
+      state.limit = clampLimit(params.get('limit') || (bootstrap.filters && bootstrap.filters.limit));
+      state.offset = clampOffset(params.get('offset') || (bootstrap.filters && bootstrap.filters.offset));
+      state.total = typeof bootstrap.total === 'number' ? bootstrap.total : 0;
+      writeInputs();
+      renderTable(state.items);
+      updateCount(state.items.length);
+      updateButtons(false);
+      updateDownloadLink();
+      if (bootstrap.error) {
+        showError(bootstrap.error);
+      } else {
+        showError('');
+      }
+      syncHistory(false);
+    })();
+  })();
+</script>
+{% endblock %}

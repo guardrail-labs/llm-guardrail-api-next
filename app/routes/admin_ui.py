@@ -3,14 +3,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
+import json
 import os
 import time
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from app.routes import admin_decisions
 from app.routes.admin_apply_demo_defaults import apply_demo_defaults as apply_demo_action
 from app.routes.admin_apply_golden import apply_golden_packs as apply_golden_action
 from app.routes.admin_apply_strict_secrets import apply_strict_secrets as apply_strict_action
@@ -29,13 +33,6 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - mitigation store unavailable
     def get_mitigation_modes(tenant: str, bot: str) -> Dict[str, bool]:
         return {"block": False, "redact": False, "clarify_first": False}
-
-try:  # pragma: no cover - optional dependency
-    from app.services.audit_forwarder import fetch_recent_decisions  # type: ignore
-except Exception:  # pragma: no cover - missing audit store
-    def fetch_recent_decisions(n: int = 50) -> List[Dict[str, Any]]:
-        return []
-
 
 router = APIRouter(tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/ui/templates")
@@ -184,14 +181,247 @@ def ui_bindings_data(_: None = Depends(require_auth)) -> JSONResponse:
     return JSONResponse({"bindings": bindings})
 
 
+def _epoch_to_iso(raw: Optional[Union[str, int, float]]) -> str:
+    if raw in (None, ""):
+        return ""
+    if isinstance(raw, (int, float)):
+        try:
+            dt = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+            return dt.isoformat().replace("+00:00", "Z")
+        except Exception:
+            return str(raw)
+    text = str(raw).strip()
+    if not text:
+        return ""
+    try:
+        value = int(text)
+    except ValueError:
+        try:
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            dt = datetime.fromisoformat(text)
+        except Exception:
+            return str(raw)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        dt = datetime.fromtimestamp(value, tz=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    except Exception:
+        return str(raw)
+
+
+def _coerce_epoch(raw: Optional[str]) -> Optional[int]:
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except Exception:
+        return None
+    return value
+
+
+def _format_ts(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (int, float)):
+        try:
+            formatted = datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+            return formatted.replace("+00:00", "Z")
+        except Exception:
+            return str(value)
+    text = str(value)
+    if not text:
+        return ""
+    if text.isdigit():
+        try:
+            formatted = datetime.fromtimestamp(int(text), tz=timezone.utc).isoformat()
+            return formatted.replace("+00:00", "Z")
+        except Exception:
+            return text
+    try:
+        clean = text.rstrip("Z") + ("+00:00" if text.endswith("Z") else "")
+        dt = datetime.fromisoformat(clean)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return text
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _render_decision_row(item: Dict[str, Any]) -> Dict[str, str]:
+    raw_details = item.get("details")
+    details: Dict[str, Any] = raw_details if isinstance(raw_details, dict) else {}
+    snippet = _first_non_empty(
+        item.get("summary"),
+        item.get("message"),
+        details.get("summary"),
+        details.get("message"),
+        details.get("prompt"),
+        details.get("text"),
+    )
+    return {
+        "ts": _format_ts(item.get("ts")),
+        "tenant": str(item.get("tenant") or ""),
+        "bot": str(item.get("bot") or ""),
+        "decision": str(item.get("decision") or ""),
+        "rule_id": str(item.get("rule_id") or ""),
+        "mitigation_forced": str(item.get("mitigation_forced") or ""),
+        "snippet": snippet,
+    }
+
+
 @router.get("/admin/ui/decisions", response_class=HTMLResponse)
-def ui_decisions(
-    req: Request, n: int = 50, _: None = Depends(require_auth)
-) -> HTMLResponse:
-    decisions = fetch_recent_decisions(n)
+def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
+    query = req.query_params
+    raw_filters: Dict[str, Optional[str]] = {
+        "tenant": query.get("tenant", ""),
+        "bot": query.get("bot", ""),
+        "rule_id": query.get("rule_id", ""),
+        "decision": query.get("decision", ""),
+        "from_ts": query.get("from_ts", ""),
+        "to_ts": query.get("to_ts", ""),
+        "limit": query.get("limit", ""),
+        "offset": query.get("offset", ""),
+        "sort": query.get("sort", ""),
+    }
+
+    filters, error = admin_decisions._parse_filters(
+        tenant=raw_filters["tenant"],
+        bot=raw_filters["bot"],
+        rule_id=raw_filters["rule_id"],
+        decision=raw_filters["decision"],
+        from_ts=raw_filters["from_ts"],
+        to_ts=raw_filters["to_ts"],
+        limit=raw_filters["limit"],
+        offset=raw_filters["offset"],
+        sort=raw_filters["sort"],
+    )
+
+    error_message: Optional[str] = None
+    if error is not None:
+        try:
+            body_bytes = bytes(error.body)
+            payload = json.loads(body_bytes.decode("utf-8"))
+            error_message = str(payload.get("error") or "Invalid filters")
+        except Exception:
+            error_message = "Invalid filters"
+
+    filters_state: Dict[str, Any]
+    items: List[Dict[str, Any]] = []
+    total = 0
+    if filters is not None:
+        records = admin_decisions.list_decisions(
+            tenant=filters["tenant"],
+            bot=filters["bot"],
+            rule_id=filters["rule_id"],
+            decision=filters["decision"],
+            from_ts=filters["from_ts"],
+            to_ts=filters["to_ts"],
+            sort=filters["sort"],
+        )
+        total = len(records)
+        start = filters["offset"]
+        end = start + filters["limit"]
+        slice_items = records[start:end]
+        items = admin_decisions._serialize_items(slice_items)
+        filters_state = {
+            "tenant": filters["tenant"] or "",
+            "bot": filters["bot"] or "",
+            "rule_id": filters["rule_id"] or "",
+            "decision": filters["decision"] or "",
+            "from_ts": filters["from_ts"],
+            "to_ts": filters["to_ts"],
+            "sort": filters["sort"],
+            "limit": filters["limit"],
+            "offset": filters["offset"],
+        }
+    else:
+        filters_state = {
+            "tenant": (raw_filters["tenant"] or "").strip(),
+            "bot": (raw_filters["bot"] or "").strip(),
+            "rule_id": (raw_filters["rule_id"] or "").strip(),
+            "decision": (raw_filters["decision"] or "").strip(),
+            "from_ts": _coerce_epoch(raw_filters["from_ts"]),
+            "to_ts": _coerce_epoch(raw_filters["to_ts"]),
+            "sort": "ts_desc",
+            "limit": 50,
+            "offset": 0,
+        }
+
+    rendered_items = [_render_decision_row(item) for item in items]
+
+    current_limit = int(filters_state.get("limit", 50))
+    current_offset = int(filters_state.get("offset", 0))
+    current_sort = filters_state.get("sort", "ts_desc") or "ts_desc"
+
+    visible_count = len(items)
+    if total <= 0 and visible_count > 0:
+        total = current_offset + visible_count
+    range_start = 0 if total == 0 or visible_count == 0 else current_offset + 1
+    if total == 0:
+        range_end = current_offset + visible_count
+    else:
+        range_end = min(total, current_offset + visible_count)
+    disable_next = total > 0 and current_offset + current_limit >= total
+
+    filter_inputs = {
+        "tenant": filters_state.get("tenant", ""),
+        "bot": filters_state.get("bot", ""),
+        "rule_id": filters_state.get("rule_id", ""),
+        "decision": filters_state.get("decision", ""),
+        "from_ts": _epoch_to_iso(filters_state.get("from_ts")),
+        "to_ts": _epoch_to_iso(filters_state.get("to_ts")),
+    }
+
+    ndjson_params: Dict[str, str] = {}
+    for key in ("tenant", "bot", "rule_id", "decision"):
+        value = filters_state.get(key)
+        if value:
+            ndjson_params[key] = str(value)
+    for key in ("from_ts", "to_ts"):
+        value = filters_state.get(key)
+        if value not in (None, ""):
+            ndjson_params[key] = str(value)
+    sort_val = filters_state.get("sort")
+    if sort_val:
+        ndjson_params["sort"] = str(sort_val)
+    ndjson_query = urlencode(ndjson_params)
+    ndjson_url = "/admin/decisions.ndjson" + (f"?{ndjson_query}" if ndjson_query else "")
+
+    bootstrap_state = {
+        "filters": filters_state,
+        "items": items,
+        "total": total,
+        "error": error_message,
+    }
+
     resp = templates.TemplateResponse(
         "decisions.html",
-        {"request": req, "decisions": decisions, "n": n},
+        {
+            "request": req,
+            "filter_inputs": filter_inputs,
+            "rendered_items": rendered_items,
+            "current_limit": current_limit,
+            "current_offset": current_offset,
+            "current_sort": current_sort,
+            "display_range": {"start": range_start, "end": range_end},
+            "total_count": total,
+            "disable_next": disable_next,
+            "error_message": error_message,
+            "ndjson_url": ndjson_url,
+            "bootstrap_state": bootstrap_state,
+        },
     )
     issue_csrf(resp)
     return resp
@@ -292,7 +522,8 @@ def export_decisions(
     n: int = 1000, _: None = Depends(require_auth)
 ) -> StreamingResponse:
     buf = io.StringIO()
-    for item in fetch_recent_decisions(n):
+    records = admin_decisions.list_decisions(sort="ts_desc")[: max(int(n), 0)]
+    for item in records:
         import json
 
         buf.write(json.dumps(item) + "\n")
