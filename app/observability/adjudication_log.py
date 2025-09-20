@@ -56,15 +56,15 @@ class AdjudicationRecord:
     rules_path: Optional[str]
     sampled: bool
     prompt_sha256: Optional[str]
+    rule_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        if data.get("rule_id") is None:
+            data.pop("rule_id", None)
         mitigation_forced = getattr(self, "mitigation_forced", None)
         if mitigation_forced is not None:
             data["mitigation_forced"] = mitigation_forced
-        rule_id = getattr(self, "rule_id", None)
-        if rule_id is not None:
-            data["rule_id"] = rule_id
         return data
 
 
@@ -103,7 +103,8 @@ def _matches(
         return False
     if rule_id:
         record_rule_id = getattr(record, "rule_id", None)
-        if record_rule_id != rule_id:
+        record_rule_hits = getattr(record, "rule_hits", None) or []
+        if record_rule_id != rule_id and rule_id not in record_rule_hits:
             return False
     if decision and record.decision != decision:
         return False
