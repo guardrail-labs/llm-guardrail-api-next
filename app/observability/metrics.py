@@ -271,6 +271,12 @@ GUARDRAIL_EGRESS_REDACTIONS_TOTAL = _get_or_create_counter(
     ("tenant", "bot", "kind", "rule_id"),
 )
 
+GUARDRAIL_MITIGATION_OVERRIDE_TOTAL = _get_or_create_counter(
+    "guardrail_mitigation_override_total",
+    "Count of decisions where a tenant/bot mitigation override was applied.",
+    ("mode",),
+)
+
 
 def inc_clarify(phase: str = "ingress") -> None:
     GUARDRAIL_CLARIFY_TOTAL.labels(phase=phase).inc()
@@ -293,6 +299,14 @@ def inc_egress_redactions(
                 kind=kind,
                 rule_id=rule_id or "",
             ).inc(n)
+        except Exception:
+            pass
+
+
+def inc_mitigation_override(mode: str) -> None:
+    if mode in ("block", "clarify", "redact"):
+        try:
+            GUARDRAIL_MITIGATION_OVERRIDE_TOTAL.labels(mode=mode).inc()
         except Exception:
             pass
 

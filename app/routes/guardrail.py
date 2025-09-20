@@ -63,6 +63,7 @@ from app.services.config_sanitizer import (
 from app.services.config_store import get_config
 from app.telemetry import metrics as m
 from app.observability import adjudication_log as _adj_log
+from app.observability import metrics as _obs_metrics
 from app.telemetry.metrics import (
     inc_actor_decisions_total,
     inc_mode,
@@ -111,6 +112,8 @@ router = APIRouter()
 DOCX_MIME = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+
+_BLOCK_DECISIONS = {"block", "block_input_only", "deny", "lock"}
 
 
 def _has_api_key(x_api_key: Optional[str], auth: Optional[str]) -> bool:
@@ -1407,6 +1410,8 @@ async def guardrail_legacy(
     mitigation_modes = get_mitigation_modes(raw_tenant, raw_bot)
     mitigation_forced: Optional[str] = None
     if mitigation_modes.get("block"):
+        if str(action or "").lower() not in _BLOCK_DECISIONS:
+            _obs_metrics.inc_mitigation_override("block")
         action = "block"
         mitigation_forced = "block"
 
@@ -1824,6 +1829,7 @@ async def guardrail_evaluate(request: Request):
             except Exception:
                 pass
             if forced_block:
+                _obs_metrics.inc_mitigation_override("block")
                 _record_actor_metric(request, "block_input_only")
                 resp = JSONResponse(
                     status_code=200,
@@ -2087,7 +2093,10 @@ async def guardrail_evaluate(request: Request):
     adjudication_sampled = verifier_sampled
     mitigation_forced: Optional[str] = None
     decision_override: Optional[str] = None
+    natural_action = str(action or "")
     if mitigation_modes.get("block"):
+        if natural_action.lower() not in _BLOCK_DECISIONS:
+            _obs_metrics.inc_mitigation_override("block")
         action = "deny"
         mitigation_forced = "block"
         decision_override = "block"
@@ -2301,7 +2310,10 @@ async def guardrail_evaluate_multipart(request: Request):
     adjudication_sampled = verifier_sampled
     mitigation_forced: Optional[str] = None
     decision_override: Optional[str] = None
+    natural_action = str(action or "")
     if mitigation_modes.get("block"):
+        if natural_action.lower() not in _BLOCK_DECISIONS:
+            _obs_metrics.inc_mitigation_override("block")
         action = "deny"
         mitigation_forced = "block"
         decision_override = "block"
