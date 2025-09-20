@@ -766,6 +766,13 @@ def create_app() -> FastAPI:
     except Exception:
         pass
 
+    try:
+        from app.routes import admin_mitigation as admin_mitigation_module
+
+        app.include_router(admin_mitigation_module.router)
+    except Exception:
+        pass
+
     # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
 
