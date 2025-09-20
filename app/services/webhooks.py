@@ -11,18 +11,18 @@ from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
+import app.telemetry.metrics as telemetry_metrics
 from app.observability.metrics import (
     webhook_dlq_length_dec,
     webhook_dlq_length_inc,
     webhook_dlq_length_set,
+    webhook_failed_inc,
+    webhook_pending_set,
+    webhook_processed_inc,
+    webhook_retried_inc,
 )
 from app.services.config_store import get_config
 from app.services.webhooks_cb import compute_backoff_ms, get_cb_registry
-from app.telemetry.metrics import (
-    WEBHOOK_DELIVERIES_TOTAL,
-    WEBHOOK_EVENTS_TOTAL,
-    WEBHOOK_LATENCY_SECONDS,
-)
 
 # Default dead-letter file path (overridable)
 _DEFAULT_DLQ_PATH = "var/webhook_deadletter.jsonl"
@@ -45,6 +45,19 @@ _stats: Dict[str, Any] = {
     "last_error": "",
     "worker_running": False,
 }
+
+
+def _sync_pending_queue_length() -> None:
+    try:
+        size = float(_q.qsize())
+    except NotImplementedError:
+        size = 0.0
+    except Exception:
+        return
+    try:
+        webhook_pending_set(size)
+    except Exception:
+        pass
 
 
 def _worker_enabled() -> bool:
@@ -244,25 +257,28 @@ def _deliver_with_client(
             resp = client.post(url, content=body_bytes, headers=headers)
             last_code = resp.status_code
             last_exc = None
-            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
             if 200 <= resp.status_code < 300:
                 reg.on_success(url)
+                webhook_processed_inc()
                 return "sent", _status_bucket(last_code, None), client, client_conf
             reg.on_failure(url)
         except httpx.TimeoutException:
             last_exc = "timeout"
             reg.on_failure(url)
-            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
         except Exception:
             last_exc = "error"
             reg.on_failure(url)
-            WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
 
         if attempt > max_retries:
             bucket = _status_bucket(last_code, last_exc)
             _dlq_write(evt, reason=bucket)
+            webhook_failed_inc()
             return "dlq", bucket, client, client_conf
 
+        webhook_retried_inc()
         sleep_ms = compute_backoff_ms(backoff_ms, attempt - 1)
         time.sleep(sleep_ms / 1000.0)
 
@@ -273,12 +289,16 @@ def _worker() -> None:
     try:
         while True:
             if _stop_event.is_set() and _q.empty():
+                _sync_pending_queue_length()
                 break
             try:
                 evt = _q.get(timeout=0.1)
+                _sync_pending_queue_length()
             except queue.Empty:
+                _sync_pending_queue_length()
                 continue
             if evt is _STOP:
+                _sync_pending_queue_length()
                 break
             try:
                 outcome, status, client, client_conf = _deliver_with_client(
@@ -289,17 +309,19 @@ def _worker() -> None:
                     _stats["last_status"] = status
                     _stats["last_error"] = "" if outcome == "sent" else status
                 # Delivery outcome metric
-                WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
+                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
                 # Ensure "enqueued" shows up in flaky CI paths for failure outcomes
                 if outcome != "sent":
-                    WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
             except Exception as e:  # pragma: no cover
                 with _lock:
                     _stats["processed"] += 1
                     _stats["last_status"] = "error"
                     _stats["last_error"] = str(e)
-                WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
-                WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
+                telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+            finally:
+                _sync_pending_queue_length()
     finally:
         try:
             if client is not None:
@@ -372,9 +394,10 @@ def enqueue(evt: Dict[str, Any]) -> None:
     """Queue a decision event for delivery."""
     with _lock:
         _stats["queued"] += 1
-    WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+    telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
     _ensure_worker(require_enabled=False)
     _q.put(evt)
+    _sync_pending_queue_length()
 
 
 def configure(*, reset: bool = False) -> None:
@@ -395,23 +418,43 @@ def configure(*, reset: bool = False) -> None:
             _stats["last_error"] = ""
             _stats["worker_running"] = False
             try:
-                WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]
+                event_children = list(telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.keys())  # type: ignore[attr-defined]
+                telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]
             except AttributeError:
+                event_children = []
                 try:
-                    WEBHOOK_EVENTS_TOTAL._children.clear()  # type: ignore[attr-defined]
+                    child_map = telemetry_metrics.WEBHOOK_EVENTS_TOTAL._children  # type: ignore[attr-defined]
+                    child_map.clear()
                 except Exception:
                     pass
+            else:
+                for labels in event_children:
+                    try:
+                        telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(*labels).inc(0)
+                    except Exception:
+                        pass
             try:
-                WEBHOOK_DELIVERIES_TOTAL._metrics.clear()  # type: ignore[attr-defined]
+                delivery_children = list(telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.keys())  # type: ignore[attr-defined]
+                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.clear()  # type: ignore[attr-defined]
             except AttributeError:
+                delivery_children = []
                 try:
-                    WEBHOOK_DELIVERIES_TOTAL._children.clear()  # type: ignore[attr-defined]
+                    child_map = telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._children  # type: ignore[attr-defined]
+                    child_map.clear()
                 except Exception:
                     pass
+            else:
+                for labels in delivery_children:
+                    try:
+                        telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(*labels).inc(0)
+                    except Exception:
+                        pass
             try:
                 get_cb_registry()._ct.clear()
             except Exception:
                 pass
+
+    _sync_pending_queue_length()
 
     # Always sync the DLQ gauge to the current backlog so restarts immediately reflect
     # reality. Previously this only ran for reset=True which left the gauge stale on
@@ -482,7 +525,7 @@ def requeue_from_dlq(limit: int) -> int:
                     if isinstance(evt, dict):
                         _q.put(evt)
                         requeued += 1
-                        WEBHOOK_DELIVERIES_TOTAL.labels("dlq_replayed", "-").inc()
+                        telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels("dlq_replayed", "-").inc()
                     else:
                         survivors.append(line)
                 except Exception:
@@ -496,6 +539,7 @@ def requeue_from_dlq(limit: int) -> int:
 
             if requeued:
                 webhook_dlq_length_dec(requeued)
+                _sync_pending_queue_length()
             return requeued
     except Exception:
         return 0

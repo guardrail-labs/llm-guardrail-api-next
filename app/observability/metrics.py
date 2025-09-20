@@ -358,3 +358,54 @@ def webhook_dlq_length_get() -> float:
     except Exception:
         pass
     return 0.0
+
+
+# ---- Webhooks: delivery worker metrics --------------------------------------
+
+_webhook_processed_total = _get_or_create_counter(
+    "guardrail_webhook_deliveries_processed_total",
+    "Count of webhook deliveries that succeeded with a 2xx response.",
+)
+
+_webhook_retried_total = _get_or_create_counter(
+    "guardrail_webhook_deliveries_retried_total",
+    "Count of webhook delivery attempts that will be retried.",
+)
+
+_webhook_failed_total = _get_or_create_counter(
+    "guardrail_webhook_deliveries_failed_total",
+    "Count of webhook deliveries that were dropped after exhausting retries.",
+)
+
+_webhook_pending_queue_length = _get_or_create_gauge(
+    "guardrail_webhook_pending_queue_length",
+    "Current number of webhook events waiting to be delivered.",
+)
+
+
+def webhook_processed_inc(n: float = 1) -> None:
+    try:
+        _webhook_processed_total.inc(float(n))
+    except Exception:
+        pass
+
+
+def webhook_retried_inc(n: float = 1) -> None:
+    try:
+        _webhook_retried_total.inc(float(n))
+    except Exception:
+        pass
+
+
+def webhook_failed_inc(n: float = 1) -> None:
+    try:
+        _webhook_failed_total.inc(float(n))
+    except Exception:
+        pass
+
+
+def webhook_pending_set(n: float) -> None:
+    try:
+        _webhook_pending_queue_length.set(float(n))
+    except Exception:
+        pass
