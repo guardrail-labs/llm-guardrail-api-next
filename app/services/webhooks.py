@@ -8,7 +8,7 @@ import queue
 import random
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import httpx
 
@@ -28,17 +28,76 @@ from app.services.config_store import get_config
 from app.services.webhooks_cb import get_cb_registry
 
 
-def _int_env(name: str, default: int) -> int:
+def _get_cfg_dict() -> Dict[str, Any]:
+    """
+    Safely fetch in-memory webhook config if available; otherwise empty.
+    Avoids circular imports by using globals().
+    """
+
     try:
-        return int(os.getenv(name, str(default)))
+        if "get_config" in globals() and callable(globals()["get_config"]):
+            cfg = globals()["get_config"]()
+            if isinstance(cfg, dict):
+                return cfg
+            if isinstance(cfg, Mapping):
+                return dict(cfg)
+    except Exception:
+        pass
+    return {}
+
+
+def _cfg_or_env_int(cfg: Dict[str, Any], cfg_key: str, env_key: str, default: int) -> int:
+    v = cfg.get(cfg_key)
+    if v is None:
+        v = os.getenv(env_key)
+    try:
+        return int(v) if v is not None else default
     except Exception:
         return default
 
 
-_BACKOFF_BASE_MS = _int_env("WEBHOOK_BACKOFF_BASE_MS", 250)
-_BACKOFF_MAX_MS = _int_env("WEBHOOK_BACKOFF_MAX_MS", 900_000)
-_MAX_ATTEMPTS = _int_env("WEBHOOK_MAX_ATTEMPTS", 12)
-_MAX_HORIZON_MS = _int_env("WEBHOOK_MAX_HORIZON_MS", 900_000)
+def _backoff_params() -> tuple[int, int, int, int]:
+    """
+    Returns (base_ms, max_ms, max_attempts, horizon_ms).
+    Prefers in-memory config keys set via set_config(...), with env fallback.
+    """
+
+    cfg = _get_cfg_dict()
+
+    base_ms = _cfg_or_env_int(cfg, "webhook_backoff_ms", "WEBHOOK_BACKOFF_BASE_MS", 250)
+    base_ms = max(1, base_ms)
+
+    max_ms_raw = _cfg_or_env_int(cfg, "webhook_backoff_max_ms", "WEBHOOK_BACKOFF_MAX_MS", 900_000)
+    max_ms = max(base_ms, max_ms_raw)
+
+    env_attempts_raw = os.getenv("WEBHOOK_MAX_ATTEMPTS")
+    try:
+        env_attempts = int(env_attempts_raw) if env_attempts_raw is not None else 12
+    except Exception:
+        env_attempts = 12
+    env_attempts = max(1, env_attempts)
+
+    cfg_retries = cfg.get("webhook_max_retries")
+    cfg_attempts: Optional[int]
+    if cfg_retries is not None:
+        try:
+            cfg_attempts = max(1, int(cfg_retries) + 1)
+        except Exception:
+            cfg_attempts = None
+    else:
+        cfg_attempts = None
+
+    max_attempts = env_attempts if cfg_attempts is None else min(env_attempts, cfg_attempts)
+
+    horizon_ms_raw = _cfg_or_env_int(
+        cfg,
+        "webhook_max_horizon_ms",
+        "WEBHOOK_MAX_HORIZON_MS",
+        max_ms,
+    )
+    horizon_ms = max(0, horizon_ms_raw)
+
+    return base_ms, max_ms, max_attempts, horizon_ms
 
 # Type signature for a one-shot attempt. Return (ok, status_code, err_kind)
 # err_kind in {"network","timeout","5xx","4xx", "cb_open", None}
@@ -75,12 +134,10 @@ def _deliver_with_backoff(
     send_once: SendOnce,
     *,
     state: Optional[Dict[str, Any]] = None,
-    base_ms: int = _BACKOFF_BASE_MS,
-    max_ms: int = _BACKOFF_MAX_MS,
-    max_attempts: int = _MAX_ATTEMPTS,
-    max_horizon_ms: int = _MAX_HORIZON_MS,
 ) -> bool:
     """Attempt delivery using decorrelated jitter backoff."""
+
+    base_ms, max_ms, max_attempts, max_horizon_ms = _backoff_params()
 
     attempts = 0
     start = time.monotonic()
@@ -350,22 +407,6 @@ def _deliver_with_client(
         )
         client_conf = desired_conf
 
-    try:
-        base_override = int(cfg.get("webhook_backoff_ms") or _BACKOFF_BASE_MS)
-    except Exception:
-        base_override = _BACKOFF_BASE_MS
-    base_override = max(1, base_override)
-    max_sleep_ms = max(base_override, _BACKOFF_MAX_MS)
-
-    max_attempts_cfg = cfg.get("webhook_max_retries")
-    max_attempts_override = _MAX_ATTEMPTS
-    if max_attempts_cfg is not None:
-        try:
-            max_attempts_override = max(1, int(max_attempts_cfg) + 1)
-        except Exception:
-            max_attempts_override = _MAX_ATTEMPTS
-    max_attempts_override = min(_MAX_ATTEMPTS, max_attempts_override)
-
     abort_state: Dict[str, Any] = {}
 
     def _send_once() -> Tuple[bool, int | None, str | None]:
@@ -412,10 +453,6 @@ def _deliver_with_client(
     ok = _deliver_with_backoff(
         _send_once,
         state=abort_state,
-        base_ms=base_override,
-        max_ms=max_sleep_ms,
-        max_attempts=max_attempts_override,
-        max_horizon_ms=_MAX_HORIZON_MS,
     )
     if ok:
         return "sent", _status_bucket(last_code, None), client, client_conf
