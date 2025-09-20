@@ -103,6 +103,13 @@ def _adjudications_mod():
     return _admin_adjudications
 
 
+def _none_if_blank(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 # ---------------------------------------------------------------------------
 # CSRF helpers (double submit cookie)
 # ---------------------------------------------------------------------------
@@ -493,15 +500,15 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
 def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     query = req.query_params
     raw_filters: Dict[str, Optional[str]] = {
-        "tenant": query.get("tenant", ""),
-        "bot": query.get("bot", ""),
-        "decision": query.get("decision", ""),
-        "mitigation_forced": query.get("mitigation_forced", ""),
-        "from_ts": query.get("from_ts", ""),
-        "to_ts": query.get("to_ts", ""),
-        "limit": query.get("limit", ""),
-        "offset": query.get("offset", ""),
-        "sort": query.get("sort", ""),
+        "tenant": _none_if_blank(query.get("tenant")),
+        "bot": _none_if_blank(query.get("bot")),
+        "decision": _none_if_blank(query.get("decision")),
+        "mitigation_forced": _none_if_blank(query.get("mitigation_forced")),
+        "from_ts": _none_if_blank(query.get("from_ts")),
+        "to_ts": _none_if_blank(query.get("to_ts")),
+        "limit": _none_if_blank(query.get("limit")),
+        "offset": _none_if_blank(query.get("offset")),
+        "sort": _none_if_blank(query.get("sort")),
     }
 
     adjudications_mod = _adjudications_mod()
