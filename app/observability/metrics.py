@@ -92,6 +92,20 @@ GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL = _get_or_create_counter(
 )
 
 
+webhook_retry_total = _get_or_create_counter(
+    "guardrail_webhook_retry_total",
+    "Webhook retries by reason",
+    labelnames=("reason",),
+)
+
+
+webhook_abort_total = _get_or_create_counter(
+    "guardrail_webhook_abort_total",
+    "Webhook aborts by reason",
+    labelnames=("reason",),
+)
+
+
 def inc_ratelimit_script_reload() -> None:
     try:
         GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc()
