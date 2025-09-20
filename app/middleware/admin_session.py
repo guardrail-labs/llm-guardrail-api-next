@@ -102,11 +102,17 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
             session_value = secrets.token_urlsafe(32)
 
         csrf_value: Optional[str] = None
+        should_set_csrf = False
         if not resp_sets_csrf:
             if new_session:
                 csrf_value = secrets.token_urlsafe(32)
-            elif not req_csrf:
+                should_set_csrf = True
+            elif req_csrf:
+                csrf_value = req_csrf
+                should_set_csrf = True
+            else:
                 csrf_value = secrets.token_urlsafe(32)
+                should_set_csrf = True
 
         max_age = self._ttl
 
@@ -121,7 +127,7 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
                 samesite="strict",
             )
 
-        if not resp_sets_csrf and csrf_value:
+        if should_set_csrf and csrf_value:
             response.set_cookie(
                 key=self._csrf_cookie,
                 value=csrf_value,

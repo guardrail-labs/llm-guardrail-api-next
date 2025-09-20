@@ -56,6 +56,23 @@ def _get_set_cookie_headers(resp) -> list[str]:
     return vals
 
 
+def _parse_cookie(header: str) -> dict[str, str | bool]:
+    parts = [part.strip() for part in header.split(";") if part.strip()]
+    if not parts:
+        return {}
+    attrs: dict[str, str | bool] = {}
+    name, _, value = parts[0].partition("=")
+    attrs["name"] = name
+    attrs["value"] = value
+    for segment in parts[1:]:
+        if "=" in segment:
+            k, v = segment.split("=", 1)
+            attrs[k.lower()] = v
+        else:
+            attrs[segment.lower()] = True
+    return attrs
+
+
 def test_new_session_rotates_once():
     with _make_client() as client:
         resp1 = client.get("/admin/ping")
@@ -73,7 +90,10 @@ def test_new_session_rotates_once():
         assert csrf2 == csrf1
 
         set_cookies = _get_set_cookie_headers(resp2)
-        assert not any(blob.startswith("admin_csrf=") for blob in set_cookies)
+        csrf_headers = [blob for blob in set_cookies if blob.startswith("admin_csrf=")]
+        assert len(csrf_headers) == 1
+        parsed = _parse_cookie(csrf_headers[0])
+        assert parsed.get("value") == csrf1
 
 
 def test_recovers_missing_csrf():
