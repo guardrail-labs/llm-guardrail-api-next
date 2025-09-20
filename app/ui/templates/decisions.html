@@ -13,6 +13,81 @@
 {% set ndjson_link = ndjson_url if ndjson_url is defined else '/admin/decisions.ndjson' %}
 {% set bootstrap = bootstrap_state if bootstrap_state is defined else {'filters': {}, 'items': [], 'total': 0, 'error': None} %}
 {% include "_admin_nav.html" %}
+<style>
+  .reqid-cell {
+    white-space: nowrap;
+  }
+  .reqid-primary {
+    font-family: monospace;
+  }
+  .reqid-filter {
+    font-size: 0.85em;
+    margin-left: 0.35rem;
+    color: #2563eb;
+  }
+  .reqid-filter:focus,
+  .reqid-filter:hover {
+    text-decoration: underline;
+  }
+  .row-actions {
+    white-space: nowrap;
+  }
+  .view-json-btn {
+    font-size: 0.9rem;
+  }
+  .json-modal {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    background: rgba(15, 23, 42, 0.55);
+    z-index: 30;
+  }
+  .json-modal.show {
+    display: flex;
+  }
+  .json-modal-card {
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 1.5rem;
+    max-width: 780px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: auto;
+    box-shadow: 0 24px 48px rgba(15, 23, 42, 0.3);
+  }
+  .json-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .json-modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+  .json-modal pre {
+    background: #f9fafb;
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin: 0;
+    overflow: auto;
+    font-size: 0.9rem;
+  }
+  .json-toast {
+    font-size: 0.85rem;
+    color: #16a34a;
+  }
+  .json-toast[hidden] {
+    display: none;
+  }
+</style>
 <div class="card" id="decisions-card">
   <h2 style="margin-top:0;">Decisions log</h2>
   <form id="decisions-filters" class="decisions-filters" style="display:grid; gap:0.75rem; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); align-items:end;">
@@ -77,10 +152,12 @@
         <th scope="col">ts</th>
         <th scope="col">tenant</th>
         <th scope="col">bot</th>
+        <th scope="col">request_id</th>
         <th scope="col">decision</th>
         <th scope="col">rule_id</th>
         <th scope="col">mitigation_forced</th>
         <th scope="col">message</th>
+        <th scope="col">actions</th>
       </tr>
     </thead>
     <tbody id="decisions-tbody">
@@ -89,15 +166,56 @@
         <td>{{ row.ts }}</td>
         <td>{{ row.tenant }}</td>
         <td>{{ row.bot }}</td>
+        <td class="reqid-cell">
+          {% if row.request_id %}
+          {% set params = namespace(value={'request_id': row.request_id}) %}
+          {% if filters.tenant %}{% set _ = params.value.update({'tenant': filters.tenant}) %}{% endif %}
+          {% if filters.bot %}{% set _ = params.value.update({'bot': filters.bot}) %}{% endif %}
+          {% set query = params.value|urlencode %}
+          <a class="reqid-primary" href="/admin/adjudications{{ '?' + query if query else '' }}">{{ row.request_id }}</a>
+          <a class="reqid-filter" href="/admin/decisions{{ '?' + query if query else '' }}">(filter here)</a>
+          {% else %}
+          <span class="muted">&mdash;</span>
+          {% endif %}
+        </td>
         <td>{{ row.decision }}</td>
         <td>{{ row.rule_id }}</td>
         <td>{{ row.mitigation_forced }}</td>
         <td>{{ row.snippet }}</td>
+        <td class="row-actions">
+          <button type="button" class="view-json-btn" data-json="{{ row.raw_json | e }}">View JSON</button>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   <p class="muted" id="decisions-empty" {% if items %}hidden{% endif %}>No decisions found.</p>
+</div>
+<div
+  id="decisions-json-modal"
+  class="json-modal"
+  role="dialog"
+  aria-modal="true"
+  aria-hidden="true"
+  hidden
+>
+  <div class="json-modal-card">
+    <div class="json-modal-header">
+      <h3 id="decisions-json-modal-title" class="json-modal-title">Decision JSON</h3>
+      <button type="button" id="decisions-json-close">Close</button>
+    </div>
+    <div class="json-modal-actions">
+      <button type="button" id="decisions-json-copy">Copy JSON</button>
+      <span
+        id="decisions-json-toast"
+        class="json-toast"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></span>
+    </div>
+    <pre id="decisions-json-modal-content" tabindex="0"></pre>
+  </div>
 </div>
 <script id="decisions-bootstrap" type="application/json">{{ bootstrap | tojson }}</script>
 <script>
@@ -145,6 +263,16 @@
     const table = document.getElementById('decisions-table');
     const tbody = document.getElementById('decisions-tbody');
     const emptyState = document.getElementById('decisions-empty');
+    const jsonModal = document.getElementById('decisions-json-modal');
+    const jsonModalContent = document.getElementById('decisions-json-modal-content');
+    const jsonModalClose = document.getElementById('decisions-json-close');
+    const jsonModalCopy = document.getElementById('decisions-json-copy');
+    const jsonModalToast = document.getElementById('decisions-json-toast');
+    const jsonModalTitle = document.getElementById('decisions-json-modal-title');
+
+    let jsonToastTimer = null;
+    let activeJsonText = '';
+    let activeTrigger = null;
 
     function clampLimit(raw) {
       const value = parseInt(raw, 10);
@@ -254,6 +382,164 @@
       return text;
     }
 
+    function buildRequestLink(basePath, requestId) {
+      const params = new URLSearchParams();
+      if (requestId) {
+        params.set('request_id', requestId);
+      }
+      if (state.tenant) {
+        params.set('tenant', state.tenant);
+      }
+      if (state.bot) {
+        params.set('bot', state.bot);
+      }
+      const query = params.toString();
+      return basePath + (query ? '?' + query : '');
+    }
+
+    function hideJsonToast() {
+      if (jsonToastTimer) {
+        window.clearTimeout(jsonToastTimer);
+        jsonToastTimer = null;
+      }
+      if (jsonModalToast) {
+        jsonModalToast.hidden = true;
+        jsonModalToast.textContent = '';
+      }
+    }
+
+    function showJsonToast(message) {
+      if (!jsonModalToast) {
+        return;
+      }
+      if (jsonToastTimer) {
+        window.clearTimeout(jsonToastTimer);
+        jsonToastTimer = null;
+      }
+      jsonModalToast.textContent = message;
+      jsonModalToast.hidden = false;
+      jsonToastTimer = window.setTimeout(function () {
+        if (jsonModalToast) {
+          jsonModalToast.hidden = true;
+          jsonModalToast.textContent = '';
+        }
+        jsonToastTimer = null;
+      }, 2000);
+    }
+
+    function closeJsonModal() {
+      if (!jsonModal) {
+        return;
+      }
+      jsonModal.classList.remove('show');
+      jsonModal.setAttribute('aria-hidden', 'true');
+      jsonModal.hidden = true;
+      activeJsonText = '';
+      if (jsonModalContent) {
+        jsonModalContent.textContent = '';
+      }
+      if (jsonModalCopy) {
+        jsonModalCopy.disabled = false;
+      }
+      if (jsonModalTitle) {
+        jsonModalTitle.textContent = 'Decision JSON';
+      }
+      hideJsonToast();
+      const trigger = activeTrigger;
+      activeTrigger = null;
+      if (trigger && typeof trigger.focus === 'function') {
+        try {
+          trigger.focus();
+        } catch (err) {
+          // ignore focus errors
+        }
+      }
+    }
+
+    function openJsonModal(item, trigger) {
+      if (!jsonModal || !jsonModalContent) {
+        return;
+      }
+      let pretty = '{}';
+      try {
+        pretty = JSON.stringify(item || {}, null, 2);
+      } catch (err) {
+        try {
+          pretty = JSON.stringify({}, null, 2);
+        } catch (innerErr) {
+          pretty = '{}';
+        }
+      }
+      activeJsonText = pretty;
+      activeTrigger = trigger || null;
+      jsonModalContent.textContent = pretty;
+      if (jsonModalTitle) {
+        let rid = '';
+        if (item && item.request_id !== undefined && item.request_id !== null) {
+          rid = String(item.request_id).trim();
+        }
+        jsonModalTitle.textContent = rid ? 'Decision ' + rid : 'Decision JSON';
+      }
+      if (jsonModalCopy) {
+        jsonModalCopy.disabled = false;
+      }
+      hideJsonToast();
+      jsonModal.hidden = false;
+      jsonModal.classList.add('show');
+      jsonModal.setAttribute('aria-hidden', 'false');
+      try {
+        jsonModalContent.focus();
+      } catch (err) {
+        // ignore focus errors
+      }
+    }
+
+    function fallbackCopy(text) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'absolute';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    async function copyActiveJson() {
+      if (!jsonModalCopy) {
+        return;
+      }
+      if (!activeJsonText) {
+        showJsonToast('Nothing to copy');
+        return;
+      }
+      jsonModalCopy.disabled = true;
+      let success = false;
+      try {
+        if (
+          typeof navigator !== 'undefined' &&
+          navigator.clipboard &&
+          typeof navigator.clipboard.writeText === 'function'
+        ) {
+          await navigator.clipboard.writeText(activeJsonText);
+          success = true;
+        } else {
+          success = fallbackCopy(activeJsonText);
+        }
+      } catch (err) {
+        success = fallbackCopy(activeJsonText);
+      } finally {
+        jsonModalCopy.disabled = false;
+      }
+      showJsonToast(success ? 'Copied' : 'Copy failed');
+    }
+
     function renderTable(items) {
       while (tbody.firstChild) {
         tbody.removeChild(tbody.firstChild);
@@ -281,6 +567,31 @@
         tenantCell.textContent = item.tenant || '';
         const botCell = document.createElement('td');
         botCell.textContent = item.bot || '';
+        const requestCell = document.createElement('td');
+        requestCell.className = 'reqid-cell';
+        let requestId = '';
+        if (item && item.request_id !== undefined && item.request_id !== null) {
+          requestId = String(item.request_id).trim();
+        }
+        if (requestId) {
+          const primaryLink = document.createElement('a');
+          primaryLink.className = 'reqid-primary';
+          primaryLink.href = buildRequestLink('/admin/adjudications', requestId);
+          primaryLink.textContent = requestId;
+          requestCell.appendChild(primaryLink);
+          const filterLink = document.createElement('a');
+          filterLink.className = 'reqid-filter';
+          filterLink.href = buildRequestLink('/admin/decisions', requestId);
+          filterLink.textContent = '(filter here)';
+          filterLink.setAttribute('aria-label', 'Filter decisions by this request id');
+          requestCell.appendChild(document.createTextNode(' '));
+          requestCell.appendChild(filterLink);
+        } else {
+          const placeholder = document.createElement('span');
+          placeholder.className = 'muted';
+          placeholder.textContent = '—';
+          requestCell.appendChild(placeholder);
+        }
         const decisionCell = document.createElement('td');
         decisionCell.textContent = item.decision || '';
         const ruleCell = document.createElement('td');
@@ -288,22 +599,41 @@
         const forcedCell = document.createElement('td');
         forcedCell.textContent = item.mitigation_forced || '';
         const snippetCell = document.createElement('td');
-        const details = item.details && typeof item.details === 'object' ? item.details : {};
-        snippetCell.textContent = firstNonEmpty([
-          item.summary,
-          item.message,
-          details.summary,
-          details.message,
-          details.prompt,
-          details.text,
+        const details = item && item.details && typeof item.details === 'object' ? item.details : {};
+        const snippet = firstNonEmpty([
+          item && item.summary,
+          item && item.message,
+          details && details.summary,
+          details && details.message,
+          details && details.prompt,
+          details && details.text,
         ]);
+        snippetCell.textContent = snippet;
+        const actionsCell = document.createElement('td');
+        actionsCell.className = 'row-actions';
+        const viewBtn = document.createElement('button');
+        viewBtn.type = 'button';
+        viewBtn.textContent = 'View JSON';
+        viewBtn.className = 'view-json-btn';
+        viewBtn.setAttribute('aria-haspopup', 'dialog');
+        try {
+          viewBtn.dataset.json = JSON.stringify(item);
+        } catch (err) {
+          viewBtn.dataset.json = '{}';
+        }
+        viewBtn.addEventListener('click', function () {
+          openJsonModal(item, viewBtn);
+        });
+        actionsCell.appendChild(viewBtn);
         tr.appendChild(tsCell);
         tr.appendChild(tenantCell);
         tr.appendChild(botCell);
+        tr.appendChild(requestCell);
         tr.appendChild(decisionCell);
         tr.appendChild(ruleCell);
         tr.appendChild(forcedCell);
         tr.appendChild(snippetCell);
+        tr.appendChild(actionsCell);
         tbody.appendChild(tr);
       });
     }
@@ -562,6 +892,29 @@
         fetchData({ pushHistory: true });
       });
     }
+
+    if (jsonModalClose) {
+      jsonModalClose.addEventListener('click', function () {
+        closeJsonModal();
+      });
+    }
+    if (jsonModalCopy) {
+      jsonModalCopy.addEventListener('click', function () {
+        copyActiveJson();
+      });
+    }
+    if (jsonModal) {
+      jsonModal.addEventListener('click', function (event) {
+        if (event.target === jsonModal) {
+          closeJsonModal();
+        }
+      });
+    }
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && jsonModal && jsonModal.classList.contains('show')) {
+        closeJsonModal();
+      }
+    });
 
     window.addEventListener('popstate', function () {
       const params = new URLSearchParams(window.location.search);

@@ -299,6 +299,11 @@ def _render_decision_row(item: Dict[str, Any]) -> Dict[str, str]:
         details.get("prompt"),
         details.get("text"),
     )
+    request_id = str(item.get("request_id") or "")
+    try:
+        raw_json = json.dumps(item, default=str)
+    except Exception:
+        raw_json = json.dumps({}, default=str)
     return {
         "ts": _format_ts(item.get("ts")),
         "tenant": str(item.get("tenant") or ""),
@@ -306,7 +311,9 @@ def _render_decision_row(item: Dict[str, Any]) -> Dict[str, str]:
         "decision": str(item.get("decision") or ""),
         "rule_id": str(item.get("rule_id") or ""),
         "mitigation_forced": str(item.get("mitigation_forced") or ""),
+        "request_id": request_id,
         "snippet": snippet,
+        "raw_json": raw_json,
     }
 
 
@@ -336,6 +343,11 @@ def _render_adjudication_row(item: Dict[str, Any]) -> Dict[str, str]:
         details.get("prompt"),
         details.get("text"),
     )
+    request_id = str(item.get("request_id") or "")
+    try:
+        raw_json = json.dumps(item, default=str)
+    except Exception:
+        raw_json = json.dumps({}, default=str)
 
     return {
         "ts": _format_ts(item.get("ts")),
@@ -344,7 +356,9 @@ def _render_adjudication_row(item: Dict[str, Any]) -> Dict[str, str]:
         "decision": str(item.get("decision") or ""),
         "mitigation_forced": str(item.get("mitigation_forced") or ""),
         "rule_ref": rule_ref,
+        "request_id": request_id,
         "snippet": snippet,
+        "raw_json": raw_json,
     }
 
 
