@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -8,7 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Deque, Iterator, List, Literal, Optional, Sequence, Tuple, Union
 
-from app.utils.cursor import decode_cursor, encode_cursor
+from app.utils.cursor import CursorError
 
 
 def _now_ts() -> str:
@@ -260,17 +261,24 @@ def _record_ts_ms(record: AdjudicationRecord) -> int:
     return int(parsed.timestamp() * 1000)
 
 
-def _record_cursor_id(index: int, record: AdjudicationRecord) -> str:
-    parts = [
-        getattr(record, "request_id", "") or "",
-        getattr(record, "rule_id", "") or "",
-        getattr(record, "provider", "") or "",
-        getattr(record, "decision", "") or "",
-        getattr(record, "policy_version", "") or "",
-        getattr(record, "prompt_sha256", "") or "",
-    ]
-    base = "|".join(parts)
-    return f"{base}|{index:08d}"
+def _enc_cursor(ts_ms: int, idx: int) -> str:
+    payload = {"ts": int(ts_ms), "i": int(idx)}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _dec_cursor(token: str) -> tuple[int, int]:
+    if not token:
+        raise CursorError("empty cursor")
+    pad = "=" * (-len(token) % 4)
+    try:
+        raw = base64.urlsafe_b64decode((token + pad).encode("ascii"))
+        obj = json.loads(raw.decode("utf-8"))
+        ts_ms = int(obj["ts"])
+        idx = int(obj["i"])
+    except Exception as exc:  # pragma: no cover - normalization path
+        raise CursorError(f"invalid cursor: {exc}") from exc
+    return ts_ms, idx
 
 
 def _iter_filtered_with_index(
@@ -329,11 +337,11 @@ def list_with_cursor(
     sort: str = "ts_desc",
 ) -> Tuple[List[AdjudicationRecord], Optional[str], Optional[str]]:
     safe_limit = max(1, min(int(limit), 500))
-    decoded: Optional[Tuple[int, str]] = None
+    decoded: Optional[Tuple[int, int]] = None
     if cursor:
-        decoded = decode_cursor(cursor)
+        decoded = _dec_cursor(cursor)
 
-    entries: List[Tuple[AdjudicationRecord, int, str]] = []
+    entries: List[Tuple[AdjudicationRecord, int, int]] = []
     for idx, rec in _iter_filtered_with_index(
         start=start,
         end=end,
@@ -347,16 +355,15 @@ def list_with_cursor(
         sort="ts_desc",
     ):
         ts_ms = _record_ts_ms(rec)
-        key = _record_cursor_id(idx, rec)
         if decoded is not None:
-            bound_ts, bound_id = decoded
+            bound_ts, bound_idx = decoded
             if dir == "next":
-                if (ts_ms, key) >= (bound_ts, bound_id):
+                if (ts_ms, idx) >= (bound_ts, bound_idx):
                     continue
             else:
-                if (ts_ms, key) <= (bound_ts, bound_id):
+                if (ts_ms, idx) <= (bound_ts, bound_idx):
                     continue
-        entries.append((rec, ts_ms, key))
+        entries.append((rec, ts_ms, idx))
         if len(entries) > safe_limit:
             break
 
@@ -365,11 +372,11 @@ def list_with_cursor(
 
     has_more = len(entries) > safe_limit
     page_entries = entries[:safe_limit]
-    first_rec, first_ts, first_key = page_entries[0]
-    last_rec, last_ts, last_key = page_entries[-1]
+    first_rec, first_ts, first_idx = page_entries[0]
+    last_rec, last_ts, last_idx = page_entries[-1]
 
-    next_cursor_token: Optional[str] = encode_cursor(last_ts, last_key)
-    prev_cursor_token: Optional[str] = encode_cursor(first_ts, first_key)
+    next_cursor_token: Optional[str] = _enc_cursor(last_ts, last_idx)
+    prev_cursor_token: Optional[str] = _enc_cursor(first_ts, first_idx)
     if dir == "next":
         if cursor is None:
             prev_cursor_token = None
@@ -379,7 +386,7 @@ def list_with_cursor(
         if not has_more:
             prev_cursor_token = None
 
-    records = [rec for rec, _ts, _key in page_entries]
+    records = [rec for rec, _ts, _idx in page_entries]
     return records, next_cursor_token, prev_cursor_token
 
 def query(
