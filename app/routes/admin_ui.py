@@ -97,6 +97,12 @@ def _decisions_mod():
     return _admin_decisions
 
 
+def _adjudications_mod():
+    from app.routes import admin_adjudications as _admin_adjudications
+
+    return _admin_adjudications
+
+
 # ---------------------------------------------------------------------------
 # CSRF helpers (double submit cookie)
 # ---------------------------------------------------------------------------
@@ -267,6 +273,14 @@ def _first_non_empty(*values: Any) -> str:
     return ""
 
 
+def _datetime_to_epoch(dt: Optional[datetime]) -> Optional[int]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.astimezone(timezone.utc).timestamp())
+
+
 def _render_decision_row(item: Dict[str, Any]) -> Dict[str, str]:
     raw_details = item.get("details")
     details: Dict[str, Any] = raw_details if isinstance(raw_details, dict) else {}
@@ -285,6 +299,44 @@ def _render_decision_row(item: Dict[str, Any]) -> Dict[str, str]:
         "decision": str(item.get("decision") or ""),
         "rule_id": str(item.get("rule_id") or ""),
         "mitigation_forced": str(item.get("mitigation_forced") or ""),
+        "snippet": snippet,
+    }
+
+
+def _render_adjudication_row(item: Dict[str, Any]) -> Dict[str, str]:
+    rule_hits = item.get("rule_hits")
+    rule_id = ""
+    if isinstance(rule_hits, list) and rule_hits:
+        try:
+            rule_id = str(rule_hits[0])
+        except Exception:
+            rule_id = ""
+    rules_path = str(item.get("rules_path") or "")
+    if rules_path and rule_id:
+        rule_ref = f"{rules_path} / {rule_id}"
+    else:
+        rule_ref = rules_path or rule_id
+
+    raw_details = item.get("details")
+    details: Dict[str, Any] = raw_details if isinstance(raw_details, dict) else {}
+    snippet = _first_non_empty(
+        item.get("notes"),
+        item.get("message"),
+        item.get("summary"),
+        details.get("notes"),
+        details.get("message"),
+        details.get("summary"),
+        details.get("prompt"),
+        details.get("text"),
+    )
+
+    return {
+        "ts": _format_ts(item.get("ts")),
+        "tenant": str(item.get("tenant") or ""),
+        "bot": str(item.get("bot") or ""),
+        "decision": str(item.get("decision") or ""),
+        "mitigation_forced": str(item.get("mitigation_forced") or ""),
+        "rule_ref": rule_ref,
         "snippet": snippet,
     }
 
@@ -418,6 +470,160 @@ def ui_decisions(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
 
     resp = templates.TemplateResponse(
         "decisions.html",
+        {
+            "request": req,
+            "filter_inputs": filter_inputs,
+            "rendered_items": rendered_items,
+            "current_limit": current_limit,
+            "current_offset": current_offset,
+            "current_sort": current_sort,
+            "display_range": {"start": range_start, "end": range_end},
+            "total_count": total,
+            "disable_next": disable_next,
+            "error_message": error_message,
+            "ndjson_url": ndjson_url,
+            "bootstrap_state": bootstrap_state,
+        },
+    )
+    issue_csrf(resp)
+    return resp
+
+
+@router.get("/admin/ui/adjudications", response_class=HTMLResponse)
+def ui_adjudications(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
+    query = req.query_params
+    raw_filters: Dict[str, Optional[str]] = {
+        "tenant": query.get("tenant", ""),
+        "bot": query.get("bot", ""),
+        "decision": query.get("decision", ""),
+        "mitigation_forced": query.get("mitigation_forced", ""),
+        "from_ts": query.get("from_ts", ""),
+        "to_ts": query.get("to_ts", ""),
+        "limit": query.get("limit", ""),
+        "offset": query.get("offset", ""),
+        "sort": query.get("sort", ""),
+    }
+
+    adjudications_mod = _adjudications_mod()
+
+    filters, error = adjudications_mod._parse_filters(
+        tenant=raw_filters["tenant"],
+        bot=raw_filters["bot"],
+        provider=None,
+        request_id=None,
+        decision=raw_filters["decision"],
+        mitigation_forced=raw_filters["mitigation_forced"],
+        start=None,
+        end=None,
+        from_ts=raw_filters["from_ts"],
+        to_ts=raw_filters["to_ts"],
+        limit=raw_filters["limit"],
+        offset=raw_filters["offset"],
+        sort=raw_filters["sort"],
+    )
+
+    error_message: Optional[str] = None
+    if error is not None:
+        try:
+            body_bytes = bytes(error.body)
+            payload = json.loads(body_bytes.decode("utf-8"))
+            error_message = str(payload.get("error") or "Invalid filters")
+        except Exception:
+            error_message = "Invalid filters"
+
+    filters_state: Dict[str, Any]
+    items: List[Dict[str, Any]] = []
+    total = 0
+    if filters is not None:
+        records, total = adjudications_mod.adjudication_log.paged_query(
+            start=filters["from_dt"],
+            end=filters["to_dt"],
+            tenant=filters["tenant"],
+            bot=filters["bot"],
+            provider=filters["provider"],
+            request_id=filters["request_id"],
+            decision=filters["decision"],
+            mitigation_forced=filters["mitigation_forced"],
+            limit=filters["limit"],
+            offset=filters["offset"],
+            sort=filters["sort"],
+        )
+        items = [adjudications_mod._serialize_record(record) for record in records]
+        filters_state = {
+            "tenant": filters["tenant"] or "",
+            "bot": filters["bot"] or "",
+            "decision": filters["decision"] or "",
+            "mitigation_forced": filters["mitigation_forced"]
+            if filters["mitigation_forced"] is not None
+            else "",
+            "from_ts": _datetime_to_epoch(filters["from_dt"]),
+            "to_ts": _datetime_to_epoch(filters["to_dt"]),
+            "sort": filters["sort"],
+            "limit": filters["limit"],
+            "offset": filters["offset"],
+        }
+    else:
+        filters_state = {
+            "tenant": (raw_filters["tenant"] or "").strip(),
+            "bot": (raw_filters["bot"] or "").strip(),
+            "decision": (raw_filters["decision"] or "").strip(),
+            "mitigation_forced": (raw_filters["mitigation_forced"] or "").strip(),
+            "from_ts": _coerce_epoch(raw_filters["from_ts"]),
+            "to_ts": _coerce_epoch(raw_filters["to_ts"]),
+            "sort": "ts_desc",
+            "limit": 50,
+            "offset": 0,
+        }
+
+    rendered_items = [_render_adjudication_row(item) for item in items]
+
+    current_limit = int(filters_state.get("limit", 50))
+    current_offset = int(filters_state.get("offset", 0))
+    current_sort = filters_state.get("sort", "ts_desc") or "ts_desc"
+
+    visible_count = len(items)
+    if total <= 0 and visible_count > 0:
+        total = current_offset + visible_count
+    range_start = 0 if total == 0 or visible_count == 0 else current_offset + 1
+    if total == 0:
+        range_end = current_offset + visible_count
+    else:
+        range_end = min(total, current_offset + visible_count)
+    disable_next = total > 0 and current_offset + current_limit >= total
+
+    filter_inputs = {
+        "tenant": filters_state.get("tenant", ""),
+        "bot": filters_state.get("bot", ""),
+        "decision": filters_state.get("decision", ""),
+        "mitigation_forced": filters_state.get("mitigation_forced", ""),
+        "from_ts": _epoch_to_iso(filters_state.get("from_ts")),
+        "to_ts": _epoch_to_iso(filters_state.get("to_ts")),
+    }
+
+    ndjson_params: Dict[str, str] = {}
+    for key in ("tenant", "bot", "decision", "mitigation_forced"):
+        value = filters_state.get(key)
+        if value:
+            ndjson_params[key] = str(value)
+    for key in ("from_ts", "to_ts"):
+        value = filters_state.get(key)
+        if value not in (None, ""):
+            ndjson_params[key] = str(value)
+    sort_val = filters_state.get("sort")
+    if sort_val:
+        ndjson_params["sort"] = str(sort_val)
+    ndjson_query = urlencode(ndjson_params)
+    ndjson_url = "/admin/adjudications.ndjson" + (f"?{ndjson_query}" if ndjson_query else "")
+
+    bootstrap_state = {
+        "filters": filters_state,
+        "items": items,
+        "total": total,
+        "error": error_message,
+    }
+
+    resp = templates.TemplateResponse(
+        "adjudications.html",
         {
             "request": req,
             "filter_inputs": filter_inputs,
