@@ -89,11 +89,14 @@ def _backoff_params() -> tuple[int, int, int, int]:
 
     max_attempts = env_attempts if cfg_attempts is None else min(env_attempts, cfg_attempts)
 
+    # IMPORTANT: keep default horizon constant (15m) unless explicitly overridden.
+    # Do NOT couple to per-attempt max backoff; callers lowering max_ms should not
+    # implicitly shrink total retry budget.
     horizon_ms_raw = _cfg_or_env_int(
         cfg,
         "webhook_max_horizon_ms",
         "WEBHOOK_MAX_HORIZON_MS",
-        max_ms,
+        900_000,
     )
     horizon_ms = max(0, horizon_ms_raw)
 
