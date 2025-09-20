@@ -81,20 +81,21 @@
               {% endif %}
               {% set meta = namespace(items=[]) %}
               {% if path %}
-                {% set meta.items = meta.items + ['<span class="lint-meta-label">Path:</span> <code>' ~ path|e ~ '</code>'] %}
+                {% set meta.items = meta.items + ['<span class="lint-meta-label">Path:</span>'|safe ~ ' <code>' ~ path|e ~ '</code>'] %}
               {% endif %}
               {% set pos_parts = [] %}
               {% if line is not none %}
-                {% set pos_parts = pos_parts + ['line ' ~ line] %}
+                {% set pos_parts = pos_parts + ['line ' ~ (line|int)] %}
               {% endif %}
               {% if column is not none %}
-                {% set pos_parts = pos_parts + ['col ' ~ column] %}
+                {% set pos_parts = pos_parts + ['col ' ~ (column|int)] %}
               {% endif %}
               {% if offset is not none %}
-                {% set pos_parts = pos_parts + ['offset ' ~ offset] %}
+                {% set pos_parts = pos_parts + ['offset ' ~ (offset|int)] %}
               {% endif %}
               {% if pos_parts %}
-                {% set meta.items = meta.items + ['<span class="lint-meta-label">Position:</span> ' ~ pos_parts|join(', ')] %}
+                {% set pos_text = (pos_parts|join(', ')|e) %}
+                {% set meta.items = meta.items + ['<span class="lint-meta-label">Position:</span>'|safe ~ ' ' ~ pos_text] %}
               {% endif %}
               <div class="lint-row" data-severity="{{ severity }}" role="listitem">
                 <span class="lint-badge {{ 'lint-badge-error' if severity == 'error' else 'lint-badge-warn' if severity == 'warn' else 'lint-badge-info' }}" aria-label="severity: {{ badge_label|e }}">{{ badge_label|upper }}</span>
@@ -107,7 +108,7 @@
                   {% endif %}
                   <div class="lint-message">{{ message|e }}</div>
                   {% if meta.items %}
-                    <div class="lint-meta">{{ meta.items|join(' · ')|safe }}</div>
+                    <div class="lint-meta">{{ meta.items|join(' · ') }}</div>
                   {% endif %}
                 </div>
               </div>
