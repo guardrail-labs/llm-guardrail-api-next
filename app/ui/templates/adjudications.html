@@ -357,20 +357,22 @@
       updateButtons(isLoading);
     }
 
+    function appendIfNotBlank(params, key, value) {
+      if (value === null || value === undefined) {
+        return;
+      }
+      const text = String(value).trim();
+      if (text) {
+        params.set(key, text);
+      }
+    }
+
     function buildQueryParams() {
       const params = new URLSearchParams();
-      if (state.tenant) {
-        params.set('tenant', state.tenant);
-      }
-      if (state.bot) {
-        params.set('bot', state.bot);
-      }
-      if (state.decision) {
-        params.set('decision', state.decision);
-      }
-      if (state.mitigationForced) {
-        params.set('mitigation_forced', state.mitigationForced);
-      }
+      appendIfNotBlank(params, 'tenant', state.tenant);
+      appendIfNotBlank(params, 'bot', state.bot);
+      appendIfNotBlank(params, 'decision', state.decision);
+      appendIfNotBlank(params, 'mitigation_forced', state.mitigationForced);
       const fromEpoch = isoToEpoch(state.fromTs);
       if (fromEpoch !== null) {
         params.set('from_ts', String(fromEpoch));
@@ -379,9 +381,7 @@
       if (toEpoch !== null) {
         params.set('to_ts', String(toEpoch));
       }
-      if (state.sort) {
-        params.set('sort', state.sort);
-      }
+      appendIfNotBlank(params, 'sort', state.sort);
       params.set('limit', String(state.limit));
       params.set('offset', String(state.offset));
       return params;
