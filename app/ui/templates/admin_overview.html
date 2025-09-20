@@ -12,6 +12,20 @@
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
     .kv { display:flex; justify-content: space-between; align-items:center; }
     code { background: #f3f4f6; padding: 2px 6px; border-radius: 6px; }
+    .tile-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+    .tile { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; min-width: 140px; }
+    .tile-label { font-size: 12px; color: #6b7280; }
+    .tile-value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+    .tile-delta { font-size: 12px; color: #059669; min-height: 16px; margin-top: 2px; }
+    .tile-delta.negative { color: #dc2626; }
+    .small { font-size: 12px; }
+    .refresh-btn {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      background: white;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -39,6 +53,118 @@
         <li><a href="/metrics" target="_blank">Metrics</a> · <a href="/health" target="_blank">Health</a></li>
       </ul>
     </div>
+
+    <div class="card">
+      <strong>Mitigation overrides</strong>
+      <div class="tile-grid" id="override-tiles">
+        <div class="tile" data-mode="block">
+          <div class="tile-label">Overrides: Block</div>
+          <div class="tile-value" data-value>0</div>
+          <div class="tile-delta" data-delta></div>
+        </div>
+        <div class="tile" data-mode="clarify">
+          <div class="tile-label">Overrides: Clarify</div>
+          <div class="tile-value" data-value>0</div>
+          <div class="tile-delta" data-delta></div>
+        </div>
+        <div class="tile" data-mode="redact">
+          <div class="tile-label">Overrides: Redact</div>
+          <div class="tile-value" data-value>0</div>
+          <div class="tile-delta" data-delta></div>
+        </div>
+      </div>
+      <div style="margin-top: 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button id="override-refresh" class="refresh-btn">Refresh</button>
+        <span class="muted small" id="override-since"></span>
+        <span class="small" id="override-error" style="color:#dc2626;"></span>
+      </div>
+    </div>
   </div>
+
+  <script>
+    (function () {
+      const tiles = document.querySelectorAll('#override-tiles .tile');
+      const sinceEl = document.getElementById('override-since');
+      const errorEl = document.getElementById('override-error');
+      const refreshButton = document.getElementById('override-refresh');
+      let previousTotals = null;
+      let loading = false;
+
+      function updateTile(tile, value, delta) {
+        const valueEl = tile.querySelector('[data-value]');
+        const deltaEl = tile.querySelector('[data-delta]');
+        if (valueEl) {
+          valueEl.textContent = String(value);
+        }
+        if (deltaEl) {
+          if (delta > 0) {
+            deltaEl.textContent = `+${delta}`;
+            deltaEl.classList.remove('negative');
+          } else if (delta < 0) {
+            deltaEl.textContent = String(delta);
+            deltaEl.classList.add('negative');
+          } else {
+            deltaEl.textContent = '';
+            deltaEl.classList.remove('negative');
+          }
+        }
+      }
+
+      async function fetchOverrides() {
+        if (loading) {
+          return;
+        }
+        loading = true;
+        if (refreshButton) {
+          refreshButton.textContent = 'Refreshing...';
+          refreshButton.disabled = true;
+        }
+        if (errorEl) {
+          errorEl.textContent = '';
+        }
+        try {
+          const resp = await fetch('/admin/api/metrics/mitigation-overrides', {
+            credentials: 'include',
+          });
+          if (!resp.ok) {
+            throw new Error(`Request failed (${resp.status})`);
+          }
+          const data = await resp.json();
+          const totals = data.totals || {};
+          tiles.forEach((tile) => {
+            const mode = tile.getAttribute('data-mode');
+            if (!mode) {
+              return;
+            }
+            const value = Number(totals[mode]) || 0;
+            const prev = previousTotals ? Number(previousTotals[mode] || 0) : undefined;
+            const delta = prev === undefined ? 0 : value - prev;
+            updateTile(tile, value, delta);
+          });
+          previousTotals = totals;
+          if (sinceEl && typeof data.since_ms === 'number') {
+            const d = new Date(data.since_ms);
+            sinceEl.textContent = `Counting since process start: ${d.toLocaleString()}`;
+          }
+        } catch (err) {
+          if (errorEl) {
+            errorEl.textContent = err instanceof Error ? err.message : 'Failed to fetch overrides';
+          }
+        } finally {
+          loading = false;
+          if (refreshButton) {
+            refreshButton.textContent = 'Refresh';
+            refreshButton.disabled = false;
+          }
+        }
+      }
+
+      if (refreshButton) {
+        refreshButton.addEventListener('click', fetchOverrides);
+      }
+      fetchOverrides();
+      setInterval(fetchOverrides, 30000);
+    })();
+  </script>
 </body>
 </html>
