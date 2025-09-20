@@ -58,10 +58,10 @@ def _decorrelated_jitter_sleep_ms(prev_sleep_ms: int, base_ms: int, max_ms: int)
 
 
 def _should_retry(status_code: int | None, err_kind: str | None) -> Tuple[bool, str | None]:
-    if err_kind in ("network", "timeout"):
-        return True, err_kind
     if err_kind == "cb_open":
         return False, "cb_open"
+    if err_kind in ("network", "timeout"):
+        return True, err_kind
     if status_code is None:
         return True, "network"
     if 500 <= status_code <= 599:
@@ -106,14 +106,10 @@ def _deliver_with_backoff(
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         if not retry:
+            abort_reason = reason or "4xx"
             if state is not None:
-                state["abort_reason"] = reason
-            if reason == "4xx":
-                webhook_abort_total.labels("4xx").inc()
-            elif reason in ("cb_open", None):
-                pass
-            else:
-                webhook_abort_total.labels("4xx").inc()
+                state["abort_reason"] = abort_reason
+            webhook_abort_total.labels(abort_reason).inc()
             return False
 
         if attempts >= max_attempts:
@@ -322,6 +318,7 @@ def _deliver_with_client(
 
     reg = get_cb_registry()
     if reg.should_dlq_now(url):
+        webhook_abort_total.labels("cb_open").inc()
         _dlq_write(evt, reason="cb_open")
         return "cb_open", "-", client, client_conf
 
@@ -373,6 +370,11 @@ def _deliver_with_client(
 
     def _send_once() -> Tuple[bool, int | None, str | None]:
         nonlocal last_code, last_exc
+
+        if reg.should_dlq_now(url):
+            last_code = None
+            last_exc = "cb_open"
+            return False, None, "cb_open"
 
         t0 = time.perf_counter()
         try:
