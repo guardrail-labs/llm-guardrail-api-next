@@ -138,6 +138,7 @@ def iter_decisions(
     tenant: Optional[str] = None,
     bot: Optional[str] = None,
     rule_id: Optional[str] = None,
+    request_id: Optional[str] = None,
     decision: Optional[str] = None,
     from_ts: Optional[int] = None,
     to_ts: Optional[int] = None,
@@ -149,6 +150,7 @@ def iter_decisions(
     bot_norm = _norm_str(bot)
     rule_id_norm = _norm_str(rule_id)
     decision_norm = _norm_str(decision)
+    request_id_norm = _norm_str(request_id)
     with _lock:
         rows = list(_buf)
 
@@ -157,6 +159,8 @@ def iter_decisions(
         if tenant_norm and _norm_str(evt.get("tenant")) != tenant_norm:
             continue
         if bot_norm and _norm_str(evt.get("bot")) != bot_norm:
+            continue
+        if request_id_norm and _norm_str(evt.get("request_id")) != request_id_norm:
             continue
         if decision_norm:
             evt_decision = _event_decision(evt)
@@ -188,6 +192,7 @@ def list_decisions(
     tenant: Optional[str] = None,
     bot: Optional[str] = None,
     rule_id: Optional[str] = None,
+    request_id: Optional[str] = None,
     decision: Optional[str] = None,
     from_ts: Optional[int] = None,
     to_ts: Optional[int] = None,
@@ -200,6 +205,7 @@ def list_decisions(
             tenant=tenant,
             bot=bot,
             rule_id=rule_id,
+            request_id=request_id,
             decision=decision,
             from_ts=from_ts,
             to_ts=to_ts,
