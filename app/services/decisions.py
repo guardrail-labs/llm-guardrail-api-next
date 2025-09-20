@@ -294,6 +294,24 @@ def _default_mode(raw: Any) -> Mode:
         return "clarify"
 
 
+def _evaluate_policy(_payload: Any) -> Any:
+    """Evaluate the active policy for ``_payload``.
+
+    The concrete implementation is provided elsewhere and patched in tests.
+    """
+
+    raise NotImplementedError("_evaluate_policy() must be provided by runtime wiring")
+
+
+def evaluate_and_record(payload: Any) -> Any:
+    """Evaluate the policy for ``payload`` and apply mitigation overrides."""
+
+    result = _evaluate_policy(payload)
+    tenant = getattr(payload, "tenant", "unknown")
+    bot = getattr(payload, "bot", "unknown")
+    return _finalize_decision(result, tenant=tenant, bot=bot)
+
+
 def _finalize_decision(result: Any, *, tenant: str, bot: str) -> Any:
     """Apply mitigation overrides for the given tenant/bot pair."""
 
