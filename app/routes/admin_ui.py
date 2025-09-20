@@ -41,6 +41,14 @@ templates = Jinja2Templates(directory="app/ui/templates")
 
 
 # ---------------------------------------------------------------------------
+# Feature flags
+# ---------------------------------------------------------------------------
+def _feature_enabled(name: str) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+# ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 def _csrf_secret() -> str:
@@ -161,6 +169,7 @@ def ui_overview(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             "request": req,
             "policy_version": current_rules_version(),
             "grafana_url": os.getenv("GRAFANA_URL"),
+            "enable_golden_one_click": _feature_enabled("ADMIN_ENABLE_GOLDEN_ONE_CLICK"),
         },
     )
     issue_csrf(resp)
@@ -187,6 +196,7 @@ def ui_bindings(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
             "tenant": tenant,
             "bot": bot,
             "mitigation_modes": mitigation_modes,
+            "enable_golden_one_click": _feature_enabled("ADMIN_ENABLE_GOLDEN_ONE_CLICK"),
         },
     )
     issue_csrf(resp)

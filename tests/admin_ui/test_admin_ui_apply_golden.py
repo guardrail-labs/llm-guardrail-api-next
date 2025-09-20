@@ -25,6 +25,7 @@ def admin_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Te
     monkeypatch.setenv("ADMIN_UI_TOKEN", "secret")
     monkeypatch.setenv("ADMIN_UI_AUTH", "1")
     monkeypatch.setenv("ADMIN_ENABLE_APPLY", "1")
+    monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
 
     app = create_app()
     client = TestClient(app)
