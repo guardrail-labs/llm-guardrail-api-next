@@ -26,6 +26,7 @@ class _Filters(TypedDict):
     bot: Optional[str]
     provider: Optional[str]
     request_id: Optional[str]
+    rule_id: Optional[str]
     decision: Optional[str]
     mitigation_forced: Optional[str]
     from_dt: Optional[datetime]
@@ -36,7 +37,14 @@ class _Filters(TypedDict):
 
 
 def _serialize_record(record: adjudication_log.AdjudicationRecord) -> Dict[str, object]:
-    return record.to_dict()
+    data = record.to_dict()
+    rule_id = getattr(record, "rule_id", None)
+    if rule_id is not None:
+        try:
+            data["rule_id"] = str(rule_id)
+        except Exception:
+            data["rule_id"] = rule_id
+    return data
 
 
 def _json_error(message: str, status_code: int = 400) -> JSONResponse:
@@ -117,6 +125,7 @@ def _parse_filters(
     bot: Optional[str],
     provider: Optional[str],
     request_id: Optional[str],
+    rule_id: Optional[str],
     decision: Optional[str],
     mitigation_forced: Optional[str],
     start: Optional[str],
@@ -131,6 +140,8 @@ def _parse_filters(
         decision_val = _normalize_optional(decision)
         if decision_val and decision_val not in _VALID_DECISIONS:
             raise ValueError("invalid decision")
+
+        rule_id_val = _normalize_optional(rule_id)
 
         if mitigation_forced is None:
             mitigation_val: Optional[str] = None
@@ -161,6 +172,7 @@ def _parse_filters(
             "bot": _normalize_optional(bot),
             "provider": _normalize_optional(provider),
             "request_id": _normalize_optional(request_id),
+            "rule_id": rule_id_val,
             "decision": decision_val,
             "mitigation_forced": mitigation_val,
             "from_dt": from_dt,
@@ -180,6 +192,7 @@ def _parse_filters_no_pagination(
     bot: Optional[str],
     provider: Optional[str],
     request_id: Optional[str],
+    rule_id: Optional[str],
     decision: Optional[str],
     mitigation_forced: Optional[str],
     start: Optional[str],
@@ -193,6 +206,7 @@ def _parse_filters_no_pagination(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         start=start,
@@ -215,6 +229,7 @@ async def list_adjudications(
     bot: Optional[str] = Query(default=None),
     provider: Optional[str] = Query(default=None),
     request_id: Optional[str] = Query(default=None),
+    rule_id: Optional[str] = Query(default=None),
     decision: Optional[str] = Query(default=None),
     mitigation_forced: Optional[str] = Query(default=None),
     start: Optional[str] = Query(default=None),
@@ -230,6 +245,7 @@ async def list_adjudications(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         start=start,
@@ -251,6 +267,7 @@ async def list_adjudications(
         bot=filters["bot"],
         provider=filters["provider"],
         request_id=filters["request_id"],
+        rule_id=filters["rule_id"],
         decision=filters["decision"],
         mitigation_forced=filters["mitigation_forced"],
         limit=filters["limit"],
@@ -275,6 +292,7 @@ def _ndjson_stream(filters: _Filters) -> Iterator[str]:
         bot=filters["bot"],
         provider=filters["provider"],
         request_id=filters["request_id"],
+        rule_id=filters["rule_id"],
         decision=filters["decision"],
         mitigation_forced=filters["mitigation_forced"],
         limit=None,
@@ -288,6 +306,7 @@ async def export_adjudications(
     bot: Optional[str] = Query(default=None),
     provider: Optional[str] = Query(default=None),
     request_id: Optional[str] = Query(default=None),
+    rule_id: Optional[str] = Query(default=None),
     decision: Optional[str] = Query(default=None),
     mitigation_forced: Optional[str] = Query(default=None),
     start: Optional[str] = Query(default=None),
@@ -301,6 +320,7 @@ async def export_adjudications(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         start=start,

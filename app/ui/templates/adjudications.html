@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-{% set filters = filter_inputs if filter_inputs is defined else {'tenant': '', 'bot': '', 'request_id': '', 'decision': '', 'mitigation_forced': '', 'from_ts': '', 'to_ts': ''} %}
+{% set filters = filter_inputs if filter_inputs is defined else {'tenant': '', 'bot': '', 'request_id': '', 'rule_id': '', 'decision': '', 'mitigation_forced': '', 'from_ts': '', 'to_ts': ''} %}
 {% set items = rendered_items if rendered_items is defined else [] %}
 {% set limit_value = current_limit if current_limit is defined else 50 %}
 {% set offset_value = current_offset if current_offset is defined else 0 %}
@@ -99,6 +99,9 @@
     </label>
     <label>Request ID
       <input type="text" id="filter-request-id" name="request_id" value="{{ filters.request_id }}" autocomplete="off" />
+    </label>
+    <label>Rule ID
+      <input type="text" id="filter-rule-id" name="rule_id" value="{{ filters.rule_id }}" autocomplete="off" />
     </label>
     <label>Decision
       <select id="filter-decision" name="decision">
@@ -237,6 +240,7 @@
       tenant: '',
       bot: '',
       requestId: '',
+      ruleId: '',
       decision: '',
       mitigationForced: '',
       fromTs: '',
@@ -252,6 +256,7 @@
     const tenantInput = document.getElementById('filter-tenant');
     const botInput = document.getElementById('filter-bot');
     const requestInput = document.getElementById('filter-request-id');
+    const ruleIdInput = document.getElementById('filter-rule-id');
     const decisionSelect = document.getElementById('filter-decision');
     const mitigationSelect = document.getElementById('filter-mitigation');
     const fromInput = document.getElementById('filter-from');
@@ -706,6 +711,7 @@
       appendIfNotBlank(params, 'tenant', state.tenant);
       appendIfNotBlank(params, 'bot', state.bot);
       appendIfNotBlank(params, 'request_id', state.requestId);
+      appendIfNotBlank(params, 'rule_id', state.ruleId);
       appendIfNotBlank(params, 'decision', state.decision);
       appendIfNotBlank(params, 'mitigation_forced', state.mitigationForced);
       const fromEpoch = isoToEpoch(state.fromTs);
@@ -761,6 +767,7 @@
       state.tenant = tenantInput ? tenantInput.value.trim() : '';
       state.bot = botInput ? botInput.value.trim() : '';
       state.requestId = requestInput ? requestInput.value.trim() : '';
+      state.ruleId = ruleIdInput ? ruleIdInput.value.trim() : '';
       state.decision = decisionSelect ? decisionSelect.value : '';
       state.mitigationForced = mitigationSelect ? mitigationSelect.value : '';
       state.fromTs = fromInput ? fromInput.value.trim() : '';
@@ -781,6 +788,9 @@
       }
       if (requestInput) {
         requestInput.value = state.requestId;
+      }
+      if (ruleIdInput) {
+        ruleIdInput.value = state.ruleId;
       }
       if (decisionSelect) {
         decisionSelect.value = state.decision;
@@ -854,6 +864,7 @@
         if (tenantInput) tenantInput.value = '';
         if (botInput) botInput.value = '';
         if (requestInput) requestInput.value = '';
+        if (ruleIdInput) ruleIdInput.value = '';
         if (decisionSelect) decisionSelect.value = '';
         if (mitigationSelect) mitigationSelect.value = '';
         if (fromInput) fromInput.value = '';
@@ -884,6 +895,9 @@
     }
     if (requestInput) {
       requestInput.addEventListener('change', onFiltersChanged);
+    }
+    if (ruleIdInput) {
+      ruleIdInput.addEventListener('change', onFiltersChanged);
     }
     if (fromInput) {
       fromInput.addEventListener('change', onFiltersChanged);
@@ -935,6 +949,7 @@
       state.tenant = params.get('tenant') || '';
       state.bot = params.get('bot') || '';
       state.requestId = params.get('request_id') || '';
+      state.ruleId = params.get('rule_id') || '';
       state.decision = params.get('decision') || '';
       state.mitigationForced = params.get('mitigation_forced') || '';
       state.fromTs = epochToIso(params.get('from_ts'));
@@ -957,6 +972,14 @@
         state.requestId = String(bootstrap.filters.request_id);
       } else {
         state.requestId = '';
+      }
+      const ruleParam = params.get('rule_id');
+      if (typeof ruleParam === 'string' && ruleParam.trim()) {
+        state.ruleId = ruleParam.trim();
+      } else if (bootstrap.filters && bootstrap.filters.rule_id) {
+        state.ruleId = String(bootstrap.filters.rule_id);
+      } else {
+        state.ruleId = '';
       }
       state.decision = params.get('decision') || '';
       const mitigationParam = params.get('mitigation_forced');
