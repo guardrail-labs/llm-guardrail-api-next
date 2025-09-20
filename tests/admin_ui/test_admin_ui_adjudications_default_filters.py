@@ -57,6 +57,7 @@ def test_default_view_does_not_filter_by_blank_values(
     assert response.status_code == 200
     assert calls["mitigation_forced"] is None
     assert calls.get("decision") is None
+    assert calls.get("rule_id") is None
 
 
 def test_blank_controls_do_not_emit_query_params(admin_client: TestClient) -> None:
@@ -74,6 +75,7 @@ def test_blank_controls_do_not_emit_query_params(admin_client: TestClient) -> No
 
     assert "mitigation_forced=" not in href
     assert "decision=" not in href
+    assert "rule_id=" not in href
 
 
 def test_non_blank_values_are_forwarded(
@@ -85,9 +87,10 @@ def test_non_blank_values_are_forwarded(
     response = admin_client.get(
         "/admin/ui/adjudications",
         headers=_auth_headers(),
-        params={"mitigation_forced": "clarify", "decision": "block"},
+        params={"mitigation_forced": "clarify", "decision": "block", "rule_id": "r-9"},
     )
 
     assert response.status_code == 200
     assert calls["mitigation_forced"] == "clarify"
     assert calls["decision"] == "block"
+    assert calls["rule_id"] == "r-9"

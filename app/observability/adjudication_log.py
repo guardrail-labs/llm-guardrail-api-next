@@ -62,6 +62,9 @@ class AdjudicationRecord:
         mitigation_forced = getattr(self, "mitigation_forced", None)
         if mitigation_forced is not None:
             data["mitigation_forced"] = mitigation_forced
+        rule_id = getattr(self, "rule_id", None)
+        if rule_id is not None:
+            data["rule_id"] = rule_id
         return data
 
 
@@ -86,6 +89,7 @@ def _matches(
     bot: Optional[str],
     provider: Optional[str],
     request_id: Optional[str],
+    rule_id: Optional[str],
     decision: Optional[str],
     mitigation_forced: Optional[str],
 ) -> bool:
@@ -97,6 +101,10 @@ def _matches(
         return False
     if request_id and record.request_id != request_id:
         return False
+    if rule_id:
+        record_rule_id = getattr(record, "rule_id", None)
+        if record_rule_id != rule_id:
+            return False
     if decision and record.decision != decision:
         return False
     if mitigation_forced is not None:
@@ -144,6 +152,7 @@ def _iter_filtered(
     bot: Optional[str] = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
     decision: Optional[str] = None,
     mitigation_forced: Optional[str] = None,
     sort: str = "ts_desc",
@@ -167,6 +176,7 @@ def _iter_filtered(
             bot=bot,
             provider=provider,
             request_id=request_id,
+            rule_id=rule_id,
             decision=decision,
             mitigation_forced=mitigation_forced,
         ):
@@ -181,6 +191,7 @@ def iter_records(
     bot: Optional[str] = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
     decision: Optional[str] = None,
     mitigation_forced: Optional[str] = None,
     sort: str = "ts_desc",
@@ -192,6 +203,7 @@ def iter_records(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         sort=sort,
@@ -206,6 +218,7 @@ def paged_query(
     bot: Optional[str] = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
     decision: Optional[str] = None,
     mitigation_forced: Optional[str] = None,
     limit: int = 50,
@@ -223,6 +236,7 @@ def paged_query(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         sort=sort,
@@ -242,6 +256,7 @@ def query(
     bot: Optional[str] = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
     decision: Optional[str] = None,
     mitigation_forced: Optional[str] = None,
     limit: int = 100,
@@ -266,6 +281,7 @@ def query(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         limit=limit_val,
@@ -283,6 +299,7 @@ def stream(
     bot: Optional[str] = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
+    rule_id: Optional[str] = None,
     decision: Optional[str] = None,
     mitigation_forced: Optional[str] = None,
     limit: Optional[int] = 100,
@@ -313,6 +330,7 @@ def stream(
         bot=bot,
         provider=provider,
         request_id=request_id,
+        rule_id=rule_id,
         decision=decision,
         mitigation_forced=mitigation_forced,
         sort=sort,

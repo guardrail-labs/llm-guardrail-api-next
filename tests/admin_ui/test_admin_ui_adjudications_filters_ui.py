@@ -73,6 +73,7 @@ def _install_paged_query(
         bot: Any,
         provider: Any,
         request_id: Any,
+        rule_id: Any,
         decision: Any,
         mitigation_forced: Any,
         limit: Any,
@@ -88,6 +89,7 @@ def _install_paged_query(
                     "bot": bot,
                     "provider": provider,
                     "request_id": request_id,
+                    "rule_id": rule_id,
                     "decision": decision,
                     "mitigation_forced": mitigation_forced,
                     "limit": limit,
@@ -108,6 +110,7 @@ def test_controls_render(admin_client: TestClient) -> None:
     assert 'id="filter-bot"' in html
     assert 'id="filter-decision"' in html
     assert 'id="filter-mitigation"' in html
+    assert 'id="filter-rule-id"' in html
     assert 'id="filter-from"' in html
     assert 'id="filter-to"' in html
     assert 'id="filter-sort"' in html
@@ -136,6 +139,7 @@ def test_filters_apply(monkeypatch: pytest.MonkeyPatch, admin_client: TestClient
     assert response.status_code == 200
     assert calls["tenant"] == "t1"
     assert calls["decision"] == "block"
+    assert calls["rule_id"] is None
     html = response.text
     assert "pack/path / rule:block" in html
     assert "clarify" in html
@@ -157,6 +161,7 @@ def test_mitigation_filter(monkeypatch: pytest.MonkeyPatch, admin_client: TestCl
     )
     assert response.status_code == 200
     assert calls["mitigation_forced"] == "clarify"
+    assert calls["rule_id"] is None
     html = response.text
     assert "pack/path / rule:clarify" in html
     assert "clarify" in html
