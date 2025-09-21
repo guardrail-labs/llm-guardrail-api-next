@@ -322,8 +322,8 @@ async def readyz(request: Request) -> JSONResponse:
             else:
                 redis_detail = redis_entry
         configured = bool(redis_detail.get("configured"))
-        ok_all = bool(redis_detail.get("ok_all", redis_detail.get("ping")))
-        readyz_redis_ok.set(1 if configured and ok_all else 0)
+        ok_all = bool(redis_detail.get("ok_all", redis_detail.get("ping", True)))
+        readyz_redis_ok.set(1 if (not configured or ok_all) else 0)
     except Exception:  # pragma: no cover - defensive metrics update
         pass
 

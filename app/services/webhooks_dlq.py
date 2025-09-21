@@ -6,7 +6,11 @@ import time
 from contextlib import nullcontext
 from typing import Any, Dict, Iterator, Optional
 
-from app.observability.metrics import webhook_dlq_length_inc, webhook_dlq_length_set
+from app.observability.metrics import (
+    webhook_dlq_depth,
+    webhook_dlq_length_inc,
+    webhook_dlq_length_set,
+)
 from app.services import webhooks
 
 
@@ -33,6 +37,17 @@ def _ensure_dir(path: str) -> None:
         return
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
+
+
+def _set_dlq_depth(count: Optional[int] = None) -> None:
+    try:
+        target = count if count is not None else webhooks.dlq_count()
+    except Exception:
+        return
+    try:
+        webhook_dlq_depth.set(max(0, int(target or 0)))
+    except Exception:
+        pass
 
 
 def _iter_records(path: str) -> Iterator[Dict[str, Any]]:
@@ -110,6 +125,7 @@ def push(ts_ms: int, payload: Dict[str, Any], error: str) -> None:
             webhook_dlq_length_inc(1)
         except Exception:
             pass
+        _set_dlq_depth()
 
 
 def stats() -> Dict[str, Optional[int | str]]:
@@ -133,34 +149,41 @@ def stats() -> Dict[str, Optional[int | str]]:
             if err:
                 last_error = err
 
+    result: Dict[str, Optional[int | str]]
     if size == 0:
-        return {
+        result = {
             "size": 0,
             "oldest_ts_ms": None,
             "newest_ts_ms": None,
             "last_error": None,
         }
-    return {
-        "size": size,
-        "oldest_ts_ms": oldest_ms,
-        "newest_ts_ms": newest_ms,
-        "last_error": last_error,
-    }
+    else:
+        result = {
+            "size": size,
+            "oldest_ts_ms": oldest_ms,
+            "newest_ts_ms": newest_ms,
+            "last_error": last_error,
+        }
+    _set_dlq_depth(size)
+    return result
 
 
 def retry_all() -> int:
     total = 0
-    while True:
-        try:
-            requeued = webhooks.requeue_from_dlq(1000)
-        except Exception:
-            break
-        if requeued <= 0:
-            break
-        total += requeued
-        if requeued < 1000:
-            break
-    return total
+    try:
+        while True:
+            try:
+                requeued = webhooks.requeue_from_dlq(1000)
+            except Exception:
+                break
+            if requeued <= 0:
+                break
+            total += requeued
+            if requeued < 1000:
+                break
+        return total
+    finally:
+        _set_dlq_depth()
 
 
 def purge_all() -> int:
@@ -168,6 +191,7 @@ def purge_all() -> int:
     with _lock_ctx():
         count = sum(1 for _ in _iter_records(path))
         if count == 0:
+            _set_dlq_depth(0)
             return 0
         try:
             os.remove(path)
@@ -179,4 +203,5 @@ def purge_all() -> int:
             webhook_dlq_length_set(0)
         except Exception:
             pass
+        _set_dlq_depth(0)
         return count

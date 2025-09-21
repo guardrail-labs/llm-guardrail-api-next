@@ -15,7 +15,9 @@ import httpx
 import app.telemetry.metrics as telemetry_metrics
 from app.observability.metrics import (
     webhook_abort_total,
+    webhook_dlq_depth,
     webhook_dlq_length_dec,
+    webhook_dlq_length_get,
     webhook_dlq_length_inc,
     webhook_dlq_length_set,
     webhook_failed_inc,
@@ -26,6 +28,14 @@ from app.observability.metrics import (
 )
 from app.services.config_store import get_config
 from app.services.webhooks_cb import get_cb_registry
+
+
+def _set_dlq_depth(value: Optional[int | float] = None) -> None:
+    try:
+        target = value if value is not None else webhook_dlq_length_get()
+        webhook_dlq_depth.set(max(0, int(target)))
+    except Exception:
+        pass
 
 
 def _get_cfg_dict() -> Dict[str, Any]:
@@ -340,6 +350,7 @@ def _dlq_write(evt: Dict[str, Any], reason: str) -> None:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
             webhook_dlq_length_inc(1)
+            _set_dlq_depth()
     except Exception:
         # DLQ failures are best-effort; swallow errors.
         pass
@@ -648,7 +659,9 @@ def configure(*, reset: bool = False) -> None:
     # reality. Previously this only ran for reset=True which left the gauge stale on
     # cold starts.
     try:
-        webhook_dlq_length_set(dlq_count())
+        current_count = dlq_count()
+        webhook_dlq_length_set(current_count)
+        _set_dlq_depth(current_count)
     except Exception:
         # Never fail configure on metrics path.
         pass
@@ -668,6 +681,7 @@ def dlq_count() -> int:
         path = _dlq_path()
         with _lock:
             if not os.path.exists(path):
+                _set_dlq_depth(0)
                 return 0
             n = 0
             with open(path, "r", encoding="utf-8") as f:
@@ -725,6 +739,7 @@ def requeue_from_dlq(limit: int) -> int:
                 out.writelines(survivors)
             os.replace(tmp_path, path)
 
+            _set_dlq_depth(len(survivors))
             if requeued:
                 webhook_dlq_length_dec(requeued)
                 _sync_pending_queue_length()
