@@ -1,45 +1,109 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
+from typing import Any, Dict, List
+
+from fastapi.testclient import TestClient
+
+from app.services import decisions_store
 
 
-def test_cursor_respects_since_and_outcome(monkeypatch, client):
-    from app.services import decisions_store as store
+def _mk_record(
+    ts_ms: int,
+    request_id: str,
+    *,
+    outcome: str = "allow",
+    tenant: str = "t",
+    bot: str = "b",
+) -> Dict[str, Any]:
+    ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    return {
+        "id": f"{request_id}-id",
+        "ts": ts,
+        "ts_ms": ts_ms,
+        "tenant": tenant,
+        "bot": bot,
+        "outcome": outcome,
+        "request_id": request_id,
+    }
 
+
+def test_filters_applied_before_cursor(monkeypatch) -> None:
     base = 1_700_000_000_000
-    items = [
-        {"id": "a", "ts_ms": base + 3, "outcome": "block"},
-        {"id": "b", "ts_ms": base + 2, "outcome": "allow"},
-        {"id": "c", "ts_ms": base + 1, "outcome": "block"},
-        {"id": "d", "ts_ms": base + 0, "outcome": "clarify"},
+    records: List[Dict[str, Any]] = [
+        _mk_record(base + 10, "A", outcome="block"),
+        _mk_record(base + 10, "B", outcome="allow"),
+        _mk_record(base + 5, "C", outcome="block"),
+        _mk_record(base + 0, "D", outcome="clarify"),
     ]
 
-    captured_kwargs = {}
+    def fake_fetch(**_: Any) -> List[Dict[str, Any]]:
+        return sorted(records, key=lambda r: (r["ts_ms"], r["id"]), reverse=True)
 
-    def fetch(**kwargs):
-        captured_kwargs.update(kwargs)
-        records = list(items)
-        since_ts = kwargs.get("since_ts_ms")
-        outcome = kwargs.get("outcome")
-        if since_ts is not None:
-            records = [x for x in records if x["ts_ms"] >= since_ts]
-        if outcome is not None:
-            records = [x for x in records if x.get("outcome") == outcome]
-        return sorted(records, key=lambda x: (x["ts_ms"], x["id"]), reverse=True)
+    monkeypatch.setattr(decisions_store, "_fetch_decisions_sorted_desc", fake_fetch)
 
-    monkeypatch.setattr(store, "_fetch_decisions_sorted_desc", fetch)
+    page1, next_cursor, prev_cursor = decisions_store.list_with_cursor(limit=1, outcome="block")
+    assert [item["request_id"] for item in page1] == ["A"]
+    assert next_cursor is not None
+    assert prev_cursor is None
 
-    since_iso = datetime.fromtimestamp((base + 1) / 1000, tz=timezone.utc).isoformat().replace(
+    page2, next_cursor2, prev_cursor2 = decisions_store.list_with_cursor(
+        limit=5,
+        cursor=next_cursor,
+        dir="next",
+        outcome="block",
+    )
+    assert [item["request_id"] for item in page2] == ["C"]
+    assert next_cursor2 is None
+    assert prev_cursor2 is not None
+
+
+def test_route_respects_filters_and_invalid_cursor(
+    client: TestClient, monkeypatch
+) -> None:
+    base = 1_700_000_000_000
+    records = [
+        _mk_record(base + 1, "RID-X", outcome="allow"),
+        _mk_record(base + 2, "RID-Y", outcome="block"),
+    ]
+
+    def fake_fetch(
+        *,
+        tenant: str | None,
+        bot: str | None,
+        limit: int,
+        cursor: tuple[int, str] | None,
+        dir: str,
+        since_ts_ms: int | None = None,
+        outcome: str | None = None,
+        request_id: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        _ = (cursor, dir)
+        filtered = sorted(records, key=lambda r: (r["ts_ms"], r["id"]), reverse=True)
+        if tenant:
+            filtered = [rec for rec in filtered if rec["tenant"] == tenant]
+        if bot:
+            filtered = [rec for rec in filtered if rec["bot"] == bot]
+        if since_ts_ms is not None:
+            filtered = [rec for rec in filtered if rec["ts_ms"] >= since_ts_ms]
+        if outcome:
+            filtered = [rec for rec in filtered if rec["outcome"] == outcome]
+        if request_id:
+            filtered = [rec for rec in filtered if rec["request_id"] == request_id]
+        return filtered[:limit]
+
+    monkeypatch.setattr(decisions_store, "_fetch_decisions_sorted_desc", fake_fetch)
+
+    since_iso = datetime.fromtimestamp((base + 2) / 1000, tz=timezone.utc).isoformat().replace(
         "+00:00", "Z"
     )
     response = client.get(
         "/admin/api/decisions",
-        params={"limit": 2, "since": since_iso, "outcome": "block"},
+        params={"since": since_iso, "request_id": "RID-Y", "limit": 10},
     )
     assert response.status_code == 200
     payload = response.json()
+    assert [item["id"] for item in payload["items"]] == ["RID-Y-id"]
 
-    assert captured_kwargs.get("since_ts_ms") == base + 1
-    assert captured_kwargs.get("outcome") == "block"
-
-    ids = [item["id"] for item in payload["items"]]
-    assert ids == ["a", "c"]
-    assert all(item["outcome"].lower() == "block" for item in payload["items"])
+    bad_cursor = client.get("/admin/api/decisions", params={"cursor": "==broken=="})
+    assert bad_cursor.status_code == 400
