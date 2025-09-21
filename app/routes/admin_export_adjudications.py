@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import time
+from typing import Iterable, Optional
+
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
+
+from app.observability import adjudication_log as _log
+
+router = APIRouter(prefix="/admin/api", tags=["admin-export"])
+
+
+def require_admin_session() -> bool:
+    """Placeholder dependency for admin session validation."""
+
+    return True
+
+
+def _ms_to_dt(value: Optional[int]) -> Optional[_dt.datetime]:
+    if value is None:
+        return None
+    try:
+        return _dt.datetime.fromtimestamp(value / 1000.0, tz=_dt.timezone.utc)
+    except Exception:
+        return None
+
+
+def _iter_adjudications_ndjson(
+    *,
+    tenant: Optional[str],
+    bot: Optional[str],
+    since: Optional[int],
+    until: Optional[int],
+    outcome: Optional[str],
+    rule_id: Optional[str],
+    request_id: Optional[str],
+) -> Iterable[bytes]:
+    start_dt = _ms_to_dt(since)
+    end_dt = None
+    if until is not None:
+        end_dt = _ms_to_dt(until + 1)
+    for record in _log.iter_records(
+        start=start_dt,
+        end=end_dt,
+        tenant=tenant,
+        bot=bot,
+        request_id=request_id,
+        rule_id=rule_id,
+        decision=outcome,
+        sort="ts_desc",
+    ):
+        if hasattr(record, "to_dict"):
+            payload = record.to_dict()
+        else:
+            payload = dict(vars(record))
+        yield (
+            json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+
+
+@router.get("/adjudications/export.ndjson")
+def export_adjudications_ndjson(
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+    since: Optional[int] = Query(None, description="Epoch ms inclusive"),
+    until: Optional[int] = Query(None, description="Epoch ms inclusive"),
+    outcome: Optional[str] = Query(None, description="allow|block|clarify|redact"),
+    rule_id: Optional[str] = Query(None),
+    request_id: Optional[str] = Query(None),
+    _=Depends(require_admin_session),
+):
+    """
+    Stream Adjudications as NDJSON. Honors tenant, bot, since, until, outcome,
+    rule_id, and request_id filters. Content-Type: application/x-ndjson
+    """
+
+    now = _dt.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
+    fname = f"adjudications_{now}.ndjson"
+    gen = _iter_adjudications_ndjson(
+        tenant=tenant,
+        bot=bot,
+        since=since,
+        until=until,
+        outcome=outcome,
+        rule_id=rule_id,
+        request_id=request_id,
+    )
+    return StreamingResponse(
+        gen,
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 import os
 import pkgutil
 import time
@@ -48,6 +49,24 @@ except Exception:  # pragma: no cover
     PromRegistry = None
 
 RequestHandler = Callable[[StarletteRequest], Awaitable[StarletteResponse]]
+
+log = logging.getLogger(__name__)
+
+
+def _remove_legacy_decisions_ndjson(app: FastAPI) -> None:
+    try:
+        from app.routes.admin_decisions_export import export_ndjson as _legacy_export_ndjson
+    except Exception:
+        return
+
+    try:
+        app.router.routes = [
+            route
+            for route in app.router.routes
+            if getattr(route, "endpoint", None) is not _legacy_export_ndjson
+        ]
+    except Exception:
+        return
 
 
 def _truthy(val: object) -> bool:
@@ -753,6 +772,15 @@ def create_app() -> FastAPI:
     except Exception:
         pass
 
+    try:
+        from app.routes import admin_export_adjudications, admin_export_decisions
+
+        app.include_router(admin_export_decisions.router)
+        app.include_router(admin_export_adjudications.router)
+        _remove_legacy_decisions_ndjson(app)
+    except Exception as exc:
+        log.warning("Admin export routes unavailable: %s", exc)
+
     # Admin Policy API (version + reload)
     try:
         from app.routes import admin_policy_api
@@ -856,6 +884,8 @@ def create_app() -> FastAPI:
         # Keep startup resilient if prometheus_client isn't installed
         pass
 
+    _remove_legacy_decisions_ndjson(app)
+
     return app
 
 
@@ -894,6 +924,8 @@ csp_mod.install_csp(app)
 
 comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
 comp_mod.install_compression(app)
+
+_remove_legacy_decisions_ndjson(app)
 
 try:
     from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
