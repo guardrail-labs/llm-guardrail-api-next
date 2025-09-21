@@ -52,7 +52,7 @@ class AdjudicationRecord:
     bot: str
     provider: str
     decision: str
-    rule_hits: List[str]
+    rule_hits: Sequence[object]
     score: Optional[float]
     latency_ms: int
     policy_version: Optional[str]
@@ -105,10 +105,32 @@ def _matches(
     if request_id and record.request_id != request_id:
         return False
     if rule_id:
+        wanted = str(rule_id)
         record_rule_id = getattr(record, "rule_id", None)
-        record_rule_hits = getattr(record, "rule_hits", None) or []
-        if record_rule_id != rule_id and rule_id not in record_rule_hits:
-            return False
+        try:
+            rule_id_match = str(record_rule_id) == wanted if record_rule_id is not None else False
+        except Exception:
+            rule_id_match = record_rule_id == rule_id
+        if not rule_id_match:
+            record_rule_hits = getattr(record, "rule_hits", None) or []
+            hit_match = False
+            for hit in record_rule_hits:
+                try:
+                    if isinstance(hit, dict):
+                        hit_id = hit.get("rule_id")
+                        if hit_id is not None and str(hit_id) == wanted:
+                            hit_match = True
+                            break
+                    else:
+                        if str(hit) == wanted:
+                            hit_match = True
+                            break
+                except Exception:
+                    if hit == rule_id:
+                        hit_match = True
+                        break
+            if not hit_match:
+                return False
     if decision and record.decision != decision:
         return False
     if mitigation_forced is not None:
@@ -335,22 +357,40 @@ def list_with_cursor(
     cursor: Optional[str] = None,
     dir: Literal["next", "prev"] = "next",
     sort: str = "ts_desc",
+    since_ts_ms: Optional[int] = None,
+    outcome: Optional[str] = None,
 ) -> Tuple[List[AdjudicationRecord], Optional[str], Optional[str]]:
     safe_limit = max(1, min(int(limit), 500))
     decoded: Optional[Tuple[int, int]] = None
     if cursor:
         decoded = _dec_cursor(cursor)
 
+    decision_filter = decision
+    if outcome:
+        if decision_filter and decision_filter != outcome:
+            raise ValueError("conflicting decision and outcome filters")
+        decision_filter = outcome
+
+    start_dt = start
+    if since_ts_ms is not None:
+        try:
+            since_val = int(since_ts_ms)
+            since_dt = datetime.fromtimestamp(since_val / 1000.0, tz=timezone.utc)
+        except Exception as exc:
+            raise ValueError("since must be epoch milliseconds") from exc
+        if start_dt is None or since_dt > start_dt:
+            start_dt = since_dt
+
     entries: List[Tuple[AdjudicationRecord, int, int]] = []
     for idx, rec in _iter_filtered_with_index(
-        start=start,
+        start=start_dt,
         end=end,
         tenant=tenant,
         bot=bot,
         provider=provider,
         request_id=request_id,
         rule_id=rule_id,
-        decision=decision,
+        decision=decision_filter,
         mitigation_forced=mitigation_forced,
         sort="ts_desc",
     ):
