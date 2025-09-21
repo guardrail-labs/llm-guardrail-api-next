@@ -8,6 +8,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from app.observability.metrics import readyz_ok, readyz_redis_ok
 from app.services.detectors.ingress_pipeline import _enabled as _flag_enabled
 
 router = APIRouter(tags=["ops"])
@@ -309,6 +310,23 @@ async def readyz(request: Request) -> JSONResponse:
 
     status_code = 200 if overall == "ok" else 503
     payload = {"status": overall, "ok": overall == "ok", "checks": checks}
+
+    try:
+        readyz_ok.set(1 if payload.get("ok") else 0)
+        redis_entry = checks.get("redis", {})
+        redis_detail: Dict[str, Any] = {}
+        if isinstance(redis_entry, dict):
+            detail_value = redis_entry.get("detail")
+            if isinstance(detail_value, dict):
+                redis_detail = detail_value
+            else:
+                redis_detail = redis_entry
+        configured = bool(redis_detail.get("configured"))
+        ok_all = bool(redis_detail.get("ok_all", redis_detail.get("ping")))
+        readyz_redis_ok.set(1 if configured and ok_all else 0)
+    except Exception:  # pragma: no cover - defensive metrics update
+        pass
+
     return JSONResponse(payload, status_code=status_code)
 
 
