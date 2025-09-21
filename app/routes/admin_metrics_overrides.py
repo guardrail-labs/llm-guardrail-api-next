@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import importlib
+import os
 import time
+from types import ModuleType
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends
+from prometheus_client import REGISTRY, CollectorRegistry
 from prometheus_client.samples import Sample
 from pydantic import BaseModel
 
-from app.observability.metrics import mitigation_override_counter
+from app.observability.metrics import mitigation_override_counter  # noqa: F401
 from app.routes.admin_mitigation import require_admin_session
 
 router = APIRouter(prefix="/admin/api/metrics", tags=["admin-metrics"])
@@ -24,18 +29,43 @@ class OverridesResp(BaseModel):
     since_ms: int
 
 
-def _collect_totals() -> dict[str, int]:
-    totals: dict[str, int] = {"block": 0, "clarify": 0, "redact": 0}
+def _load_multiprocess() -> Optional[ModuleType]:
     try:
-        collections = mitigation_override_counter.collect()
+        return importlib.import_module("prometheus_client.multiprocess")
+    except Exception:  # pragma: no cover
+        return None
+
+
+multiprocess = _load_multiprocess()
+
+
+def _active_registry() -> CollectorRegistry:
+    """Return the registry that reflects process-wide metrics."""
+
+    mp_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR")
+    if mp_dir and multiprocess is not None:
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        return registry
+    return REGISTRY
+
+
+def _collect_totals() -> Dict[str, int]:
+    totals: Dict[str, int] = {"block": 0, "clarify": 0, "redact": 0}
+    registry = _active_registry()
+    try:
+        collections = registry.collect()
     except Exception:
         return totals
 
     for metric in collections:
         samples = getattr(metric, "samples", [])
         for sample in samples:
-            if isinstance(sample, Sample) and sample.name == "guardrail_mitigation_override_total":
-                mode = sample.labels.get("mode") if sample.labels else None
+            if (
+                isinstance(sample, Sample)
+                and sample.name == "guardrail_mitigation_override_total"
+            ):
+                mode = (sample.labels or {}).get("mode")
                 if mode in totals:
                     try:
                         totals[mode] += int(sample.value)
