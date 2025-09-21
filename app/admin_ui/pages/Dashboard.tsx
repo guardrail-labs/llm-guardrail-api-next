@@ -1,6 +1,7 @@
 import React from "react";
 
 import ApplyGoldenButton from "@/admin_ui/components/ApplyGoldenButton";
+import MitigationToggles from "@/admin_ui/components/MitigationToggles";
 import OverrideTiles from "@/admin_ui/components/OverrideTiles";
 import WebhookDLQPanel from "@/admin_ui/components/WebhookDLQPanel";
 
@@ -11,6 +12,7 @@ export default function DashboardPage() {
         <ApplyGoldenButton />
       </div>
       <OverrideTiles />
+      <MitigationToggles tenant="demo" bot="site" />
       <WebhookDLQPanel />
     </div>
   );
