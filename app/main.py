@@ -27,7 +27,6 @@ from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
-from app.routes import admin_mitigation_modes
 from app.routes.egress import router as egress_router
 from app.services.bindings.utils import (
     compute_version_for_path as _compute_version_for_path,
@@ -780,7 +779,11 @@ def create_app() -> FastAPI:
         pass
 
     try:
-        from app.routes import admin_mitigation as admin_mitigation_module
+        # Lazy import so optional admin deps don’t crash startup at module import time.
+        from app.routes import (
+            admin_mitigation as admin_mitigation_module,
+            admin_mitigation_modes,
+        )
 
         app.include_router(admin_mitigation_module.router)
         app.include_router(admin_mitigation_modes.router)
