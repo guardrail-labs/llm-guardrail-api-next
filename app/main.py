@@ -747,6 +747,7 @@ def create_app() -> FastAPI:
             admin_echo,
             admin_metrics_overrides,
             admin_policies,
+            admin_retention,
             admin_rulepacks,
             admin_ui,
             admin_webhook,
@@ -769,6 +770,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_metrics_overrides.router)
         app.include_router(admin_adjudications.router)
         app.include_router(admin_adjudications_api.router)
+        app.include_router(admin_retention.router)
     except Exception:
         pass
 
