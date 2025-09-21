@@ -494,14 +494,43 @@ def _list_decisions_offset_path(
     return JSONResponse(payload.model_dump())
 
 
-@router.get("/admin/api/decisions", response_model=DecisionPage)
+@router.get(
+    "/admin/api/decisions",
+    response_model=DecisionPage,
+    tags=["admin-decisions"],
+    summary="List decisions (cursor)",
+    description=(
+        "Cursor-paginated decisions ordered by (ts desc, id). Supports filters for tenant, "
+        "bot, since (epoch ms), outcome, and request_id."
+    ),
+)
 async def get_decisions(
     request: Request,
-    since: Optional[str] = Query(None, description="ISO8601 timestamp (UTC)"),
-    tenant: Optional[str] = Query(None),
-    bot: Optional[str] = Query(None),
-    outcome: Optional[str] = Query(None),
-    request_id: Optional[str] = Query(None),
+    since: Optional[str] = Query(
+        None,
+        description="Filter decisions since this ISO8601 timestamp (UTC)",
+        examples=[{"summary": "Recent decisions", "value": "2024-01-01T00:00:00Z"}],
+    ),
+    tenant: Optional[str] = Query(
+        None,
+        description="Filter decisions for this tenant",
+        examples=[{"summary": "Tenant filter", "value": "tenant-123"}],
+    ),
+    bot: Optional[str] = Query(
+        None,
+        description="Filter decisions for this bot",
+        examples=[{"summary": "Bot filter", "value": "bot-alpha"}],
+    ),
+    outcome: Optional[str] = Query(
+        None,
+        description="Filter by outcome",
+        examples=[{"summary": "Allow outcome", "value": "allow"}],
+    ),
+    request_id: Optional[str] = Query(
+        None,
+        description="Return decisions for a specific request ID",
+        examples=[{"summary": "Specific request", "value": "req-123"}],
+    ),
     page: int = Query(
         1,
         ge=1,
@@ -515,10 +544,29 @@ async def get_decisions(
     ),
     sort: str = "ts",
     sort_dir: Optional[str] = Query(None, alias="sort_dir"),
-    limit: int = Query(50, ge=1, le=500),
-    cursor: Optional[str] = Query(None),
-    page_dir: Literal["next", "prev"] = Query("next", alias="cursor_dir"),
-    offset: Optional[int] = Query(None),
+    limit: int = Query(
+        50,
+        ge=1,
+        le=500,
+        description="Maximum number of items to return when using cursor pagination",
+        examples=[{"summary": "Custom page size", "value": 100}],
+    ),
+    cursor: Optional[str] = Query(
+        None,
+        description="Opaque cursor token from a previous response",
+        examples=[{"summary": "Resume token", "value": "1704067200000:dec_42"}],
+    ),
+    page_dir: Literal["next", "prev"] = Query(
+        "next",
+        alias="cursor_dir",
+        description="Direction relative to the provided cursor",
+        examples=[{"summary": "Previous page", "value": "prev"}],
+    ),
+    offset: Optional[int] = Query(
+        None,
+        description="Offset to use with limit when cursor is not supplied",
+        examples=[{"summary": "First page", "value": 0}],
+    ),
 ) -> JSONResponse:
     query_dir_raw = request.query_params.get("dir")
     query_dir = query_dir_raw.lower() if query_dir_raw else None

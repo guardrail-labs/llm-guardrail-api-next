@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.services.detectors.ingress_pipeline import _enabled as _flag_enabled
 
-router = APIRouter(tags=["system"])
+router = APIRouter(tags=["ops"])
 
 
 def _ok(name: str, detail: Any | None = None) -> Dict[str, Any]:
@@ -139,6 +139,79 @@ def _check_metrics_route(app: Any) -> Dict[str, Any]:
     return _ok("metrics", {"route": _has_metrics(app)})
 
 
+def _check_redis() -> Dict[str, Any]:
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if not redis_url:
+        return _ok("redis", {"configured": False})
+    try:
+        from app.observability import admin_audit as audit
+
+        client = getattr(audit, "_redis_client", lambda: None)()
+        pong = bool(client and client.ping())
+    except Exception as exc:  # pragma: no cover - defensive
+        return _fail(
+            "redis",
+            {"configured": True, "url": redis_url, "error": str(exc)},
+        )
+    detail = {"configured": True, "url": redis_url, "ping": pong}
+    return _ok("redis", detail) if pong else _fail("redis", detail)
+
+
+def _check_audit_file() -> Dict[str, Any]:
+    from app import config
+
+    audit_backend = (
+        os.getenv("AUDIT_BACKEND", getattr(config, "AUDIT_BACKEND", ""))
+        .strip()
+        .lower()
+    )
+    audit_file_env = os.getenv("AUDIT_LOG_FILE", "")
+    audit_file_config = getattr(config, "AUDIT_LOG_FILE", "")
+    audit_file = audit_file_env or audit_file_config
+    need_file = audit_backend == "file" or bool(audit_file)
+    if not need_file:
+        return _ok("audit_file", {"configured": False})
+    if not audit_file:
+        return _fail("audit_file", {"configured": True, "error": "path not set"})
+    try:
+        directory = os.path.dirname(audit_file) or "."
+        dir_ok = os.path.isdir(directory)
+        writable = False
+        try:
+            with open(audit_file, "a", encoding="utf-8"):
+                pass
+            writable = True
+        except Exception:
+            writable = False
+        detail = {"path": audit_file, "dir_ok": dir_ok, "writable": writable}
+        return _ok("audit_file", detail) if dir_ok and writable else _fail("audit_file", detail)
+    except Exception as exc:  # pragma: no cover - defensive
+        return _fail("audit_file", {"path": audit_file, "error": str(exc)})
+
+
+def _check_mitigation_file() -> Dict[str, Any]:
+    backend = os.getenv("MITIGATION_STORE_BACKEND", "").strip().lower()
+    path = os.getenv("MITIGATION_STORE_FILE", "")
+    if backend != "file" or not path:
+        return _ok("mitigation_file", {"configured": False})
+    try:
+        directory = os.path.dirname(path) or "."
+        dir_ok = os.path.isdir(directory)
+        writable = False
+        try:
+            with open(path, "a", encoding="utf-8"):
+                pass
+            writable = True
+        except Exception:
+            writable = False
+        detail = {"path": path, "dir_ok": dir_ok, "writable": writable}
+        if dir_ok and writable:
+            return _ok("mitigation_file", detail)
+        return _fail("mitigation_file", detail)
+    except Exception as exc:  # pragma: no cover - defensive
+        return _fail("mitigation_file", {"path": path, "error": str(exc)})
+
+
 def _current_rules_version_safe() -> str:
     try:
         pol = importlib.import_module("app.services.policy")
@@ -153,7 +226,8 @@ def _current_rules_version_safe() -> str:
 
 @router.get("/livez")
 async def livez() -> JSONResponse:
-    return JSONResponse({"status": "ok", "time": time.time()})
+    payload = {"status": "ok", "ok": True, "time": time.time()}
+    return JSONResponse(payload)
 
 
 @router.get("/readyz")
@@ -165,6 +239,9 @@ async def readyz(request: Request) -> JSONResponse:
     checks.update(_check_webhooks())
     checks.update(_check_ratelimit_backend(app))
     checks.update(_check_metrics_route(app))
+    checks.update(_check_redis())
+    checks.update(_check_audit_file())
+    checks.update(_check_mitigation_file())
 
     overall = "ok"
     for value in checks.values():
@@ -173,7 +250,7 @@ async def readyz(request: Request) -> JSONResponse:
             break
 
     status_code = 200 if overall == "ok" else 503
-    payload = {"status": overall, "checks": checks}
+    payload = {"status": overall, "ok": overall == "ok", "checks": checks}
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -191,6 +268,7 @@ async def healthz() -> JSONResponse:
     }
     payload = {
         "status": "ok",
+        "ok": True,
         "policy_version": _current_rules_version_safe(),
         "features": features,
     }
