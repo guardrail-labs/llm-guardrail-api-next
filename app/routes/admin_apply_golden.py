@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.observability.admin_audit import record
+from app.observability.metrics import admin_audit_total
+from app.security import rbac
 from app.security.admin_auth import require_admin
 from app.services import config_store
 from app.services.bindings.utils import (
@@ -68,13 +71,15 @@ def _update_inmemory_bindings(payload: List[Dict[str, str]]) -> None:
         pass
 
 
-@router.post("/bindings/apply_golden")
-def apply_golden_packs(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _parse_tenant_bot(payload: Dict[str, Any]) -> Tuple[str, str]:
     tenant = str(payload.get("tenant", "")).strip()
     bot = str(payload.get("bot", "")).strip()
     if not tenant or not bot:
         raise HTTPException(status_code=400, detail="tenant and bot are required.")
+    return tenant, bot
 
+
+def _apply_golden(tenant: str, bot: str) -> Dict[str, Any]:
     rules_path = _resolved_golden_path()
 
     doc = config_store.load_bindings()
@@ -110,3 +115,69 @@ def apply_golden_packs(payload: Dict[str, Any]) -> Dict[str, Any]:
         "version": version,
         "policy_version": policy_version,
     }
+
+
+@router.post("/bindings/apply_golden")
+def apply_golden_packs(
+    payload: Dict[str, Any],
+    user: Dict[str, Any] = Depends(rbac.require_operator),
+) -> Dict[str, Any]:
+    tenant, bot = _parse_tenant_bot(payload)
+    actor_email = (user or {}).get("email") if isinstance(user, dict) else None
+    actor_role = (user or {}).get("role") if isinstance(user, dict) else None
+    try:
+        result = _apply_golden(tenant, bot)
+    except HTTPException as exc:
+        try:
+            admin_audit_total.labels("apply_golden", "error").inc()
+        except Exception:
+            pass
+        record(
+            action="apply_golden",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant,
+            bot=bot,
+            outcome="error",
+            meta={"error": exc.detail},
+        )
+        raise
+    except Exception as exc:  # pragma: no cover - unexpected failure
+        try:
+            admin_audit_total.labels("apply_golden", "error").inc()
+        except Exception:
+            pass
+        record(
+            action="apply_golden",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant,
+            bot=bot,
+            outcome="error",
+            meta={"error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    try:
+        admin_audit_total.labels("apply_golden", "ok").inc()
+    except Exception:
+        pass
+    record(
+        action="apply_golden",
+        actor_email=actor_email,
+        actor_role=actor_role,
+        tenant=tenant,
+        bot=bot,
+        outcome="ok",
+        meta={
+            "rules_path": result.get("rules_path"),
+            "applied": bool(result.get("applied")),
+            "version": result.get("version"),
+            "policy_version": result.get("policy_version"),
+        },
+    )
+    return result
+
+
+def apply_golden_action(payload: Dict[str, Any]) -> Dict[str, Any]:
+    tenant, bot = _parse_tenant_bot(payload)
+    return _apply_golden(tenant, bot)

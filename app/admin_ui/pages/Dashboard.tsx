@@ -1,5 +1,6 @@
 import React from "react";
 
+import AdminAuditPanel from "@/admin_ui/components/AdminAuditPanel";
 import ApplyGoldenButton from "@/admin_ui/components/ApplyGoldenButton";
 import MitigationToggles from "@/admin_ui/components/MitigationToggles";
 import OverrideTiles from "@/admin_ui/components/OverrideTiles";
@@ -16,6 +17,7 @@ export default function DashboardPage() {
       <MitigationToggles tenant="demo" bot="site" />
       <SecretsStrictToggle tenant="demo" bot="site" />
       <WebhookDLQPanel />
+      <AdminAuditPanel />
     </div>
   );
 }
