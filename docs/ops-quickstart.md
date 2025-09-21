@@ -24,3 +24,19 @@ Grafana and Prometheus assets live at:
 * `ops/grafana/*` – importable dashboards.
 
 Load them into your observability stack for parity with staging.
+
+## Admin OIDC SSO
+
+Set these environment variables to enable admin single sign-on with an OIDC provider such as Okta, Azure AD, or GitHub:
+
+```
+OIDC_ENABLED=true
+OIDC_ISSUER=https://dev-XXXX.okta.com/oauth2/default
+OIDC_CLIENT_ID=your-client-id
+OIDC_CLIENT_SECRET=your-client-secret
+OIDC_SCOPES=openid email profile
+OIDC_ROLE_CLAIM=groups
+OIDC_ROLE_MAP={"admin":["guardrail-admin"],"operator":["guardrail-ops"],"viewer":["guardrail-viewer"]}
+```
+
+Register the redirect URI `https://<host>/admin/auth/callback` with the provider. Map group/role claims to `admin`, `operator`, or `viewer` using `OIDC_ROLE_MAP`. The admin UI and API share the same cookie-backed session and continue to honor CSRF protections and legacy bearer/basic tokens.

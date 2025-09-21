@@ -718,9 +718,9 @@ def create_app() -> FastAPI:
         pass
     # Optional auth/OIDC helpers
     try:
-        from app.security import oidc
+        from app.routes import admin_auth_oidc
 
-        app.include_router(oidc.router)
+        app.include_router(admin_auth_oidc.router)
     except Exception as exc:
         log.warning("OIDC routes unavailable: %s", exc)
     try:

@@ -21,6 +21,11 @@ def _normalize_role(role: Optional[str]) -> str:
 
 
 def get_current_user(request: Request) -> Dict[str, Any] | None:
+    """Return the current admin session payload if present.
+
+    When OIDC is enabled, the login flow populates this cookie-backed session.
+    """
+
     try:
         session_obj = getattr(request, "session", None)
     except AssertionError:
