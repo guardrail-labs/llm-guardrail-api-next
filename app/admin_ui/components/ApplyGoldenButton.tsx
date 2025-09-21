@@ -2,7 +2,17 @@ import React, { useEffect, useState } from "react";
 
 type FeaturesResp = { golden_one_click?: boolean };
 
-export default function ApplyGoldenButton() {
+type ApplyGoldenButtonProps = {
+  tenant?: string;
+  bot?: string;
+  csrfToken?: string;
+};
+
+export default function ApplyGoldenButton({
+  tenant = "demo",
+  bot = "site",
+  csrfToken,
+}: ApplyGoldenButtonProps) {
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -31,6 +41,14 @@ export default function ApplyGoldenButton() {
     };
   }, []);
 
+  function _csrf(): string | undefined {
+    if (csrfToken) {
+      return csrfToken;
+    }
+    const meta = document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement | null;
+    return meta?.content || undefined;
+  }
+
   if (!enabled) {
     return null;
   }
@@ -41,11 +59,20 @@ export default function ApplyGoldenButton() {
     }
     setBusy(true);
     try {
-      const r = await fetch("/admin/bindings/apply_golden", {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const csrf = _csrf();
+      if (csrf) {
+        headers["X-CSRF-Token"] = csrf;
+      }
+
+      // Use the authenticated UI endpoint and include CSRF so cookie-based admin sessions work.
+      const r = await fetch("/admin/ui/bindings/apply_golden", {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenant: "demo", bot: "site" }),
+        headers,
+        body: JSON.stringify({ tenant, bot }),
       });
       if (r.ok) {
         window.alert("Applied successfully.");
