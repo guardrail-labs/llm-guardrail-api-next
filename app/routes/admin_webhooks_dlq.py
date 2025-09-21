@@ -14,8 +14,8 @@ from app.observability.metrics import (
     webhook_dlq_purge_total,
     webhook_dlq_retry_total,
 )
-from app.routes.admin_mitigation import require_admin_session
 from app.routes.admin_ui import _require_ui_csrf
+from app.security.rbac import require_operator, require_viewer
 from app.services import webhooks_dlq as DLQ
 from app.services.audit import emit_audit_event
 
@@ -104,7 +104,7 @@ def _audit_action(request: Request, action: str, count: Optional[int]) -> None:
 
 
 @router.get("/dlq", response_model=DlqStats)
-def get_dlq(_: None = Depends(require_admin_session)) -> DlqStats:
+def get_dlq(_: dict[str, Any] = Depends(require_viewer)) -> DlqStats:
     data = DLQ.stats()
     return DlqStats(**data)  # type: ignore[arg-type]
 
@@ -113,7 +113,7 @@ def get_dlq(_: None = Depends(require_admin_session)) -> DlqStats:
 def retry_dlq(
     payload: DlqActionRequest,
     request: Request,
-    _: None = Depends(require_admin_session),
+    _: dict[str, Any] = Depends(require_operator),
 ) -> DlqActResp:
     _enforce_csrf(request, payload.csrf_token)
     try:
@@ -134,7 +134,7 @@ def retry_dlq(
 def purge_dlq(
     payload: DlqActionRequest,
     request: Request,
-    _: None = Depends(require_admin_session),
+    _: dict[str, Any] = Depends(require_operator),
 ) -> DlqActResp:
     _enforce_csrf(request, payload.csrf_token)
     try:

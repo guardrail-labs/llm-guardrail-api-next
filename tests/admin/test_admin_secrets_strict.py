@@ -1,4 +1,5 @@
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -6,9 +7,17 @@ from app.routes.admin_ui import _csrf_token
 
 
 @pytest.fixture()
-def app_factory():
+def app_factory(monkeypatch: pytest.MonkeyPatch):
     def _factory():
-        return create_app()
+        app = create_app()
+        from app.security import rbac as rbac_mod
+
+        def _allow(_: Request) -> None:
+            return None
+
+        app.dependency_overrides[rbac_mod.require_viewer] = _allow
+        app.dependency_overrides[rbac_mod.require_operator] = _allow
+        return app
 
     return _factory
 

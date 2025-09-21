@@ -2,6 +2,7 @@ import types
 from typing import List, Tuple
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 
@@ -74,7 +75,6 @@ def _patched_dlq(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(dlq_route, "webhook_dlq_purge_total", counters["purge"])
     monkeypatch.setattr(dlq_route, "emit_audit_event", lambda event: events.append(event))
     monkeypatch.setattr(dlq_route, "_require_ui_csrf", lambda request, token: None)
-    monkeypatch.setattr(dlq_route, "require_admin_session", lambda request: None)
 
     return fake, counters, events
 
@@ -82,9 +82,17 @@ def _patched_dlq(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture()
 def app_factory(_patched_dlq):
     from app.main import create_app
+    from app.security import rbac as rbac_mod
 
     def factory():
-        return create_app()
+        app = create_app()
+
+        def _allow(_: Request) -> None:
+            return None
+
+        app.dependency_overrides[rbac_mod.require_viewer] = _allow
+        app.dependency_overrides[rbac_mod.require_operator] = _allow
+        return app
 
     return factory
 

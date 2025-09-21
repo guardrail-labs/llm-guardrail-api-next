@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -12,7 +13,15 @@ from app.services.mitigation_store import reset_for_tests
 def app_factory():
     def _factory():
         reset_for_tests()
-        return create_app()
+        app = create_app()
+        from app.security import rbac as rbac_mod
+
+        def _allow(_: Request) -> None:
+            return None
+
+        app.dependency_overrides[rbac_mod.require_viewer] = _allow
+        app.dependency_overrides[rbac_mod.require_operator] = _allow
+        return app
 
     return _factory
 

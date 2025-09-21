@@ -30,7 +30,7 @@ def require_admin_session(request: Request) -> None:
     attempted = False
     for path in (
         "app.security.admin_auth:require_admin",
-        "app.routes.admin_rbac:require_admin",
+        "app.security.rbac:require_admin",
         "app.routes.admin_ui:require_auth",
     ):
         guard = _load_callable(path)
