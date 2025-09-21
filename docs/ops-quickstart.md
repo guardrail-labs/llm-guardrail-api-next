@@ -40,3 +40,5 @@ OIDC_ROLE_MAP={"admin":["guardrail-admin"],"operator":["guardrail-ops"],"viewer"
 ```
 
 Register the redirect URI `https://<host>/admin/auth/callback` with the provider. Map group/role claims to `admin`, `operator`, or `viewer` using `OIDC_ROLE_MAP`. The admin UI and API share the same cookie-backed session and continue to honor CSRF protections and legacy bearer/basic tokens.
+
+Signing algorithms: RS*/ES*/PS* are validated against the issuer JWKS, while HS* (HMAC) tokens are verified with `OIDC_CLIENT_SECRET`. If your provider issues HS tokens, ensure `OIDC_CLIENT_SECRET` is configured. RS256 remains the recommended default.
