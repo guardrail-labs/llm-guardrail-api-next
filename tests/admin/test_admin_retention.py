@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.observability import adjudication_log as AL
 from app.routes import admin_retention as retention_route
+from app.security import rbac
 from app.services import retention as retention_service
 
 
@@ -63,12 +64,18 @@ def seed_adjudications(base: int, extra: List[AL.AdjudicationRecord] | None = No
 
 @pytest.fixture()
 def app_factory(monkeypatch: pytest.MonkeyPatch) -> Callable[[], FastAPI]:
-    monkeypatch.setattr(retention_route, "require_admin_session", lambda request: None)
     monkeypatch.setattr(retention_route, "require_csrf", lambda request: None)
     monkeypatch.setattr(retention_service, "_decisions_supports_sql", lambda: False)
 
     def factory() -> FastAPI:
-        return create_app()
+        app = create_app()
+
+        def _allow(_: Request) -> None:
+            return None
+
+        app.dependency_overrides[rbac.require_viewer] = _allow
+        app.dependency_overrides[rbac.require_operator] = _allow
+        return app
 
     return factory
 
@@ -243,7 +250,7 @@ def test_auth_and_csrf_enforced(monkeypatch: pytest.MonkeyPatch):
     from app.services import decisions_store as store
 
     app = create_app()
-    app.dependency_overrides[admin_mitigation.require_admin_session] = fail_admin
+    app.dependency_overrides[rbac.require_viewer] = fail_admin
     client = TestClient(cast(Any, app))
     resp = client.post("/admin/api/retention/preview", json={"before_ts_ms": 1})
     assert resp.status_code == 403
@@ -256,7 +263,8 @@ def test_auth_and_csrf_enforced(monkeypatch: pytest.MonkeyPatch):
         store, "_fetch_decisions_sorted_desc", lambda **_: [], raising=False
     )
     app2 = create_app()
-    app2.dependency_overrides[admin_mitigation.require_admin_session] = lambda request: None
+    app2.dependency_overrides[rbac.require_viewer] = lambda request: None
+    app2.dependency_overrides[rbac.require_operator] = lambda request: None
     app2.dependency_overrides[admin_mitigation.require_csrf] = _csrf_fail
     client2 = TestClient(cast(Any, app2))
     resp2 = client2.post(

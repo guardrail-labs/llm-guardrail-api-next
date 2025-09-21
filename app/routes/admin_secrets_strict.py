@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.observability.metrics import secrets_strict_toggle_total
 from app.routes import admin_mitigation
+from app.security.rbac import require_operator, require_viewer
 from app.services import secrets_strict as secrets_service
 
 router = APIRouter(prefix="/admin/api", tags=["admin-secrets"])
@@ -20,7 +21,7 @@ class StrictResp(BaseModel):
 def get_strict(
     tenant: str = Query(...),
     bot: str = Query(...),
-    _session: None = Depends(admin_mitigation.require_admin_session),
+    _session: dict[str, Any] = Depends(require_viewer),
 ) -> StrictResp:
     return StrictResp(enabled=secrets_service.is_enabled(tenant, bot))
 
@@ -39,7 +40,7 @@ class OkResp(BaseModel):
 @router.put("/secrets/strict", response_model=OkResp)
 def set_strict(
     req: StrictSetReq,
-    _session: None = Depends(admin_mitigation.require_admin_session),
+    _session: dict[str, Any] = Depends(require_operator),
     _csrf: None = Depends(admin_mitigation.require_csrf),
 ) -> OkResp:
     try:

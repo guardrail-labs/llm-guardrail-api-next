@@ -690,6 +690,19 @@ def create_app() -> FastAPI:
         app.include_router(admin_features.router)
     except Exception:
         pass
+    # Optional auth/OIDC helpers
+    try:
+        from app.security import oidc
+
+        app.include_router(oidc.router)
+    except Exception as exc:
+        log.warning("OIDC routes unavailable: %s", exc)
+    try:
+        from app.routes import admin_me
+
+        app.include_router(admin_me.router)
+    except Exception as exc:
+        log.warning("Admin /me route unavailable: %s", exc)
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)

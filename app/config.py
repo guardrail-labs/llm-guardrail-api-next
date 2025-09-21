@@ -1,6 +1,7 @@
 # app/config.py
 from __future__ import annotations
 
+import json
 import os
 from typing import List, Literal, Optional
 
@@ -130,3 +131,18 @@ def admin_allow_remote() -> bool:
 class ServiceInfo(BaseModel):
     service: str = "llm-guardrail-api-next"
     env: str = Field(default=os.environ.get("ENV", "dev"))
+# --- Admin UI auth / RBAC ---
+ADMIN_AUTH_MODE = os.getenv("ADMIN_AUTH_MODE", "cookie")  # "disabled" | "cookie" | "oidc"
+ADMIN_RBAC_DEFAULT_ROLE = os.getenv("ADMIN_RBAC_DEFAULT_ROLE", "viewer")
+ADMIN_RBAC_OVERRIDES_JSON = os.getenv("ADMIN_RBAC_OVERRIDES", "{}")
+try:
+    ADMIN_RBAC_OVERRIDES = json.loads(ADMIN_RBAC_OVERRIDES_JSON)
+except Exception:
+    ADMIN_RBAC_OVERRIDES = {}
+
+# OIDC configuration (only used when ADMIN_AUTH_MODE == "oidc")
+OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
+OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
+OIDC_SCOPES = os.getenv("OIDC_SCOPES", "openid email profile")

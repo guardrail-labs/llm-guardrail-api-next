@@ -3,14 +3,15 @@ from __future__ import annotations
 import base64
 import os
 import uuid
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.middleware.request_id import get_request_id
 from app.observability.metrics import retention_deleted_total, retention_preview_total
-from app.routes.admin_mitigation import require_admin_session, require_csrf
+from app.routes.admin_mitigation import require_csrf
+from app.security.rbac import require_operator, require_viewer
 from app.services import retention as retention_service
 from app.services.audit import emit_audit_event
 
@@ -36,7 +37,7 @@ class PreviewResp(BaseModel):
 @router.post("/retention/preview", response_model=PreviewResp)
 def retention_preview(
     payload: PreviewReq,
-    _: None = Depends(require_admin_session),
+    _: dict[str, Any] = Depends(require_viewer),
 ) -> PreviewResp:
     decisions = retention_service.count_decisions_before(
         payload.before_ts_ms,
@@ -107,7 +108,7 @@ def _ensure_csrf_token(token: Optional[str]) -> None:
 def retention_execute(
     payload: ExecuteReq,
     request: Request,
-    _: None = Depends(require_admin_session),
+    _: dict[str, Any] = Depends(require_operator),
     __: None = Depends(require_csrf),
 ) -> ExecuteResp:
     if payload.confirm != "DELETE":
