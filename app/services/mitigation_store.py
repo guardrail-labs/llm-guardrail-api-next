@@ -9,6 +9,7 @@ Redis keys.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -28,6 +29,19 @@ _MEM_STORE: Dict[Tuple[str, str], str] = {}
 _STORE = _MEM_STORE
 _REDIS_CLIENT: Any | None = None
 _REDIS_URL: str | None = None
+
+
+def _encode_component(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def _decode_component(value: str) -> Optional[str]:
+    try:
+        return base64.b64decode(value.encode("ascii"), altchars=b"-_", validate=True).decode(
+            "utf-8"
+        )
+    except Exception:
+        return None
 
 
 def _key(tenant: str, bot: str) -> Tuple[str, str]:
@@ -61,8 +75,13 @@ def _file_load(path: str) -> Dict[Tuple[str, str], str]:
             if not isinstance(k, str) or not isinstance(v, str):
                 continue
             if "|" in k:
-                tenant, bot = k.split("|", 1)
-                out[(tenant, bot)] = v
+                tenant_key, bot_key = k.split("|", 1)
+                tenant = _decode_component(tenant_key)
+                bot = _decode_component(bot_key)
+                if tenant is not None and bot is not None:
+                    out[(tenant, bot)] = v
+                else:
+                    out[(tenant_key, bot_key)] = v
     return out
 
 
@@ -73,7 +92,7 @@ def _file_save(path: str, data: Dict[Tuple[str, str], str]) -> None:
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             payload = {
-                f"{tenant}|{bot}": mode
+                f"{_encode_component(tenant)}|{_encode_component(bot)}": mode
                 for (tenant, bot), mode in data.items()
             }
             json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
@@ -113,6 +132,10 @@ def _ensure_redis_client(url: str) -> Any | None:
 
 
 def _redis_key(tenant: str, bot: str) -> str:
+    return f"guardrail:mitigation:{_encode_component(tenant)}:{_encode_component(bot)}"
+
+
+def _legacy_redis_key(tenant: str, bot: str) -> str:
     return f"guardrail:mitigation:{tenant}:{bot}"
 
 
@@ -132,6 +155,9 @@ def get_mode(tenant: str, bot: str) -> Optional[str]:
                 value = client.get(_redis_key(tenant, bot))
                 if isinstance(value, str) and value:
                     return value
+                legacy_value = client.get(_legacy_redis_key(tenant, bot))
+                if isinstance(legacy_value, str) and legacy_value:
+                    return legacy_value
             except Exception:
                 pass
         if path:
@@ -148,7 +174,14 @@ def set_mode(tenant: str, bot: str, mode: str) -> None:
     with _LOCK:
         if client is not None:
             try:
-                client.set(_redis_key(tenant, bot), mode)
+                key = _redis_key(tenant, bot)
+                client.set(key, mode)
+                legacy_key = _legacy_redis_key(tenant, bot)
+                if legacy_key != key:
+                    try:
+                        client.delete(legacy_key)
+                    except Exception:
+                        pass
                 return
             except Exception:
                 pass
@@ -167,7 +200,14 @@ def clear_mode(tenant: str, bot: str) -> None:
     with _LOCK:
         if client is not None:
             try:
-                client.delete(_redis_key(tenant, bot))
+                key = _redis_key(tenant, bot)
+                client.delete(key)
+                legacy_key = _legacy_redis_key(tenant, bot)
+                if legacy_key != key:
+                    try:
+                        client.delete(legacy_key)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         if path:
@@ -197,7 +237,12 @@ def list_modes() -> List[Entry]:
                                 continue
                             parts = key.split(":", 3)
                             if len(parts) == 4:
-                                _, _, tenant, bot = parts
+                                _, _, tenant_key, bot_key = parts
+                                tenant = _decode_component(tenant_key)
+                                bot = _decode_component(bot_key)
+                                if tenant is None or bot is None:
+                                    tenant = tenant_key
+                                    bot = bot_key
                                 items[(tenant, bot)] = value
                     if cursor == "0":
                         break
