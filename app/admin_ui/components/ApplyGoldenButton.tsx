@@ -59,20 +59,13 @@ export default function ApplyGoldenButton({
     }
     setBusy(true);
     try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      const csrf = _csrf();
-      if (csrf) {
-        headers["X-CSRF-Token"] = csrf;
-      }
-
-      // Use the authenticated UI endpoint and include CSRF so cookie-based admin sessions work.
+      const csrf = _csrf() ?? "";
+      // Use the authenticated UI endpoint; CSRF must be in the JSON body (server contract).
       const r = await fetch("/admin/ui/bindings/apply_golden", {
         method: "POST",
         credentials: "include",
-        headers,
-        body: JSON.stringify({ tenant, bot }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenant, bot, csrf_token: csrf }),
       });
       if (r.ok) {
         window.alert("Applied successfully.");
