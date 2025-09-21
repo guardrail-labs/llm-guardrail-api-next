@@ -104,6 +104,33 @@ def verify_id_token(
     kid = header.get("kid") if isinstance(header, dict) else None
     candidates = list(_candidate_keys(jwks, kid))
     if not candidates:
+        if alg.upper().startswith("HS"):
+            secret = config.OIDC_CLIENT_SECRET
+            if not secret:
+                raise OIDCError("HMAC-signed ID token but OIDC_CLIENT_SECRET is not set")
+
+            audience = config.OIDC_CLIENT_ID or None
+            issuer = config.OIDC_ISSUER or None
+            hmac_decode_kwargs: Dict[str, Any] = {
+                "algorithms": [alg],
+                "audience": ([audience] if audience else None),
+                "issuer": issuer,
+                "options": {
+                    "verify_aud": bool(audience),
+                    "verify_iss": bool(issuer),
+                },
+                "leeway": 30,
+            }
+            if now is not None:
+                hmac_decode_kwargs["current_time"] = now
+            try:
+                decoded = jwt.decode(id_token, key=secret, **hmac_decode_kwargs)
+            except PyJWTError as exc:
+                raise OIDCError("Unable to verify HMAC-signed ID token") from exc
+            if not isinstance(decoded, dict):
+                raise OIDCError("Invalid ID token claims")
+            return cast(Dict[str, Any], decoded)
+
         raise OIDCError("No signing keys available for ID token")
 
     audience = config.OIDC_CLIENT_ID or None
