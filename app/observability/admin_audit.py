@@ -2,19 +2,97 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
+
+from app import config
 
 _log = logging.getLogger("admin_audit")
 
+_LOG_LOCK = threading.RLock()
 _RING: List[Dict[str, Any]] = []
 _RING_MAX = 500
-_LOCK = threading.RLock()
+_REDIS_CLIENT: Any | None = None
+_REDIS_URL: str | None = None
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _storage_mode() -> str:
+    backend = (getattr(config, "AUDIT_BACKEND", "") or "").strip().lower()
+    if backend == "redis":
+        return "redis"
+    if backend == "memory":
+        return "memory"
+    if backend == "file" or getattr(config, "AUDIT_LOG_FILE", ""):
+        return "file"
+    return "memory"
+
+
+def _persist_file_line(line: str) -> None:
+    path = getattr(config, "AUDIT_LOG_FILE", "")
+    if not path:
+        return
+    directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except Exception:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+            handle.flush()
+    except Exception:
+        pass
+
+
+def _iter_file_lines() -> List[str]:
+    path = getattr(config, "AUDIT_LOG_FILE", "")
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return [line.rstrip("\n") for line in handle]
+    except Exception:
+        return []
+
+
+def _redis_client() -> Any | None:
+    global _REDIS_CLIENT, _REDIS_URL
+    url = (os.getenv("REDIS_URL", "").strip() or "redis://localhost:6379/0")
+    if _REDIS_CLIENT is not None and _REDIS_URL == url:
+        return _REDIS_CLIENT
+    try:
+        import redis
+
+        client = redis.Redis.from_url(url, decode_responses=True)
+    except Exception:
+        _REDIS_CLIENT = None
+        _REDIS_URL = None
+        return None
+
+    _REDIS_CLIENT = client
+    _REDIS_URL = url
+    return client
+
+
+def _persist_redis_line(line: str) -> None:
+    client = _redis_client()
+    if client is None:
+        return
+    redis_key = getattr(config, "AUDIT_REDIS_KEY", "guardrail:admin_audit:v1")
+    maxlen = getattr(config, "AUDIT_REDIS_MAXLEN", 50000)
+    try:
+        pipe = client.pipeline()
+        pipe.rpush(redis_key, line)
+        pipe.ltrim(redis_key, -maxlen, -1)
+        pipe.execute()
+    except Exception:
+        pass
 
 
 def record(
@@ -41,14 +119,103 @@ def record(
         _log.info(json.dumps(evt, separators=(",", ":"), ensure_ascii=False))
     except Exception:
         pass
-    with _LOCK:
+
+    line = json.dumps(evt, separators=(",", ":"), ensure_ascii=False)
+    mode = _storage_mode()
+    with _LOG_LOCK:
         _RING.append(evt)
         if len(_RING) > _RING_MAX:
             del _RING[: len(_RING) - _RING_MAX]
+    if mode == "file":
+        _persist_file_line(line)
+    elif mode == "redis":
+        _persist_redis_line(line)
     return evt
 
 
+def _recent_from_file(cap: int) -> List[Dict[str, Any]]:
+    lines = _iter_file_lines()
+    items: List[Dict[str, Any]] = []
+    for raw in lines[-cap:]:
+        try:
+            items.append(json.loads(raw))
+        except Exception:
+            continue
+    return items
+
+
+def _recent_from_redis(cap: int) -> List[Dict[str, Any]]:
+    client = _redis_client()
+    if client is None:
+        return []
+    try:
+        redis_key = getattr(config, "AUDIT_REDIS_KEY", "guardrail:admin_audit:v1")
+        values = client.lrange(redis_key, -cap, -1)
+    except Exception:
+        return []
+    items: List[Dict[str, Any]] = []
+    for raw in values:
+        try:
+            items.append(json.loads(raw))
+        except Exception:
+            continue
+    return items
+
+
 def recent(limit: int = 50) -> List[Dict[str, Any]]:
-    clamped = max(1, min(limit, _RING_MAX))
-    with _LOCK:
-        return list(_RING[-clamped:])
+    max_recent = getattr(config, "AUDIT_RECENT_LIMIT", _RING_MAX) or _RING_MAX
+    cap = max(1, min(limit, max_recent))
+    mode = _storage_mode()
+    if mode == "file":
+        items = _recent_from_file(cap)
+        if items:
+            return items
+    elif mode == "redis":
+        items = _recent_from_redis(cap)
+        if items:
+            return items
+    with _LOG_LOCK:
+        return list(_RING[-cap:])
+
+
+def iter_events() -> Iterable[Dict[str, Any]]:
+    mode = _storage_mode()
+    if mode == "file":
+        for raw in _iter_file_lines():
+            try:
+                yield json.loads(raw)
+            except Exception:
+                continue
+        return
+    if mode == "redis":
+        client = _redis_client()
+        if client is not None:
+            try:
+                redis_key = getattr(config, "AUDIT_REDIS_KEY", "guardrail:admin_audit:v1")
+                values = client.lrange(redis_key, 0, -1)
+            except Exception:
+                values = []
+            for raw in values:
+                try:
+                    yield json.loads(raw)
+                except Exception:
+                    continue
+            return
+    with _LOG_LOCK:
+        snapshot = list(_RING)
+    for item in snapshot:
+        yield item
+
+
+__all__ = [
+    "iter_events",
+    "record",
+    "recent",
+    "_iter_file_lines",
+    "_persist_file_line",
+    "_persist_redis_line",
+    "_RING",
+    "_RING_MAX",
+    "_redis_client",
+    "_storage_mode",
+]
