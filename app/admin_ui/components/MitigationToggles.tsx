@@ -81,6 +81,7 @@ export default function MitigationToggles({
       <div className="text-sm">
         Mitigation mode for <b>{tenant}</b>/<b>{bot}</b>
       </div>
+      <div className="text-xs opacity-60">Values persist (file/redis).</div>
       <div className="flex gap-2">
         <Choice value="block" label="Block" />
         <Choice value="clarify" label="Clarify" />
