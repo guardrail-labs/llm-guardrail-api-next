@@ -782,7 +782,11 @@ def create_app() -> FastAPI:
     except Exception as exc:
         log.warning("Admin export routes unavailable: %s", exc)
 
-    if exports_loaded:
+    # Persist the outcome on the app instance for any downstream checks
+    app.state.exports_loaded_exports = exports_loaded
+
+    # Remove the legacy route only if new exports are available
+    if app.state.exports_loaded_exports:
         _remove_legacy_decisions_ndjson(app)
 
     # Admin Policy API (version + reload)
@@ -888,7 +892,12 @@ def create_app() -> FastAPI:
         # Keep startup resilient if prometheus_client isn't installed
         pass
 
-    _remove_legacy_decisions_ndjson(app)
+    # Ensure there is no unconditional legacy removal here or at module import time.
+    # If needed elsewhere, always guard with:
+    # if getattr(app.state, "exports_loaded_exports", False):
+    #     _remove_legacy_decisions_ndjson(app)
+    if getattr(app.state, "exports_loaded_exports", False):
+        _remove_legacy_decisions_ndjson(app)
 
     return app
 
@@ -929,7 +938,8 @@ csp_mod.install_csp(app)
 comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
 comp_mod.install_compression(app)
 
-_remove_legacy_decisions_ndjson(app)
+if getattr(app.state, "exports_loaded_exports", False):
+    _remove_legacy_decisions_ndjson(app)
 
 try:
     from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
