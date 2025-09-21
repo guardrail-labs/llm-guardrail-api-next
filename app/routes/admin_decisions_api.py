@@ -385,6 +385,20 @@ def _list_decisions_offset_path(
     sort_lower = (sort or "").lower()
     sort_key_safe: SortKey = cast(SortKey, sort_lower) if sort_lower in SORT_KEYS else "ts"
     sort_dir_safe: SortDir = "asc" if sort_dir == "asc" else "desc"
+    def _filter_reqid(items: Iterable[Dict[str, Any]]) -> ProviderResult:
+        if request_id is None:
+            return list(items), None
+        materialized = list(items)
+        filtered = [
+            item
+            for item in materialized
+            if (
+                isinstance(item, dict) and item.get("request_id") == request_id
+            )
+            or getattr(item, "request_id", None) == request_id
+        ]
+        return filtered, len(filtered)
+
     try:
         items_raw, total = prov(
             since=since_dt,
@@ -399,42 +413,33 @@ def _list_decisions_offset_path(
         )
     except TypeError:
         try:
-            if request_id is not None:
-                items_raw, total = prov(
-                    since_dt,
-                    tenant,
-                    bot,
-                    outcome,
-                    request_id,
-                    page_size,
-                    offset,
-                    sort_key_safe,
-                    sort_dir_safe,
-                )
-            else:
-                items_raw, total = prov(
-                    since_dt,
-                    tenant,
-                    bot,
-                    outcome,
-                    page_size,
-                    offset,
-                    sort_key_safe,
-                    sort_dir_safe,
-                )
+            items_raw, total = prov(
+                since_dt,
+                tenant,
+                bot,
+                outcome,
+                request_id,
+                page_size,
+                offset,
+                sort_key_safe,
+                sort_dir_safe,
+            )
         except TypeError:
             try:
+                items_raw, total = prov(
+                    since_dt,
+                    tenant,
+                    bot,
+                    outcome,
+                    page_size,
+                    offset,
+                    sort_key_safe,
+                    sort_dir_safe,
+                )
                 if request_id is not None:
-                    items_raw, total = prov(
-                        since_dt,
-                        tenant,
-                        bot,
-                        outcome,
-                        request_id,
-                        page_size,
-                        offset,
-                    )
-                else:
+                    items_raw, total = _filter_reqid(items_raw)
+            except TypeError:
+                try:
                     items_raw, total = prov(
                         since_dt,
                         tenant,
@@ -443,11 +448,13 @@ def _list_decisions_offset_path(
                         page_size,
                         offset,
                     )
-            except TypeError as final_exc:
-                raise HTTPException(
-                    status_code=500,
-                    detail="decisions provider error",
-                ) from final_exc
+                    if request_id is not None:
+                        items_raw, total = _filter_reqid(items_raw)
+                except TypeError as final_exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="decisions provider error",
+                    ) from final_exc
     items = [_norm_item(x) for x in items_raw]
     if total is not None:
         has_more = (offset + len(items)) < total
