@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable, Iterable, Optional, cast
+from typing import Any, Callable, ContextManager, Iterable, Optional, cast
 
 
 def _decisions_supports_sql() -> bool:
@@ -192,30 +192,54 @@ def delete_adjudications_before(
     except Exception:
         cap = 10000
 
+    lock_obj = getattr(log, "_LOCK", None)
+
+    def _compute_and_apply() -> int:
+        snapshot_desc = []
+        snapshot_fn = getattr(log, "_snapshot_records_desc", None)
+
+        if callable(snapshot_fn):
+            try:
+                snapshot_desc = list(snapshot_fn())
+            except Exception:
+                snapshot_desc = []
+
+        if not snapshot_desc:
+            try:
+                records, _ = log.paged_query(
+                    tenant=None,
+                    bot=None,
+                    limit=cap,
+                    offset=0,
+                    sort="ts_asc",
+                )
+            except Exception:
+                records = []
+        else:
+            records = list(reversed(snapshot_desc))
+
+        kept = []
+        removed = 0
+        for record in records:
+            ts_val = log._record_ts_ms(record) if hasattr(log, "_record_ts_ms") else 0
+            match_tenant = tenant is None or getattr(record, "tenant", None) == tenant
+            match_bot = bot is None or getattr(record, "bot", None) == bot
+            if removed < limit and match_tenant and match_bot and ts_val < cutoff:
+                removed += 1
+                continue
+            kept.append(record)
+
+        if removed and hasattr(log, "clear") and hasattr(log, "append"):
+            log.clear()
+            for entry in kept:
+                log.append(entry)
+        return removed
+
+    if lock_obj is not None and hasattr(lock_obj, "__enter__") and hasattr(lock_obj, "__exit__"):
+        lock_cm = cast(ContextManager[Any], lock_obj)
+        with lock_cm:
+            return _compute_and_apply()
     try:
-        records, _ = log.paged_query(
-            tenant=None,
-            bot=None,
-            limit=cap,
-            offset=0,
-            sort="ts_asc",
-        )
+        return _compute_and_apply()
     except Exception:
-        records = []
-
-    kept = []
-    removed = 0
-    for record in records:
-        ts_val = log._record_ts_ms(record) if hasattr(log, "_record_ts_ms") else 0
-        match_tenant = tenant is None or getattr(record, "tenant", None) == tenant
-        match_bot = bot is None or getattr(record, "bot", None) == bot
-        if removed < limit and match_tenant and match_bot and ts_val < cutoff:
-            removed += 1
-            continue
-        kept.append(record)
-
-    if removed and hasattr(log, "clear") and hasattr(log, "append"):
-        log.clear()
-        for entry in kept:
-            log.append(entry)
-    return removed
+        return 0

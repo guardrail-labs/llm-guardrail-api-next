@@ -73,7 +73,7 @@ class AdjudicationRecord:
 
 _CAP = _coerce_cap(os.getenv("ADJUDICATION_LOG_CAP"))
 _BUFFER: Deque[AdjudicationRecord] = deque(maxlen=_CAP)
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 
 
 def _ts_sort_key(record: AdjudicationRecord) -> datetime:
@@ -168,6 +168,20 @@ def clear() -> None:
             _BUFFER.clear()
     except Exception:
         return
+
+
+def _snapshot_records_desc() -> List[AdjudicationRecord]:
+    """Return a newest->oldest snapshot of buffered adjudications."""
+
+    with _LOCK:
+        snapshot: Sequence[AdjudicationRecord] = list(_BUFFER)
+
+    ordered = sorted(
+        enumerate(snapshot),
+        key=lambda item: (_ts_sort_key(item[1]), item[0]),
+        reverse=True,
+    )
+    return [rec for _, rec in ordered]
 
 
 def _iter_filtered(
