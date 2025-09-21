@@ -106,6 +106,18 @@ webhook_abort_total = _get_or_create_counter(
 )
 
 
+webhook_dlq_retry_total = _get_or_create_counter(
+    "guardrail_webhook_dlq_retry_total",
+    "Manual requeue operations on the webhook DLQ",
+)
+
+
+webhook_dlq_purge_total = _get_or_create_counter(
+    "guardrail_webhook_dlq_purge_total",
+    "Manual purge operations on the webhook DLQ",
+)
+
+
 def inc_ratelimit_script_reload() -> None:
     try:
         GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc()
