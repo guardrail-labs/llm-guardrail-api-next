@@ -31,6 +31,7 @@ def list_with_cursor(
     dir: Dir = "next",
     since_ts_ms: Optional[int] = None,
     outcome: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
     """Return a page of decisions ordered by ``(ts_ms DESC, id DESC)``."""
 
@@ -47,9 +48,15 @@ def list_with_cursor(
         dir=dir,
         since_ts_ms=since_ts_ms,
         outcome=outcome,
+        request_id=request_id,
     )
 
-    filtered_items = _apply_filters(raw_items, since_ts_ms=since_ts_ms, outcome=outcome)
+    filtered_items = _apply_filters(
+        raw_items,
+        since_ts_ms=since_ts_ms,
+        outcome=outcome,
+        request_id=request_id,
+    )
     items = _apply_cursor_window(filtered_items, decoded, dir)
     page = items[:safe_limit]
     if not page:
@@ -102,17 +109,36 @@ def _apply_filters(
     *,
     since_ts_ms: Optional[int],
     outcome: Optional[str],
+    request_id: Optional[str],
 ) -> List[Dict[str, Any]]:
-    if since_ts_ms is None and outcome is None:
+    normalized = [_ensure_ts_ms(item) for item in items]
+    return _filter_items(
+        normalized,
+        since_ts_ms=since_ts_ms,
+        outcome=outcome,
+        request_id=request_id,
+    )
+
+
+def _filter_items(
+    items: List[Dict[str, Any]],
+    *,
+    since_ts_ms: Optional[int],
+    outcome: Optional[str],
+    request_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    if since_ts_ms is None and outcome is None and request_id is None:
         return items
 
     filtered = items
     if since_ts_ms is not None:
-        filtered = [
-            item for item in filtered if int(_ensure_ts_ms(item)["ts_ms"]) >= int(since_ts_ms)
-        ]
+        filtered = [item for item in filtered if int(item["ts_ms"]) >= int(since_ts_ms)]
     if outcome is not None:
         filtered = [item for item in filtered if item.get("outcome") == outcome]
+    if request_id is not None:
+        filtered = [
+            item for item in filtered if _extract_request_id(item) == request_id
+        ]
     return filtered
 
 
@@ -139,6 +165,7 @@ def _fetch_decisions_sorted_desc(
     dir: Dir,
     since_ts_ms: Optional[int] = None,
     outcome: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     if select is None or decisions_service is None:
         raise RuntimeError("SQLAlchemy is required for decisions cursor pagination")
@@ -154,6 +181,10 @@ def _fetch_decisions_sorted_desc(
         conditions.append(table.c.ts >= since_dt)
     if outcome:
         conditions.append(table.c.outcome == outcome)
+    if request_id:
+        request_col = getattr(table.c, "request_id", None)
+        if request_col is not None:
+            conditions.append(request_col == request_id)
     if cursor is not None:
         ts_ms, cursor_id = cursor
         cursor_dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -177,6 +208,21 @@ def _fetch_decisions_sorted_desc(
     with decisions_service._get_engine().begin() as conn:
         rows = list(conn.execute(stmt).mappings())
     return [_row_to_item(row) for row in rows]
+
+
+def _extract_request_id(item: Dict[str, Any]) -> Optional[str]:
+    raw = item.get("request_id")
+    if isinstance(raw, str) and raw:
+        return raw
+    details = item.get("details")
+    if isinstance(details, dict):
+        nested = details.get("request_id")
+        if nested is None:
+            return None
+        if isinstance(nested, str):
+            return nested or None
+        return str(nested)
+    return None
 
 
 def _row_to_item(row: Any) -> Dict[str, Any]:

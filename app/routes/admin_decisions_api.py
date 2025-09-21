@@ -50,12 +50,15 @@ def _call_decisions_provider(
     tenant: Optional[str],
     bot: Optional[str],
     outcome: Optional[str],
+    request_id: Optional[str] = None,
     page: int,
     page_size: int,
     sort_key: Optional[str] = None,
     sort_dir: Optional[str] = None,
 ) -> ProviderResult:
     base: Dict[str, Any] = dict(since=since, tenant=tenant, bot=bot, outcome=outcome)
+    if request_id is not None:
+        base["request_id"] = request_id
     if sort_key is not None:
         base["sort_key"] = sort_key
     if sort_dir is not None:
@@ -96,7 +99,14 @@ def _call_decisions_provider(
                 )
             except TypeError:
                 return _normalize_provider_result(
-                    fn(since, tenant, bot, outcome, limit, offset)
+                    fn(
+                        since,
+                        tenant,
+                        bot,
+                        outcome,
+                        limit,
+                        offset,
+                    )
                 )
 
 
@@ -115,10 +125,12 @@ def _wrap_decisions_provider(*functions: Callable[..., Any]) -> DecisionProvider
         sort_key: SortKey = "ts",
         sort_dir: SortDir = "desc",
         _candidates=candidates,
+        **extra: Any,
     ) -> ProviderResult:
         page_size = max(int(limit) if limit is not None else 0, 0) or 1
         page = max(int(offset) // page_size + 1, 1)
         last_exc: Optional[TypeError] = None
+        request_id = cast(Optional[str], extra.get("request_id"))
         for idx, underlying in enumerate(list(_candidates)):
             try:
                 result = _call_decisions_provider(
@@ -127,6 +139,7 @@ def _wrap_decisions_provider(*functions: Callable[..., Any]) -> DecisionProvider
                     tenant=tenant,
                     bot=bot,
                     outcome=outcome,
+                    request_id=request_id,
                     page=page,
                     page_size=page_size,
                     sort_key=sort_key,
@@ -359,6 +372,7 @@ def _list_decisions_offset_path(
     tenant: Optional[str],
     bot: Optional[str],
     outcome: Optional[str],
+    request_id: Optional[str],
     page: int,
     page_size: int,
     sort: str,
@@ -377,6 +391,7 @@ def _list_decisions_offset_path(
             tenant=tenant,
             bot=bot,
             outcome=outcome,
+            request_id=request_id,
             limit=page_size,
             offset=offset,
             sort_key=sort_key_safe,
@@ -384,18 +399,19 @@ def _list_decisions_offset_path(
         )
     except TypeError:
         try:
-            items_raw, total = prov(
-                since_dt,
-                tenant,
-                bot,
-                outcome,
-                page_size,
-                offset,
-                sort_key_safe,
-                sort_dir_safe,
-            )
-        except TypeError:
-            try:
+            if request_id is not None:
+                items_raw, total = prov(
+                    since_dt,
+                    tenant,
+                    bot,
+                    outcome,
+                    request_id,
+                    page_size,
+                    offset,
+                    sort_key_safe,
+                    sort_dir_safe,
+                )
+            else:
                 items_raw, total = prov(
                     since_dt,
                     tenant,
@@ -403,7 +419,30 @@ def _list_decisions_offset_path(
                     outcome,
                     page_size,
                     offset,
+                    sort_key_safe,
+                    sort_dir_safe,
                 )
+        except TypeError:
+            try:
+                if request_id is not None:
+                    items_raw, total = prov(
+                        since_dt,
+                        tenant,
+                        bot,
+                        outcome,
+                        request_id,
+                        page_size,
+                        offset,
+                    )
+                else:
+                    items_raw, total = prov(
+                        since_dt,
+                        tenant,
+                        bot,
+                        outcome,
+                        page_size,
+                        offset,
+                    )
             except TypeError as final_exc:
                 raise HTTPException(
                     status_code=500,
@@ -435,6 +474,7 @@ async def get_decisions(
     tenant: Optional[str] = Query(None),
     bot: Optional[str] = Query(None),
     outcome: Optional[str] = Query(None),
+    request_id: Optional[str] = Query(None),
     page: int = Query(
         1,
         ge=1,
@@ -489,6 +529,7 @@ async def get_decisions(
             tenant=tenant,
             bot=bot,
             outcome=outcome,
+            request_id=request_id,
             page=max(int(page), 1),
             page_size=requested_page_size,
             sort=sort,
@@ -504,6 +545,7 @@ async def get_decisions(
             tenant=tenant,
             bot=bot,
             outcome=outcome,
+            request_id=request_id,
             page=max(int(page), 1),
             page_size=requested_page_size,
             sort=sort,
@@ -536,6 +578,7 @@ async def get_decisions(
             dir=pagination_dir,
             since_ts_ms=since_ts_ms,
             outcome=outcome,
+            request_id=request_id,
         )
     except CursorError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -546,6 +589,7 @@ async def get_decisions(
             tenant=tenant,
             bot=bot,
             outcome=outcome,
+            request_id=request_id,
             page=max(int(page), 1),
             page_size=requested_page_size,
             sort=sort,
