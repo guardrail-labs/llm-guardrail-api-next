@@ -939,6 +939,13 @@ def create_app() -> FastAPI:
         # Keep startup resilient if prometheus_client isn't installed
         pass
 
+    try:
+        from app.routes import version
+
+        app.include_router(version.router)
+    except Exception as exc:
+        log.warning("Version route unavailable: %s", exc)
+
     # Ensure there is no unconditional legacy removal here or at module import time.
     # If needed elsewhere, always guard with:
     # if getattr(app.state, "exports_loaded_exports", False):

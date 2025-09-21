@@ -15,7 +15,7 @@ def test_version_endpoint_includes_info_and_config(monkeypatch) -> None:
     r = client.get("/version")
     assert r.status_code == 200
     data = r.json()
-    assert "info" in data and "config" in data
-    assert data["info"]["version"] == "9.9.9"
-    assert data["info"]["commit"] == "abc123"
-    assert "verifier_sampling_pct" in data["config"]
+    assert data["version"] == "9.9.9"
+    assert data["git_sha"] == "abc123"
+    assert "runtime" in data and isinstance(data["runtime"], dict)
+    assert data["features"]["admin_auth_mode"] == "cookie"
