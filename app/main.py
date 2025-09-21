@@ -620,14 +620,28 @@ async def lifespan(app: FastAPI):
             pass
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="llm-guardrail-api", lifespan=lifespan)
-    try:
-        from app.routes.health import router as health_router
+openapi_tags = [
+    {"name": "ops", "description": "Health, readiness, and metrics"},
+    {
+        "name": "admin-decisions",
+        "description": "Decisions listing, filters, exports",
+    },
+    {
+        "name": "admin-adjudications",
+        "description": "Adjudications listing, filters, exports",
+    },
+    {"name": "admin-audit", "description": "Admin audit feed and export"},
+]
 
-        app.include_router(health_router)
-    except Exception:
-        pass
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="llm-guardrail-api", lifespan=lifespan, openapi_tags=openapi_tags)
+    try:
+        from app.routes import health
+
+        app.include_router(health.router)
+    except Exception as exc:
+        log.warning("Health routes unavailable: %s", exc)
     try:
         from app.routes.admin_policy_packs import router as admin_policy_packs_router
 

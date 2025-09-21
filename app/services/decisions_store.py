@@ -33,7 +33,12 @@ def list_with_cursor(
     outcome: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
-    """Return a page of decisions ordered by ``(ts_ms DESC, id DESC)``."""
+    """Return a page of decisions ordered by ``(ts_ms DESC, id DESC)``.
+
+    The ``since_ts_ms``, ``outcome``, and ``request_id`` filters are applied
+    against the ordered results before the cursor windowing step so the
+    returned page aligns with the cursor semantics.
+    """
 
     safe_limit = max(1, min(int(limit), 500))
     decoded: Optional[Tuple[int, str]] = None

@@ -20,17 +20,62 @@ router = APIRouter(
 )
 
 
-@router.get("/adjudications")
+@router.get(
+    "/adjudications",
+    summary="List adjudications (cursor)",
+    description=(
+        "Cursor-paginated adjudications ordered by (ts desc, id). Supports filters for tenant, "
+        "bot, since (epoch ms), outcome, rule_id, and request_id."
+    ),
+)
 def list_adjudications(
-    limit: int = Query(50, ge=1, le=500),
-    cursor: Optional[str] = Query(None),
-    dir: Literal["next", "prev"] = Query("next"),
-    tenant: Optional[str] = Query(None),
-    bot: Optional[str] = Query(None),
-    since: Optional[int] = Query(None),
-    outcome: Optional[str] = Query(None),
-    rule_id: Optional[str] = Query(None),
-    request_id: Optional[str] = Query(None),
+    limit: int = Query(
+        50,
+        ge=1,
+        le=500,
+        description="Maximum number of adjudications to include in the response",
+        examples=[{"summary": "Custom page size", "value": 100}],
+    ),
+    cursor: Optional[str] = Query(
+        None,
+        description="Opaque cursor token from a previous response",
+        examples=[{"summary": "Resume token", "value": "1704067200000:adj_7"}],
+    ),
+    dir: Literal["next", "prev"] = Query(
+        "next",
+        description="Direction relative to the provided cursor",
+        examples=[{"summary": "Previous page", "value": "prev"}],
+    ),
+    tenant: Optional[str] = Query(
+        None,
+        description="Filter adjudications for this tenant",
+        examples=[{"summary": "Tenant filter", "value": "tenant-123"}],
+    ),
+    bot: Optional[str] = Query(
+        None,
+        description="Filter adjudications for this bot",
+        examples=[{"summary": "Bot filter", "value": "bot-alpha"}],
+    ),
+    since: Optional[int] = Query(
+        None,
+        description="Return adjudications at or after this epoch millisecond timestamp",
+        examples=[{"summary": "Recent adjudications", "value": 1704067200000}],
+    ),
+    outcome: Optional[str] = Query(
+        None,
+        description="Filter by adjudication outcome",
+        examples=[{"summary": "Allow outcome", "value": "allow"}],
+    ),
+    rule_id: Optional[str] = Query(
+        None,
+        description="Filter by rule identifier",
+        examples=[{"summary": "Rule identifier", "value": "rule-1"}],
+    ),
+    request_id: Optional[str] = Query(
+        None,
+        description="Return adjudications for a specific request ID",
+        examples=[{"summary": "Specific request", "value": "req-123"}],
+    ),
 ):
     try:
         items, next_cur, prev_cur = log.list_with_cursor(
