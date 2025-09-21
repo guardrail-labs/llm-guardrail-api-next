@@ -679,6 +679,12 @@ def create_app() -> FastAPI:
     except Exception:
         pass
     try:
+        from app.routes import admin_secrets_strict
+
+        app.include_router(admin_secrets_strict.router)
+    except Exception as exc:
+        log.warning("Admin secrets strict routes unavailable: %s", exc)
+    try:
         from app.routes import admin_features
 
         app.include_router(admin_features.router)

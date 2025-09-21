@@ -130,6 +130,12 @@ retention_deleted_total = _get_or_create_counter(
     labelnames=("kind",),
 )
 
+secrets_strict_toggle_total = _get_or_create_counter(
+    "guardrail_secrets_strict_toggle_total",
+    "Admin toggled stricter secrets pack",
+    labelnames=("action",),
+)
+
 
 def inc_ratelimit_script_reload() -> None:
     try:
