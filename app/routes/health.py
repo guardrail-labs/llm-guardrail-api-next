@@ -192,18 +192,27 @@ def _check_redis() -> Dict[str, Any]:
     if not configured:
         return _ok("redis", {"configured": False})
 
-    pong = bool(pong_a or pong_m)
+    # Require every configured consumer to be healthy.
+    failures: list[str] = []
+    if using_audit and not pong_a:
+        failures.append("audit")
+    if using_mitig and not pong_m:
+        failures.append("mitigation")
+    ok_all = not failures
+
     detail: Dict[str, Any] = {
         "configured": True,
         "used_by": [
             name for name, using in (("audit", using_audit), ("mitigation", using_mitig)) if using
         ],
         "urls": list(dict.fromkeys([u for u in urls if u])),
-        "ping": pong,
-        "audit_ping": pong_a,
-        "mitigation_ping": pong_m,
+        "ping": ok_all,
+        "ok_all": ok_all,
+        "audit_ping": pong_a if using_audit else None,
+        "mitigation_ping": pong_m if using_mitig else None,
+        "failed": failures,
     }
-    return _ok("redis", detail) if pong else _fail("redis", detail)
+    return _ok("redis", detail) if ok_all else _fail("redis", detail)
 
 
 def _check_audit_file() -> Dict[str, Any]:
