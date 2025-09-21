@@ -659,6 +659,12 @@ def create_app() -> FastAPI:
         app.include_router(admin_apply_strict_secrets_router)
     except Exception:
         pass
+    try:
+        from app.routes import admin_features
+
+        app.include_router(admin_features.router)
+    except Exception:
+        pass
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
@@ -777,6 +783,13 @@ def create_app() -> FastAPI:
 
     # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
+
+    try:
+        from app.admin_config.demo_seed import seed_demo_defaults
+
+        seed_demo_defaults()
+    except Exception:
+        pass
 
     try:
         from app.routes import guardrail as guardrail_routes

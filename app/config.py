@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     LOG_JSON: bool = Field(default=True)
     LOG_LEVEL: str = Field(default="INFO")
 
+    # --- Admin UI feature toggles ---
+    ADMIN_ENABLE_GOLDEN_ONE_CLICK: bool = Field(default=False)
+    DEMO_DEFAULT_BINDINGS: bool = Field(default=False)
+
     model_config = {
         "extra": "ignore",
         "env_file": ".env",
