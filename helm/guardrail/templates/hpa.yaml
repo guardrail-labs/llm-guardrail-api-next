@@ -1,5 +1,12 @@
 {{- if .Values.hpa.enabled }}
+{{- if .Capabilities.APIVersions.Has "autoscaling/v2" -}}
 apiVersion: autoscaling/v2
+{{- else if .Capabilities.APIVersions.Has "autoscaling/v2beta2" -}}
+apiVersion: autoscaling/v2beta2
+{{- else -}}
+{{- /* No supported HPA API found; do not render to avoid install failure. */ -}}
+{{- end -}}
+{{- if or (.Capabilities.APIVersions.Has "autoscaling/v2") (.Capabilities.APIVersions.Has "autoscaling/v2beta2") }}
 kind: HorizontalPodAutoscaler
 metadata:
   name: {{ include "guardrail.fullname" . }}
@@ -19,4 +26,5 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.hpa.targetCPUUtilizationPercentage }}
+{{- end }}
 {{- end }}

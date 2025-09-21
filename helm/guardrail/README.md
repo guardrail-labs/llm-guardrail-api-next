@@ -5,6 +5,7 @@ This chart deploys the LLM Guardrail API with sensible defaults for production-o
 ## Prerequisites
 
 * Kubernetes 1.23+
+* [kubectl](https://kubernetes.io/docs/tasks/tools/)
 * [Helm 3](https://helm.sh/docs/intro/install/)
 * Optional: Prometheus Operator CRDs (for ServiceMonitor support)
 
@@ -64,6 +65,15 @@ helm upgrade -i guardrail ./helm/guardrail -n guardrail --create-namespace -f va
 
 ## Notes
 
-* The `ServiceMonitor` resource is created only when `.Values.serviceMonitor.enabled` is `true` and requires the Prometheus Operator CRDs.
-* The HorizontalPodAutoscaler (HPA) requires the metrics API to be available in your cluster.
+ServiceMonitor is **disabled by default** (requires Prometheus Operator CRDs). Enable with:
+
+```yaml
+serviceMonitor:
+  enabled: true
+```
+
+HPA:
+- The chart uses `autoscaling/v2` when available, otherwise falls back to `autoscaling/v2beta2` (K8s 1.23–1.25).
+- If neither API is present, the HPA template is skipped to avoid install failures.
+
 * Provide sensitive values (e.g., OIDC secrets) via `.Values.secretEnv` or external secret tooling.

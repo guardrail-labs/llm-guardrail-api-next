@@ -52,7 +52,7 @@ ingress:
   tls: []
 
 serviceMonitor:
-  enabled: true
+  enabled: false     # default off: requires Prometheus Operator CRD
   interval: 30s
   scrapeTimeout: 10s
 

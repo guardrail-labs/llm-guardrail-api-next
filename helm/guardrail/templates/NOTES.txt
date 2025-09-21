@@ -1,0 +1,4 @@
+{{- if and .Values.serviceMonitor.enabled (not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor")) -}}
+NOTE: ServiceMonitor was enabled but the CRD is not installed. The resource was not rendered.
+Install Prometheus Operator CRDs or set serviceMonitor.enabled=false (default).
+{{- end -}}
