@@ -14,9 +14,12 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, 
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
+from app.observability.admin_audit import record as record_admin_audit
+from app.observability.metrics import admin_audit_total
 from app.routes.admin_apply_demo_defaults import apply_demo_defaults as apply_demo_action
-from app.routes.admin_apply_golden import apply_golden_packs as apply_golden_action
+from app.routes.admin_apply_golden import apply_golden_action
 from app.routes.admin_apply_strict_secrets import apply_strict_secrets as apply_strict_action
+from app.security import rbac
 from app.services.config_store import get_config, get_policy_packs
 from app.services.policy import current_rules_version, reload_rules
 
@@ -806,18 +809,54 @@ def ui_apply_golden(
     req: Request, payload: Dict[str, Any], _: None = Depends(require_auth)
 ) -> JSONResponse:
     token = str(payload.get("csrf_token", ""))
-    _require_ui_csrf(req, token)
+    user_info = rbac.get_current_user(req)
+    if not user_info:
+        legacy_dep = getattr(rbac, "_try_legacy_admin_token", None)
+        if callable(legacy_dep):  # pragma: no cover - legacy auth fallback
+            try:
+                legacy_user = legacy_dep(req)
+            except Exception:  # pragma: no cover - defensive legacy call
+                legacy_user = None
+            if isinstance(legacy_user, dict):
+                user_info = legacy_user
+    actor_email = user_info.get("email") if isinstance(user_info, dict) else None
+    actor_role = rbac.effective_role(user_info) if user_info else None
 
     tenant = str(payload.get("tenant", "")).strip()
     bot = str(payload.get("bot", "")).strip()
+
+    def _audit(outcome: str, meta: Dict[str, Any]) -> None:
+        try:
+            admin_audit_total.labels("apply_golden", outcome).inc()
+        except Exception:
+            pass
+        record_admin_audit(
+            action="apply_golden",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant or None,
+            bot=bot or None,
+            outcome=outcome,
+            meta=meta,
+        )
+
+    try:
+        _require_ui_csrf(req, token)
+    except HTTPException as exc:
+        _audit("error", {"reason": "csrf", "error": str(exc.detail)})
+        raise
+
     if not tenant or not bot:
+        _audit("error", {"reason": "missing_params"})
         raise HTTPException(status_code=400, detail="tenant and bot are required.")
 
     try:
         result = apply_golden_action({"tenant": tenant, "bot": bot})
-    except HTTPException:
+    except HTTPException as exc:
+        _audit("error", {"error": str(exc.detail)})
         raise
     except Exception as exc:  # pragma: no cover - unexpected failure
+        _audit("error", {"error": str(exc)})
         raise HTTPException(status_code=500, detail=str(exc))
 
     try:
@@ -831,6 +870,16 @@ def ui_apply_golden(
     else:
         message = "Already using Golden Packs."
         status = "info"
+
+    _audit(
+        "ok",
+        {
+            "applied": bool(result.get("applied")),
+            "rules_path": result.get("rules_path"),
+            "version": result.get("version"),
+            "policy_version": result.get("policy_version"),
+        },
+    )
 
     return JSONResponse(
         {

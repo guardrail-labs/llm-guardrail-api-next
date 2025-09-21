@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import base64
-import os
-import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.middleware.request_id import get_request_id
-from app.observability.metrics import retention_deleted_total, retention_preview_total
+from app.observability.admin_audit import record
+from app.observability.metrics import (
+    admin_audit_total,
+    retention_deleted_total,
+    retention_preview_total,
+)
 from app.routes.admin_mitigation import require_csrf
 from app.security.rbac import require_operator, require_viewer
 from app.services import retention as retention_service
-from app.services.audit import emit_audit_event
 
 router = APIRouter(prefix="/admin/api", tags=["admin-retention"])
 
@@ -75,29 +75,6 @@ class ExecuteResp(BaseModel):
     deleted: Dict[str, int]
 
 
-def _resolve_actor(request: Request) -> str:
-    for header in ("X-Admin-Actor", "X-Admin-User", "X-User"):
-        value = request.headers.get(header)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    cookie_actor = request.cookies.get("admin_actor")
-    if isinstance(cookie_actor, str) and cookie_actor.strip():
-        return cookie_actor.strip()
-    auth = request.headers.get("Authorization", "")
-    if auth.lower().startswith("basic "):
-        try:
-            decoded = base64.b64decode(auth.split(" ", 1)[1]).decode("utf-8")
-            username = decoded.split(":", 1)[0]
-            if username:
-                return username
-        except Exception:  # pragma: no cover - defensive parsing
-            pass
-    env_user = os.getenv("ADMIN_UI_USER")
-    if env_user:
-        return env_user
-    return "admin-ui"
-
-
 def _ensure_csrf_token(token: Optional[str]) -> None:
     if token and token.strip():
         return
@@ -107,13 +84,45 @@ def _ensure_csrf_token(token: Optional[str]) -> None:
 @router.post("/retention/execute", response_model=ExecuteResp)
 def retention_execute(
     payload: ExecuteReq,
-    request: Request,
-    _: dict[str, Any] = Depends(require_operator),
+    user: Dict[str, Any] = Depends(require_operator),
     __: None = Depends(require_csrf),
 ) -> ExecuteResp:
+    actor_email = (user or {}).get("email") if isinstance(user, dict) else None
+    actor_role = (user or {}).get("role") if isinstance(user, dict) else None
+    tenant = payload.tenant
+    bot = payload.bot
     if payload.confirm != "DELETE":
+        try:
+            admin_audit_total.labels("retention_execute", "error").inc()
+        except Exception:
+            pass
+        record(
+            action="retention_execute",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant,
+            bot=bot,
+            outcome="error",
+            meta={"reason": "confirm_mismatch", "before_ts_ms": int(payload.before_ts_ms)},
+        )
         raise HTTPException(status_code=400, detail="Confirmation phrase mismatch")
-    _ensure_csrf_token(payload.csrf_token)
+    try:
+        _ensure_csrf_token(payload.csrf_token)
+    except HTTPException as exc:
+        try:
+            admin_audit_total.labels("retention_execute", "error").inc()
+        except Exception:
+            pass
+        record(
+            action="retention_execute",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant,
+            bot=bot,
+            outcome="error",
+            meta={"reason": "csrf_required", "before_ts_ms": int(payload.before_ts_ms)},
+        )
+        raise exc
 
     try:
         deleted_decisions = retention_service.delete_decisions_before(
@@ -129,9 +138,35 @@ def retention_execute(
             bot=payload.bot,
             limit=remaining,
         )
-    except HTTPException:
+    except HTTPException as exc:
+        try:
+            admin_audit_total.labels("retention_execute", "error").inc()
+        except Exception:
+            pass
+        record(
+            action="retention_execute",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant,
+            bot=bot,
+            outcome="error",
+            meta={"before_ts_ms": int(payload.before_ts_ms), "error": exc.detail},
+        )
         raise
     except Exception as exc:  # pragma: no cover - backend failure surfaced
+        try:
+            admin_audit_total.labels("retention_execute", "error").inc()
+        except Exception:
+            pass
+        record(
+            action="retention_execute",
+            actor_email=actor_email,
+            actor_role=actor_role,
+            tenant=tenant,
+            bot=bot,
+            outcome="error",
+            meta={"before_ts_ms": int(payload.before_ts_ms), "error": str(exc)},
+        )
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     try:
@@ -140,22 +175,23 @@ def retention_execute(
     except Exception:  # pragma: no cover - metrics optional
         pass
 
-    actor = _resolve_actor(request)
-    request_id = get_request_id() or request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    event = {
-        "action": "admin.retention.execute",
-        "actor": actor,
-        "request_id": request_id,
-        "before_ts_ms": int(payload.before_ts_ms),
-        "tenant": payload.tenant,
-        "bot": payload.bot,
-        "deleted_decisions": int(deleted_decisions),
-        "deleted_adjudications": int(deleted_adjudications),
-    }
     try:
-        emit_audit_event(event)
-    except Exception:  # pragma: no cover - audit is best-effort
+        admin_audit_total.labels("retention_execute", "ok").inc()
+    except Exception:
         pass
+    record(
+        action="retention_execute",
+        actor_email=actor_email,
+        actor_role=actor_role,
+        tenant=tenant,
+        bot=bot,
+        outcome="ok",
+        meta={
+            "before_ts_ms": int(payload.before_ts_ms),
+            "deleted_decisions": int(deleted_decisions),
+            "deleted_adjudications": int(deleted_adjudications),
+        },
+    )
 
     return ExecuteResp(
         deleted={

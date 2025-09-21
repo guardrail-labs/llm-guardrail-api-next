@@ -4,11 +4,24 @@ from pathlib import Path
 from typing import Dict
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.security import rbac
 from app.services import config_store
 
+
+def _operator_override(_: Request) -> Dict[str, str]:
+    return {"email": "test@example.com", "role": "operator"}
+
+
+def _viewer_override(_: Request) -> Dict[str, str]:
+    return {"email": "test@example.com", "role": "viewer"}
+
+
+app.dependency_overrides[rbac.require_operator] = _operator_override
+app.dependency_overrides[rbac.require_viewer] = _viewer_override
 client = TestClient(app)
 
 

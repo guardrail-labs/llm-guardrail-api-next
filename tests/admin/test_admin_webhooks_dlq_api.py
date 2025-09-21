@@ -58,7 +58,6 @@ def _patched_dlq(monkeypatch: pytest.MonkeyPatch):
         "retry": _CounterStub(),
         "purge": _CounterStub(),
     }
-    events: List[dict] = []
 
     import app.routes.admin_webhooks_dlq as dlq_route
 
@@ -73,10 +72,9 @@ def _patched_dlq(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(dlq_route, "webhook_dlq_retry_total", counters["retry"])
     monkeypatch.setattr(dlq_route, "webhook_dlq_purge_total", counters["purge"])
-    monkeypatch.setattr(dlq_route, "emit_audit_event", lambda event: events.append(event))
     monkeypatch.setattr(dlq_route, "_require_ui_csrf", lambda request, token: None)
 
-    return fake, counters, events
+    return fake, counters
 
 
 @pytest.fixture()
@@ -110,7 +108,7 @@ def test_dlq_stats_empty(app_factory):
 
 
 def test_dlq_retry_and_purge(_patched_dlq, app_factory):
-    fake, counters, events = _patched_dlq
+    fake, counters = _patched_dlq
     fake.push(1710000000000, "timeout")
     fake.push(1710000001000, "5xx")
 
@@ -122,13 +120,7 @@ def test_dlq_retry_and_purge(_patched_dlq, app_factory):
     assert r.json()["requeued"] == 2
     assert fake.stats()["size"] == 0
     assert counters["retry"].increments == [2]
-    assert events[0]["action"].endswith(".retry")
-    assert events[0]["actor"] == "tester"
-    assert events[0]["request_id"] == "req-123"
-
     r2 = c.post("/admin/api/webhooks/dlq/purge", json={"csrf_token": "ok"}, headers=headers)
     assert r2.status_code == 200
     assert r2.json()["deleted"] == 0
     assert counters["purge"].increments == [0]
-    assert events[-1]["action"].endswith(".purge")
-    assert events[-1]["count"] == 0

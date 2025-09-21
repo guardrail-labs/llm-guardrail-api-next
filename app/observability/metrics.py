@@ -136,6 +136,12 @@ secrets_strict_toggle_total = _get_or_create_counter(
     labelnames=("action",),
 )
 
+admin_audit_total = _get_or_create_counter(
+    "guardrail_admin_audit_total",
+    "Admin action audit events",
+    labelnames=("action", "outcome"),
+)
+
 
 def inc_ratelimit_script_reload() -> None:
     try:
