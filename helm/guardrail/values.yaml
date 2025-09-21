@@ -1,0 +1,73 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/your-org/llm-guardrail-api-next
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+env:
+  ADMIN_AUTH_MODE: cookie
+  ADMIN_ENABLE_GOLDEN_ONE_CLICK: "false"
+  FORCE_BLOCK: "false"
+  AUDIT_BACKEND: file
+  AUDIT_LOG_FILE: /var/lib/guardrail/admin_audit.ndjson
+  MITIGATION_STORE_BACKEND: file
+  MITIGATION_STORE_FILE: /var/lib/guardrail/mitigation.json
+  REDIS_URL: ""
+
+secretEnv: {}
+
+pod:
+  extraVolumeMounts:
+    - name: data
+      mountPath: /var/lib/guardrail
+  extraVolumes:
+    - name: data
+      emptyDir: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: guardrail.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 10
+    periodSeconds: 10
