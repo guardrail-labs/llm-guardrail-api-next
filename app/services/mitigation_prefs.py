@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Literal, Optional, Tuple
 
+from app.services import mitigation_store
+
 Mode = Literal["block", "clarify", "redact"]
 _VALID = {"block", "clarify", "redact"}
 
@@ -16,29 +18,23 @@ def validate_mode(mode: str) -> Mode:
     return mode  # type: ignore[return-value]
 
 
-def _key(tenant: str, bot: str) -> str:
-    tenant_id = tenant or "default"
-    bot_id = bot or "default"
-    return f"mitigation:{tenant_id}:{bot_id}"
-
-
-# NOTE: Replace with Redis/KV in production deployments. The tests patch this.
-_STORE: dict[str, str] = {}
+# expose for backwards compatibility in existing tests
+_STORE = mitigation_store._STORE
 
 
 def get_mode(tenant: str, bot: str) -> Optional[Mode]:
-    raw = _STORE.get(_key(tenant, bot))
-    if not raw:
+    raw = mitigation_store.get_mode(tenant, bot)
+    if raw is None:
         return None
     return validate_mode(raw)
 
 
 def set_mode(tenant: str, bot: str, mode: Mode) -> None:
-    _STORE[_key(tenant, bot)] = validate_mode(mode)
+    mitigation_store.set_mode(tenant, bot, validate_mode(mode))
 
 
 def clear_mode(tenant: str, bot: str) -> None:
-    _STORE.pop(_key(tenant, bot), None)
+    mitigation_store.clear_mode(tenant, bot)
 
 
 def resolve_mode(*, tenant: str, bot: str, policy_default: Mode) -> Tuple[Mode, str]:
@@ -51,4 +47,4 @@ def resolve_mode(*, tenant: str, bot: str, policy_default: Mode) -> Tuple[Mode, 
 
 
 def _reset_for_tests() -> None:
-    _STORE.clear()
+    mitigation_store.reset_for_tests()
