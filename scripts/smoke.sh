@@ -45,4 +45,7 @@ echo "ok"
 echo "== decisions sample =="
 curl -fsS -H "X-Admin-Key: $ADMIN_KEY" "$BASE/admin/api/decisions?since=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | jq '.items|length'
 
+echo "== /version =="
+curl -fsS "$BASE/version" | jq .
+
 echo "smoke OK"
