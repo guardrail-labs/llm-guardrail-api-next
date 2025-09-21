@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+import importlib
+from typing import Any, Callable, Dict, Mapping, Optional, cast
 
 from fastapi import HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
@@ -33,6 +34,46 @@ def get_current_user(request: Request) -> Dict[str, Any] | None:
     return user if isinstance(user, dict) else None
 
 
+def _try_legacy_admin_token(request: Request) -> Dict[str, Any] | None:
+    """Attempt to authenticate using legacy token-based admin auth."""
+
+    authz = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not authz:
+        return None
+    try:
+        legacy = importlib.import_module("app.security.admin_auth")
+    except Exception:  # pragma: no cover - legacy module missing
+        return None
+
+    candidates = [
+        "verify_request",
+        "authenticate_request",
+        "validate",
+        "verify",
+        "check",
+        "require_auth",
+    ]
+    for name in candidates:
+        fn = getattr(legacy, name, None)
+        if not callable(fn):
+            continue
+        try:
+            legacy_fn = cast(Callable[[Request], Any], fn)
+            res = legacy_fn(request)
+        except Exception:  # pragma: no cover - try the next strategy
+            continue
+        identity = res if isinstance(res, dict) else {}
+        email = identity.get("email") if isinstance(identity, dict) else None
+        role = identity.get("role") if isinstance(identity, dict) else None
+        name_ = identity.get("name") if isinstance(identity, dict) else None
+        return {
+            "email": email or "token@legacy",
+            "name": name_ or "Token",
+            "role": role or "operator",
+        }
+    return None
+
+
 def _effective_role(user: Dict[str, Any] | None) -> str:
     if not user:
         return "anonymous"
@@ -59,6 +100,9 @@ def _ensure_authn(request: Request) -> Dict[str, Any]:
         return {"email": "dev@local", "name": "Dev", "role": "admin"}
     user = get_current_user(request)
     if not user:
+        legacy_user = _try_legacy_admin_token(request)
+        if legacy_user:
+            return legacy_user
         raise HTTPException(HTTP_401_UNAUTHORIZED, "Authentication required")
     return user
 
