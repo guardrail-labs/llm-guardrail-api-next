@@ -51,9 +51,18 @@ export default function AdminAuditPanel() {
         <div className="text-sm">
           <b>Recent Admin Actions</b>
         </div>
-        <button className="px-3 py-1 rounded-lg border" onClick={() => refresh()} disabled={busy}>
-          {busy ? "…" : "Refresh"}
-        </button>
+        <div className="flex gap-2">
+          <a
+            className="px-3 py-1 rounded-lg border"
+            href="/admin/api/audit/export.ndjson"
+            download
+          >
+            Download NDJSON
+          </a>
+          <button className="px-3 py-1 rounded-lg border" onClick={refresh} disabled={busy}>
+            {busy ? "…" : "Refresh"}
+          </button>
+        </div>
       </div>
       <div className="flex flex-col gap-2">
         {items.map((it, idx) => (

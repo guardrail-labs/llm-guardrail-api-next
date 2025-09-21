@@ -131,6 +131,23 @@ def admin_allow_remote() -> bool:
 class ServiceInfo(BaseModel):
     service: str = "llm-guardrail-api-next"
     env: str = Field(default=os.environ.get("ENV", "dev"))
+
+
+# --- Admin audit persistence ---
+AUDIT_BACKEND = os.getenv("AUDIT_BACKEND", "").strip().lower()
+AUDIT_LOG_FILE = os.getenv("AUDIT_LOG_FILE", "").strip()
+_AUDIT_REDIS_KEY_DEFAULT = "guardrail:admin_audit:v1"
+AUDIT_REDIS_KEY = (
+    os.getenv("AUDIT_REDIS_KEY", _AUDIT_REDIS_KEY_DEFAULT).strip() or _AUDIT_REDIS_KEY_DEFAULT
+)
+try:
+    AUDIT_REDIS_MAXLEN = int(os.getenv("AUDIT_REDIS_MAXLEN", "50000"))
+except ValueError:
+    AUDIT_REDIS_MAXLEN = 50000
+try:
+    AUDIT_RECENT_LIMIT = int(os.getenv("AUDIT_RECENT_LIMIT", "500"))
+except ValueError:
+    AUDIT_RECENT_LIMIT = 500
 # --- Admin UI auth / RBAC ---
 ADMIN_AUTH_MODE = os.getenv("ADMIN_AUTH_MODE", "cookie")  # "disabled" | "cookie" | "oidc"
 ADMIN_RBAC_DEFAULT_ROLE = os.getenv("ADMIN_RBAC_DEFAULT_ROLE", "viewer")
