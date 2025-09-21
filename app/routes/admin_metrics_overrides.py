@@ -76,5 +76,6 @@ def _collect_totals() -> Dict[str, int]:
 
 @router.get("/mitigation-overrides", response_model=OverridesResp)
 def get_mitigation_overrides(_: None = Depends(require_admin_session)) -> OverridesResp:
+    """Return aggregated guardrail mitigation override counters across multiprocess collector."""
     totals = _collect_totals()
     return OverridesResp(totals=MitigationTotals(**totals), since_ms=_PROCESS_START_MS)

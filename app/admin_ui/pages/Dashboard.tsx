@@ -3,7 +3,7 @@ import React from "react";
 import AdminAuditPanel from "@/admin_ui/components/AdminAuditPanel";
 import ApplyGoldenButton from "@/admin_ui/components/ApplyGoldenButton";
 import MitigationToggles from "@/admin_ui/components/MitigationToggles";
-import OverrideTiles from "@/admin_ui/components/OverrideTiles";
+import OverrideMetricsTiles from "@/admin_ui/components/OverrideMetricsTiles";
 import SecretsStrictToggle from "@/admin_ui/components/SecretsStrictToggle";
 import WebhookDLQPanel from "@/admin_ui/components/WebhookDLQPanel";
 
@@ -13,7 +13,7 @@ export default function DashboardPage() {
       <div className="flex gap-3">
         <ApplyGoldenButton />
       </div>
-      <OverrideTiles />
+      <OverrideMetricsTiles />
       <MitigationToggles tenant="demo" bot="site" />
       <SecretsStrictToggle tenant="demo" bot="site" />
       <WebhookDLQPanel />
