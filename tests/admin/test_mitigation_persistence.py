@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -50,18 +51,60 @@ def test_persist_file_roundtrip(app_factory, monkeypatch):
             )
             assert response.status_code == 200
 
+            response = client.put(
+                "/admin/api/mitigation-mode",
+                json={
+                    "tenant": "ten|ant",
+                    "bot": "bo|t",
+                    "mode": "clarify",
+                    "csrf_token": token,
+                },
+                headers={"X-CSRF-Token": token},
+            )
+            assert response.status_code == 200
+
             with open(path, "r", encoding="utf-8") as handle:
                 contents = json.load(handle)
-            assert contents.get("t|b") == "block"
+            decoded = {}
+            for raw_key, value in contents.items():
+                if "|" not in raw_key:
+                    continue
+                tenant_key, bot_key = raw_key.split("|", 1)
+                try:
+                    tenant = base64.b64decode(
+                        tenant_key.encode("ascii"), altchars=b"-_", validate=True
+                    ).decode("utf-8")
+                    bot = base64.b64decode(
+                        bot_key.encode("ascii"), altchars=b"-_", validate=True
+                    ).decode("utf-8")
+                except Exception:
+                    tenant, bot = tenant_key, bot_key
+                decoded[(tenant, bot)] = value
+
+            assert decoded.get(("t", "b")) == "block"
+            assert decoded.get(("ten|ant", "bo|t")) == "clarify"
 
             roundtrip = client.get("/admin/api/mitigation-mode", params={"tenant": "t", "bot": "b"})
             assert roundtrip.status_code == 200
             assert roundtrip.json()["mode"] == "block"
 
+            roundtrip_pipe = client.get(
+                "/admin/api/mitigation-mode",
+                params={"tenant": "ten|ant", "bot": "bo|t"},
+            )
+            assert roundtrip_pipe.status_code == 200
+            assert roundtrip_pipe.json()["mode"] == "clarify"
+
             listing = client.get("/admin/api/mitigation-modes")
             assert listing.status_code == 200
             assert any(
                 entry["tenant"] == "t" and entry["bot"] == "b" and entry["mode"] == "block"
+                for entry in listing.json()
+            )
+            assert any(
+                entry["tenant"] == "ten|ant"
+                and entry["bot"] == "bo|t"
+                and entry["mode"] == "clarify"
                 for entry in listing.json()
             )
 
