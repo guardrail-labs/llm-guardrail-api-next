@@ -1,0 +1,10 @@
+groups:
+  - name: guardrail-recording
+    interval: 30s
+    rules:
+      - record: job:http_5xx_rate:5m
+        expr: |
+          sum by (job) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+      - record: guardrail:mitigation_override_block:10m
+        expr: |
+          increase(guardrail_mitigation_override_total{mode="block"}[10m])

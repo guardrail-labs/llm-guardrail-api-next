@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from app.observability.admin_audit import record
 from app.observability.metrics import (
     admin_audit_total,
+    webhook_dlq_depth,
     webhook_dlq_purge_total,
     webhook_dlq_retry_total,
 )
@@ -52,6 +53,14 @@ def _enforce_csrf(request: Request, token: Optional[str]) -> None:
 @router.get("/dlq", response_model=DlqStats)
 def get_dlq(_: dict[str, Any] = Depends(require_viewer)) -> DlqStats:
     data = DLQ.stats()
+    try:
+        depth_raw = data.get("depth") if isinstance(data, dict) else None
+        if depth_raw is None and isinstance(data, dict):
+            depth_raw = data.get("size")
+        depth_val = int(depth_raw) if depth_raw is not None else 0
+        webhook_dlq_depth.set(max(0, depth_val))
+    except Exception:  # pragma: no cover - defensive metrics update
+        pass
     return DlqStats(**data)  # type: ignore[arg-type]
 
 

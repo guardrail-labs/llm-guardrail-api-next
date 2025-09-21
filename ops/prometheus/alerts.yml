@@ -1,0 +1,48 @@
+groups:
+  - name: guardrail-alerts
+    interval: 30s
+    rules:
+      - alert: GuardrailTargetDown
+        expr: up{job="guardrail"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Guardrail target is down
+          description: 'The Prometheus target for {{ $labels.job }} is down.'
+
+      - alert: GuardrailReadinessFailing
+        expr: guardrail_readyz_ok == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Guardrail readiness failing
+          description: '/readyz reports not ready. Investigate /readyz checks (redis, files, etc.).'
+
+      - alert: GuardrailRedisUnhealthy
+        expr: guardrail_readyz_redis_ok == 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: Guardrail Redis backend unhealthy
+          description: 'At least one configured Redis consumer (audit/mitigation) failed readiness.'
+
+      - alert: GuardrailWebhookDLQBacklog
+        expr: guardrail_webhook_dlq_depth > 0
+        for: 10m
+        labels:
+          severity: high
+        annotations:
+          summary: Webhook DLQ backlog present
+          description: 'DLQ depth is {{ $value }} for over 10 minutes. Check /admin → Webhooks DLQ panel.'
+
+      - alert: GuardrailBlockOverridesSpike
+        expr: guardrail:mitigation_override_block:10m > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: Block overrides detected in last 10m
+          description: 'There were {{ $value }} block overrides in the past 10m. Validate override config.'

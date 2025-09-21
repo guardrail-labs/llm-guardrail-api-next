@@ -217,6 +217,26 @@ def _get_or_create_gauge(
         return Gauge(name, doc, labelnames=labelnames)
 
 
+# --- Ops/health gauges -------------------------------------------------------
+
+readyz_ok = _get_or_create_gauge(
+    "guardrail_readyz_ok",
+    "Overall readiness computed by /readyz (1=ready, 0=not ready).",
+)
+
+readyz_redis_ok = _get_or_create_gauge(
+    "guardrail_readyz_redis_ok",
+    "Redis readiness computed by /readyz (1=all configured Redis consumers healthy, 0 otherwise).",
+)
+
+# --- DLQ depth ---------------------------------------------------------------
+
+webhook_dlq_depth = _get_or_create_gauge(
+    "guardrail_webhook_dlq_depth",
+    "Number of items currently in the webhook DLQ.",
+)
+
+
 # ---- Verifier provider metrics (existing set) --------------------------------
 
 
