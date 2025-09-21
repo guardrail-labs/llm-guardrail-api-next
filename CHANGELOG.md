@@ -1,19 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## v0.1.0-rc1 (2025-09-07)
 ### Added
-- Joint tenant/bot metrics label guard via `METRICS_LABEL_PAIR_CARDINALITY_MAX`.
-- Conditional fallback for `/admin/bindings*` when persistent admin routes are missing.
-- Restored `policy_admin` routes such as `/policy/version`.
+- Admin audit persistence (file/redis) + NDJSON export.
+- Health (`/healthz`) & readiness (`/readyz`) with Redis/file checks.
+- Override metrics tiles; gauges: `guardrail_readyz_ok`, `guardrail_readyz_redis_ok`, `guardrail_webhook_dlq_depth`.
+- Version endpoint `/version` with build metadata.
 
-## [0.1.0] — 2025-09-07
-### Added
-- Directional observability (ingress/egress families, tenant/bot breakdowns)
-- OCR v1 for images/PDFs → text pipeline
-- Admin config endpoints and binding store (per-tenant/bot policy packs)
-- One-command packaging with Prometheus & Grafana
-- Docs: Quickstart, Operator Guide, OpenAI Integration, Demo Script
-- Sales polish: README, License, Playbooks
+### Changed
+- Webhook backoff + jitter; circuit-breaker guard on open state.
+- Cursor pagination for decisions/adjudications; filters parity.
+- Mitigation mode persistence (file/redis) with delimiter-safe keys.
 
-### Notes
-- Roadmap: verifier specialization, adjudication logs, auto-mitigation toggles, admin UI
+### Fixed
+- Redis readiness accuracy and all-consumer enforcement.
+- DLQ depth metric freshness (updated on enqueue/purge/retry).
+- Admin UI CSRF placement for Apply Golden.
+
+### Upgrade notes
+- If using Redis backends, ensure `REDIS_URL` reachable; `/readyz` will fail otherwise.
+- For file backends, create writable dirs for `AUDIT_LOG_FILE` and `MITIGATION_STORE_FILE`.
