@@ -178,33 +178,71 @@ def recent(limit: int = 50) -> List[Dict[str, Any]]:
         return list(_RING[-cap:])
 
 
-def iter_events() -> Iterable[Dict[str, Any]]:
+def iter_events(
+    *,
+    since: Optional[int] = None,
+    until: Optional[int] = None,
+    tenant: Optional[str] = None,
+    bot: Optional[str] = None,
+    action: Optional[str] = None,
+    outcome: Optional[str] = None,
+) -> Iterable[Dict[str, Any]]:
+    def _match(obj: Dict[str, Any]) -> bool:
+        try:
+            ts = int(obj.get("ts_ms", 0))
+        except Exception:
+            return False
+        if since is not None and ts < since:
+            return False
+        if until is not None and ts > until:
+            return False
+        if tenant and obj.get("tenant") != tenant:
+            return False
+        if bot and obj.get("bot") != bot:
+            return False
+        if action and obj.get("action") != action:
+            return False
+        if outcome and obj.get("outcome") != outcome:
+            return False
+        return True
+
+    yielded_any = False
     mode = _storage_mode()
-    if mode == "file":
-        for raw in _iter_file_lines():
-            try:
-                yield json.loads(raw)
-            except Exception:
-                continue
-        return
-    if mode == "redis":
-        client = _redis_client()
-        if client is not None:
-            try:
-                redis_key = getattr(config, "AUDIT_REDIS_KEY", "guardrail:admin_audit:v1")
-                values = client.lrange(redis_key, 0, -1)
-            except Exception:
-                values = []
-            for raw in values:
+    try:
+        if mode == "file":
+            for raw in _iter_file_lines():
                 try:
-                    yield json.loads(raw)
+                    obj = json.loads(raw)
                 except Exception:
                     continue
-            return
-    with _LOG_LOCK:
-        snapshot = list(_RING)
-    for item in snapshot:
-        yield item
+                if _match(obj):
+                    yielded_any = True
+                    yield obj
+        elif mode == "redis":
+            client = _redis_client()
+            if client is not None:
+                try:
+                    redis_key = getattr(config, "AUDIT_REDIS_KEY", "guardrail:admin_audit:v1")
+                    values = client.lrange(redis_key, 0, -1)
+                except Exception:
+                    values = []
+                for raw in values:
+                    try:
+                        obj = json.loads(raw)
+                    except Exception:
+                        continue
+                    if _match(obj):
+                        yielded_any = True
+                        yield obj
+    except Exception:
+        pass
+
+    if not yielded_any:
+        with _LOG_LOCK:
+            snapshot = list(_RING)
+        for item in snapshot:
+            if _match(item):
+                yield item
 
 
 __all__ = [
