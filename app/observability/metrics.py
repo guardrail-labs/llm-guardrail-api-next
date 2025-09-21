@@ -118,6 +118,19 @@ webhook_dlq_purge_total = _get_or_create_counter(
 )
 
 
+retention_preview_total = _get_or_create_counter(
+    "guardrail_retention_preview_total",
+    "Retention preview operations executed by admins",
+)
+
+
+retention_deleted_total = _get_or_create_counter(
+    "guardrail_retention_deleted_total",
+    "Retention deletes executed by admins",
+    labelnames=("kind",),
+)
+
+
 def inc_ratelimit_script_reload() -> None:
     try:
         GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc()
