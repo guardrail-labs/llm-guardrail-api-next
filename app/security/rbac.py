@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
+import inspect
 from typing import Any, Callable, Dict, Mapping, Optional, cast
 
 from fastapi import HTTPException, Request
@@ -60,6 +62,21 @@ def _try_legacy_admin_token(request: Request) -> Dict[str, Any] | None:
         try:
             legacy_fn = cast(Callable[[Request], Any], fn)
             res = legacy_fn(request)
+            if inspect.isawaitable(res):
+                try:
+                    import anyio
+
+                    async def _await_it(coro: Any) -> Any:
+                        return await coro
+
+                    res = anyio.from_thread.run(_await_it, res)
+                except Exception:
+                    try:
+                        asyncio.get_running_loop()
+                    except RuntimeError:
+                        res = asyncio.run(res)
+                    else:
+                        raise RuntimeError("running loop; cannot await legacy auth here")
         except Exception:  # pragma: no cover - try the next strategy
             continue
         identity = res if isinstance(res, dict) else {}
