@@ -772,14 +772,18 @@ def create_app() -> FastAPI:
     except Exception:
         pass
 
+    exports_loaded = False
     try:
         from app.routes import admin_export_adjudications, admin_export_decisions
 
         app.include_router(admin_export_decisions.router)
         app.include_router(admin_export_adjudications.router)
-        _remove_legacy_decisions_ndjson(app)
+        exports_loaded = True
     except Exception as exc:
         log.warning("Admin export routes unavailable: %s", exc)
+
+    if exports_loaded:
+        _remove_legacy_decisions_ndjson(app)
 
     # Admin Policy API (version + reload)
     try:
