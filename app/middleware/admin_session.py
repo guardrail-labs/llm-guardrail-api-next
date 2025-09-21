@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import secrets
-from typing import Awaitable, Callable, Optional
+from threading import Lock
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -26,6 +27,8 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
         self._cookie_path = path
         self._ttl = self._parse_ttl(os.getenv("ADMIN_SESSION_TTL_SECONDS"))
         self._secure = self._parse_secure_flag(os.getenv("ADMIN_COOKIE_SECURE"))
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._lock = Lock()
 
     @staticmethod
     def _parse_ttl(raw: Optional[str]) -> int:
@@ -68,9 +71,22 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        response = await call_next(request)
         path = request.url.path if request.url else ""
-        if not self._is_admin_path(path):
+        is_admin_path = self._is_admin_path(path)
+        session_value: Optional[str] = None
+        store: Optional[Dict[str, Any]] = None
+        new_session = False
+        if is_admin_path:
+            req_session = request.cookies.get(self._session_cookie)
+            new_session = not bool(req_session)
+            session_value = req_session or secrets.token_urlsafe(32)
+            with self._lock:
+                store = self._sessions.setdefault(session_value, {})
+            request.scope["session"] = store
+
+        response = await call_next(request)
+
+        if not is_admin_path:
             return response
 
         def _response_has_cookie(resp: Response, name: str) -> bool:
@@ -89,17 +105,13 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
                 pass
             return False
 
-        req_session = request.cookies.get(self._session_cookie)
         req_csrf = request.cookies.get(self._csrf_cookie)
-
         resp_sets_session = _response_has_cookie(response, self._session_cookie)
         resp_sets_csrf = _response_has_cookie(response, self._csrf_cookie)
-
-        new_session = not bool(req_session)
-
-        session_value = req_session
-        if new_session:
+        if session_value is None:
             session_value = secrets.token_urlsafe(32)
+            with self._lock:
+                store = self._sessions.setdefault(session_value, {})
 
         csrf_value: Optional[str] = None
         should_set_csrf = False
@@ -137,5 +149,17 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
                 httponly=False,
                 samesite="strict",
             )
+
+        scope_session = request.scope.get("session")
+        if isinstance(scope_session, dict) and session_value:
+            with self._lock:
+                if store is not None and scope_session is not store:
+                    self._sessions[session_value] = dict(scope_session)
+                    store = self._sessions[session_value]
+                if not scope_session:
+                    self._sessions.pop(session_value, None)
+        elif session_value:
+            with self._lock:
+                self._sessions.pop(session_value, None)
 
         return response

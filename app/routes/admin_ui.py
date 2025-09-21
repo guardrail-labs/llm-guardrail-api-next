@@ -92,6 +92,9 @@ def _basic_ok(req: Request) -> bool:
 
 
 def require_auth(req: Request) -> None:
+    user = rbac.get_current_user(req)
+    if user:
+        return
     if _bearer_ok(req) or _basic_ok(req):
         return
     headers = {"WWW-Authenticate": "Bearer" if os.getenv("ADMIN_UI_TOKEN") else "Basic"}
@@ -158,6 +161,9 @@ def issue_csrf(resp: Response, token: Optional[str] = None) -> str:
         samesite="strict",
         secure=_csrf_cookie_secure(),
     )
+    context = getattr(resp, "context", None)
+    if isinstance(context, dict):
+        context.setdefault("csrf_token", token)
     return token
 
 

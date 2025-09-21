@@ -161,9 +161,29 @@ try:
 except Exception:
     ADMIN_RBAC_OVERRIDES = {}
 
-# OIDC configuration (only used when ADMIN_AUTH_MODE == "oidc")
-OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
-OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
-OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
-OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
-OIDC_SCOPES = os.getenv("OIDC_SCOPES", "openid email profile")
+# OIDC configuration for admin UI/API session auth
+def _truthy_env(name: str) -> bool:
+    return (os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+OIDC_ENABLED = _truthy_env("OIDC_ENABLED")
+OIDC_ISSUER = (os.getenv("OIDC_ISSUER", "") or "").strip()
+OIDC_CLIENT_ID = (os.getenv("OIDC_CLIENT_ID", "") or "").strip()
+OIDC_CLIENT_SECRET = (os.getenv("OIDC_CLIENT_SECRET", "") or "").strip()
+OIDC_REDIRECT_PATH = (os.getenv("OIDC_REDIRECT_PATH", "/admin/auth/callback") or "").strip()
+OIDC_SCOPES = (os.getenv("OIDC_SCOPES", "openid email profile") or "").strip()
+OIDC_ROLE_CLAIM = (os.getenv("OIDC_ROLE_CLAIM", "roles") or "").strip()
+try:
+    OIDC_ROLE_MAP = json.loads(
+        os.getenv(
+            "OIDC_ROLE_MAP",
+            '{"admin": ["admin"], "operator": ["operator"], "viewer": ["viewer"]}',
+        )
+        or "{}",
+    )
+except Exception:
+    OIDC_ROLE_MAP = {"admin": ["admin"], "operator": ["operator"], "viewer": ["viewer"]}
+OIDC_DEFAULT_ROLE = (os.getenv("OIDC_DEFAULT_ROLE", "viewer") or "").strip() or "viewer"
+OIDC_EMAIL_CLAIM = (os.getenv("OIDC_EMAIL_CLAIM", "email") or "").strip()
+OIDC_NAME_CLAIM = (os.getenv("OIDC_NAME_CLAIM", "name") or "").strip()
+OIDC_LOGOUT_URL = (os.getenv("OIDC_LOGOUT_URL", "") or "").strip()
