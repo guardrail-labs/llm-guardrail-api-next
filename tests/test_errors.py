@@ -75,6 +75,8 @@ def test_429_has_retry_after_and_code():
         RATE_LIMIT_PER_MINUTE="2",
         RATE_LIMIT_BURST="2",
         RATE_LIMIT_ENFORCE_UNKNOWN="true",
+        RATE_LIMIT_BACKEND="memory",
+        REDIS_URL=None,
     ):
         app = _build_app()
         client = _make_client(app)

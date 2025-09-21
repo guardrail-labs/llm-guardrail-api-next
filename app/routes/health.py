@@ -140,20 +140,69 @@ def _check_metrics_route(app: Any) -> Dict[str, Any]:
 
 
 def _check_redis() -> Dict[str, Any]:
-    redis_url = os.getenv("REDIS_URL", "").strip()
-    if not redis_url:
-        return _ok("redis", {"configured": False})
+    """Check Redis readiness across subsystems and surface usage context."""
+
+    using_audit = False
+    using_mitig = False
+    urls: list[str] = []
+    client_a = None
+    client_m = None
+
+    redis_url_env = os.getenv("REDIS_URL", "").strip()
+    if redis_url_env:
+        urls.append(redis_url_env)
+
+    pong_a = False
     try:
         from app.observability import admin_audit as audit
 
-        client = getattr(audit, "_redis_client", lambda: None)()
-        pong = bool(client and client.ping())
-    except Exception as exc:  # pragma: no cover - defensive
-        return _fail(
-            "redis",
-            {"configured": True, "url": redis_url, "error": str(exc)},
-        )
-    detail = {"configured": True, "url": redis_url, "ping": pong}
+        audit_backend = os.getenv("AUDIT_BACKEND", "").strip().lower()
+        if audit_backend:
+            using_audit = audit_backend == "redis"
+        else:
+            using_audit = getattr(audit, "_storage_mode", lambda: None)() == "redis"
+        client_a = getattr(audit, "_redis_client", lambda: None)()
+        audit_url = str(getattr(audit, "_REDIS_URL", "") or "").strip()
+        if audit_url:
+            urls.append(audit_url)
+        pong_a = bool(client_a and client_a.ping())
+        if using_audit and not (audit_url or redis_url_env):
+            urls.append("redis://localhost:6379/0")
+    except Exception:
+        pong_a = False
+
+    pong_m = False
+    try:
+        from app.services import mitigation_store as ms
+
+        backend = os.getenv("MITIGATION_STORE_BACKEND", "").strip().lower()
+        using_mitig = (backend == "redis") or (backend == "" and bool(redis_url_env))
+        client_m = getattr(ms, "_redis_client", lambda: None)() if using_mitig else None
+        if using_mitig:
+            if redis_url_env:
+                urls.append(redis_url_env)
+            else:
+                cached_url = str(getattr(ms, "_REDIS_URL", "") or "").strip()
+                urls.append(cached_url or "redis://localhost:6379/0")
+        pong_m = bool(client_m and client_m.ping())
+    except Exception:
+        pong_m = False
+
+    configured = bool(redis_url_env or using_audit or using_mitig)
+    if not configured:
+        return _ok("redis", {"configured": False})
+
+    pong = bool(pong_a or pong_m)
+    detail: Dict[str, Any] = {
+        "configured": True,
+        "used_by": [
+            name for name, using in (("audit", using_audit), ("mitigation", using_mitig)) if using
+        ],
+        "urls": list(dict.fromkeys([u for u in urls if u])),
+        "ping": pong,
+        "audit_ping": pong_a,
+        "mitigation_ping": pong_m,
+    }
     return _ok("redis", detail) if pong else _fail("redis", detail)
 
 
