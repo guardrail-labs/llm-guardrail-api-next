@@ -732,6 +732,7 @@ def create_app() -> FastAPI:
             admin_webhook,
             admin_webhook_replay,
             admin_webhooks,
+            admin_webhooks_dlq,
         )
 
         app.include_router(admin_decisions.router)
@@ -743,6 +744,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_webhook.router)
         app.include_router(admin_webhook_replay.router)
         app.include_router(admin_webhooks.router)
+        app.include_router(admin_webhooks_dlq.router)
         app.include_router(admin_echo.router)
         app.include_router(admin_metrics_overrides.router)
         app.include_router(admin_adjudications.router)
