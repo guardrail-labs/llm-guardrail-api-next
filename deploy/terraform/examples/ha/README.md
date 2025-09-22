@@ -41,7 +41,7 @@ terraform apply -var="namespace=guardrail" \
 
 This example uses a repo-relative **local chart** path by default:
 
-`"${path.module}/../../../helm/guardrail-api"`
+`"${path.module}/../../../../helm/guardrail"`
 
 If your chart lives elsewhere (or you publish it), update the `helm_release.guardrail`
 block accordingly, or simply override at apply time:
