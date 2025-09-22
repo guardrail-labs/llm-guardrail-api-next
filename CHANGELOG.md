@@ -4,6 +4,10 @@
 ### Added
 - Feature flag to auto-constrain service token scope and emit effective scope headers when enabled.
 - Observability for scope autoconstraint, including Prometheus counter labels, admin UI "Effective scope" chip, and optional audit log entries.
+- OpenAPI metadata polish with canonical tags, summaries, and response examples for admin APIs.
+- Lightweight SDKs for Python (`guardrail_api`) and TypeScript (`@guardrail/api`) with quickstart docs.
+- Postman collection and language-specific quickstarts for curl, Python, and TypeScript.
+- SDK publish workflow to build packages on release tags and publish when registry credentials are configured.
 
 ### Fixed
 - Normalize export scopes to single values, returning `400` when ambiguous multi-tenant tokens omit filters.

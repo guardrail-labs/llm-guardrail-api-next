@@ -1,0 +1,144 @@
+{
+  "info": {
+    "name": "Guardrail API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Healthz",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/healthz",
+          "host": ["{{baseUrl}}"],
+          "path": ["healthz"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Readyz",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/readyz",
+          "host": ["{{baseUrl}}"],
+          "path": ["readyz"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "List decisions",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/admin/api/decisions?limit=5",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "api", "decisions"],
+          "query": [
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "List adjudications",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/admin/api/adjudications?limit=5",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "api", "adjudications"],
+          "query": [
+            {
+              "key": "limit",
+              "value": "5"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Export decisions (NDJSON)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/admin/api/export/decisions.ndjson?tenant=tenant-123",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "api", "export", "decisions.ndjson"],
+          "query": [
+            {
+              "key": "tenant",
+              "value": "tenant-123"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Export adjudications (NDJSON)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/admin/api/export/adjudications.ndjson?tenant=tenant-123",
+          "host": ["{{baseUrl}}"],
+          "path": ["admin", "api", "export", "adjudications.ndjson"],
+          "query": [
+            {
+              "key": "tenant",
+              "value": "tenant-123"
+            }
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ]
+}

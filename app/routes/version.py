@@ -9,7 +9,7 @@ from fastapi import APIRouter
 
 from app import config
 
-router = APIRouter(tags=["ops"])
+router = APIRouter(tags=["health"])
 
 
 def _boolenv(name: str) -> bool:

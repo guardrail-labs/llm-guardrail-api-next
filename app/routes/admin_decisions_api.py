@@ -525,12 +525,45 @@ def _list_decisions_offset_path(
 @router.get(
     "/admin/api/decisions",
     response_model=DecisionPage,
-    tags=["admin-decisions"],
+    tags=["decisions"],
     summary="List decisions (cursor)",
     description=(
         "Cursor-paginated decisions ordered by (ts desc, id). Supports filters for tenant, "
         "bot, since (epoch ms), outcome, and request_id."
     ),
+    responses={
+        200: {
+            "description": "Decisions with cursor metadata.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "items": [
+                            {
+                                "id": "dec_123",
+                                "ts": "2024-01-01T12:00:00Z",
+                                "tenant": "tenant-123",
+                                "bot": "bot-alpha",
+                                "outcome": "allow",
+                                "policy_version": "v1",
+                                "rule_id": "rule-42",
+                                "incident_id": None,
+                                "mode": "enforce",
+                                "details": {"score": 0.12},
+                            }
+                        ],
+                        "limit": 50,
+                        "dir": "next",
+                        "next_cursor": "1704100800000:dec_123",
+                        "prev_cursor": None,
+                        "total": 120,
+                    }
+                }
+            },
+        },
+        401: {"description": "Authentication required."},
+        403: {"description": "Forbidden for the provided scope."},
+        429: {"description": "Too many requests."},
+    },
 )
 async def get_decisions(
     request: Request,
@@ -883,7 +916,28 @@ def _stream_jsonl(
         yield line.encode("utf-8", errors="replace")
 
 
-@router.get("/admin/api/decisions/export")
+@router.get(
+    "/admin/api/decisions/export",
+    tags=["decisions"],
+    summary="Export decisions",
+    description="Stream decisions as CSV or newline-delimited JSON (NDJSON).",
+    responses={
+        200: {
+            "description": "Decision export stream.",
+            "content": {
+                "text/csv": {
+                    "example": "id,ts,outcome\ndec_123,2024-01-01T12:00:00Z,allow"
+                },
+                "application/x-ndjson": {
+                    "example": "{\"id\":\"dec_123\",\"tenant\":\"tenant-123\"}\n"
+                },
+            },
+        },
+        401: {"description": "Authentication required."},
+        403: {"description": "Forbidden for the provided scope."},
+        429: {"description": "Too many requests."},
+    },
+)
 async def export_decisions(
     request: Request,
     format: str = Query("csv", pattern="^(csv|jsonl)$"),
