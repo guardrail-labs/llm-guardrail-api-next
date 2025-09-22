@@ -12,11 +12,11 @@ from fastapi import (
     Response,
     status,
 )
-from typing_extensions import TypedDict  # use with Pydantic v2 on py<3.12
+from typing_extensions import TypedDict  # pydantic v2 + py<3.12
 
 router = APIRouter(prefix="/admin/api/scope", tags=["admin"])
 
-# Late-bind modules to keep mypy happy and avoid attr-defined errors.
+# Lazy imports to avoid mypy attr-defined on optional modules
 _rbac: Any = importlib.import_module("app.security.rbac")
 _admin_session: Any = importlib.import_module("app.middleware.admin_session")
 
@@ -25,7 +25,7 @@ _admin_session: Any = importlib.import_module("app.middleware.admin_session")
 
 class PolicyPackInfo(TypedDict):
     name: str
-    source: str  # e.g. "golden" | "local" | "remote"
+    source: str  # "golden" | "local" | "remote"
     version: str
 
 
@@ -74,7 +74,6 @@ def _coerce_pack(obj: Any) -> PolicyPackInfo:
         source = str(obj.get("source", "local"))
         version = str(obj.get("version", ""))
         return {"name": name, "source": source, "version": version}
-    # object with attributes
     return {
         "name": str(getattr(obj, "name", "")),
         "source": str(getattr(obj, "source", "local")),
@@ -86,8 +85,8 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     # 1) scope_read plugin, if present
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_policy_packs"):
-        packs_any: Any = scope_read.get_policy_packs(tenant, bot)
-        return [_coerce_pack(p) for p in (packs_any or [])]
+        packs_sr: Any = scope_read.get_policy_packs(tenant, bot)
+        return [_coerce_pack(p) for p in (packs_sr or [])]
 
     # 2) other likely providers in this repo (update list as needed)
     candidates: List[Tuple[str, str]] = [
@@ -99,8 +98,8 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
             func = cast(Any, getattr(mod, fn))
-            packs_any: Any = func(tenant, bot)
-            return [_coerce_pack(p) for p in (packs_any or [])]
+            packs_mod: Any = func(tenant, bot)
+            return [_coerce_pack(p) for p in (packs_mod or [])]
 
     # No provider found
     raise HTTPException(
@@ -138,8 +137,8 @@ def _get_mitigation_overrides(
     # 1) scope_read plugin
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_mitigation_overrides"):
-        overrides_any: Any = scope_read.get_mitigation_overrides(tenant, bot)
-        return _dict_of_overrides(overrides_any)
+        overrides_sr: Any = scope_read.get_mitigation_overrides(tenant, bot)
+        return _dict_of_overrides(overrides_sr)
 
     # 2) likely providers
     candidates: List[Tuple[str, str]] = [
@@ -150,8 +149,8 @@ def _get_mitigation_overrides(
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
             func = cast(Any, getattr(mod, fn))
-            overrides_any: Any = func(tenant, bot)
-            return _dict_of_overrides(overrides_any)
+            overrides_mod: Any = func(tenant, bot)
+            return _dict_of_overrides(overrides_mod)
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -166,8 +165,8 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
     # 1) scope_read plugin
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_secret_set_names"):
-        names_any: Any = scope_read.get_secret_set_names(tenant, bot)
-        return [str(n) for n in (names_any or [])]
+        names_sr: Any = scope_read.get_secret_set_names(tenant, bot)
+        return [str(n) for n in (names_sr or [])]
 
     # 2) likely providers
     candidates: List[Tuple[str, str]] = [
@@ -178,8 +177,8 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
             func = cast(Any, getattr(mod, fn))
-            names_any: Any = func(tenant, bot)
-            return [str(n) for n in (names_any or [])]
+            names_mod: Any = func(tenant, bot)
+            return [str(n) for n in (names_mod or [])]
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
