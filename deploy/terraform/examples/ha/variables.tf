@@ -16,6 +16,12 @@ variable "release_name" {
   default     = "guardrail-api"
 }
 
+variable "chart_path" {
+  description = "Override path to the Guardrail Helm chart (empty uses repo-relative default)."
+  type        = string
+  default     = ""
+}
+
 variable "image_repository" {
   description = "Container image repository for Guardrail API."
   type        = string

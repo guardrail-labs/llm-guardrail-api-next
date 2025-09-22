@@ -97,13 +97,13 @@ locals {
 }
 
 # --- Guardrail API via local Helm chart ---
-# Adjust 'chart' path if your chart lives elsewhere.
 resource "helm_release" "guardrail" {
   name      = var.release_name
   namespace = kubernetes_namespace.ns.metadata[0].name
 
-  # Local chart path (repo-relative). Update if your chart path differs.
-  chart = "${path.module}/../../helm/guardrail"
+  # Local chart path (repo-relative). Default points to deploy/helm/guardrail-api.
+  # You can override with -var="chart_path=/abs/or/relative/path".
+  chart = var.chart_path != "" ? var.chart_path : "${path.module}/../../../helm/guardrail-api"
 
   # If you publish the chart, you can switch to:
   # repository = "oci://ghcr.io/<org>/helm-charts"
