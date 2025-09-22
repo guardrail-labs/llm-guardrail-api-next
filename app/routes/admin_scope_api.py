@@ -3,7 +3,15 @@ from __future__ import annotations
 import importlib
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from typing_extensions import TypedDict  # required on Python < 3.12 with Pydantic v2
 
 router = APIRouter(prefix="/admin/api/scope", tags=["admin"])
@@ -46,7 +54,8 @@ class SecretsResponse(TypedDict):
 
 def _require_admin_dep(request: Request) -> Any:
     """
-    Wrapper around app.middleware.admin_session.require_admin to keep imports stable for mypy.
+    Wrapper around app.middleware.admin_session.require_admin to keep imports
+    stable for mypy.
     """
     return _admin_session.require_admin(request)
 
@@ -83,7 +92,7 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_policy_packs"):
         packs = scope_read.get_policy_packs(tenant, bot)  # type: ignore[no-any-return]
-        return [ _coerce_pack(p) for p in (packs or []) ]
+        return [_coerce_pack(p) for p in (packs or [])]
 
     # 2) other likely providers in this repo (update list as needed)
     candidates: List[Tuple[str, str]] = [
@@ -95,12 +104,15 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
             packs = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
-            return [ _coerce_pack(p) for p in (packs or []) ]
+            return [_coerce_pack(p) for p in (packs or [])]
 
     # No provider found
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="No policy pack provider configured (enable scope_read or policy_packs service).",
+        detail=(
+            "No policy pack provider configured "
+            "(enable scope_read or policy_packs service)."
+        ),
     )
 
 
@@ -116,11 +128,16 @@ def _coerce_override(rule: str, meta: Any) -> MitigationOverrideInfo:
     }
 
 
-def _get_mitigation_overrides(tenant: str, bot: str) -> Dict[str, MitigationOverrideInfo]:
+def _get_mitigation_overrides(
+    tenant: str,
+    bot: str,
+) -> Dict[str, MitigationOverrideInfo]:
     # 1) scope_read plugin
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_mitigation_overrides"):
-        overrides = scope_read.get_mitigation_overrides(tenant, bot)  # type: ignore[no-any-return]
+        overrides = scope_read.get_mitigation_overrides(
+            tenant, bot
+        )  # type: ignore[no-any-return]
         out: Dict[str, MitigationOverrideInfo] = {}
         for k, v in (overrides or {}).items():
             out[str(k)] = _coerce_override(str(k), v)
@@ -142,7 +159,10 @@ def _get_mitigation_overrides(tenant: str, bot: str) -> Dict[str, MitigationOver
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="No mitigation overrides provider configured (enable scope_read or mitigations service).",
+        detail=(
+            "No mitigation overrides provider configured "
+            "(enable scope_read or mitigations service)."
+        ),
     )
 
 
@@ -166,7 +186,10 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="No secrets provider configured (enable scope_read or secrets service).",
+        detail=(
+            "No secrets provider configured "
+            "(enable scope_read or secrets service)."
+        ),
     )
 
 
@@ -202,7 +225,8 @@ def get_bindings(
     current_user: Any = Depends(_require_admin_dep),
 ) -> BindingsResponse:
     """
-    Read-only: policy pack bindings and mitigation overrides for a specific tenant/bot.
+    Read-only: policy pack bindings and mitigation overrides for a specific
+    tenant/bot.
     """
     eff_tenant, eff_bot = _rbac.require_effective_scope(
         user=current_user,
@@ -210,7 +234,7 @@ def get_bindings(
         bot=bot,
         metric_endpoint="admin_scope_bindings",
     )
-    # If multi-scope resolves to a list, the request must be narrowed to a single scope.
+    # If multi-scope resolves to a list, the request must be narrowed.
     if isinstance(eff_tenant, list) or isinstance(eff_bot, list):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
