@@ -17,15 +17,15 @@ docker-build:
 	docker build -t guardrail:local -f docker/Dockerfile .
 
 docker-run:
-        docker run --rm -p 8000:8000 --env-file .env \
-          -v $$(pwd)/rules.yaml:/etc/guardrail/rules.yaml:ro \
-          guardrail:local
+	docker run --rm -p 8000:8000 --env-file .env \
+	  -v $$(pwd)/rules.yaml:/etc/guardrail/rules.yaml:ro \
+	  guardrail:local
 
 demo-traffic:
-        python scripts/demo_traffic.py
+	python scripts/demo_traffic.py
 
 compose-up:
-        docker compose up --build
+	docker compose up --build
 
 compose-down:
 	docker compose down -v
@@ -45,3 +45,15 @@ demo-stack-down:
 
 demo-stack-clean:
 	@docker compose down -v --remove-orphans
+.PHONY: perf-smoke
+perf-smoke:
+	@python tools/perf/bench.py \
+	  --base "$${BASE:-http://localhost:8000}" \
+	  --token "$${TOKEN:-}" \
+	  -c "$${C:-50}" \
+	  -d "$${DURATION:-60s}" \
+	  --timeout "$${TIMEOUT:-5}" \
+	  --limit "$${LIMIT:-50}" \
+	  $${INSECURE:+--insecure} \
+	  $${OUT:+--out "$$OUT"}
+
