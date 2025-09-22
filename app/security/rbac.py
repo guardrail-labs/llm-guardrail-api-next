@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
+from collections.abc import Iterable
 from typing import Any, Callable, Dict, Mapping, Optional, cast
 
 from fastapi import HTTPException, Request
@@ -12,6 +13,14 @@ from app import config
 from app.security import service_tokens as ST
 
 _ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
+
+
+class RBACError(Exception):
+    """Raised when a request is outside of a caller's RBAC scope."""
+
+
+def _is_iterable_scope(val: object) -> bool:
+    return isinstance(val, Iterable) and not isinstance(val, (str, bytes))
 
 
 def _normalize_role(role: Optional[str]) -> str:
@@ -188,30 +197,45 @@ def require_admin(request: Request) -> Dict[str, Any]:
     return _require_min_role(request, "admin")
 
 
-def _value_in_scope(scope_value: Any, candidate: Optional[str]) -> bool:
+def _value_in_scope(scope_value: object, candidate: Optional[str]) -> bool:
+    """Return True when ``candidate`` is permitted by ``scope_value``."""
+
     if scope_value == "*":
         return True
     if candidate is None:
-        return True
+        # Scoped tokens must provide explicit filters.
+        return False
     if isinstance(scope_value, str):
         return scope_value == candidate
-    try:
-        return candidate in scope_value
-    except Exception:
-        return False
-
-
-def _within_scope(user: dict[str, Any], tenant: Optional[str], bot: Optional[str]) -> bool:
-    scope = user.get("scope") if isinstance(user, dict) else None
-    if not scope:
-        return True
-    tenants = scope.get("tenants", "*") if isinstance(scope, dict) else "*"
-    bots = scope.get("bots", "*") if isinstance(scope, dict) else "*"
-    return _value_in_scope(tenants, tenant) and _value_in_scope(bots, bot)
+    if _is_iterable_scope(scope_value):
+        try:
+            return candidate in cast(Iterable[str], scope_value)
+        except Exception:
+            return False
+    return False
 
 
 def ensure_scope(
     user: dict[str, Any], *, tenant: Optional[str], bot: Optional[str]
 ) -> None:
-    if not _within_scope(user, tenant, bot):
-        raise HTTPException(HTTP_403_FORBIDDEN, "Out of scope")
+    """Validate tenant/bot filters against the caller's scope."""
+
+    if isinstance(user, dict):
+        scope = user.get("scope")
+    else:
+        scope = getattr(user, "scope", None)
+    if not scope:
+        return
+
+    tenant_scope = scope.get("tenants", "*") if isinstance(scope, dict) else "*"
+    bot_scope = scope.get("bots", "*") if isinstance(scope, dict) else "*"
+
+    if tenant is None and tenant_scope != "*":
+        raise RBACError("tenant filter required for scoped token")
+    if bot is None and bot_scope != "*":
+        raise RBACError("bot filter required for scoped token")
+
+    if not _value_in_scope(tenant_scope, tenant):
+        raise RBACError(f"tenant '{tenant}' out of scope")
+    if not _value_in_scope(bot_scope, bot):
+        raise RBACError(f"bot '{bot}' out of scope")

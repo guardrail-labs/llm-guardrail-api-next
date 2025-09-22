@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
-from app.security.rbac import ensure_scope, require_viewer
+from app.security.rbac import RBACError, ensure_scope, require_viewer
 from app.services.decisions_store import list_with_cursor
 from app.utils.cursor import CursorError
 
@@ -579,7 +579,10 @@ async def get_decisions(
     ),
 ) -> JSONResponse:
     user = require_viewer(request)
-    ensure_scope(user, tenant=tenant, bot=bot)
+    try:
+        ensure_scope(user, tenant=tenant, bot=bot)
+    except RBACError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     query_dir_raw = request.query_params.get("dir")
     query_dir = query_dir_raw.lower() if query_dir_raw else None
@@ -869,7 +872,10 @@ async def export_decisions(
     """
 
     user = require_viewer(request)
-    ensure_scope(user, tenant=tenant, bot=bot)
+    try:
+        ensure_scope(user, tenant=tenant, bot=bot)
+    except RBACError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     prov = _get_provider()
     since_dt = _parse_since(since)

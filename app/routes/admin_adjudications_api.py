@@ -5,7 +5,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.observability import adjudication_log as log
-from app.security.rbac import ensure_scope, require_viewer
+from app.security.rbac import RBACError, ensure_scope, require_viewer
 from app.utils.cursor import CursorError
 
 try:
@@ -80,7 +80,10 @@ def list_adjudications(
     ),
 ):
     user = require_viewer(request)
-    ensure_scope(user, tenant=tenant, bot=bot)
+    try:
+        ensure_scope(user, tenant=tenant, bot=bot)
+    except RBACError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     try:
         items, next_cur, prev_cur = log.list_with_cursor(

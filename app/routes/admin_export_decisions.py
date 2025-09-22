@@ -5,10 +5,10 @@ import json
 import time
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.security.rbac import ensure_scope, require_viewer
+from app.security.rbac import RBACError, ensure_scope, require_viewer
 from app.services import decisions_store as _store
 
 router = APIRouter(prefix="/admin/api", tags=["admin-export"])
@@ -113,7 +113,10 @@ def export_decisions_ndjson(
             {"email": "admin@export", "name": "Admin Export", "role": "admin"},
         )
     user = require_viewer(request)
-    ensure_scope(user, tenant=tenant, bot=bot)
+    try:
+        ensure_scope(user, tenant=tenant, bot=bot)
+    except RBACError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     now = _dt.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     fname = f"decisions_{now}.ndjson"
