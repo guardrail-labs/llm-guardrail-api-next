@@ -28,6 +28,12 @@ const decisions = await client.listDecisions({ limit: 5 });
 for (const item of decisions.items ?? []) {
   console.log(item.id, item.outcome);
 }
+
+const decisionsDump = await client.exportDecisions({ tenant: "tenant-123" }); // /admin/api/decisions/export?format=jsonl
+console.log(decisionsDump.split("\n")[0]);
+
+const adjudicationsDump = await client.exportAdjudications({ bot: "bot-456" }); // /admin/api/adjudications/export.ndjson
+console.log(adjudicationsDump.split("\n")[0]);
 ```
 
 The client uses `fetch`, so it works in browsers out of the box. In Node.js 18+

@@ -98,12 +98,12 @@ export class GuardrailClient {
   }
 
   async exportDecisions(options: { tenant?: string; bot?: string } = {}): Promise<string> {
-    const response = await this.get("/admin/api/export/decisions.ndjson", options);
+    const response = await this.get("/admin/api/decisions/export", { ...options, format: "jsonl" });
     return response.text();
   }
 
   async exportAdjudications(options: { tenant?: string; bot?: string } = {}): Promise<string> {
-    const response = await this.get("/admin/api/export/adjudications.ndjson", options);
+    const response = await this.get("/admin/api/adjudications/export.ndjson", options);
     return response.text();
   }
 }
