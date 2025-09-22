@@ -10,11 +10,12 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Tuple, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
+from app.middleware.scope import require_effective_scope, set_effective_scope_headers
 from app.security.rbac import RBACError, ensure_scope, require_viewer
 from app.services.decisions_store import list_with_cursor
 from app.utils.cursor import CursorError
@@ -516,6 +517,8 @@ def _list_decisions_offset_path(
 )
 async def get_decisions(
     request: Request,
+    response: Response,
+    scope=Depends(require_effective_scope),
     since: Optional[str] = Query(
         None,
         description="Filter decisions since this ISO8601 timestamp (UTC)",
@@ -578,11 +581,13 @@ async def get_decisions(
         examples=[{"summary": "First page", "value": 0}],
     ),
 ) -> JSONResponse:
-    user = require_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    eff_tenant, eff_bot = scope
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
+
+    def _offset_response(**kwargs) -> JSONResponse:
+        resp = _list_decisions_offset_path(**kwargs)
+        set_effective_scope_headers(resp, eff_tenant, eff_bot)
+        return resp
 
     query_dir_raw = request.query_params.get("dir")
     query_dir = query_dir_raw.lower() if query_dir_raw else None
@@ -615,10 +620,10 @@ async def get_decisions(
 
     if cursor is None and query_dir and query_dir not in {"next", "prev"}:
         log.warning("Offset pagination is deprecated; prefer cursor.")
-        return _list_decisions_offset_path(
+        return _offset_response(
             since=since,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             outcome=outcome,
             request_id=request_id,
             page=max(int(page), 1),
@@ -631,10 +636,10 @@ async def get_decisions(
 
     if offset is not None and cursor is None:
         log.warning("Offset pagination is deprecated; prefer cursor.")
-        return _list_decisions_offset_path(
+        return _offset_response(
             since=since,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             outcome=outcome,
             request_id=request_id,
             page=max(int(page), 1),
@@ -662,8 +667,8 @@ async def get_decisions(
 
     try:
         items_raw, next_cursor, prev_cursor = list_with_cursor(
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             limit=effective_limit,
             cursor=cursor,
             dir=pagination_dir,
@@ -675,10 +680,10 @@ async def get_decisions(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         log.warning("Cursor pagination unavailable (%s); falling back to offset path.", exc)
-        return _list_decisions_offset_path(
+        return _offset_response(
             since=since,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             outcome=outcome,
             request_id=request_id,
             page=max(int(page), 1),
@@ -702,7 +707,9 @@ async def get_decisions(
         limit=effective_limit,
         dir=pagination_dir,
     )
-    return JSONResponse(payload.model_dump())
+    resp = JSONResponse(payload.model_dump())
+    set_effective_scope_headers(resp, eff_tenant, eff_bot)
+    return resp
 
 
 @router.get("/admin/decisions", response_class=HTMLResponse)

@@ -3,27 +3,35 @@ from __future__ import annotations
 import datetime
 import json
 import time
-from typing import Any, Dict, Iterable, Optional, cast
+from typing import Any, Dict, Iterable, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
+from app.middleware.scope import (
+    as_single_scope,
+    require_effective_scope,
+    set_effective_scope_headers,
+)
 from app.observability import admin_audit
-from app.security.rbac import RBACError, ensure_scope, require_viewer
+from app.security.rbac import require_viewer
 
 router = APIRouter(prefix="/admin/api", tags=["admin-audit"])
 
 
-def _resolve_viewer(request: Request) -> Dict[str, Any]:
-    try:
-        overrides = getattr(request.app, "dependency_overrides", None)
-    except Exception:
-        overrides = None
-    if isinstance(overrides, dict):
-        handler = overrides.get(require_viewer)
-        if callable(handler):
-            return cast(Dict[str, Any], handler(request))
-    return require_viewer(request)
+def _export_scope_dependency(
+    request: Request,
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+):
+    if not isinstance(getattr(request.state, "admin_user", None), dict):
+        setattr(
+            request.state,
+            "admin_user",
+            {"email": "admin@audit", "name": "Admin Audit", "role": "admin"},
+        )
+    user = require_viewer(request)
+    return require_effective_scope(user=user, tenant=tenant, bot=bot)
 
 
 def _matches(
@@ -80,39 +88,34 @@ def _iter_ndjson(
 
 @router.get("/audit/export.ndjson")
 def export_audit_ndjson(
-    request: Request,
+    _request: Request,
+    response: Response,
+    scope=Depends(_export_scope_dependency),
     since: Optional[int] = Query(None, description="Epoch ms inclusive"),
     until: Optional[int] = Query(None, description="Epoch ms inclusive"),
-    tenant: Optional[str] = Query(None),
-    bot: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
     outcome: Optional[str] = Query(None, pattern="^(ok|error)$"),
 ):
     """Stream admin audit events as NDJSON."""
 
-    if not isinstance(getattr(request.state, "admin_user", None), dict):
-        setattr(
-            request.state,
-            "admin_user",
-            {"email": "admin@audit", "name": "Admin Audit", "role": "admin"},
-        )
-    user = _resolve_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    eff_tenant, eff_bot = scope
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
+    tenant_single = as_single_scope(eff_tenant, field="tenant")
+    bot_single = as_single_scope(eff_bot, field="bot")
     timestamp = datetime.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     filename = f"admin_audit_{timestamp}.ndjson"
     generator = _iter_ndjson(
         since=since,
         until=until,
-        tenant=tenant,
-        bot=bot,
+        tenant=tenant_single,
+        bot=bot_single,
         action=action,
         outcome=outcome,
     )
-    return StreamingResponse(
+    stream = StreamingResponse(
         generator,
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+    set_effective_scope_headers(stream, eff_tenant, eff_bot)
+    return stream

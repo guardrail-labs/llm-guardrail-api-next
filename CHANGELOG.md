@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+### Added
+- Feature flag to auto-constrain service token scope and emit effective scope headers when enabled.
+
+### Fixed
+- Normalize export scopes to single values, returning `400` when ambiguous multi-tenant tokens omit filters.
+
 ## v0.1.0-rc1 (2025-09-07)
 ### Added
 - Admin audit persistence (file/redis) + NDJSON export.
