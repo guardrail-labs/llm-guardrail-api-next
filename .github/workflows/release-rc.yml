@@ -6,8 +6,9 @@ on:
       - "v1.0.0-rc*"
 
 permissions:
-  contents: write   # needed to create the GitHub Release
-  packages: write   # needed to push to GHCR
+  contents: write     # create GH Release
+  packages: write     # push to GHCR
+  id-token: write     # keyless signing & provenance attestation require OIDC
 
 jobs:
   build-and-push:
@@ -25,15 +26,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build & push
+        id: build
         uses: docker/build-push-action@v5
         with:
           push: true
           tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          provenance: false   # we'll attach a first-party attestation below
           labels: |
             org.opencontainers.image.title=llm-guardrail-api
             org.opencontainers.image.version=${{ github.ref_name }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.repositoryUrl }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Cosign sign (keyless OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE="ghcr.io/${{ github.repository }}@${DIGEST}"
+          cosign sign --yes "$IMAGE"
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          format: spdx-json
+          artifact-name: sbom-${{ github.ref_name }}.spdx.json
       - name: Generate release notes
         run: awk '/## \[1\.0\.0-rc1\]/{flag=1} /## \[/{if(flag && NR!=1) exit} flag' CHANGELOG.md > /tmp/notes.md
       - name: Create GitHub Release
@@ -41,3 +69,5 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           body_path: /tmp/notes.md
+          files: |
+            sbom-${{ github.ref_name }}.spdx.json
