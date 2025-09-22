@@ -1,5 +1,14 @@
 # Guardrail Observability
 
+## SLOs & Alerting
+
+- [SLOs & Alerts](../ops/slo-alerting.md)
+- Prometheus rules:
+  - `deploy/monitoring/prometheus/rules/guardrail-recording-rules.yaml`
+  - `deploy/monitoring/prometheus/rules/guardrail-alerts.yaml`
+- Alertmanager example:
+  - `deploy/monitoring/alertmanager/alertmanager.yml.example`
+
 This package gives you:
 - **PromQL cookbook** for your dashboards/alerts.
 - **Grafana dashboards** you can import as-is.
