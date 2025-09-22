@@ -55,6 +55,18 @@ def snapshot() -> list[Dict[str, Any]]:
         return list(_buf)
 
 
+def iter_all() -> Iterator[Dict[str, Any]]:
+    """Iterate over a snapshot of all buffered decisions."""
+
+    with _lock:
+        rows = list(_buf)
+
+    for evt in rows:
+        item = dict(evt)
+        item.setdefault("ts_ms", _event_ts_ms(evt))
+        yield item
+
+
 def subscribe() -> queue.SimpleQueue[Dict[str, Any]]:
     """Create a subscriber queue that receives future events."""
     q: queue.SimpleQueue[Dict[str, Any]] = queue.SimpleQueue()
@@ -131,6 +143,31 @@ def _event_ts(evt: Dict[str, Any]) -> float:
         return float(evt.get("ts", 0))
     except Exception:
         return 0.0
+
+
+def _event_ts_ms(evt: Dict[str, Any]) -> int:
+    raw_ms = evt.get("ts_ms")
+    if raw_ms is not None:
+        try:
+            return int(float(raw_ms))
+        except Exception:
+            pass
+    raw = evt.get("ts")
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        if value > 1_000_000_000_000:  # already ms
+            return int(value)
+        return int(value * 1000)
+    if isinstance(raw, str):
+        try:
+            if raw.isdigit():
+                value = float(raw)
+                if value > 1_000_000_000_000:
+                    return int(value)
+                return int(value * 1000)
+        except Exception:
+            pass
+    return int(_event_ts(evt) * 1000)
 
 
 def iter_decisions(
@@ -212,3 +249,49 @@ def list_decisions(
             sort=sort,
         )
     )
+
+
+def delete_where(
+    *,
+    tenant: Optional[str],
+    bot: Optional[str],
+    before_ts_ms: Optional[int],
+) -> int:
+    """Delete matching decisions from the in-memory buffer."""
+
+    tenant_norm = _norm_str(tenant)
+    bot_norm = _norm_str(bot)
+    cutoff = int(before_ts_ms) if before_ts_ms is not None else None
+    removed = 0
+    with _lock:
+        keep: list[Dict[str, Any]] = []
+        for evt in list(_buf):
+            if tenant_norm and _norm_str(evt.get("tenant")) != tenant_norm:
+                keep.append(evt)
+                continue
+            if bot_norm and _norm_str(evt.get("bot")) != bot_norm:
+                keep.append(evt)
+                continue
+            ts_ms = _event_ts_ms(evt)
+            if cutoff is not None and ts_ms >= cutoff:
+                keep.append(evt)
+                continue
+            removed += 1
+        if removed:
+            _buf.clear()
+            for evt in keep:
+                _buf.append(evt)
+    return removed
+
+
+__all__ = [
+    "configure",
+    "delete_where",
+    "iter_all",
+    "iter_decisions",
+    "list_decisions",
+    "publish",
+    "snapshot",
+    "subscribe",
+    "unsubscribe",
+]

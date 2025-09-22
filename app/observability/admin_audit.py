@@ -245,8 +245,104 @@ def iter_events(
                 yield item
 
 
+def delete_where(
+    *,
+    tenant: Optional[str],
+    bot: Optional[str],
+    before_ts_ms: Optional[int],
+) -> int:
+    """Delete audit events that match the provided filters."""
+
+    cutoff = int(before_ts_ms) if before_ts_ms is not None else None
+
+    def _matches(obj: Dict[str, Any]) -> bool:
+        try:
+            ts = int(obj.get("ts_ms", 0))
+        except Exception:
+            ts = 0
+        if tenant and obj.get("tenant") != tenant:
+            return False
+        if bot and obj.get("bot") != bot:
+            return False
+        if cutoff is not None and ts >= cutoff:
+            return False
+        return True
+
+    deleted = 0
+    mode = _storage_mode()
+    if mode == "file":
+        path = getattr(config, "AUDIT_LOG_FILE", "")
+        lines = _iter_file_lines()
+        kept_lines: List[str] = []
+        for raw in lines:
+            try:
+                obj = json.loads(raw)
+            except Exception:
+                kept_lines.append(raw)
+                continue
+            if _matches(obj):
+                deleted += 1
+            else:
+                kept_lines.append(raw)
+        if path:
+            tmp_path = f"{path}.tmp"
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as handle:
+                    for line in kept_lines:
+                        handle.write(line + "\n")
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+    elif mode == "redis":
+        client = _redis_client()
+        if client is not None:
+            redis_key = getattr(config, "AUDIT_REDIS_KEY", "guardrail:admin_audit:v1")
+            kept_values: List[str] = []
+            try:
+                values = client.lrange(redis_key, 0, -1)
+            except Exception:
+                values = []
+            for raw in values:
+                try:
+                    obj = json.loads(raw)
+                except Exception:
+                    kept_values.append(raw)
+                    continue
+                if _matches(obj):
+                    deleted += 1
+                else:
+                    kept_values.append(raw)
+            try:
+                pipe = client.pipeline()
+                pipe.delete(redis_key)
+                if kept_values:
+                    pipe.rpush(redis_key, *kept_values)
+                pipe.execute()
+            except Exception:
+                pass
+    else:
+        with _LOG_LOCK:
+            kept_ring: List[Dict[str, Any]] = []
+            for obj in list(_RING):
+                if _matches(obj):
+                    deleted += 1
+                else:
+                    kept_ring.append(obj)
+            _RING[:] = kept_ring
+        return deleted
+
+    with _LOG_LOCK:
+        _RING[:] = [obj for obj in _RING if not _matches(obj)]
+    return deleted
+
+
 __all__ = [
     "iter_events",
+    "delete_where",
     "record",
     "recent",
     "_iter_file_lines",
