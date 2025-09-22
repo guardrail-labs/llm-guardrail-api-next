@@ -1,0 +1,120 @@
+name: Perf Nightly
+
+on:
+  schedule:
+    - cron: "17 4 * * *"  # daily 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Override base URL (e.g., https://rc.example.com)"
+        required: false
+        type: string
+      token:
+        description: "Bearer token (optional)"
+        required: false
+        type: string
+      duration:
+        description: "Test duration (e.g., 60s)"
+        required: false
+        default: "60s"
+        type: string
+      concurrency:
+        description: "Concurrent workers"
+        required: false
+        default: "50"
+        type: string
+      limit:
+        description: "Decisions ?limit= param"
+        required: false
+        default: "50"
+        type: string
+      insecure:
+        description: "Skip TLS verify"
+        required: false
+        default: "false"
+        type: boolean
+
+permissions:
+  contents: write
+  actions: write  # needed for actions/upload-artifact
+
+jobs:
+  perf-nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve config
+        id: cfg
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.inputs.base_url || '' }}"
+          TOKEN="${{ github.event.inputs.token || '' }}"
+          if [ -z "$BASE" ]; then BASE="${{ secrets.PERF_BASE_URL }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PERF_TOKEN }}"; fi
+          if [ -z "$BASE" ]; then
+            echo "No PERF_BASE_URL provided; skipping nightly perf."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "base=$BASE"   >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "skip=false"   >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python
+        if: steps.cfg.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        if: steps.cfg.outputs.skip != 'true'
+        run: pip install httpx==0.28.1
+
+      - name: Run bench
+        if: steps.cfg.outputs.skip != 'true'
+        id: bench
+        run: |
+          set -euo pipefail
+          mkdir -p perf/nightly
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          OUT="perf/nightly/perf-${TS}.json"
+          DUR="${{ github.event.inputs.duration || '60s' }}"
+          CONC="${{ github.event.inputs.concurrency || '50' }}"
+          LIM="${{ github.event.inputs.limit || '50' }}"
+          INSEC="${{ github.event.inputs.insecure || 'false' }}"
+          [ "$INSEC" = "true" ] && INSEC_FLAG="--insecure" || INSEC_FLAG=""
+          python tools/perf/bench.py \
+            --base "${{ steps.cfg.outputs.base }}" \
+            --token "${{ steps.cfg.outputs.token }}" \
+            -c "$CONC" -d "$DUR" --limit "$LIM" --timeout 5.0 $INSEC_FLAG \
+            --out "$OUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload perf artifact
+        if: steps.cfg.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly-json
+          path: ${{ steps.bench.outputs.out }}
+
+      - name: Compare vs baseline (optional)
+        if: steps.cfg.outputs.skip != 'true'
+        env:
+          PERF_BASELINE: perf/baseline.json
+          PERF_RESULT: ${{ steps.bench.outputs.out }}
+          # Thresholds (tweak as needed)
+          MAX_P95_REG_PCT: "20"   # fail if p95_ms increases > 20%
+          MAX_RPS_DROP_PCT: "20"  # fail if rps drops > 20%
+          MIN_SUCCESS_RATE: "99"  # fail if success_rate% < 99
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PERF_BASELINE" ]; then
+            echo "No baseline found at $PERF_BASELINE — skipping comparison."; exit 0
+          fi
+          python tools/perf/compare.py \
+            --baseline "$PERF_BASELINE" \
+            --result "$PERF_RESULT" \
+            --max-p95-reg-pct "$MAX_P95_REG_PCT" \
+            --max-rps-drop-pct "$MAX_RPS_DROP_PCT" \
+            --min-success-rate "$MIN_SUCCESS_RATE"
