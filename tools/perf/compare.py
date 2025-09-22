@@ -15,7 +15,6 @@ def pick_all_bucket(rows: Any) -> Optional[JSONDict]:
         return None
     for r in rows:
         if isinstance(r, dict) and r.get("name") == "ALL":
-            # Narrow type for mypy
             return cast(JSONDict, r)
     return None
 
@@ -30,7 +29,10 @@ def load(path: str) -> JSONDict:
 
 
 def percent_change(new: float, old: float) -> float:
-    """Percentage change from old -> new (positive = increase)."""
+    """
+    Percentage change from old -> new, i.e. (new - old) / old * 100.
+    Positive means an increase vs baseline; negative means a decrease.
+    """
     if old == 0.0:
         return 0.0 if new == 0.0 else float("inf")
     return (new - old) / old * 100.0
@@ -74,9 +76,12 @@ def main() -> int:
     r_rps = require_field(r_all, "rps")
     r_ok = require_field(r_all, "success_rate")
 
+    # p95 regression: percent increase vs. baseline
     p95_reg_pct = percent_change(r_p95, b_p95)
-    # rps drop is measured as (baseline - result)/baseline
-    rps_drop_pct = percent_change(b_rps, r_rps)
+
+    # rps drop: percent decrease vs. baseline (positive number when result is lower)
+    rps_change_pct = percent_change(r_rps, b_rps)  # negative if result < baseline
+    rps_drop_pct = max(0.0, -rps_change_pct)
 
     print("=== Perf Regression Check (ALL) ===")
     print(f"Baseline p95_ms={b_p95}  Result p95_ms={r_p95}  Δ%={p95_reg_pct:.2f}")
@@ -86,8 +91,7 @@ def main() -> int:
     failures = []
     if r_ok < args.min_success_rate:
         failures.append(f"success_rate {r_ok:.2f}% < {args.min_success_rate}%")
-    if p95_reg_pct > args.max_p95_reg_p
-ct:
+    if p95_reg_pct > args.max_p95_reg_pct:
         failures.append(
             f"p95 regression {p95_reg_pct:.2f}% > {args.max_p95_reg_pct}%"
         )
