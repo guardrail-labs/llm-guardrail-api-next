@@ -61,7 +61,9 @@ jobs:
         with:
           image: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
           format: spdx-json
+          output-file: sbom-${{ github.ref_name }}.spdx.json
           artifact-name: sbom-${{ github.ref_name }}.spdx.json
+          upload-artifact: false
       - name: Generate release notes
         run: awk '/## \[1\.0\.0-rc1\]/{flag=1} /## \[/{if(flag && NR!=1) exit} flag' CHANGELOG.md > /tmp/notes.md
       - name: Create GitHub Release
