@@ -17,6 +17,9 @@
 - DLQ depth metric freshness (updated on enqueue/purge/retry).
 - Admin UI CSRF placement for Apply Golden.
 
+### Security
+- Security (P0): Fix RBAC bypass where omitted tenant/bot filters were treated as in-scope for scoped service tokens. Admin and export endpoints now require explicit filters unless the token scope is "*".
+
 ### Upgrade notes
 - If using Redis backends, ensure `REDIS_URL` reachable; `/readyz` will fail otherwise.
 - For file backends, create writable dirs for `AUDIT_LOG_FILE` and `MITIGATION_STORE_FILE`.

@@ -5,11 +5,11 @@ import json
 import time
 from typing import Any, Dict, Iterable, Optional, cast
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.observability import admin_audit
-from app.security.rbac import ensure_scope, require_viewer
+from app.security.rbac import RBACError, ensure_scope, require_viewer
 
 router = APIRouter(prefix="/admin/api", tags=["admin-audit"])
 
@@ -97,7 +97,10 @@ def export_audit_ndjson(
             {"email": "admin@audit", "name": "Admin Audit", "role": "admin"},
         )
     user = _resolve_viewer(request)
-    ensure_scope(user, tenant=tenant, bot=bot)
+    try:
+        ensure_scope(user, tenant=tenant, bot=bot)
+    except RBACError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     timestamp = datetime.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     filename = f"admin_audit_{timestamp}.ndjson"
     generator = _iter_ndjson(
