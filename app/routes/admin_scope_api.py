@@ -12,11 +12,11 @@ from fastapi import (
     Response,
     status,
 )
-from typing_extensions import TypedDict  # required on Python < 3.12 with Pydantic v2
+from typing_extensions import TypedDict  # use with Pydantic v2 on py<3.12
 
 router = APIRouter(prefix="/admin/api/scope", tags=["admin"])
 
-# Resolve at runtime; keeps mypy happy and avoids attr-defined errors.
+# Late-bind modules to keep mypy happy and avoid attr-defined errors.
 _rbac: Any = importlib.import_module("app.security.rbac")
 _admin_session: Any = importlib.import_module("app.middleware.admin_session")
 
@@ -53,10 +53,7 @@ class SecretsResponse(TypedDict):
 # ------------------------- Dependency wrappers -------------------------
 
 def _require_admin_dep(request: Request) -> Any:
-    """
-    Wrapper around app.middleware.admin_session.require_admin to keep imports
-    stable for mypy.
-    """
+    """Wrapper around middleware-admin require_admin."""
     return _admin_session.require_admin(request)
 
 
@@ -70,8 +67,6 @@ def _try_import(module: str) -> Optional[Any]:
 
 
 # ------------------------- Provider adapters -------------------------
-# We try known providers in order. If none exist, raise 501 so callers
-# understand configuration is incomplete, rather than returning empty data.
 
 def _coerce_pack(obj: Any) -> PolicyPackInfo:
     if isinstance(obj, dict):
@@ -91,8 +86,8 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     # 1) scope_read plugin, if present
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_policy_packs"):
-        packs = scope_read.get_policy_packs(tenant, bot)  # type: ignore[no-any-return]
-        return [_coerce_pack(p) for p in (packs or [])]
+        packs_any: Any = scope_read.get_policy_packs(tenant, bot)
+        return [_coerce_pack(p) for p in (packs_any or [])]
 
     # 2) other likely providers in this repo (update list as needed)
     candidates: List[Tuple[str, str]] = [
@@ -103,8 +98,9 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     for mod_name, fn in candidates:
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
-            packs = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
-            return [_coerce_pack(p) for p in (packs or [])]
+            func = cast(Any, getattr(mod, fn))
+            packs_any: Any = func(tenant, bot)
+            return [_coerce_pack(p) for p in (packs_any or [])]
 
     # No provider found
     raise HTTPException(
@@ -116,7 +112,7 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     )
 
 
-def _coerce_override(rule: str, meta: Any) -> MitigationOverrideInfo:
+def _coerce_override(_rule: str, meta: Any) -> MitigationOverrideInfo:
     if isinstance(meta, dict):
         return {
             "enabled": bool(meta.get("enabled", False)),
@@ -128,6 +124,13 @@ def _coerce_override(rule: str, meta: Any) -> MitigationOverrideInfo:
     }
 
 
+def _dict_of_overrides(obj: Any) -> Dict[str, MitigationOverrideInfo]:
+    out: Dict[str, MitigationOverrideInfo] = {}
+    for k, v in (obj or {}).items():
+        out[str(k)] = _coerce_override(str(k), v)
+    return out
+
+
 def _get_mitigation_overrides(
     tenant: str,
     bot: str,
@@ -135,13 +138,8 @@ def _get_mitigation_overrides(
     # 1) scope_read plugin
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_mitigation_overrides"):
-        overrides = scope_read.get_mitigation_overrides(
-            tenant, bot
-        )  # type: ignore[no-any-return]
-        out: Dict[str, MitigationOverrideInfo] = {}
-        for k, v in (overrides or {}).items():
-            out[str(k)] = _coerce_override(str(k), v)
-        return out
+        overrides_any: Any = scope_read.get_mitigation_overrides(tenant, bot)
+        return _dict_of_overrides(overrides_any)
 
     # 2) likely providers
     candidates: List[Tuple[str, str]] = [
@@ -151,11 +149,9 @@ def _get_mitigation_overrides(
     for mod_name, fn in candidates:
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
-            overrides = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
-            out: Dict[str, MitigationOverrideInfo] = {}
-            for k, v in (overrides or {}).items():
-                out[str(k)] = _coerce_override(str(k), v)
-            return out
+            func = cast(Any, getattr(mod, fn))
+            overrides_any: Any = func(tenant, bot)
+            return _dict_of_overrides(overrides_any)
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -170,8 +166,8 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
     # 1) scope_read plugin
     scope_read = _try_import("app.services.scope_read")
     if scope_read and hasattr(scope_read, "get_secret_set_names"):
-        names = scope_read.get_secret_set_names(tenant, bot)  # type: ignore[no-any-return]
-        return [str(n) for n in (names or [])]
+        names_any: Any = scope_read.get_secret_set_names(tenant, bot)
+        return [str(n) for n in (names_any or [])]
 
     # 2) likely providers
     candidates: List[Tuple[str, str]] = [
@@ -181,8 +177,9 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
     for mod_name, fn in candidates:
         mod = _try_import(mod_name)
         if mod and hasattr(mod, fn):
-            names = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
-            return [str(n) for n in (names or [])]
+            func = cast(Any, getattr(mod, fn))
+            names_any: Any = func(tenant, bot)
+            return [str(n) for n in (names_any or [])]
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
