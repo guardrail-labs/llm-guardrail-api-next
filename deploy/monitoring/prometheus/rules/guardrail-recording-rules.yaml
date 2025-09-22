@@ -1,30 +1,27 @@
-# PrometheusRule (Prometheus Operator) — Recording rules for SLIs
-apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  name: guardrail-recording-rules
-  labels:
-    app.kubernetes.io/name: guardrail
-spec:
-  groups:
-    - name: guardrail.sli
-      interval: 30s
-      rules:
-        # Fleet readiness availability (0..1). Average of pod gauges.
-        - record: guardrail:readyz_available:ratio
-          expr: avg(guardrail_readyz_ok)
+groups:
+  - name: guardrail.recordings
+    interval: 30s
+    rules:
+      - record: guardrail:decisions:availability_30d
+        expr: |
+          1 - (
+            sum(rate(http_server_errors_total{job="guardrail", route="decisions"}[30d])) /
+            sum(rate(http_requests_total{job="guardrail", route="decisions"}[30d]))
+          )
 
-        # Redis availability (0..1). Average of pod redis_ok gauges.
-        - record: guardrail:redis_available:ratio
-          expr: avg(guardrail_readyz_redis_ok)
+      - record: guardrail:decisions:p95_latency_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="guardrail", route="decisions"}[5m]))
+          )
 
-        # 30-day rolling availability (SLO windows).
-        - record: guardrail:readyz_available:ratio:30d
-          expr: avg_over_time(guardrail:readyz_available:ratio[30d])
+      - record: guardrail:webhook:delivery_success_30m
+        expr: |
+          1 - (
+            sum(rate(guardrail_webhook_fail_total[30m])) /
+            sum(rate(guardrail_webhook_attempt_total[30m]))
+          )
 
-        - record: guardrail:redis_available:ratio:30d
-          expr: avg_over_time(guardrail:redis_available:ratio[30d])
-
-        # DLQ backlog helpers
-        - record: guardrail:webhook_dlq_depth:max_30m
-          expr: max_over_time(guardrail_webhook_dlq_depth[30m])
+      - record: guardrail:webhook_dlq_depth:max_5m
+        expr: max_over_time(guardrail_webhook_dlq_depth[5m])
