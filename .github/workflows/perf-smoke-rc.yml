@@ -1,0 +1,109 @@
+name: Perf Smoke on RC Release
+
+on:
+  release:
+    types: [published, prereleased]
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Override base URL (e.g., https://rc1.example.com)"
+        required: false
+        type: string
+      token:
+        description: "Bearer token (optional)"
+        required: false
+        type: string
+      duration:
+        description: "Test duration (e.g., 30s)"
+        required: false
+        default: "30s"
+        type: string
+      concurrency:
+        description: "Concurrent workers"
+        required: false
+        default: "20"
+        type: string
+      limit:
+        description: "Decisions ?limit= param"
+        required: false
+        default: "50"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  perf-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set inputs
+        id: cfg
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.inputs.base_url || '' }}"
+          TOKEN="${{ github.event.inputs.token || '' }}"
+          if [ -z "$BASE" ]; then BASE="${{ secrets.PERF_BASE_URL }}"; fi
+          if [ -z "$TOKEN" ]; then TOKEN="${{ secrets.PERF_TOKEN }}"; fi
+          if [ -z "$BASE" ]; then
+            echo "No PERF_BASE_URL provided; skipping perf"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "base=$BASE"   >> "$GITHUB_OUTPUT"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "skip=false"   >> "$GITHUB_OUTPUT"
+
+      - name: Set perf params
+        if: steps.cfg.outputs.skip != 'true'
+        id: p
+        run: |
+          DUR="${{ github.event.inputs.duration || '30s' }}"
+          CONC="${{ github.event.inputs.concurrency || '20' }}"
+          LIM="${{ github.event.inputs.limit || '50' }}"
+          echo "duration=$DUR"     >> "$GITHUB_OUTPUT"
+          echo "concurrency=$CONC" >> "$GITHUB_OUTPUT"
+          echo "limit=$LIM"        >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python
+        if: steps.cfg.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps (httpx)
+        if: steps.cfg.outputs.skip != 'true'
+        run: pip install httpx==0.28.1
+
+      - name: Run perf smoke
+        if: steps.cfg.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p perf
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          TAG="${{ github.event.release.tag_name || github.ref_name }}"
+          OUT="perf/${TAG}-${TS}.json"
+          python tools/perf/bench.py \
+            --base "${{ steps.cfg.outputs.base }}" \
+            --token "${{ steps.cfg.outputs.token }}" \
+            -c "${{ steps.p.outputs.concurrency }}" \
+            -d "${{ steps.p.outputs.duration }}" \
+            --limit "${{ steps.p.outputs.limit }}" \
+            --timeout 5.0 \
+            --out "$OUT"
+          echo "OUT=$OUT" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        if: steps.cfg.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke-json
+          path: ${{ env.OUT }}
+
+      - name: Attach to GitHub Release
+        if: steps.cfg.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          files: ${{ env.OUT }}
+          fail_on_unmatched_files: false
