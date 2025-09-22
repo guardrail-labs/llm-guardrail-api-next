@@ -66,7 +66,9 @@ class GuardrailClient:
             params["tenant"] = tenant
         if bot is not None:
             params["bot"] = bot
-        response = self._get("/admin/api/export/decisions.ndjson", params=params)
+        # Server expects /admin/api/decisions/export with format selector.
+        params["format"] = "jsonl"
+        response = self._get("/admin/api/decisions/export", params=params)
         return response.text
 
     # Adjudications ----------------------------------------------------------
@@ -107,7 +109,8 @@ class GuardrailClient:
             params["tenant"] = tenant
         if bot is not None:
             params["bot"] = bot
-        response = self._get("/admin/api/export/adjudications.ndjson", params=params)
+        # Server exposes NDJSON at /admin/api/adjudications/export.ndjson
+        response = self._get("/admin/api/adjudications/export.ndjson", params=params)
         return response.text
 
 

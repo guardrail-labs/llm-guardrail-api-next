@@ -33,8 +33,11 @@ page = client.list_decisions(limit=5)
 for decision in page["items"]:
     print(decision["id"], decision["outcome"])
 
-ndjson = client.export_adjudications(tenant="tenant-123")
-print(ndjson.splitlines()[0])
+decisions_ndjson = client.export_decisions(tenant="tenant-123")
+print(decisions_ndjson.splitlines()[0])  # GET /admin/api/decisions/export?format=jsonl
+
+adjudications_ndjson = client.export_adjudications(tenant="tenant-123")
+print(adjudications_ndjson.splitlines()[0])  # GET /admin/api/adjudications/export.ndjson
 ```
 
 When scoping is enforced server-side you can omit the `tenant`/`bot` arguments

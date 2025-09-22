@@ -11,6 +11,8 @@
 
 ### Fixed
 - Normalize export scopes to single values, returning `400` when ambiguous multi-tenant tokens omit filters.
+- SDK: Correct export endpoints for decisions (`/admin/api/decisions/export?format=jsonl`) and adjudications
+  (`/admin/api/adjudications/export.ndjson`) in Python & TypeScript clients.
 
 ## [1.0.0-rc1] — 2025-09-21
 ### Added
