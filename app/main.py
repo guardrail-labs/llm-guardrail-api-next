@@ -28,6 +28,7 @@ from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
+from app.routes.admin_scope_api import router as admin_scope_router
 from app.routes.egress import router as egress_router
 from app.services.bindings.utils import (
     compute_version_for_path as _compute_version_for_path,
@@ -639,11 +640,21 @@ def create_app() -> FastAPI:
         openapi_tags=OPENAPI_TAGS,
     )
     try:
+        from app.security.rbac import RBACError
+
+        async def handle_rbac_error(request: Request, exc: Exception) -> JSONResponse:
+            return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+        app.add_exception_handler(RBACError, handle_rbac_error)
+    except Exception:
+        pass
+    try:
         from app.routes import health
 
         app.include_router(health.router)
     except Exception as exc:
         log.warning("Health routes unavailable: %s", exc)
+    app.include_router(admin_scope_router)
     try:
         from app.routes.admin_policy_packs import router as admin_policy_packs_router
 
