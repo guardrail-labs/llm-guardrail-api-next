@@ -68,6 +68,18 @@ def set_effective_scope_headers(
     response.headers["X-Guardrail-Scope-Bot"] = _fmt_scope_val(bot)
 
 
+def as_iterable_scope(
+    value: Optional[Union[str, Iterable[str]]]
+) -> Optional[Iterable[str]]:
+    """Normalize a scope value to an iterable of strings or ``None``."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    return value
+
+
 def as_single_scope(
     value: Optional[Union[str, Iterable[str]]],
     *,

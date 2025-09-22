@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable as IterableABC
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
@@ -17,15 +18,33 @@ try:  # pragma: no cover - optional dependency resolution
 except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
     decisions_service = None  # type: ignore[assignment]
 
+from app.security.rbac import ScopeParam
 from app.utils.cursor import decode_cursor, encode_cursor
 
 Dir = Literal["next", "prev"]
 
 
+def _normalize_scope_values(scope: ScopeParam) -> Optional[List[str]]:
+    if scope is None:
+        return None
+    if isinstance(scope, str):
+        return [scope]
+    if isinstance(scope, IterableABC) and not isinstance(scope, (str, bytes)):
+        values = [str(item) for item in scope if item is not None]
+        if not values:
+            return []
+        # Preserve order while dropping duplicates.
+        seen: Dict[str, None] = {}
+        for value in values:
+            seen.setdefault(value, None)
+        return list(seen.keys())
+    return [str(scope)]
+
+
 def list_with_cursor(
     *,
-    tenant: Optional[str] = None,
-    bot: Optional[str] = None,
+    tenant: ScopeParam = None,
+    bot: ScopeParam = None,
     limit: int = 50,
     cursor: Optional[str] = None,
     dir: Dir = "next",
@@ -163,8 +182,8 @@ def _ensure_ts_ms(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def _fetch_decisions_sorted_desc(
     *,
-    tenant: Optional[str],
-    bot: Optional[str],
+    tenant: ScopeParam,
+    bot: ScopeParam,
     limit: int,
     cursor: Optional[Tuple[int, str]],
     dir: Dir,
@@ -176,11 +195,21 @@ def _fetch_decisions_sorted_desc(
         raise RuntimeError("SQLAlchemy is required for decisions cursor pagination")
     table = decisions_service.decisions
     stmt: Select = select(table)
+    tenant_values = _normalize_scope_values(tenant)
+    bot_values = _normalize_scope_values(bot)
+    if tenant_values == [] or bot_values == []:
+        return []
     conditions = []
-    if tenant:
-        conditions.append(table.c.tenant == tenant)
-    if bot:
-        conditions.append(table.c.bot == bot)
+    if tenant_values:
+        if len(tenant_values) == 1:
+            conditions.append(table.c.tenant == tenant_values[0])
+        else:
+            conditions.append(table.c.tenant.in_(tenant_values))
+    if bot_values:
+        if len(bot_values) == 1:
+            conditions.append(table.c.bot == bot_values[0])
+        else:
+            conditions.append(table.c.bot.in_(bot_values))
     if since_ts_ms is not None:
         since_dt = datetime.fromtimestamp(since_ts_ms / 1000, tz=timezone.utc)
         conditions.append(table.c.ts >= since_dt)

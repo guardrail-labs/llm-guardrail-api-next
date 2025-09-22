@@ -4,10 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config
-from app.services import config as services_config
 from app.main import create_app
 from app.security import service_tokens as ST
-from app.services import decisions_store as decisions_store
+from app.services import config as services_config, decisions_store as decisions_store
 
 
 def _auth(token: str) -> dict[str, str]:

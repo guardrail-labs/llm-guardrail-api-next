@@ -4,7 +4,11 @@ from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
-from app.middleware.scope import require_effective_scope, set_effective_scope_headers
+from app.middleware.scope import (
+    as_iterable_scope,
+    require_effective_scope,
+    set_effective_scope_headers,
+)
 from app.observability import adjudication_log as log
 from app.utils.cursor import CursorError
 
@@ -84,13 +88,15 @@ def list_adjudications(
     eff_tenant, eff_bot = scope
     set_effective_scope_headers(response, eff_tenant, eff_bot)
 
+    eff_tenant_seq = as_iterable_scope(eff_tenant)
+    eff_bot_seq = as_iterable_scope(eff_bot)
     try:
         items, next_cur, prev_cur = log.list_with_cursor(
             limit=limit,
             cursor=cursor,
             dir=dir,
-            tenant=eff_tenant,
-            bot=eff_bot,
+            tenant=eff_tenant_seq,
+            bot=eff_bot_seq,
             since_ts_ms=since,
             outcome=outcome,
             rule_id=rule_id,

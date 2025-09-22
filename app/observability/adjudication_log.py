@@ -5,10 +5,12 @@ import json
 import os
 import threading
 from collections import deque
+from collections.abc import Iterable as IterableABC
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Deque, Dict, Iterator, List, Literal, Optional, Sequence, Tuple, Union
 
+from app.security.rbac import ScopeParam
 from app.utils.cursor import CursorError
 
 
@@ -83,23 +85,45 @@ def _ts_sort_key(record: AdjudicationRecord) -> datetime:
     return parsed
 
 
+def _normalize_scope_values(scope: ScopeParam) -> Optional[Tuple[str, ...]]:
+    if scope is None:
+        return None
+    if isinstance(scope, str):
+        return (scope,)
+    if isinstance(scope, IterableABC) and not isinstance(scope, (str, bytes)):
+        values = [str(item) for item in scope if item is not None]
+        if not values:
+            return tuple()
+        seen: Dict[str, None] = {}
+        for value in values:
+            seen.setdefault(value, None)
+        return tuple(seen.keys())
+    return (str(scope),)
+
+
 def _matches(
     record: AdjudicationRecord,
     *,
     start: Optional[datetime],
     end: Optional[datetime],
-    tenant: Optional[str],
-    bot: Optional[str],
+    tenant_filter: Optional[Tuple[str, ...]],
+    bot_filter: Optional[Tuple[str, ...]],
     provider: Optional[str],
     request_id: Optional[str],
     rule_id: Optional[str],
     decision: Optional[str],
     mitigation_forced: Optional[str],
 ) -> bool:
-    if tenant and record.tenant != tenant:
-        return False
-    if bot and record.bot != bot:
-        return False
+    if tenant_filter is not None:
+        if not tenant_filter:
+            return False
+        if record.tenant not in tenant_filter:
+            return False
+    if bot_filter is not None:
+        if not bot_filter:
+            return False
+        if record.bot not in bot_filter:
+            return False
     if provider and record.provider != provider:
         return False
     if request_id and record.request_id != request_id:
@@ -233,8 +257,8 @@ def _iter_filtered(
     *,
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
-    tenant: Optional[str] = None,
-    bot: Optional[str] = None,
+    tenant: ScopeParam = None,
+    bot: ScopeParam = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
     rule_id: Optional[str] = None,
@@ -246,6 +270,8 @@ def _iter_filtered(
         snapshot: Sequence[AdjudicationRecord] = list(_BUFFER)
 
     reverse = sort != "ts_asc"
+    tenant_filter = _normalize_scope_values(tenant)
+    bot_filter = _normalize_scope_values(bot)
     ordered = sorted(
         enumerate(snapshot),
         key=lambda item: (_ts_sort_key(item[1]), item[0]),
@@ -257,8 +283,8 @@ def _iter_filtered(
             rec,
             start=start,
             end=end,
-            tenant=tenant,
-            bot=bot,
+            tenant_filter=tenant_filter,
+            bot_filter=bot_filter,
             provider=provider,
             request_id=request_id,
             rule_id=rule_id,
@@ -366,8 +392,8 @@ def _iter_filtered_with_index(
     *,
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
-    tenant: Optional[str] = None,
-    bot: Optional[str] = None,
+    tenant: ScopeParam = None,
+    bot: ScopeParam = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
     rule_id: Optional[str] = None,
@@ -379,6 +405,8 @@ def _iter_filtered_with_index(
         snapshot: Sequence[AdjudicationRecord] = list(_BUFFER)
 
     reverse = sort != "ts_asc"
+    tenant_filter = _normalize_scope_values(tenant)
+    bot_filter = _normalize_scope_values(bot)
     ordered = sorted(
         enumerate(snapshot),
         key=lambda item: (_ts_sort_key(item[1]), item[0]),
@@ -390,8 +418,8 @@ def _iter_filtered_with_index(
             rec,
             start=start,
             end=end,
-            tenant=tenant,
-            bot=bot,
+            tenant_filter=tenant_filter,
+            bot_filter=bot_filter,
             provider=provider,
             request_id=request_id,
             rule_id=rule_id,
@@ -405,8 +433,8 @@ def list_with_cursor(
     *,
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
-    tenant: Optional[str] = None,
-    bot: Optional[str] = None,
+    tenant: ScopeParam = None,
+    bot: ScopeParam = None,
     provider: Optional[str] = None,
     request_id: Optional[str] = None,
     rule_id: Optional[str] = None,
