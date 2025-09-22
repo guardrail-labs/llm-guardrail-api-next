@@ -348,3 +348,10 @@ console.log(ndjson.split("\n")[0]);
 ---
 
 Use the effective scope headers and explicit query filters to guarantee you are working within the intended tenant/bot boundaries when operating in multi-tenant environments.
+
+### Scope (read-only)
+- `GET /admin/api/scope/effective` → JSON mirror of `X-Guardrail-Scope-*` effective scope headers.
+- `GET /admin/api/scope/bindings?tenant=...&bot=...` → policy packs + mitigation overrides.
+- `GET /admin/api/scope/secrets?tenant=...&bot=...` → **secret set names only** (no values).
+
+All endpoints enforce admin RBAC and scope autoconstrain; multi-scope tokens must provide explicit `tenant` and `bot`.

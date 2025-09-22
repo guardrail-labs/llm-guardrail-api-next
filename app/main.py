@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRouter
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -737,6 +737,15 @@ def create_app() -> FastAPI:
         app.include_router(admin_me.router)
     except Exception as exc:
         log.warning("Admin /me route unavailable: %s", exc)
+    try:
+        from app.routes.admin_scope_api import router as admin_scope_router
+        from app.security.rbac import require_admin as _require_admin_router
+
+        app.include_router(
+            admin_scope_router, dependencies=[Depends(_require_admin_router)]
+        )
+    except Exception:
+        pass
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
