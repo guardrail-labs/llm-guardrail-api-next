@@ -15,6 +15,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python (for pre-download wheelhouse)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Prepare wheelhouse for Docker build
+        env:
+          PIP_DEFAULT_TIMEOUT: "60"
+        run: |
+          python -m pip install --upgrade pip
+          mkdir -p .docker_wheelhouse
+          # Pre-download wheels with retries; if dev reqs exist, pull them too (optional).
+          python -m pip download -r requirements.txt -d .docker_wheelhouse --retries 6 --timeout 60
+          if [ -f requirements-dev.txt ]; then \
+            python -m pip download -r requirements-dev.txt -d .docker_wheelhouse --retries 6 --timeout 60 ; \
+          fi
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Buildx
@@ -27,11 +46,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build & push
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           push: true
           tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-          provenance: false   # we'll attach a first-party attestation below
+          provenance: false   # we attach first-party attestation later
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.title=llm-guardrail-api
             org.opencontainers.image.version=${{ github.ref_name }}
