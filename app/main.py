@@ -711,6 +711,12 @@ def create_app() -> FastAPI:
     except Exception as exc:
         log.warning("Admin audit export unavailable: %s", exc)
     try:
+        from app.routes import admin_data_lifecycle
+
+        app.include_router(admin_data_lifecycle.router)
+    except Exception as exc:
+        log.warning("Data lifecycle routes unavailable: %s", exc)
+    try:
         from app.routes import admin_features
 
         app.include_router(admin_features.router)

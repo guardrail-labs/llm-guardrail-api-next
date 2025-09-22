@@ -7,7 +7,7 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Deque, Iterator, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Deque, Dict, Iterator, List, Literal, Optional, Sequence, Tuple, Union
 
 from app.utils.cursor import CursorError
 
@@ -159,6 +159,51 @@ def append(record: AdjudicationRecord) -> None:
     except Exception:
         return
 
+
+def iter_all() -> Iterator[Dict[str, Any]]:
+    """Yield snapshots of all buffered adjudication records as dictionaries."""
+
+    with _LOCK:
+        snapshot: Sequence[AdjudicationRecord] = list(_BUFFER)
+
+    for record in snapshot:
+        try:
+            data = record.to_dict()
+        except Exception:
+            data = dict(vars(record))
+        data.setdefault("ts_ms", _record_ts_ms(record))
+        yield dict(data)
+
+
+def delete_where(
+    *,
+    tenant: Optional[str],
+    bot: Optional[str],
+    before_ts_ms: Optional[int],
+) -> int:
+    """Remove matching adjudication records from the in-memory buffer."""
+
+    cutoff = int(before_ts_ms) if before_ts_ms is not None else None
+    removed = 0
+    with _LOCK:
+        keep: List[AdjudicationRecord] = []
+        for record in list(_BUFFER):
+            ts_ms = _record_ts_ms(record)
+            if tenant and record.tenant != tenant:
+                keep.append(record)
+                continue
+            if bot and record.bot != bot:
+                keep.append(record)
+                continue
+            if cutoff is not None and ts_ms >= cutoff:
+                keep.append(record)
+                continue
+            removed += 1
+        if removed:
+            _BUFFER.clear()
+            for record in keep:
+                _BUFFER.append(record)
+    return removed
 
 def clear() -> None:
     """Clear all buffered records (testing/support)."""
@@ -542,7 +587,9 @@ def stream(
 __all__ = [
     "AdjudicationRecord",
     "append",
+    "delete_where",
     "clear",
+    "iter_all",
     "iter_records",
     "paged_query",
     "list_with_cursor",
