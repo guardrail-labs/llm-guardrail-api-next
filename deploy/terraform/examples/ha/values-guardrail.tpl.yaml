@@ -1,0 +1,64 @@
+# Rendered by Terraform's templatefile(). Do not edit generated YAML.
+# Basic image + HA footprint
+image:
+  repository: "${image_repository}"
+  tag: "${image_tag}"
+
+replicaCount: ${replicas}
+
+# Probes (chart already ships defaults; keeping explicit here)
+livenessProbe:
+  enabled: true
+readinessProbe:
+  enabled: true
+
+# Resources (adjust per cluster)
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Metrics / ServiceMonitor (gated by CRD existence)
+metrics:
+  serviceMonitor:
+    enabled: ${service_monitor}
+
+# Environment for app configuration
+env:
+  # Redis wiring from Terraform (computed URL)
+  - name: REDIS_URL
+    value: "${redis_url}"
+
+  # OIDC (demo!) — Prefer a Kubernetes Secret for client_secret in production
+  - name: OIDC_ISSUER
+    value: "${oidc_issuer}"
+  - name: OIDC_CLIENT_ID
+    value: "${oidc_client_id}"
+  - name: OIDC_CLIENT_SECRET
+    value: "${oidc_client_secret}"
+
+  # Admin origin / cookies / CSRF
+  - name: ADMIN_ALLOWED_ORIGIN
+    value: "${admin_origin}"
+
+# Optional HPA (chart auto-selects API version; leave off in example)
+hpa:
+  enabled: false
+
+# Example service configuration (ClusterIP by default)
+service:
+  type: ClusterIP
+
+# Example ingress (disabled by default)
+ingress:
+  enabled: false
+  className: ""
+  hosts:
+    - host: "guardrail.example.com"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []

@@ -84,3 +84,16 @@ featureFlags:
   ADMIN_ENABLE_GOLDEN_ONE_CLICK: true
   METRICS_ROUTE_ENABLED: true
 ```
+
+## Terraform Example (HA)
+
+A ready-to-run Terraform configuration that deploys Redis and a 2-replica Guardrail API
+is available at:
+
+```
+deploy/terraform/examples/ha
+```
+
+It renders a Helm values file from a template (injecting the Redis URL, image repo/tag,
+and OIDC placeholders). The example **enables ServiceMonitor** optionally (gated on the
+CRD) and keeps HPA disabled by default. See the README in that directory for details.
