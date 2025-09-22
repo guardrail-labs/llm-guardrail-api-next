@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict, List, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from typing_extensions import TypedDict  # required on Python < 3.12 for Pydantic v2
+from typing_extensions import TypedDict  # required on Python < 3.12 with Pydantic v2
 
 router = APIRouter(prefix="/admin/api/scope", tags=["admin"])
 
-# Resolve runtime-only to keep mypy happy while using real code at runtime.
+# Resolve at runtime; keeps mypy happy and avoids attr-defined errors.
 _rbac: Any = importlib.import_module("app.security.rbac")
 _admin_session: Any = importlib.import_module("app.middleware.admin_session")
 
@@ -17,7 +17,7 @@ _admin_session: Any = importlib.import_module("app.middleware.admin_session")
 
 class PolicyPackInfo(TypedDict):
     name: str
-    source: str  # "golden" | "local" | "remote"
+    source: str  # e.g. "golden" | "local" | "remote"
     version: str
 
 
@@ -46,80 +46,128 @@ class SecretsResponse(TypedDict):
 
 def _require_admin_dep(request: Request) -> Any:
     """
-    Wrapper so we don't import a specific symbol name that mypy can't see.
-    Calls the real require_admin(request) under the hood.
+    Wrapper around app.middleware.admin_session.require_admin to keep imports stable for mypy.
     """
     return _admin_session.require_admin(request)
 
 
-# ------------------------- Adapters (read-only) -------------------------
+# ------------------------- Import helpers -------------------------
+
+def _try_import(module: str) -> Optional[Any]:
+    try:
+        return importlib.import_module(module)
+    except Exception:
+        return None
+
+
+# ------------------------- Provider adapters -------------------------
+# We try known providers in order. If none exist, raise 501 so callers
+# understand configuration is incomplete, rather than returning empty data.
+
+def _coerce_pack(obj: Any) -> PolicyPackInfo:
+    if isinstance(obj, dict):
+        name = str(obj.get("name", ""))
+        source = str(obj.get("source", "local"))
+        version = str(obj.get("version", ""))
+        return {"name": name, "source": source, "version": version}
+    # object with attributes
+    return {
+        "name": str(getattr(obj, "name", "")),
+        "source": str(getattr(obj, "source", "local")),
+        "version": str(getattr(obj, "version", "")),
+    }
+
 
 def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
-    try:
-        scope_read = importlib.import_module("app.services.scope_read")
-        return cast(List[PolicyPackInfo], scope_read.get_policy_packs(tenant, bot))
-    except Exception:
-        pass
+    # 1) scope_read plugin, if present
+    scope_read = _try_import("app.services.scope_read")
+    if scope_read and hasattr(scope_read, "get_policy_packs"):
+        packs = scope_read.get_policy_packs(tenant, bot)  # type: ignore[no-any-return]
+        return [ _coerce_pack(p) for p in (packs or []) ]
 
-    try:
-        admin_cfg = importlib.import_module("app.services.admin_config")
-        packs = admin_cfg.get_policy_packs_for(tenant, bot) or []
-        out: List[PolicyPackInfo] = []
-        for p in packs:
-            if isinstance(p, dict):
-                name = str(p.get("name", ""))
-                source = str(p.get("source", "local"))
-                version = str(p.get("version", ""))
-            else:
-                name = str(getattr(p, "name", ""))
-                source = str(getattr(p, "source", "local"))
-                version = str(getattr(p, "version", ""))
-            out.append({"name": name, "source": source, "version": version})
-        return out
-    except Exception:
-        return []
+    # 2) other likely providers in this repo (update list as needed)
+    candidates: List[Tuple[str, str]] = [
+        ("app.services.policy_packs", "get_policy_packs_for"),
+        ("app.store.policy_packs", "get_policy_packs_for"),
+        ("app.services.bindings", "get_policy_packs_for"),
+    ]
+    for mod_name, fn in candidates:
+        mod = _try_import(mod_name)
+        if mod and hasattr(mod, fn):
+            packs = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
+            return [ _coerce_pack(p) for p in (packs or []) ]
+
+    # No provider found
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="No policy pack provider configured (enable scope_read or policy_packs service).",
+    )
+
+
+def _coerce_override(rule: str, meta: Any) -> MitigationOverrideInfo:
+    if isinstance(meta, dict):
+        return {
+            "enabled": bool(meta.get("enabled", False)),
+            "last_modified": int(meta.get("last_modified", 0)),
+        }
+    return {
+        "enabled": bool(getattr(meta, "enabled", False)),
+        "last_modified": int(getattr(meta, "last_modified", 0)),
+    }
 
 
 def _get_mitigation_overrides(tenant: str, bot: str) -> Dict[str, MitigationOverrideInfo]:
-    try:
-        scope_read = importlib.import_module("app.services.scope_read")
-        return cast(
-            Dict[str, MitigationOverrideInfo],
-            scope_read.get_mitigation_overrides(tenant, bot),
-        )
-    except Exception:
-        pass
-
-    try:
-        mit = importlib.import_module("app.services.mitigations")
-        overrides = mit.list_overrides_for(tenant, bot) or {}
+    # 1) scope_read plugin
+    scope_read = _try_import("app.services.scope_read")
+    if scope_read and hasattr(scope_read, "get_mitigation_overrides"):
+        overrides = scope_read.get_mitigation_overrides(tenant, bot)  # type: ignore[no-any-return]
         out: Dict[str, MitigationOverrideInfo] = {}
-        for rule, meta in overrides.items():
-            if isinstance(meta, dict):
-                enabled = bool(meta.get("enabled", False))
-                lm = int(meta.get("last_modified", 0))
-            else:
-                enabled = bool(getattr(meta, "enabled", False))
-                lm = int(getattr(meta, "last_modified", 0))
-            out[str(rule)] = {"enabled": enabled, "last_modified": lm}
+        for k, v in (overrides or {}).items():
+            out[str(k)] = _coerce_override(str(k), v)
         return out
-    except Exception:
-        return {}
+
+    # 2) likely providers
+    candidates: List[Tuple[str, str]] = [
+        ("app.services.mitigations", "list_overrides_for"),
+        ("app.store.mitigations", "list_overrides_for"),
+    ]
+    for mod_name, fn in candidates:
+        mod = _try_import(mod_name)
+        if mod and hasattr(mod, fn):
+            overrides = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
+            out: Dict[str, MitigationOverrideInfo] = {}
+            for k, v in (overrides or {}).items():
+                out[str(k)] = _coerce_override(str(k), v)
+            return out
+
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="No mitigation overrides provider configured (enable scope_read or mitigations service).",
+    )
 
 
 def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
-    try:
-        scope_read = importlib.import_module("app.services.scope_read")
-        return cast(List[str], scope_read.get_secret_set_names(tenant, bot))
-    except Exception:
-        pass
+    # 1) scope_read plugin
+    scope_read = _try_import("app.services.scope_read")
+    if scope_read and hasattr(scope_read, "get_secret_set_names"):
+        names = scope_read.get_secret_set_names(tenant, bot)  # type: ignore[no-any-return]
+        return [str(n) for n in (names or [])]
 
-    try:
-        secrets = importlib.import_module("app.services.secrets")
-        names = secrets.list_secret_set_names(tenant, bot) or []
-        return [str(n) for n in names]
-    except Exception:
-        return []
+    # 2) likely providers
+    candidates: List[Tuple[str, str]] = [
+        ("app.services.secrets", "list_secret_set_names"),
+        ("app.store.secrets", "list_secret_set_names"),
+    ]
+    for mod_name, fn in candidates:
+        mod = _try_import(mod_name)
+        if mod and hasattr(mod, fn):
+            names = getattr(mod, fn)(tenant, bot)  # type: ignore[misc]
+            return [str(n) for n in (names or [])]
+
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="No secrets provider configured (enable scope_read or secrets service).",
+    )
 
 
 # ------------------------- Endpoints -------------------------
@@ -162,7 +210,7 @@ def get_bindings(
         bot=bot,
         metric_endpoint="admin_scope_bindings",
     )
-    # Multi-scope token must resolve to a single scope when filters are provided.
+    # If multi-scope resolves to a list, the request must be narrowed to a single scope.
     if isinstance(eff_tenant, list) or isinstance(eff_bot, list):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
