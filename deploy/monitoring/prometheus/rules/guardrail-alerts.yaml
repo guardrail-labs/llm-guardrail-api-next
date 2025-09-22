@@ -1,0 +1,81 @@
+# PrometheusRule — Alerting rules that map to the paging policy in docs/ops/slo-alerting.md
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: guardrail-alerts
+  labels:
+    app.kubernetes.io/name: guardrail
+spec:
+  groups:
+    - name: guardrail.alerts
+      interval: 30s
+      rules:
+        # Page: Fleet readiness degraded for >= 5m
+        - alert: GuardrailReadinessDegraded
+          expr: guardrail:readyz_available:ratio < 1
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Guardrail readiness degraded"
+            description: >
+              One or more pods are not ready.
+              Fleet availability={{ $value | printf "%.2f" }} (target 1.0).
+              Check /readyz, pod restarts, and app logs.
+
+        # Page: Redis unavailable for >= 5m
+        - alert: GuardrailRedisDegraded
+          expr: guardrail:redis_available:ratio < 1
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Guardrail Redis connectivity degraded"
+            description: >
+              App cannot reach Redis.
+              Fleet redis_ok={{ $value | printf "%.2f" }} (target 1.0).
+              Check Redis service/pods, network policy, and REDIS_URL.
+
+        # Warn: brief readiness flap (<5m)
+        - alert: GuardrailReadinessFlap
+          expr: guardrail:readyz_available:ratio < 1
+          for: 1m
+          labels:
+            severity: warn
+            team: platform
+          annotations:
+            summary: "Guardrail readiness flap"
+            description: >
+              Transient pod not-ready condition detected.
+              Investigate if recurring.
+
+        # Page: DLQ backlog persists for >= 15m
+        - alert: GuardrailWebhookDLQBacklog
+          expr: guardrail:webhook_dlq_depth:max_30m > 0
+          for: 15m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Guardrail webhook DLQ backlog"
+            description: >
+              Webhook DLQ depth sustained > 0 for 15m.
+              Check webhook worker logs, endpoints, and circuit breaker status.
+
+        # Warn: DLQ backlog appears but hasn't persisted yet (heads-up)
+        - alert: GuardrailWebhookDLQBacklogWarn
+          expr: max_over_time(guardrail_webhook_dlq_depth[5m]) > 0
+          for: 5m
+          labels:
+            severity: warn
+            team: platform
+          annotations:
+            summary: "Guardrail webhook DLQ backlog (transient)"
+            description: >
+              DLQ depth observed over last 5m.
+              Will page if it persists for 15m.
+
+# If you’re not using the Prometheus Operator, you can drop just the rules: sections into
+# your own rules files and load them via your Prometheus config.

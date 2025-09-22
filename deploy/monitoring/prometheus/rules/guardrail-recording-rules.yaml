@@ -1,0 +1,30 @@
+# PrometheusRule (Prometheus Operator) — Recording rules for SLIs
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: guardrail-recording-rules
+  labels:
+    app.kubernetes.io/name: guardrail
+spec:
+  groups:
+    - name: guardrail.sli
+      interval: 30s
+      rules:
+        # Fleet readiness availability (0..1). Average of pod gauges.
+        - record: guardrail:readyz_available:ratio
+          expr: avg(guardrail_readyz_ok)
+
+        # Redis availability (0..1). Average of pod redis_ok gauges.
+        - record: guardrail:redis_available:ratio
+          expr: avg(guardrail_readyz_redis_ok)
+
+        # 30-day rolling availability (SLO windows).
+        - record: guardrail:readyz_available:ratio:30d
+          expr: avg_over_time(guardrail:readyz_available:ratio[30d])
+
+        - record: guardrail:redis_available:ratio:30d
+          expr: avg_over_time(guardrail:redis_available:ratio[30d])
+
+        # DLQ backlog helpers
+        - record: guardrail:webhook_dlq_depth:max_30m
+          expr: max_over_time(guardrail_webhook_dlq_depth[30m])
