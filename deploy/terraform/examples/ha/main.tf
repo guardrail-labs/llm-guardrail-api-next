@@ -101,9 +101,10 @@ resource "helm_release" "guardrail" {
   name      = var.release_name
   namespace = kubernetes_namespace.ns.metadata[0].name
 
-  # Local chart path (repo-relative). Default points to deploy/helm/guardrail-api.
+  # Local chart path (repo-relative). Default points to helm/guardrail at repo root.
   # You can override with -var="chart_path=/abs/or/relative/path".
-  chart = var.chart_path != "" ? var.chart_path : "${path.module}/../../../helm/guardrail-api"
+  # path.module is deploy/terraform/examples/ha → go up 4 dirs to repo root.
+  chart = var.chart_path != "" ? var.chart_path : "${path.module}/../../../../helm/guardrail"
 
   # If you publish the chart, you can switch to:
   # repository = "oci://ghcr.io/<org>/helm-charts"
