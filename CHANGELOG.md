@@ -8,6 +8,17 @@
 ### Fixed
 - Normalize export scopes to single values, returning `400` when ambiguous multi-tenant tokens omit filters.
 
+## [1.0.0-rc1] — 2025-09-21
+### Added
+- Autoconstraint observability: Prom counter + UI chip (flagged feature).
+- Admin/docs set: security/scoping, admin API, ops runbook, helm, metrics, SLOs.
+
+### Changed
+- List endpoints support multi-scope union when autoconstraint is ON.
+
+### Security
+- RBAC P0: scoped tokens no longer bypass when tenant/bot omitted.
+
 ## v0.1.0-rc1 (2025-09-07)
 ### Added
 - Admin audit persistence (file/redis) + NDJSON export.

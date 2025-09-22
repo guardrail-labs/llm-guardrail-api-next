@@ -1,0 +1,34 @@
+groups:
+  - name: guardrail-slo
+    rules:
+      - alert: GuardrailReadinessFailing
+        expr: min_over_time(guardrail_readyz_ok[5m]) < 1
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "Guardrail readiness failing"
+          description: "readyz check failing for >2m"
+
+      - alert: GuardrailDLQBacklog
+        expr: rate(guardrail_webhook_dlq_depth[5m]) > 0 or max_over_time(guardrail_webhook_dlq_depth[10m]) > 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Webhook DLQ backlog"
+          description: "Items accumulating in DLQ"
+
+      - alert: GuardrailBlockRateSpike
+        expr: sum(rate(guardrail_decisions_block_total[5m])) / sum(rate(guardrail_decisions_total[5m])) > 0.5
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "Block-rate > 50%"
+          description: "High block-rate—investigate policy changes or attacks"
+
+      - alert: GuardrailAutoconstraintSpike
+        expr: sum by (result) (rate(guardrail_scope_autoconstraint_total[5m])) > 0
+        for: 10m
+        labels: {severity: info}
+        annotations:
+          summary: "Autoconstraint activity"
+          description: "Visibility of constrained vs explicit scope usage"

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # --- Build metadata (OCI labels) ---
-ARG APP_VERSION=dev
+ARG APP_VERSION=1.0.0-rc1
 ARG GIT_SHA=unknown
 ARG BUILD_TS=unknown
 
