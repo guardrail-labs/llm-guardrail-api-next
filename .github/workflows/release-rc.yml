@@ -5,6 +5,10 @@ on:
     tags:
       - "v1.0.0-rc*"
 
+permissions:
+  contents: write   # needed to create the GitHub Release
+  packages: write   # needed to push to GHCR
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
