@@ -13,7 +13,7 @@ This example deploys:
 - A Kubernetes cluster and `kubectl` access
 - Terraform `>= 1.6`
 - Helm and the **Prometheus Operator CRDs** if you want ServiceMonitor
-- This repo checked out, so the chart is available at `helm/guardrail`
+- This repo checked out, so the chart is available at `helm/guardrail-api`
 
 ## Quick start
 
@@ -39,14 +39,16 @@ terraform apply -var="namespace=guardrail" \
 
 ## Chart path
 
-This example uses the local chart path:
+This example uses a repo-relative **local chart** path by default:
 
-```
-chart = "${path.module}/../../helm/guardrail"
-```
+`"${path.module}/../../../helm/guardrail-api"`
 
 If your chart lives elsewhere (or you publish it), update the `helm_release.guardrail`
-block accordingly.
+block accordingly, or simply override at apply time:
+
+```bash
+terraform apply -var="chart_path=/absolute/or/relative/path/to/chart"
+```
 
 ## Verify
 
