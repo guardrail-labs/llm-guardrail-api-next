@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import importlib
-from typing import Any, Dict, Iterable, List, TypedDict, Union, cast
+from typing import Dict, List, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from typing_extensions import TypedDict  # <-- Pydantic v2 requires this on Python < 3.12
 
-from app.middleware.scope import require_effective_scope, set_effective_scope_headers
-from app.security.rbac import require_admin  # authenticated admin user/session
+from app.middleware.admin_session import require_admin  # authenticated admin user/session
+from app.security.rbac import (
+    require_effective_scope,
+    set_effective_scope_headers,
+)
 
 router = APIRouter(prefix="/admin/api/scope", tags=["admin"])
 
 
 # ------------------------- Typed payloads -------------------------
-
 
 class PolicyPackInfo(TypedDict):
     name: str
@@ -43,35 +45,15 @@ class SecretsResponse(TypedDict):
 
 # ------------------------- Adapters (read-only) -------------------------
 
-
-def _coerce_scope_value(value: Union[str, Iterable[str]]) -> Union[str, List[str]]:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    try:
-        return [str(item) for item in list(value)]
-    except TypeError:
-        return str(value)
-
-
 def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     try:
-        scope_read = importlib.import_module("app.services.scope_read")
+        from app.services.scope_read import get_policy_packs  # type: ignore
+        return get_policy_packs(tenant, bot)
     except Exception:
-        scope_read = None
-    if scope_read is not None:
-        getter = getattr(scope_read, "get_policy_packs", None)
-        if callable(getter):
-            try:
-                packs = getter(tenant, bot)
-                return cast(List[PolicyPackInfo], packs)
-            except Exception:
-                pass
+        pass
 
     try:
-        from app.services.admin_config import get_policy_packs_for
-
+        from app.services.admin_config import get_policy_packs_for  # type: ignore
         packs = get_policy_packs_for(tenant, bot) or []
         out: List[PolicyPackInfo] = []
         for p in packs:
@@ -91,21 +73,13 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
 
 def _get_mitigation_overrides(tenant: str, bot: str) -> Dict[str, MitigationOverrideInfo]:
     try:
-        scope_read = importlib.import_module("app.services.scope_read")
+        from app.services.scope_read import get_mitigation_overrides  # type: ignore
+        return get_mitigation_overrides(tenant, bot)
     except Exception:
-        scope_read = None
-    if scope_read is not None:
-        getter = getattr(scope_read, "get_mitigation_overrides", None)
-        if callable(getter):
-            try:
-                overrides = getter(tenant, bot)
-                return cast(Dict[str, MitigationOverrideInfo], overrides)
-            except Exception:
-                pass
+        pass
 
     try:
-        from app.services.mitigations import list_overrides_for
-
+        from app.services.mitigations import list_overrides_for  # type: ignore
         overrides = list_overrides_for(tenant, bot) or {}
         out: Dict[str, MitigationOverrideInfo] = {}
         for rule, meta in overrides.items():
@@ -123,21 +97,13 @@ def _get_mitigation_overrides(tenant: str, bot: str) -> Dict[str, MitigationOver
 
 def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
     try:
-        scope_read = importlib.import_module("app.services.scope_read")
+        from app.services.scope_read import get_secret_set_names  # type: ignore
+        return get_secret_set_names(tenant, bot)
     except Exception:
-        scope_read = None
-    if scope_read is not None:
-        getter = getattr(scope_read, "get_secret_set_names", None)
-        if callable(getter):
-            try:
-                names = getter(tenant, bot)
-                return [str(name) for name in list(cast(Iterable[Any], names))]
-            except Exception:
-                pass
+        pass
 
     try:
-        from app.services.secrets import list_secret_set_names
-
+        from app.services.secrets import list_secret_set_names  # type: ignore
         names = list_secret_set_names(tenant, bot) or []
         return [str(n) for n in names]
     except Exception:
@@ -145,7 +111,6 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
 
 
 # ------------------------- Endpoints -------------------------
-
 
 @router.get("/effective", response_model=EffectiveScope)
 def get_effective_scope(
@@ -163,9 +128,9 @@ def get_effective_scope(
 
     out: EffectiveScope = {}
     if eff_tenant is not None:
-        out["effective_tenant"] = _coerce_scope_value(eff_tenant)
+        out["effective_tenant"] = eff_tenant
     if eff_bot is not None:
-        out["effective_bot"] = _coerce_scope_value(eff_bot)
+        out["effective_bot"] = eff_bot
     return out
 
 
