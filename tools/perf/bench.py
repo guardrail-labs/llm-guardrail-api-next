@@ -71,7 +71,12 @@ class StatBucket:
     status_counts: Dict[str, int] = field(default_factory=_default_status_counts)
     errors: int = 0
 
-    def record(self, status: Optional[int], elapsed_s: Optional[float], had_error: bool) -> None:
+    def record(
+        self,
+        status: Optional[int],
+        elapsed_s: Optional[float],
+        had_error: bool,
+    ) -> None:
         if had_error:
             self.errors += 1
             return
@@ -99,8 +104,19 @@ class StatBucket:
         if not self.latencies:
             return None
         # statistics.quantiles gives cutpoints; easier to compute manually
-        idx = max(0, min(len(self.latencies) - 1, math.ceil(q * len(self.latencies)) - 1))
+        idx = max(
+            0,
+            min(len(self.latencies) - 1, math.ceil(q * len(self.latencies)) - 1),
+        )
         return sorted(self.latencies)[idx]
+
+
+def _quantile_ms(bucket: StatBucket, q: float) -> Optional[float]:
+    """Return the q-quantile in milliseconds, or None if no data."""
+    v = bucket.p(q)
+    if v is None:
+        return None
+    return round(v * 1000.0, 1)
 
 
 def summarize(bucket: StatBucket, duration_s: float) -> Dict[str, Any]:
@@ -115,10 +131,12 @@ def summarize(bucket: StatBucket, duration_s: float) -> Dict[str, Any]:
         "3xx": bucket.status_counts["3xx"],
         "4xx": bucket.status_counts["4xx"],
         "5xx": bucket.status_counts["5xx"],
-        "p50_ms": None if not bucket.latencies else round(bucket.p(0.50) * 1000.0, 1),
-        "p95_ms": None if not bucket.latencies else round(bucket.p(0.95) * 1000.0, 1),
-        "p99_ms": None if not bucket.latencies else round(bucket.p(0.99) * 1000.0, 1),
-        "success_rate": 0.0 if bucket.total == 0 else round(successes / bucket.total * 100.0, 2),
+        "p50_ms": _quantile_ms(bucket, 0.50),
+        "p95_ms": _quantile_ms(bucket, 0.95),
+        "p99_ms": _quantile_ms(bucket, 0.99),
+        "success_rate": 0.0
+        if bucket.total == 0
+        else round(successes / bucket.total * 100.0, 2),
     }
 
 
@@ -179,7 +197,9 @@ async def run_bench(
         verify=not insecure,
     ) as client:
         tasks = [
-            asyncio.create_task(worker(client, stop_at, endpoints, buckets, auth_header))
+            asyncio.create_task(
+                worker(client, stop_at, endpoints, buckets, auth_header)
+            )
             for _ in range(concurrency)
         ]
         await asyncio.gather(*tasks)
@@ -215,7 +235,7 @@ async def run_bench(
         print(row_to_line(r))
 
     if export_json:
-        payload = {
+        payload: Dict[str, Any] = {
             "meta": {
                 "base": base,
                 "duration_s": duration_s,
@@ -232,7 +252,9 @@ async def run_bench(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Tiny async perf smoke for Guardrail API")
+    parser = argparse.ArgumentParser(
+        description="Tiny async perf smoke for Guardrail API"
+    )
     parser.add_argument(
         "--base",
         default=os.getenv("BASE", "http://localhost:8000"),
