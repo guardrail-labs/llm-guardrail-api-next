@@ -27,16 +27,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check Prometheus rules (if any)
+      - name: Check Prometheus rules (if present)
         if: ${{ hashFiles('deploy/monitoring/prometheus/rules/**/*.yaml') != '' || hashFiles('deploy/monitoring/prometheus/rules/*.yaml') != '' }}
         run: |
           set -euo pipefail
+          # Run promtool inside the Prometheus image by overriding entrypoint.
           docker run --rm -v "$PWD:/work" -w /work \
-            prom/prometheus:v2.54.1 \
-            promtool check rules deploy/monitoring/prometheus/rules/*.yaml || \
-          docker run --rm -v "$PWD:/work" -w /work \
-            prom/prometheus:v2.54.1 \
-            promtool check rules deploy/monitoring/prometheus/rules/**/*.yaml
+            --entrypoint /bin/sh prom/prometheus:v2.54.1 -lc '
+              set -e
+              files=$(find deploy/monitoring/prometheus/rules -type f -name "*.yaml" -print)
+              for f in $files; do
+                echo "::group::promtool check rules $f"
+                /bin/promtool check rules "$f"
+                echo "::endgroup::"
+              done
+            '
 
   amtool:
     name: amtool check-config
@@ -48,6 +53,9 @@ jobs:
         if: ${{ hashFiles('deploy/monitoring/alertmanager/alertmanager.yaml') != '' }}
         run: |
           set -euo pipefail
+          # Use shell as entrypoint so amtool is on PATH inside the container.
           docker run --rm -v "$PWD:/work" -w /work \
-            prom/alertmanager:v0.27.0 \
-            amtool check-config deploy/monitoring/alertmanager/alertmanager.yaml
+            --entrypoint /bin/sh prom/alertmanager:v0.27.0 -lc '
+              set -e
+              amtool check-config deploy/monitoring/alertmanager/alertmanager.yaml
+            '
