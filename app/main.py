@@ -800,6 +800,7 @@ def create_app() -> FastAPI:
             admin_policies,
             admin_retention,
             admin_rulepacks,
+            admin_service_tokens,
             admin_ui,
             admin_webhook,
             admin_webhook_replay,
@@ -819,6 +820,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_webhooks_dlq.router)
         app.include_router(admin_echo.router)
         app.include_router(admin_metrics_overrides.router)
+        app.include_router(admin_service_tokens.router)
         app.include_router(admin_adjudications.router)
         app.include_router(admin_adjudications_api.router)
         app.include_router(admin_retention.router)

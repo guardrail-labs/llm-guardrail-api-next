@@ -12,7 +12,7 @@ from app.observability.metrics import (
     retention_preview_total,
 )
 from app.routes.admin_mitigation import require_csrf
-from app.security.rbac import require_operator, require_viewer
+from app.security.rbac import ensure_scope, require_operator, require_viewer
 from app.services import retention as retention_service
 
 router = APIRouter(prefix="/admin/api", tags=["admin-retention"])
@@ -37,8 +37,10 @@ class PreviewResp(BaseModel):
 @router.post("/retention/preview", response_model=PreviewResp)
 def retention_preview(
     payload: PreviewReq,
-    _: dict[str, Any] = Depends(require_viewer),
+    user: Dict[str, Any] = Depends(require_viewer),
 ) -> PreviewResp:
+    ensure_scope(user, tenant=payload.tenant, bot=payload.bot)
+
     decisions = retention_service.count_decisions_before(
         payload.before_ts_ms,
         tenant=payload.tenant,
@@ -91,6 +93,7 @@ def retention_execute(
     actor_role = (user or {}).get("role") if isinstance(user, dict) else None
     tenant = payload.tenant
     bot = payload.bot
+    ensure_scope(user, tenant=tenant, bot=bot)
     if payload.confirm != "DELETE":
         try:
             admin_audit_total.labels("retention_execute", "error").inc()

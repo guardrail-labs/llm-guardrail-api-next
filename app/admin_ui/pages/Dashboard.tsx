@@ -6,6 +6,7 @@ import MitigationToggles from "@/admin_ui/components/MitigationToggles";
 import OverrideMetricsTiles from "@/admin_ui/components/OverrideMetricsTiles";
 import SecretsStrictToggle from "@/admin_ui/components/SecretsStrictToggle";
 import WebhookDLQPanel from "@/admin_ui/components/WebhookDLQPanel";
+import AdminServiceTokensPanel from "@/admin_ui/components/AdminServiceTokensPanel";
 
 export default function DashboardPage() {
   return (
@@ -17,6 +18,7 @@ export default function DashboardPage() {
       <MitigationToggles tenant="demo" bot="site" />
       <SecretsStrictToggle tenant="demo" bot="site" />
       <WebhookDLQPanel />
+      <AdminServiceTokensPanel />
       <AdminAuditPanel />
     </div>
   );

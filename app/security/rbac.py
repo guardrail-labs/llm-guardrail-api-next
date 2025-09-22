@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 
 from app import config
+from app.security import service_tokens as ST
 
 _ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
 
@@ -39,6 +40,31 @@ def get_current_user(request: Request) -> Dict[str, Any] | None:
         session = None
     user = session.get("user") if session is not None else None
     return user if isinstance(user, dict) else None
+
+
+def _try_service_token(request: Request) -> Dict[str, Any] | None:
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        claims = ST.verify(token)
+    except Exception:
+        return None
+    tenants = claims.get("tenants", "*")
+    bots = claims.get("bots", "*")
+    role_claim = str(claims.get("role") or "viewer")
+    return {
+        "email": f"{claims.get('sub', 'svc')}@tokens",
+        "name": "Service Token",
+        "role": _normalize_role(role_claim),
+        "scope": {"tenants": tenants, "bots": bots},
+        "svc": True,
+        "jti": claims.get("jti"),
+        "claims": claims,
+    }
 
 
 def _try_legacy_admin_token(request: Request) -> Dict[str, Any] | None:
@@ -118,14 +144,25 @@ def effective_role(user: Dict[str, Any] | None) -> str:
 
 
 def _ensure_authn(request: Request) -> Dict[str, Any]:
+    svc_user = _try_service_token(request)
+    if svc_user:
+        setattr(request.state, "admin_user", svc_user)
+        return svc_user
+    state_user = getattr(request.state, "admin_user", None)
+    if isinstance(state_user, dict) and state_user:
+        return state_user
     if config.ADMIN_AUTH_MODE == "disabled":
-        return {"email": "dev@local", "name": "Dev", "role": "admin"}
+        dev_user = {"email": "dev@local", "name": "Dev", "role": "admin"}
+        setattr(request.state, "admin_user", dev_user)
+        return dev_user
     user = get_current_user(request)
     if not user:
         legacy_user = _try_legacy_admin_token(request)
         if legacy_user:
+            setattr(request.state, "admin_user", legacy_user)
             return legacy_user
         raise HTTPException(HTTP_401_UNAUTHORIZED, "Authentication required")
+    setattr(request.state, "admin_user", user)
     return user
 
 
@@ -149,3 +186,32 @@ def require_operator(request: Request) -> Dict[str, Any]:
 
 def require_admin(request: Request) -> Dict[str, Any]:
     return _require_min_role(request, "admin")
+
+
+def _value_in_scope(scope_value: Any, candidate: Optional[str]) -> bool:
+    if scope_value == "*":
+        return True
+    if candidate is None:
+        return True
+    if isinstance(scope_value, str):
+        return scope_value == candidate
+    try:
+        return candidate in scope_value
+    except Exception:
+        return False
+
+
+def _within_scope(user: dict[str, Any], tenant: Optional[str], bot: Optional[str]) -> bool:
+    scope = user.get("scope") if isinstance(user, dict) else None
+    if not scope:
+        return True
+    tenants = scope.get("tenants", "*") if isinstance(scope, dict) else "*"
+    bots = scope.get("bots", "*") if isinstance(scope, dict) else "*"
+    return _value_in_scope(tenants, tenant) and _value_in_scope(bots, bot)
+
+
+def ensure_scope(
+    user: dict[str, Any], *, tenant: Optional[str], bot: Optional[str]
+) -> None:
+    if not _within_scope(user, tenant, bot):
+        raise HTTPException(HTTP_403_FORBIDDEN, "Out of scope")
