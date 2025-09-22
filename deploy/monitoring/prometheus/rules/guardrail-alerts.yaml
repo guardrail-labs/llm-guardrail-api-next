@@ -51,31 +51,33 @@ spec:
               Transient pod not-ready condition detected.
               Investigate if recurring.
 
-        # Page: DLQ backlog persists for >= 15m
+        # Page: DLQ backlog continuously non-zero for 15m
         - alert: GuardrailWebhookDLQBacklog
-          expr: guardrail:webhook_dlq_depth:max_30m > 0
-          for: 15m
+          expr: min_over_time(guardrail_webhook_dlq_depth[15m]) > 0
+          # 'min_over_time' already encodes the 15m persistence; keep a short 'for'
+          # to avoid flicker on scrape hiccups.
+          for: 1m
           labels:
             severity: critical
             team: platform
           annotations:
             summary: "Guardrail webhook DLQ backlog"
             description: >
-              Webhook DLQ depth sustained > 0 for 15m.
+              Webhook DLQ depth has been > 0 continuously for 15 minutes.
               Check webhook worker logs, endpoints, and circuit breaker status.
 
-        # Warn: DLQ backlog appears but hasn't persisted yet (heads-up)
+        # Warn: DLQ backlog continuously non-zero for 5m (heads-up)
         - alert: GuardrailWebhookDLQBacklogWarn
-          expr: max_over_time(guardrail_webhook_dlq_depth[5m]) > 0
-          for: 5m
+          expr: min_over_time(guardrail_webhook_dlq_depth[5m]) > 0
+          for: 1m
           labels:
             severity: warn
             team: platform
           annotations:
             summary: "Guardrail webhook DLQ backlog (transient)"
             description: >
-              DLQ depth observed over last 5m.
-              Will page if it persists for 15m.
+              DLQ depth has been > 0 continuously for 5 minutes.
+              Will page if it continues for 15 minutes.
 
 # If you’re not using the Prometheus Operator, you can drop just the rules: sections into
 # your own rules files and load them via your Prometheus config.

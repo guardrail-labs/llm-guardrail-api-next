@@ -33,18 +33,18 @@ We intentionally use only metrics the API exposes today:
 
 - Availability over 30d: `avg_over_time(avg(guardrail_readyz_ok)[30d])`
 - Redis availability over 30d: `avg_over_time(avg(guardrail_readyz_redis_ok)[30d])`
-- DLQ backlog sustained: `max_over_time(guardrail_webhook_dlq_depth[30m]) > 0`
+- DLQ backlog sustained: `min_over_time(guardrail_webhook_dlq_depth[15m]) > 0`
 
 ## Paging Policy
 
 - **Page (critical):**
   - Fleet availability drops (avg ready < 1.0) for ≥ 5m
   - Redis availability drops (avg redis_ok < 1.0) for ≥ 5m
-  - DLQ backlog persists > 0 for ≥ 15m (indicates stuck webhook deliveries)
+  - DLQ backlog **continuously** > 0 for ≥ 15m (indicates stuck webhook deliveries)
 
 - **Warn (ticket / Slack):**
   - Brief readiness flaps (< 5m)
-  - Small DLQ blips that clear < 15m
+  - DLQ > 0 continuously for ≥ 5m (heads-up). If it continues to 15m, it pages.
 
 Use Alertmanager to route:
 - `severity: critical` → PagerDuty (or your paging tool)
