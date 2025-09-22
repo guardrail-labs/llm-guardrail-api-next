@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from app.observability.metrics import readyz_ok, readyz_redis_ok
 from app.services.detectors.ingress_pipeline import _enabled as _flag_enabled
 
-router = APIRouter(tags=["ops"])
+router = APIRouter(tags=["health"])
 
 
 def _ok(name: str, detail: Any | None = None) -> Dict[str, Any]:

@@ -21,7 +21,7 @@ except Exception as exc:  # pragma: no cover - surface import error when used
 
 router = APIRouter(
     prefix="/admin/api",
-    tags=["admin-adjudications"],
+    tags=["adjudications"],
     dependencies=[Depends(_admin_decisions._require_admin_dep)],
 )
 
@@ -41,11 +41,41 @@ def _adjudications_scope_dependency(
 
 @router.get(
     "/adjudications",
+    tags=["adjudications"],
     summary="List adjudications (cursor)",
     description=(
         "Cursor-paginated adjudications ordered by (ts desc, id). Supports filters for tenant, "
         "bot, since (epoch ms), outcome, rule_id, and request_id."
     ),
+    responses={
+        200: {
+            "description": "Adjudications with cursor metadata.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "items": [
+                            {
+                                "id": "adj_7",
+                                "ts": "2024-01-01T12:00:00Z",
+                                "tenant": "tenant-123",
+                                "bot": "bot-alpha",
+                                "outcome": "allow",
+                                "rule_id": "rule-1",
+                                "request_id": "req-123",
+                            }
+                        ],
+                        "limit": 50,
+                        "dir": "next",
+                        "next_cursor": "1704100800000:adj_7",
+                        "prev_cursor": None,
+                    }
+                }
+            },
+        },
+        401: {"description": "Authentication required."},
+        403: {"description": "Forbidden for the provided scope."},
+        429: {"description": "Too many requests."},
+    },
 )
 def list_adjudications(
     request: Request,

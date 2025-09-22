@@ -16,3 +16,9 @@ Guardrail API provides policy-driven moderation, safety, and governance controls
 - `SCOPE_AUTOCONSTRAIN_ENABLED` **false** → safety-first; enable per env if desired.
 - `ADMIN_ENABLE_GOLDEN_ONE_CLICK` **true** (demo) → safe CSRF’d endpoint.
 - `METRICS_ROUTE_ENABLED` **true** → standard ops exposure.
+
+## Using the SDKs
+
+- **Python** – Install from `clients/python` (`pip install -e clients/python`) and import `GuardrailClient` from `guardrail_api`. The client exposes health checks, cursor-based decision/adjudication listing, and NDJSON exports.
+- **TypeScript** – Build the package in `clients/typescript` (`npm install && npm run build`) and import `GuardrailClient` from `@guardrail/api`. Works with browser `fetch` or Node.js 18+.
+- See [`docs/quickstart`](quickstart) for step-by-step examples (curl, Python, and TypeScript) plus the Postman collection in `postman/` for manual exploration.

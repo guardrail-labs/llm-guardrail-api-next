@@ -620,22 +620,24 @@ async def lifespan(app: FastAPI):
             pass
 
 
-openapi_tags = [
-    {"name": "ops", "description": "Health, readiness, and metrics"},
-    {
-        "name": "admin-decisions",
-        "description": "Decisions listing, filters, exports",
-    },
-    {
-        "name": "admin-adjudications",
-        "description": "Adjudications listing, filters, exports",
-    },
-    {"name": "admin-audit", "description": "Admin audit feed and export"},
+OPENAPI_TAGS = [
+    {"name": "health", "description": "Liveness and readiness probes"},
+    {"name": "decisions", "description": "Decision listing and exports"},
+    {"name": "adjudications", "description": "Adjudication listing and exports"},
+    {"name": "admin", "description": "Admin operations (CSRF-protected)"},
 ]
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="llm-guardrail-api", lifespan=lifespan, openapi_tags=openapi_tags)
+    app = FastAPI(
+        title="LLM Guardrail API",
+        description="Policy enforcement, adjudication, and observability for LLM apps.",
+        version="1.0.0-rc1",
+        contact={"name": "Guardrail Team"},
+        license_info={"name": "Apache-2.0"},
+        lifespan=lifespan,
+        openapi_tags=OPENAPI_TAGS,
+    )
     try:
         from app.routes import health
 
