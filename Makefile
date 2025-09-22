@@ -1,4 +1,4 @@
-.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic
+.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic docs-check
 
 install:
 	pip install -r requirements.txt || pip install .
@@ -23,6 +23,11 @@ docker-run:
 
 demo-traffic:
 	python scripts/demo_traffic.py
+
+.PHONY: docs-check
+docs-check:
+	@echo "Checking docs links…"
+	@true  # placeholder; can add markdown-link-check later
 
 compose-up:
 	docker compose up --build
