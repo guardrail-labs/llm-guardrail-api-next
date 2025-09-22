@@ -118,6 +118,13 @@ webhook_dlq_purge_total = _get_or_create_counter(
 )
 
 
+guardrail_scope_autoconstraint_total = _get_or_create_counter(
+    "guardrail_scope_autoconstraint_total",
+    "Autoconstraint requests by mode/result/multi/endpoint",
+    labelnames=("mode", "result", "multi", "endpoint"),
+)
+
+
 retention_preview_total = _get_or_create_counter(
     "guardrail_retention_preview_total",
     "Retention preview operations executed by admins",
@@ -146,6 +153,22 @@ admin_audit_total = _get_or_create_counter(
 def inc_ratelimit_script_reload() -> None:
     try:
         GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc()
+    except Exception:
+        pass
+
+
+def inc_scope_autoconstraint(
+    *, mode: str, result: str, multi: bool, endpoint: str
+) -> None:
+    """Increment the autoconstraint counter with guarded labels."""
+
+    try:
+        guardrail_scope_autoconstraint_total.labels(
+            mode=mode or "unknown",
+            result=result or "unknown",
+            multi="true" if multi else "false",
+            endpoint=endpoint or "unknown",
+        ).inc()
     except Exception:
         pass
 

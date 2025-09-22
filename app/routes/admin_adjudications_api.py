@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
@@ -10,6 +10,7 @@ from app.middleware.scope import (
     set_effective_scope_headers,
 )
 from app.observability import adjudication_log as log
+from app.security.rbac import require_viewer
 from app.utils.cursor import CursorError
 
 try:
@@ -25,6 +26,19 @@ router = APIRouter(
 )
 
 
+def _adjudications_scope_dependency(
+    user: Dict[str, Any] = Depends(require_viewer),
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+):
+    return require_effective_scope(
+        user=user,
+        tenant=tenant,
+        bot=bot,
+        metric_endpoint="adjudications_list",
+    )
+
+
 @router.get(
     "/adjudications",
     summary="List adjudications (cursor)",
@@ -36,7 +50,7 @@ router = APIRouter(
 def list_adjudications(
     request: Request,
     response: Response,
-    scope=Depends(require_effective_scope),
+    scope=Depends(_adjudications_scope_dependency),
     limit: int = Query(
         50,
         ge=1,

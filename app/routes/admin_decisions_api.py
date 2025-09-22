@@ -257,6 +257,19 @@ router = APIRouter(dependencies=[Depends(_require_admin_dep)])
 templates = Jinja2Templates(directory="app/ui/templates")
 
 
+def _decisions_scope_dependency(
+    user: Dict[str, Any] = Depends(require_viewer),
+    tenant: Optional[str] = Query(None),
+    bot: Optional[str] = Query(None),
+):
+    return require_effective_scope(
+        user=user,
+        tenant=tenant,
+        bot=bot,
+        metric_endpoint="decisions_list",
+    )
+
+
 class DecisionItem(BaseModel):
     id: str
     ts: str
@@ -522,7 +535,7 @@ def _list_decisions_offset_path(
 async def get_decisions(
     request: Request,
     response: Response,
-    scope=Depends(require_effective_scope),
+    scope=Depends(_decisions_scope_dependency),
     since: Optional[str] = Query(
         None,
         description="Filter decisions since this ISO8601 timestamp (UTC)",
