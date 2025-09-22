@@ -1,4 +1,4 @@
-.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic docs-check
+.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic docs-check monitoring-lint
 
 install:
 	pip install -r requirements.txt || pip install .
@@ -58,7 +58,15 @@ perf-smoke:
 	  -c "$${C:-50}" \
 	  -d "$${DURATION:-60s}" \
 	  --timeout "$${TIMEOUT:-5}" \
-	  --limit "$${LIMIT:-50}" \
-	  $${INSECURE:+--insecure} \
-	  $${OUT:+--out "$$OUT"}
+          --limit "$${LIMIT:-50}" \
+          $${INSECURE:+--insecure} \
+          $${OUT:+--out "$$OUT"}
+
+monitoring-lint:
+	@docker run --rm -v "$$(pwd):/work" -w /work prom/prometheus:v2.54.1 \
+		promtool check rules deploy/monitoring/prometheus/rules/*.yaml || \
+		docker run --rm -v "$$(pwd):/work" -w /work prom/prometheus:v2.54.1 \
+		promtool check rules deploy/monitoring/prometheus/rules/**/*.yaml
+	@docker run --rm -v "$$(pwd):/work" -w /work prom/alertmanager:v0.27.0 \
+		amtool check-config deploy/monitoring/alertmanager/alertmanager.yaml
 

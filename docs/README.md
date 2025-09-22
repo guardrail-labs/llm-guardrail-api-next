@@ -25,5 +25,13 @@ scripts/smoke.sh
 - Prometheus rules: `deploy/monitoring/prometheus/rules/`
 - Alertmanager routes: `deploy/monitoring/alertmanager/alertmanager.yaml`
 
+### Monitoring config checks
+CI validates Prometheus rules and Alertmanager config via `promtool`/`amtool`.
+Run locally with:
+
+```bash
+make monitoring-lint
+```
+
 ## API Reference
 - [Admin API (endpoints, pagination, exports)](./api/README.md)

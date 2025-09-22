@@ -22,15 +22,23 @@ inhibit_rules:
     equal: ['alertname', 'job']
 
 receivers:
-  # No integrations: valid receiver that drops alerts
+  # Valid receiver that drops alerts (keeps the root route legal)
   - name: blackhole
 
+  # Example PagerDuty receiver
+  # NOTE: Use routing_key_file via Helm Secret mount in real deployments.
+  # The placeholder below lets amtool validate without secrets.
   - name: pagerduty
     pagerduty_configs:
-      - routing_key: "${PAGERDUTY_ROUTING_KEY}"
+      - routing_key: "00000000000000000000000000000000"  # placeholder
         severity: critical
+        send_resolved: true
 
+  # Example Slack receiver
+  # Prefer file-based secret so CI lint doesn't need a real URL.
+  # Mount a Secret at /etc/alertmanager/secrets/slack_webhook_url.
   - name: ops-slack
     slack_configs:
-      - api_url: "${SLACK_WEBHOOK_URL}"
+      - api_url_file: /etc/alertmanager/secrets/slack_webhook_url
         channel: "#ops-guardrail"
+        send_resolved: true
