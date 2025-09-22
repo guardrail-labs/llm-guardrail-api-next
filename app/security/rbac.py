@@ -203,7 +203,7 @@ def _value_in_scope(scope_value: object, candidate: Optional[str]) -> bool:
     if scope_value == "*":
         return True
     if candidate is None:
-        # Scoped tokens must provide explicit filters.
+        # Scoped tokens must provide explicit filters unless scope="*".
         return False
     if isinstance(scope_value, str):
         return scope_value == candidate
@@ -213,6 +213,24 @@ def _value_in_scope(scope_value: object, candidate: Optional[str]) -> bool:
         except Exception:
             return False
     return False
+
+
+def coerce_query_to_scope(scope_value: object, candidate: Optional[str]):
+    """Coerce query parameters to an effective scope value.
+
+    Autoconstraint rules:
+      * ``"*"`` -> passthrough candidate (may be ``None``)
+      * Missing candidate -> fall back to the caller's scope
+      * Provided candidate -> must be within scope
+    """
+
+    if scope_value == "*":
+        return candidate
+    if candidate is None:
+        return scope_value
+    if _value_in_scope(scope_value, candidate):
+        return candidate
+    raise RBACError("out of scope")
 
 
 def ensure_scope(
