@@ -1,0 +1,53 @@
+name: Monitoring Lint
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/monitoring/prometheus/rules/**'
+      - 'deploy/monitoring/alertmanager/**'
+      - '.github/workflows/monitoring-lint.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'deploy/monitoring/prometheus/rules/**'
+      - 'deploy/monitoring/alertmanager/**'
+      - '.github/workflows/monitoring-lint.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoring-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  promtool:
+    name: promtool check rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Prometheus rules (if any)
+        if: ${{ hashFiles('deploy/monitoring/prometheus/rules/**/*.yaml') != '' || hashFiles('deploy/monitoring/prometheus/rules/*.yaml') != '' }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/work" -w /work \
+            prom/prometheus:v2.54.1 \
+            promtool check rules deploy/monitoring/prometheus/rules/*.yaml || \
+          docker run --rm -v "$PWD:/work" -w /work \
+            prom/prometheus:v2.54.1 \
+            promtool check rules deploy/monitoring/prometheus/rules/**/*.yaml
+
+  amtool:
+    name: amtool check-config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Alertmanager config (if present)
+        if: ${{ hashFiles('deploy/monitoring/alertmanager/alertmanager.yaml') != '' }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/work" -w /work \
+            prom/alertmanager:v0.27.0 \
+            amtool check-config deploy/monitoring/alertmanager/alertmanager.yaml
