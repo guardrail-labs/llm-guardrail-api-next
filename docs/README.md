@@ -24,3 +24,6 @@ scripts/smoke.sh
 - Runbooks: [DLQ](./operability/runbooks/DLQ.md), [Readiness](./operability/runbooks/Readiness.md)
 - Prometheus rules: `deploy/monitoring/prometheus/rules/`
 - Alertmanager routes: `deploy/monitoring/alertmanager/alertmanager.yaml`
+
+## API Reference
+- [Admin API (endpoints, pagination, exports)](./api/README.md)

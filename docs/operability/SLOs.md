@@ -22,8 +22,10 @@ These are reference targets you can adopt or tune.
   Backlog depth: `max_over_time(guardrail_webhook_dlq_depth[5m])`  
   Oldest age (if exported): `max_over_time(guardrail_webhook_dlq_oldest_seconds[5m])`
 
-- **Readiness**  
+- **Readiness**
   `guardrail_readyz_ok == 1 AND guardrail_readyz_redis_ok == 1`
+
+  See [Admin API readiness and version endpoints](../api/README.md#health-and-metadata-endpoints) for response details.
 
 ## Default SLO Targets (recommended)
 - Availability (30d): **99.9%**
