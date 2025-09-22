@@ -1,0 +1,56 @@
+name: Create RC Tag & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "RC version (e.g., v1.0.0-rc1)"
+        required: true
+        type: string
+      notes:
+        description: "Release notes (optional, appended to CHANGELOG section)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version format
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          case "$V" in
+            v*rc*) echo "OK: $V" ;;
+            *) echo "Version must look like vX.Y.Z-rcN" && exit 1 ;;
+          esac
+
+      - name: Create annotated tag (if not exists)
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          if git rev-parse "$V" >/dev/null 2>&1; then
+            echo "Tag $V already exists"; exit 0
+          fi
+          git tag -a "$V" -m "Release Candidate $V"
+          git push origin "$V"
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: true
+          body: |
+            ## ${{ inputs.version }}
+            See CHANGELOG for details.
+            
+            ${{ inputs.notes }}
