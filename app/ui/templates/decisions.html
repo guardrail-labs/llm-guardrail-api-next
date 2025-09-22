@@ -140,7 +140,15 @@
     {% if not error_text %}hidden{% endif %}
   >{{ error_text or '' }}</div>
   <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-top:0.75rem;">
-    <p class="muted" id="decisions-count">Showing {{ range_start }}–{{ range_end }} of {{ total_value }}</p>
+    <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+      <p class="muted" id="decisions-count">Showing {{ range_start }}–{{ range_end }} of {{ total_value }}</p>
+      <div class="scope-chip" id="decisions-scope-chip" aria-live="polite">
+        Effective scope:
+        <span class="mono" data-scope-tenant>loading…</span>
+        /
+        <span class="mono" data-scope-bot>loading…</span>
+      </div>
+    </div>
     <div style="display:flex; gap:0.5rem;">
       <button type="button" id="decisions-prev" {% if offset_value <= 0 %}disabled{% endif %}>&laquo; Prev</button>
       <button type="button" id="decisions-next" {% if disable_next_value %}disabled{% endif %}>Next &raquo;</button>
@@ -269,6 +277,9 @@
     const jsonModalCopy = document.getElementById('decisions-json-copy');
     const jsonModalToast = document.getElementById('decisions-json-toast');
     const jsonModalTitle = document.getElementById('decisions-json-modal-title');
+    const scopeChip = document.getElementById('decisions-scope-chip');
+    const scopeTenantEl = scopeChip ? scopeChip.querySelector('[data-scope-tenant]') : null;
+    const scopeBotEl = scopeChip ? scopeChip.querySelector('[data-scope-bot]') : null;
 
     let jsonToastTimer = null;
     let activeJsonText = '';
@@ -337,6 +348,36 @@
         return null;
       }
       return Math.floor(parsed.getTime() / 1000);
+    }
+
+    function normalizeScopeValue(value) {
+      if (value === null || value === undefined) {
+        return 'none';
+      }
+      const text = String(value).trim();
+      return text || 'none';
+    }
+
+    function updateScopeChip(tenantValue, botValue) {
+      if (!scopeChip) {
+        return;
+      }
+      if (scopeTenantEl) {
+        scopeTenantEl.textContent = normalizeScopeValue(tenantValue);
+      }
+      if (scopeBotEl) {
+        scopeBotEl.textContent = normalizeScopeValue(botValue);
+      }
+    }
+
+    function applyScopeFromHeaders(headers) {
+      if (!headers) {
+        return;
+      }
+      updateScopeChip(
+        headers.get('X-Guardrail-Scope-Tenant'),
+        headers.get('X-Guardrail-Scope-Bot')
+      );
     }
 
     function firstNonEmpty(values) {
@@ -796,7 +837,7 @@
       showError('');
       try {
         const params = buildQueryParams();
-        const response = await fetch('/admin/decisions?' + params.toString(), {
+        const response = await fetch('/admin/api/decisions?' + params.toString(), {
           credentials: 'same-origin',
         });
         if (!response.ok) {
@@ -804,6 +845,7 @@
           showError(message);
           return;
         }
+        applyScopeFromHeaders(response.headers);
         const data = await response.json();
         const items = Array.isArray(data.items) ? data.items : [];
         state.items = items;
@@ -970,6 +1012,7 @@
         showError('');
       }
       syncHistory(false);
+      fetchData({ pushHistory: false, updateUrl: false });
     })();
   })();
 </script>

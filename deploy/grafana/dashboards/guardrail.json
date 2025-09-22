@@ -28,6 +28,46 @@
           "expr": "sum by (mask) (rate(guardrail_redactions_total{direction=\"egress\"}[5m]))"
         }
       ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Scope autoconstraint by result",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(guardrail_scope_autoconstraint_total[5m]))"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Scope autoconstraint multi-scope share",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "options": {
+        "legend": { "displayMode": "table" },
+        "tooltip": { "mode": "single" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (multi) (rate(guardrail_scope_autoconstraint_total[5m]))"
+        }
+      ]
     }
   ]
 }

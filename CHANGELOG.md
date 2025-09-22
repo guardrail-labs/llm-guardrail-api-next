@@ -3,6 +3,7 @@
 ## Unreleased
 ### Added
 - Feature flag to auto-constrain service token scope and emit effective scope headers when enabled.
+- Observability for scope autoconstraint, including Prometheus counter labels, admin UI "Effective scope" chip, and optional audit log entries.
 
 ### Fixed
 - Normalize export scopes to single values, returning `400` when ambiguous multi-tenant tokens omit filters.
