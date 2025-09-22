@@ -12,6 +12,10 @@
 ### Added
 - Autoconstraint observability: Prom counter + UI chip (flagged feature).
 - Admin/docs set: security/scoping, admin API, ops runbook, helm, metrics, SLOs.
+- RC artifacts are now supply-chain hardened:
+  - Container image is **cosign keyless signed** (OIDC).
+  - **Build provenance attestation** published to GHCR.
+  - **SBOM (SPDX JSON)** attached to the GitHub Release.
 
 ### Changed
 - List endpoints support multi-scope union when autoconstraint is ON.
