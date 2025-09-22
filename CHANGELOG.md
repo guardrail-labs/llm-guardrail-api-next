@@ -17,12 +17,14 @@
 ### Changed
 - Webhook backoff + jitter; circuit-breaker guard on open state.
 - Cursor pagination for decisions/adjudications; filters parity.
+- Autoconstraint list endpoints honor multi-tenant/bot scopes by applying `IN (...)` filters when callers omit explicit filters.
 - Mitigation mode persistence (file/redis) with delimiter-safe keys.
 
 ### Fixed
 - Redis readiness accuracy and all-consumer enforcement.
 - DLQ depth metric freshness (updated on enqueue/purge/retry).
 - Admin UI CSRF placement for Apply Golden.
+- Removed duplicate tenant/bot keyword arguments when invoking list providers.
 
 ### Security
 - Security (P0): Fix RBAC bypass where omitted tenant/bot filters were treated as in-scope for scoped service tokens. Admin and export endpoints now require explicit filters unless the token scope is "*".

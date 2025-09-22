@@ -4,7 +4,7 @@ import asyncio
 import importlib
 import inspect
 from collections.abc import Iterable
-from typing import Any, Callable, Dict, Mapping, Optional, cast
+from typing import Any, Callable, Dict, Mapping, Optional, TypeAlias, Union, cast
 
 from fastapi import HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
@@ -13,6 +13,9 @@ from app import config
 from app.security import service_tokens as ST
 
 _ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
+
+
+ScopeParam: TypeAlias = Optional[Union[str, Iterable[str]]]
 
 
 class RBACError(Exception):
@@ -257,3 +260,4 @@ def ensure_scope(
         raise RBACError(f"tenant '{tenant}' out of scope")
     if not _value_in_scope(bot_scope, bot):
         raise RBACError(f"bot '{bot}' out of scope")
+

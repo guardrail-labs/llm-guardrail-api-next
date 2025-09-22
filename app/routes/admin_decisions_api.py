@@ -15,7 +15,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
-from app.middleware.scope import require_effective_scope, set_effective_scope_headers
+from app.middleware.scope import (
+    as_iterable_scope,
+    require_effective_scope,
+    set_effective_scope_headers,
+)
 from app.security.rbac import RBACError, ensure_scope, require_viewer
 from app.services.decisions_store import list_with_cursor
 from app.utils.cursor import CursorError
@@ -665,10 +669,12 @@ async def get_decisions(
         if parsed_since is not None:
             since_ts_ms = int(parsed_since.timestamp() * 1000)
 
+    eff_tenant_seq = as_iterable_scope(eff_tenant)
+    eff_bot_seq = as_iterable_scope(eff_bot)
     try:
         items_raw, next_cursor, prev_cursor = list_with_cursor(
-            tenant=eff_tenant,
-            bot=eff_bot,
+            tenant=eff_tenant_seq,
+            bot=eff_bot_seq,
             limit=effective_limit,
             cursor=cursor,
             dir=pagination_dir,
