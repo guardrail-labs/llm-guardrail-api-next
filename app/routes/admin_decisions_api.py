@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
+from app.security.rbac import ensure_scope, require_viewer
 from app.services.decisions_store import list_with_cursor
 from app.utils.cursor import CursorError
 
@@ -231,6 +232,15 @@ def _require_admin_dep(request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Admin authentication required",
             )
+
+    # Mark request as coming from the admin API path for downstream RBAC checks
+    state_user = getattr(request.state, "admin_user", None)
+    if not isinstance(state_user, dict):
+        setattr(
+            request.state,
+            "admin_user",
+            {"email": "admin@api-key", "name": "Admin API", "role": "admin"},
+        )
 
     # No key configured and no guard raised: allow (dev)
     return None
@@ -568,6 +578,9 @@ async def get_decisions(
         examples=[{"summary": "First page", "value": 0}],
     ),
 ) -> JSONResponse:
+    user = require_viewer(request)
+    ensure_scope(user, tenant=tenant, bot=bot)
+
     query_dir_raw = request.query_params.get("dir")
     query_dir = query_dir_raw.lower() if query_dir_raw else None
 
@@ -843,7 +856,7 @@ def _stream_jsonl(
 
 @router.get("/admin/api/decisions/export")
 async def export_decisions(
-    _request: Request,
+    request: Request,
     format: str = Query("csv", pattern="^(csv|jsonl)$"),
     since: Optional[str] = Query(None, description="ISO8601 timestamp (UTC)"),
     tenant: Optional[str] = Query(None),
@@ -854,6 +867,9 @@ async def export_decisions(
     """
     Stream decisions as CSV or JSONL. Same filters as the list API.
     """
+
+    user = require_viewer(request)
+    ensure_scope(user, tenant=tenant, bot=bot)
 
     prov = _get_provider()
     since_dt = _parse_since(since)

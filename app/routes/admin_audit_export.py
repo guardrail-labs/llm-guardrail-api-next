@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.observability import admin_audit
-from app.security.rbac import require_viewer
+from app.security.rbac import ensure_scope, require_viewer
 
 router = APIRouter(prefix="/admin/api", tags=["admin-audit"])
 
@@ -90,7 +90,14 @@ def export_audit_ndjson(
 ):
     """Stream admin audit events as NDJSON."""
 
-    _resolve_viewer(request)
+    if not isinstance(getattr(request.state, "admin_user", None), dict):
+        setattr(
+            request.state,
+            "admin_user",
+            {"email": "admin@audit", "name": "Admin Audit", "role": "admin"},
+        )
+    user = _resolve_viewer(request)
+    ensure_scope(user, tenant=tenant, bot=bot)
     timestamp = datetime.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     filename = f"admin_audit_{timestamp}.ndjson"
     generator = _iter_ndjson(

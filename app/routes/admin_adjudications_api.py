@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.observability import adjudication_log as log
+from app.security.rbac import ensure_scope, require_viewer
 from app.utils.cursor import CursorError
 
 try:
@@ -29,6 +30,7 @@ router = APIRouter(
     ),
 )
 def list_adjudications(
+    request: Request,
     limit: int = Query(
         50,
         ge=1,
@@ -77,6 +79,9 @@ def list_adjudications(
         examples=[{"summary": "Specific request", "value": "req-123"}],
     ),
 ):
+    user = require_viewer(request)
+    ensure_scope(user, tenant=tenant, bot=bot)
+
     try:
         items, next_cur, prev_cur = log.list_with_cursor(
             limit=limit,

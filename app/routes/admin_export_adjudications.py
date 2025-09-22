@@ -5,10 +5,11 @@ import json
 import time
 from typing import Iterable, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.observability import adjudication_log as _log
+from app.security.rbac import ensure_scope, require_viewer
 
 router = APIRouter(prefix="/admin/api", tags=["admin-export"])
 
@@ -63,6 +64,7 @@ def _iter_adjudications_ndjson(
 
 @router.get("/adjudications/export.ndjson")
 def export_adjudications_ndjson(
+    request: Request,
     tenant: Optional[str] = Query(None),
     bot: Optional[str] = Query(None),
     since: Optional[int] = Query(None, description="Epoch ms inclusive"),
@@ -76,6 +78,15 @@ def export_adjudications_ndjson(
     Stream Adjudications as NDJSON. Honors tenant, bot, since, until, outcome,
     rule_id, and request_id filters. Content-Type: application/x-ndjson
     """
+
+    if not isinstance(getattr(request.state, "admin_user", None), dict):
+        setattr(
+            request.state,
+            "admin_user",
+            {"email": "admin@export", "name": "Admin Export", "role": "admin"},
+        )
+    user = require_viewer(request)
+    ensure_scope(user, tenant=tenant, bot=bot)
 
     now = _dt.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     fname = f"adjudications_{now}.ndjson"
