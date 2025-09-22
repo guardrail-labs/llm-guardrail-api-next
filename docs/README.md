@@ -18,3 +18,9 @@ scripts/smoke.sh
 * [Operations Quickstart](./ops-quickstart.md) – probes, metrics, and dashboards to watch.
 * [Configuration Matrix](./config-matrix.md) – environment variables and their effects.
 * [Alert Runbook](./runbook-alerts.md) – actionable playbooks when alerts fire.
+
+## Operability
+- [SLOs & SLIs](./operability/SLOs.md)
+- Runbooks: [DLQ](./operability/runbooks/DLQ.md), [Readiness](./operability/runbooks/Readiness.md)
+- Prometheus rules: `deploy/monitoring/prometheus/rules/`
+- Alertmanager routes: `deploy/monitoring/alertmanager/alertmanager.yaml`

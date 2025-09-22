@@ -1,83 +1,47 @@
-# PrometheusRule — Alerting rules that map to the paging policy in docs/ops/slo-alerting.md
-apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  name: guardrail-alerts
-  labels:
-    app.kubernetes.io/name: guardrail
-spec:
-  groups:
-    - name: guardrail.alerts
-      interval: 30s
-      rules:
-        # Page: Fleet readiness degraded for >= 5m
-        - alert: GuardrailReadinessDegraded
-          expr: guardrail:readyz_available:ratio < 1
-          for: 5m
-          labels:
-            severity: critical
-            team: platform
-          annotations:
-            summary: "Guardrail readiness degraded"
-            description: >
-              One or more pods are not ready.
-              Fleet availability={{ $value | printf "%.2f" }} (target 1.0).
-              Check /readyz, pod restarts, and app logs.
+groups:
+  - name: guardrail.alerts
+    rules:
+      - alert: GuardrailReadinessCritical
+        expr: (guardrail_readyz_ok == 0) or (guardrail_readyz_redis_ok == 0)
+        for: 5m
+        labels:
+          severity: "critical"
+        annotations:
+          summary: "Guardrail not ready"
+          description: "Ready check failing for >=5m."
 
-        # Page: Redis unavailable for >= 5m
-        - alert: GuardrailRedisDegraded
-          expr: guardrail:redis_available:ratio < 1
-          for: 5m
-          labels:
-            severity: critical
-            team: platform
-          annotations:
-            summary: "Guardrail Redis connectivity degraded"
-            description: >
-              App cannot reach Redis.
-              Fleet redis_ok={{ $value | printf "%.2f" }} (target 1.0).
-              Check Redis service/pods, network policy, and REDIS_URL.
+      - alert: GuardrailWebhookDLQBacklogWarn
+        expr: guardrail:webhook_dlq_depth:max_5m > 0
+        for: 5m
+        labels:
+          severity: "warning"
+        annotations:
+          summary: "Webhook DLQ backlog present"
+          description: "There is a non-zero DLQ backlog."
 
-        # Warn: brief readiness flap (<5m)
-        - alert: GuardrailReadinessFlap
-          expr: guardrail:readyz_available:ratio < 1
-          for: 1m
-          labels:
-            severity: warn
-            team: platform
-          annotations:
-            summary: "Guardrail readiness flap"
-            description: >
-              Transient pod not-ready condition detected.
-              Investigate if recurring.
+      - alert: GuardrailWebhookDLQBacklogCrit
+        expr: guardrail:webhook_dlq_depth:max_5m > 0
+        for: 15m
+        labels:
+          severity: "critical"
+        annotations:
+          summary: "Webhook DLQ backlog sustained"
+          description: "Non-zero DLQ backlog sustained for >=15m (likely stuck deliveries)."
 
-        # Page: DLQ backlog continuously non-zero for 15m
-        - alert: GuardrailWebhookDLQBacklog
-          expr: min_over_time(guardrail_webhook_dlq_depth[15m]) > 0
-          # 'min_over_time' already encodes the 15m persistence; keep a short 'for'
-          # to avoid flicker on scrape hiccups.
-          for: 1m
-          labels:
-            severity: critical
-            team: platform
-          annotations:
-            summary: "Guardrail webhook DLQ backlog"
-            description: >
-              Webhook DLQ depth has been > 0 continuously for 15 minutes.
-              Check webhook worker logs, endpoints, and circuit breaker status.
+      - alert: GuardrailLatencyP95High
+        expr: guardrail:decisions:p95_latency_5m > 0.3
+        for: 10m
+        labels:
+          severity: "warning"
+        annotations:
+          summary: "Decisions p95 latency > 300ms"
+          description: "Sustained p95 > 300ms over 10m"
 
-        # Warn: DLQ backlog continuously non-zero for 5m (heads-up)
-        - alert: GuardrailWebhookDLQBacklogWarn
-          expr: min_over_time(guardrail_webhook_dlq_depth[5m]) > 0
-          for: 1m
-          labels:
-            severity: warn
-            team: platform
-          annotations:
-            summary: "Guardrail webhook DLQ backlog (transient)"
-            description: >
-              DLQ depth has been > 0 continuously for 5 minutes.
-              Will page if it continues for 15 minutes.
-
-# If you’re not using the Prometheus Operator, you can drop just the rules: sections into
-# your own rules files and load them via your Prometheus config.
+      - alert: GuardrailAvailabilitySLOMiss
+        expr: guardrail:decisions:availability_30d < 0.999
+        for: 30m
+        labels:
+          severity: "critical"
+        annotations:
+          summary: "Availability SLO miss (30d)"
+          description: "Availability below 99.9% (rolling 30d window)."

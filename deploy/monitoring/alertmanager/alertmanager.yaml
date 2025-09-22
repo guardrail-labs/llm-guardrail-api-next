@@ -1,0 +1,36 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  # Default sink for unmatched alerts (intentionally drops notifications)
+  receiver: blackhole
+  group_by: ['alertname', 'job']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: pagerduty
+    - matchers:
+        - severity="warning"
+      receiver: ops-slack
+
+inhibit_rules:
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ['alertname', 'job']
+
+receivers:
+  # No integrations: valid receiver that drops alerts
+  - name: blackhole
+
+  - name: pagerduty
+    pagerduty_configs:
+      - routing_key: "${PAGERDUTY_ROUTING_KEY}"
+        severity: critical
+
+  - name: ops-slack
+    slack_configs:
+      - api_url: "${SLACK_WEBHOOK_URL}"
+        channel: "#ops-guardrail"
