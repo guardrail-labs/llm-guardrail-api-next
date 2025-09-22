@@ -3,27 +3,25 @@ from __future__ import annotations
 import datetime
 import json
 import time
-from typing import Any, Dict, Iterable, Optional, cast
+from typing import Any, Dict, Iterable, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.middleware.scope import require_effective_scope, set_effective_scope_headers
 from app.observability import admin_audit
-from app.security.rbac import RBACError, ensure_scope, require_viewer
+from app.security.rbac import require_viewer
 
 router = APIRouter(prefix="/admin/api", tags=["admin-audit"])
 
 
-def _resolve_viewer(request: Request) -> Dict[str, Any]:
-    try:
-        overrides = getattr(request.app, "dependency_overrides", None)
-    except Exception:
-        overrides = None
-    if isinstance(overrides, dict):
-        handler = overrides.get(require_viewer)
-        if callable(handler):
-            return cast(Dict[str, Any], handler(request))
-    return require_viewer(request)
+def _ensure_audit_user(request: Request) -> None:
+    if not isinstance(getattr(request.state, "admin_user", None), dict):
+        setattr(
+            request.state,
+            "admin_user",
+            {"email": "admin@audit", "name": "Admin Audit", "role": "admin"},
+        )
 
 
 def _matches(
@@ -90,29 +88,25 @@ def export_audit_ndjson(
 ):
     """Stream admin audit events as NDJSON."""
 
-    if not isinstance(getattr(request.state, "admin_user", None), dict):
-        setattr(
-            request.state,
-            "admin_user",
-            {"email": "admin@audit", "name": "Admin Audit", "role": "admin"},
-        )
-    user = _resolve_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    _ensure_audit_user(request)
+    user = require_viewer(request)
+    eff_tenant, eff_bot = require_effective_scope(
+        user=user, tenant=tenant, bot=bot
+    )
     timestamp = datetime.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     filename = f"admin_audit_{timestamp}.ndjson"
     generator = _iter_ndjson(
         since=since,
         until=until,
-        tenant=tenant,
-        bot=bot,
+        tenant=eff_tenant,
+        bot=eff_bot,
         action=action,
         outcome=outcome,
     )
-    return StreamingResponse(
+    response = StreamingResponse(
         generator,
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
+    return response

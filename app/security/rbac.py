@@ -215,6 +215,39 @@ def _value_in_scope(scope_value: object, candidate: Optional[str]) -> bool:
     return False
 
 
+def coerce_query_to_scope(scope_value: object, candidate: Optional[str]):
+    """Return an effective filter constrained to ``scope_value``.
+
+    Behavior:
+    - ``*``: passthrough (may return ``None``).
+    - Explicit scope with missing candidate: if the scope contains a single
+      value, return it; otherwise require the caller to specify a filter.
+    - Candidate provided: verify membership; raise ``RBACError`` when out of
+      scope.
+    """
+
+    if scope_value == "*":
+        return candidate
+    if candidate is None:
+        if isinstance(scope_value, str):
+            return scope_value
+        if _is_iterable_scope(scope_value):
+            normalized = [
+                str(item)
+                for item in cast(Iterable[Any], scope_value)
+                if item not in (None, "")
+            ]
+            if not normalized:
+                raise RBACError("empty scope")
+            if len(normalized) == 1:
+                return normalized[0]
+            raise RBACError("ambiguous scope; specify filter")
+        return str(scope_value)
+    if _value_in_scope(scope_value, candidate):
+        return candidate
+    raise RBACError("out of scope")
+
+
 def ensure_scope(
     user: dict[str, Any], *, tenant: Optional[str], bot: Optional[str]
 ) -> None:

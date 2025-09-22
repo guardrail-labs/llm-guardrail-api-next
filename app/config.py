@@ -161,6 +161,18 @@ try:
 except Exception:
     ADMIN_RBAC_OVERRIDES = {}
 
+
+def _to_bool(val: object, default: bool = False) -> bool:
+    if val is None:
+        return default
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Optional DX flag: keep strict behavior unless explicitly enabled.
+SCOPE_AUTOCONSTRAIN_ENABLED = _to_bool(
+    os.getenv("SCOPE_AUTOCONSTRAIN_ENABLED"), False
+)
+
 SERVICE_TOKEN_SECRET = os.getenv("SERVICE_TOKEN_SECRET", "").strip()
 SERVICE_TOKEN_TTL_HOURS = int(os.getenv("SERVICE_TOKEN_TTL_HOURS", "720"))
 SERVICE_TOKEN_ISSUER = os.getenv("SERVICE_TOKEN_ISSUER", "guardrail-api")

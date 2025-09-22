@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
-from app.security.rbac import RBACError, ensure_scope, require_viewer
+from app.middleware.scope import require_effective_scope, set_effective_scope_headers
 from app.services.decisions_store import list_with_cursor
 from app.utils.cursor import CursorError
 
@@ -501,7 +501,9 @@ def _list_decisions_offset_path(
         limit=limit,
         dir="next",
     )
-    return JSONResponse(payload.model_dump())
+    response = JSONResponse(payload.model_dump())
+    set_effective_scope_headers(response, tenant, bot)
+    return response
 
 
 @router.get(
@@ -516,6 +518,7 @@ def _list_decisions_offset_path(
 )
 async def get_decisions(
     request: Request,
+    scope=Depends(require_effective_scope),
     since: Optional[str] = Query(
         None,
         description="Filter decisions since this ISO8601 timestamp (UTC)",
@@ -578,11 +581,7 @@ async def get_decisions(
         examples=[{"summary": "First page", "value": 0}],
     ),
 ) -> JSONResponse:
-    user = require_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    eff_tenant, eff_bot = scope
 
     query_dir_raw = request.query_params.get("dir")
     query_dir = query_dir_raw.lower() if query_dir_raw else None
@@ -617,8 +616,8 @@ async def get_decisions(
         log.warning("Offset pagination is deprecated; prefer cursor.")
         return _list_decisions_offset_path(
             since=since,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             outcome=outcome,
             request_id=request_id,
             page=max(int(page), 1),
@@ -633,8 +632,8 @@ async def get_decisions(
         log.warning("Offset pagination is deprecated; prefer cursor.")
         return _list_decisions_offset_path(
             since=since,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             outcome=outcome,
             request_id=request_id,
             page=max(int(page), 1),
@@ -662,8 +661,8 @@ async def get_decisions(
 
     try:
         items_raw, next_cursor, prev_cursor = list_with_cursor(
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             limit=effective_limit,
             cursor=cursor,
             dir=pagination_dir,
@@ -677,8 +676,8 @@ async def get_decisions(
         log.warning("Cursor pagination unavailable (%s); falling back to offset path.", exc)
         return _list_decisions_offset_path(
             since=since,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             outcome=outcome,
             request_id=request_id,
             page=max(int(page), 1),
@@ -702,7 +701,9 @@ async def get_decisions(
         limit=effective_limit,
         dir=pagination_dir,
     )
-    return JSONResponse(payload.model_dump())
+    response = JSONResponse(payload.model_dump())
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
+    return response
 
 
 @router.get("/admin/decisions", response_class=HTMLResponse)
@@ -866,16 +867,13 @@ async def export_decisions(
     bot: Optional[str] = Query(None),
     outcome: Optional[str] = Query(None),
     batch: int = Query(1000, ge=100, le=10000),
+    scope=Depends(require_effective_scope),
 ):
     """
     Stream decisions as CSV or JSONL. Same filters as the list API.
     """
 
-    user = require_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    eff_tenant, eff_bot = scope
 
     prov = _get_provider()
     since_dt = _parse_since(since)
@@ -883,11 +881,13 @@ async def export_decisions(
     if format == "jsonl":
         filename = "decisions.jsonl"
         media_type = "application/x-ndjson"
-        body_iter = _stream_jsonl(prov, since_dt, tenant, bot, outcome, batch)
+        body_iter = _stream_jsonl(prov, since_dt, eff_tenant, eff_bot, outcome, batch)
     else:
         filename = "decisions.csv"
         media_type = "text/csv"
-        body_iter = _stream_csv(prov, since_dt, tenant, bot, outcome, batch)
+        body_iter = _stream_csv(prov, since_dt, eff_tenant, eff_bot, outcome, batch)
 
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-    return StreamingResponse(body_iter, media_type=media_type, headers=headers)
+    response = StreamingResponse(body_iter, media_type=media_type, headers=headers)
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
+    return response

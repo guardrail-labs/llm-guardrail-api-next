@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from app.middleware.scope import require_effective_scope, set_effective_scope_headers
 from app.observability import adjudication_log as log
-from app.security.rbac import RBACError, ensure_scope, require_viewer
 from app.utils.cursor import CursorError
 
 try:
@@ -31,6 +31,8 @@ router = APIRouter(
 )
 def list_adjudications(
     request: Request,
+    response: Response,
+    scope=Depends(require_effective_scope),
     limit: int = Query(
         50,
         ge=1,
@@ -79,19 +81,15 @@ def list_adjudications(
         examples=[{"summary": "Specific request", "value": "req-123"}],
     ),
 ):
-    user = require_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    eff_tenant, eff_bot = scope
 
     try:
         items, next_cur, prev_cur = log.list_with_cursor(
             limit=limit,
             cursor=cursor,
             dir=dir,
-            tenant=tenant,
-            bot=bot,
+            tenant=eff_tenant,
+            bot=eff_bot,
             since_ts_ms=since,
             outcome=outcome,
             rule_id=rule_id,
@@ -102,6 +100,7 @@ def list_adjudications(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
     return {
         "items": [item.__dict__ for item in items],
         "next_cursor": next_cur,

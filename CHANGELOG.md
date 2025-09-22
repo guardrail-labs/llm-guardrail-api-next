@@ -5,6 +5,7 @@
 - Admin audit persistence (file/redis) + NDJSON export.
 - Health (`/healthz`) & readiness (`/readyz`) with Redis/file checks.
 - Override metrics tiles; gauges: `guardrail_readyz_ok`, `guardrail_readyz_redis_ok`, `guardrail_webhook_dlq_depth`.
+- Optional `SCOPE_AUTOCONSTRAIN_ENABLED` flag to auto-constrain scoped requests and emit `X-Guardrail-Scope-*` headers.
 - Version endpoint `/version` with build metadata.
 
 ### Changed

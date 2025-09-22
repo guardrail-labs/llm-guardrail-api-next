@@ -5,10 +5,11 @@ import json
 import time
 from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.security.rbac import RBACError, ensure_scope, require_viewer
+from app.middleware.scope import require_effective_scope, set_effective_scope_headers
+from app.security.rbac import require_viewer
 from app.services import decisions_store as _store
 
 router = APIRouter(prefix="/admin/api", tags=["admin-export"])
@@ -18,6 +19,15 @@ def require_admin_session() -> bool:
     """Placeholder dependency for admin session validation."""
 
     return True
+
+
+def _ensure_export_user(request: Request) -> None:
+    if not isinstance(getattr(request.state, "admin_user", None), dict):
+        setattr(
+            request.state,
+            "admin_user",
+            {"email": "admin@export", "name": "Admin Export", "role": "admin"},
+        )
 
 
 def _normalize_decision(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,36 +109,32 @@ def export_decisions_ndjson(
     since: Optional[int] = Query(None, description="Epoch ms inclusive"),
     until: Optional[int] = Query(None, description="Epoch ms inclusive"),
     outcome: Optional[str] = Query(None, description="allow|block|clarify|redact"),
-    _=Depends(require_admin_session),
 ):
     """
     Stream Decisions as NDJSON. Honors tenant, bot, since, until, outcome filters.
     Content-Type: application/x-ndjson
     """
 
-    if not isinstance(getattr(request.state, "admin_user", None), dict):
-        setattr(
-            request.state,
-            "admin_user",
-            {"email": "admin@export", "name": "Admin Export", "role": "admin"},
-        )
+    require_admin_session()
+    _ensure_export_user(request)
     user = require_viewer(request)
-    try:
-        ensure_scope(user, tenant=tenant, bot=bot)
-    except RBACError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    eff_tenant, eff_bot = require_effective_scope(
+        user=user, tenant=tenant, bot=bot
+    )
 
     now = _dt.datetime.utcfromtimestamp(time.time()).strftime("%Y%m%dT%H%M%SZ")
     fname = f"decisions_{now}.ndjson"
     gen = _iter_decisions_ndjson(
-        tenant=tenant,
-        bot=bot,
+        tenant=eff_tenant,
+        bot=eff_bot,
         since=since,
         until=until,
         outcome=outcome,
     )
-    return StreamingResponse(
+    response = StreamingResponse(
         gen,
         media_type="application/x-ndjson",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+    set_effective_scope_headers(response, eff_tenant, eff_bot)
+    return response
