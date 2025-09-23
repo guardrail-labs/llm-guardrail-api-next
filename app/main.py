@@ -52,6 +52,17 @@ except Exception:  # pragma: no cover
 RequestHandler = Callable[[StarletteRequest], Awaitable[StarletteResponse]]
 
 log = logging.getLogger(__name__)
+_log = log
+
+
+def _best_effort(msg: str, fn: Callable[[], Any]) -> None:
+    """Invoke ``fn`` while ensuring failures are only logged at DEBUG."""
+
+    try:
+        fn()
+    except Exception as exc:  # pragma: no cover - diagnostic only
+        # nosec B110 - preserve historical "best effort" behavior while logging
+        _log.debug("%s: %s", msg, exc)
 
 
 def _remove_legacy_decisions_ndjson(app: FastAPI) -> None:
@@ -91,10 +102,10 @@ async def _prune_loop() -> None:
     while True:
         try:
             from app.services import decisions as decisions_store
-
-            decisions_store.prune()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("import decisions store failed: %s", exc)
+        else:
+            _best_effort("prune decisions", lambda: decisions_store.prune())
         try:
             await asyncio.sleep(interval)
         except Exception:
@@ -105,13 +116,14 @@ def _start_prune_task(app: FastAPI) -> None:
     """
     Start the prune loop once. Safe to call from both lifespan and startup.
     """
-    try:
-        if getattr(app.state, "prune_task", None):
-            return
+    if getattr(app.state, "prune_task", None):
+        return
+
+    def _start() -> None:
         task = asyncio.create_task(_prune_loop())
         app.state.prune_task = task
-    except Exception:
-        pass
+
+    _best_effort("start prune loop", _start)
 
 
 def _get_or_create_latency_histogram() -> Optional[Any]:
@@ -124,8 +136,8 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
             existing = names_map.get(name)
             if existing is not None:
                 return existing
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("inspect prometheus registry failed: %s", exc)
     try:
         return PromHistogram(name, "Request latency in seconds", ["route", "method"])
     except ValueError:
@@ -133,7 +145,8 @@ def _get_or_create_latency_histogram() -> Optional[Any]:
             names_map = getattr(PromRegistry, "_names_to_collectors", None)
             if isinstance(names_map, dict):
                 return names_map.get(name)
-        except Exception:
+        except Exception as exc:
+            _log.debug("fallback latency histogram lookup failed: %s", exc)
             return None
         return None
 
@@ -151,12 +164,12 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         finally:
             if self._hist is not None:
-                try:
+                def _observe() -> None:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
                     self._hist.labels(route=safe_route, method=request.method).observe(dur)
-                except Exception:
-                    pass
+
+                _best_effort("observe latency", _observe)
 
 
 _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
@@ -167,12 +180,13 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
     try:
         for k, v in src_headers.raw:
             out.setdefault(k.decode("latin-1"), v.decode("latin-1"))
-    except Exception:
+    except Exception as exc:
+        _log.debug("copy raw headers failed: %s", exc)
         try:
             for k, v in src_headers.items():
                 out.setdefault(k, v)
-        except Exception:
-            pass
+        except Exception as inner_exc:
+            _log.debug("copy mapped headers failed: %s", inner_exc)
     rid = out.get("X-Request-ID") or (get_request_id() or "")
     if rid:
         out["X-Request-ID"] = rid
@@ -210,8 +224,8 @@ def _ensure_idempotency_inner(app: FastAPI, *, finalize: bool = False) -> None:
             app.middleware_stack = app.build_middleware_stack()
         elif getattr(app, "middleware_stack", None) is not None:
             app.middleware_stack = None
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("ensure idempotency middleware update failed: %s", exc)
 
 
 class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
@@ -231,8 +245,8 @@ class _NormalizeUnauthorizedMiddleware(BaseHTTPMiddleware):
             if raw:
                 parsed = json.loads(raw.decode() or "{}")
                 detail = str(parsed.get("detail", detail))
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("normalize unauthorized parse failed: %s", exc)
         payload = {
             "code": "unauthorized",
             "detail": detail,
@@ -314,7 +328,8 @@ def _include_all_route_modules(app: FastAPI) -> int:
             try:
                 mod = importlib.import_module(name)
                 visited.add(name)
-            except Exception:
+            except Exception as exc:
+                _log.debug("module import failed: %s", name, exc_info=True)
                 continue
             try:
                 for attr_name in dir(mod):
@@ -322,13 +337,13 @@ def _include_all_route_modules(app: FastAPI) -> int:
                     if isinstance(obj, APIRouter):
                         app.include_router(obj)
                         count += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.debug("include routers from %s failed: %s", name, exc)
             try:
                 if hasattr(mod, "__path__"):
                     _walk(mod)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.debug("walk module failed: %s", name, exc)
 
     _walk(routes_pkg)
     return count
@@ -379,10 +394,7 @@ def _install_bindings_fallback(app: FastAPI) -> None:
                 "policy_version": policy_version,
             }
             out.append(rec)
-        try:
-            _propagate_bindings(out)
-        except Exception:
-            pass
+        _best_effort("propagate bindings", lambda: _propagate_bindings(out))
         return {"bindings": out}
 
     @admin.get("/bindings")
@@ -559,47 +571,63 @@ async def lifespan(app: FastAPI):
     # Best-effort pre-warm of rulepacks and bindings so first request isn't slow.
     try:
         from app.services import rulepacks_engine
-        rulepacks_engine.compile_active_rulepacks()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import rulepacks_engine failed: %s", exc)
+    else:
+        _best_effort("compile active rulepacks", 
+                     lambda: rulepacks_engine.compile_active_rulepacks()
+                    )
     try:
         from app.services.config_store import load_bindings
-        load_bindings()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import load_bindings failed: %s", exc)
+    else:
+        _best_effort("load bindings", lambda: load_bindings())
 
     # Initialize decisions store and start prune loop (duplicate-safe)
     try:
         from app.services import decisions as decisions_store
-
-        decisions_store.ensure_ready()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import decisions store failed: %s", exc)
+    else:
+        _best_effort("ensure decisions store ready", 
+                     lambda: decisions_store.ensure_ready()
+                    )
 
     _start_prune_task(app)
 
     try:
         from app.services import webhooks as _wh_mod
-
-        _wh_mod.ensure_started()
-        _webhooks_module = _wh_mod
-    except Exception:
+    except Exception as exc:
+        _log.debug("import webhooks module failed: %s", exc)
         _webhooks_module = None
+    else:
+        try:
+            _wh_mod.ensure_started()
+        except Exception as exc:
+            _log.debug("webhooks ensure started failed: %s", exc)
+            _webhooks_module = None
+        else:
+            _webhooks_module = _wh_mod
 
     await sysmod._startup_readiness()
     try:
         yield
     finally:
         await sysmod._shutdown_readiness()
-        try:
-            if _webhooks_module is not None:
-                _webhooks_module.shutdown()
-            else:
+        if _webhooks_module is not None:
+            _best_effort("webhooks module shutdown", 
+                         lambda: _webhooks_module.shutdown()
+                        )
+        else:
+            try:
                 from app.services import webhooks as _wh_mod
-
-                _wh_mod.shutdown()
-        except Exception:
-            pass
+            except Exception as exc:
+                _log.debug("import webhooks module for shutdown failed: %s", exc)
+            else:
+                _best_effort("webhooks module shutdown", 
+                             lambda: _wh_mod.shutdown()
+                            )
         # Stop prune loop gracefully if running
         try:
             task = getattr(app.state, "prune_task", None)
@@ -608,8 +636,8 @@ async def lifespan(app: FastAPI):
                 with suppress(asyncio.CancelledError):
                     await task
                 app.state.prune_task = None
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("prune loop shutdown failed: %s", exc)
         # Clean shutdown for tracer/exporter if present.
         try:
             from opentelemetry import trace as _trace
@@ -617,8 +645,8 @@ async def lifespan(app: FastAPI):
             shutdown = getattr(provider, "shutdown", None)
             if callable(shutdown):
                 shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("tracer shutdown failed: %s", exc)
 
 
 OPENAPI_TAGS = [
@@ -641,13 +669,16 @@ def create_app() -> FastAPI:
     )
     try:
         from app.security.rbac import RBACError
-
+    except Exception as exc:
+        _log.debug("import RBACError failed: %s", exc)
+    else:
         async def handle_rbac_error(request: Request, exc: Exception) -> JSONResponse:
             return JSONResponse(status_code=403, content={"detail": str(exc)})
 
-        app.add_exception_handler(RBACError, handle_rbac_error)
-    except Exception:
-        pass
+        _best_effort(
+            "install RBAC error handler",
+            lambda: app.add_exception_handler(RBACError, handle_rbac_error),
+        )
     try:
         from app.routes import health
 
@@ -657,54 +688,75 @@ def create_app() -> FastAPI:
     app.include_router(admin_scope_router)
     try:
         from app.routes.admin_policy_packs import router as admin_policy_packs_router
-
-        app.include_router(admin_policy_packs_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_policy_packs_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_policy_packs_router",
+            lambda: app.include_router(admin_policy_packs_router),
+        )
     try:
         from app.routes.admin_decisions_api import router as admin_decisions_router
-
-        app.include_router(admin_decisions_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_decisions_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_decisions_router",
+            lambda: app.include_router(admin_decisions_router),
+        )
     try:
         from app.routes.admin_decisions_export import (
             router as admin_decisions_export_router,
         )
-
-        app.include_router(admin_decisions_export_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_decisions_export_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_decisions_export_router",
+            lambda: app.include_router(admin_decisions_export_router),
+        )
     try:
         from app.routes.admin_overview import router as admin_overview_router
-
-        app.include_router(admin_overview_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_overview_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_overview_router",
+            lambda: app.include_router(admin_overview_router),
+        )
     try:
         from app.routes.admin_apply_demo_defaults import (
             router as admin_apply_demo_defaults_router,
         )
-
-        app.include_router(admin_apply_demo_defaults_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_apply_demo_defaults_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_apply_demo_defaults_router",
+            lambda: app.include_router(admin_apply_demo_defaults_router),
+        )
     try:
         from app.routes.admin_apply_golden import (
             router as admin_apply_golden_router,
         )
-
-        app.include_router(admin_apply_golden_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_apply_golden_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_apply_golden_router",
+            lambda: app.include_router(admin_apply_golden_router),
+        )
     try:
         from app.routes.admin_apply_strict_secrets import (
             router as admin_apply_strict_secrets_router,
         )
-
-        app.include_router(admin_apply_strict_secrets_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_apply_strict_secrets_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_apply_strict_secrets_router",
+            lambda: app.include_router(admin_apply_strict_secrets_router),
+        )
     try:
         from app.routes import admin_secrets_strict
 
@@ -731,10 +783,10 @@ def create_app() -> FastAPI:
         log.warning("Data lifecycle routes unavailable: %s", exc)
     try:
         from app.routes import admin_features
-
-        app.include_router(admin_features.router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_features failed: %s", exc)
+    else:
+        _best_effort("include admin_features", lambda: app.include_router(admin_features.router))
     # Optional auth/OIDC helpers
     try:
         from app.routes import admin_auth_oidc
@@ -753,10 +805,10 @@ def create_app() -> FastAPI:
         app.add_middleware(TracingMiddleware)
     try:
         from app.middleware.rate_limit import RateLimitMiddleware
-
-        app.add_middleware(RateLimitMiddleware)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import RateLimitMiddleware failed: %s", exc)
+    else:
+        _best_effort("add RateLimitMiddleware", lambda: app.add_middleware(RateLimitMiddleware))
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(EgressRedactMiddleware)
     app.add_middleware(TenantBotMiddleware)
@@ -765,9 +817,10 @@ def create_app() -> FastAPI:
     # Max body size (intercepts early)
     try:
         max_body_mod = __import__("app.middleware.max_body", fromlist=["install_max_body"])
-        max_body_mod.install_max_body(app)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import max_body middleware failed: %s", exc)
+    else:
+        _best_effort("install max body middleware", lambda: max_body_mod.install_max_body(app))
 
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
@@ -778,15 +831,17 @@ def create_app() -> FastAPI:
     admin_router = None
     try:
         from app.routes import admin as _admin_mod
-
-        admin_router = getattr(_admin_mod, "router", None)
-    except Exception:
+    except Exception as exc:
+        _log.debug("import admin router failed: %s", exc)
         try:
             from app.routes.admin.bindings import router as _bindings_router
-
-            admin_router = _bindings_router
-        except Exception:
+        except Exception as inner_exc:
+            _log.debug("import admin bindings router failed: %s", inner_exc)
             admin_router = None
+        else:
+            admin_router = _bindings_router
+    else:
+        admin_router = getattr(_admin_mod, "router", None)
     if admin_router is not None:
         app.include_router(admin_router)
     else:
@@ -795,11 +850,13 @@ def create_app() -> FastAPI:
     # --- Explicit admin/policy routers (avoid walker dupes) ---
     try:
         from app.routes import policy_admin
-
-        app.include_router(policy_admin.router)
-    except Exception:
-        # Intentionally swallow import errors; endpoints just won't be present
-        pass
+    except Exception as exc:
+        _log.debug("import policy_admin failed (optional): %s", exc)
+    else:
+        _best_effort(
+            "include policy_admin",
+            lambda: app.include_router(policy_admin.router),
+        )
 
     try:
         from app.routes import (
@@ -837,8 +894,8 @@ def create_app() -> FastAPI:
         app.include_router(admin_adjudications.router)
         app.include_router(admin_adjudications_api.router)
         app.include_router(admin_retention.router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("bulk admin router include failed: %s", exc, exc_info=True)
 
     exports_loaded = False
     try:
@@ -860,27 +917,35 @@ def create_app() -> FastAPI:
     # Admin Policy API (version + reload)
     try:
         from app.routes import admin_policy_api
-
-        app.include_router(admin_policy_api.router)
-    except Exception:
-        # keep startup resilient even if import order changes during refactors
-        pass
+    except Exception as exc:
+        _log.debug("import admin_policy_api failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_policy_api",
+            lambda: app.include_router(admin_policy_api.router),
+        )
 
     try:
         from app.routes.admin_policy_validate import (
             router as admin_policy_validate_router,
         )
-
-        app.include_router(admin_policy_validate_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_policy_validate_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_policy_validate_router",
+            lambda: app.include_router(admin_policy_validate_router),
+        )
 
     try:
         from app.routes.admin_mitigations import router as admin_mitigations_router
-
-        app.include_router(admin_mitigations_router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin_mitigations_router failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_mitigations_router",
+            lambda: app.include_router(admin_mitigations_router),
+        )
 
     try:
         # Lazy import so optional admin deps don’t crash startup at module import time.
@@ -888,32 +953,41 @@ def create_app() -> FastAPI:
             admin_mitigation as admin_mitigation_module,
             admin_mitigation_modes,
         )
-
-        app.include_router(admin_mitigation_module.router)
-        app.include_router(admin_mitigation_modes.router)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import admin mitigation modules failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_mitigation_module",
+            lambda: app.include_router(admin_mitigation_module.router),
+        )
+        _best_effort(
+            "include admin_mitigation_modes",
+            lambda: app.include_router(admin_mitigation_modes.router),
+        )
 
     # --- Remaining routers (walker skips egress + all admin variants) ---
     _include_all_route_modules(app)
 
     try:
         from app.admin_config.demo_seed import seed_demo_defaults
-
-        seed_demo_defaults()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import seed_demo_defaults failed: %s", exc)
+    else:
+        _best_effort("seed demo defaults", seed_demo_defaults)
 
     try:
         from app.routes import guardrail as guardrail_routes
-
-        app.include_router(
-            guardrail_routes.router,
-            prefix="/v1",
-            tags=["guardrail", "v1"],
+    except Exception as exc:
+        _log.debug("import guardrail routes failed: %s", exc)
+    else:
+        _best_effort(
+            "include guardrail routes",
+            lambda: app.include_router(
+                guardrail_routes.router,
+                prefix="/v1",
+                tags=["guardrail", "v1"],
+            ),
         )
-    except Exception:
-        pass
 
     # --- Public egress route once ---
     app.include_router(egress_router)
@@ -937,10 +1011,13 @@ def create_app() -> FastAPI:
     app.add_middleware(EgressGuardMiddleware)
     try:
         from app.middleware.decision_headers import DecisionHeaderMiddleware
-
-        app.add_middleware(DecisionHeaderMiddleware)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("import DecisionHeaderMiddleware failed: %s", exc)
+    else:
+        _best_effort(
+            "add DecisionHeaderMiddleware",
+            lambda: app.add_middleware(DecisionHeaderMiddleware),
+        )
     install_json_logging(app)
     _ensure_idempotency_inner(app)
 
@@ -951,14 +1028,17 @@ def create_app() -> FastAPI:
             r for r in app.router.routes
             if not (isinstance(r, Route) and getattr(r, "path", "") == "/metrics")
         ]
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("prune legacy metrics route failed: %s", exc)
     try:
         from app.routes.metrics import router as _metrics_router
-        app.include_router(_metrics_router)
-    except Exception:
-        # Keep startup resilient if prometheus_client isn't installed
-        pass
+    except Exception as exc:
+        _log.debug("import metrics router failed: %s", exc)
+    else:
+        _best_effort(
+            "include metrics router",
+            lambda: app.include_router(_metrics_router),
+        )
 
     try:
         from app.routes import version
@@ -1023,7 +1103,7 @@ try:
             _StarletteGZip,
             minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
         )
-except Exception:
-    pass
+except Exception as exc:
+    _log.debug("configure gzip middleware failed: %s", exc)
 
 _ensure_idempotency_inner(app, finalize=True)
