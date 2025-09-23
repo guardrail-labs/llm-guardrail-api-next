@@ -678,13 +678,15 @@ def configure(*, reset: bool = False) -> None:
                 )
             else:
                 for labels in event_children:
+                    # mypy: make label tuple type explicit
+                    def _prime_event_child(
+                        ls: tuple[str, ...] = tuple(labels),
+                    ) -> None:
+                        telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(*ls).inc(0)
+
                     _best_effort(
                         "prime webhook event metric child",
-                        lambda labels=labels: (
-                            telemetry_metrics.WEBHOOK_EVENTS_TOTAL
-                            .labels(*labels)
-                            .inc(0)
-                        ),
+                        _prime_event_child,
                     )
             try:
                 delivery_children = list(
@@ -703,13 +705,15 @@ def configure(*, reset: bool = False) -> None:
                 )
             else:
                 for labels in delivery_children:
+                    # mypy: make label tuple type explicit
+                    def _prime_delivery_child(
+                        ls: tuple[str, ...] = tuple(labels),
+                    ) -> None:
+                        telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(*ls).inc(0)
+
                     _best_effort(
                         "prime webhook delivery metric child",
-                        lambda labels=labels: (
-                            telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL
-                            .labels(*labels)
-                            .inc(0)
-                        ),
+                        _prime_delivery_child,
                     )
             _best_effort(
                 "clear webhook circuit breaker cache",
