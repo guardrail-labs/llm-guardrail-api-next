@@ -5,8 +5,14 @@
 - **Auditability** of each decision with stable identifiers (incident/request IDs).
 - **Org controls** for explicit overrides with visibility (metrics/webhooks).
 
-## Core guarantee
-If a model attempts to produce content that violates your policy/statute, the Guardrail API enforces the decision (e.g., `block`, `clarify`, `redact`) **in-band**, and the original disallowed output **does not reach** the user. The client receives a mitigated response with decision context for observability.
+## Enforcement posture
+The Guardrail API enforces policy synchronously around model I/O.  
+When policies are active, disallowed outputs are intercepted and replaced with the configured
+mitigation outcome. The original disallowed output is not returned to the client.
+
+This posture provides strong defaults, but it is not a blanket guarantee:
+- If a pack is missing or disabled, the API cannot block on its behalf.
+- Administrators must enable and maintain the policy packs that match their compliance requirements.
 
 ## Enforcement + observability
 - **In-band enforcement:** the decision engine runs synchronously around model I/O.

@@ -2,7 +2,9 @@
 
 ## [v1.0.0-rc1] - 2025-09-23
 ### Added
-- Security model doc: clarified that disallowed outputs are blocked **in-band** and never reach end users.
+- Security model doc: clarified **enforcement posture** — disallowed outputs are intercepted
+  and mitigated (block/clarify/redact) before returning to clients when policies are active.
+  Administrators must enable/maintain appropriate packs for compliance.
 - Perf docs: smoke + compare flow; CI artifacts guidance.
 - Terraform HA example notes (real chart path; override fallback).
 - Repo audits doc (gitleaks/trufflehog/pinning).
