@@ -6,7 +6,7 @@ import json
 import queue
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, TypedDict
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.routes.admin_ui import require_auth
@@ -112,7 +112,8 @@ def _parse_int(raw: Optional[str], *, field: str, default: Optional[int] = None)
 
 def _parse_limit(raw: Optional[str]) -> int:
     value = _parse_int(raw, field="limit", default=50)
-    assert value is not None
+    if value is None:
+        raise HTTPException(status_code=400, detail="Invalid 'limit' parameter")
     if value < 1:
         raise ValueError("limit must be >= 1")
     if value > 500:
@@ -122,7 +123,8 @@ def _parse_limit(raw: Optional[str]) -> int:
 
 def _parse_offset(raw: Optional[str]) -> int:
     value = _parse_int(raw, field="offset", default=0)
-    assert value is not None
+    if value is None:
+        raise HTTPException(status_code=400, detail="Invalid 'offset' parameter")
     if value < 0:
         raise ValueError("offset must be >= 0")
     return value
@@ -249,7 +251,8 @@ def get_decisions(
     )
     if error:
         return error
-    assert filters is not None
+    if filters is None:
+        raise HTTPException(status_code=400, detail="Invalid or missing 'filters'")
 
     records = list_decisions(
         tenant=filters["tenant"],
@@ -314,7 +317,8 @@ def export_decisions_ndjson(
     )
     if error:
         return error  # type: ignore[return-value]
-    assert filters is not None
+    if filters is None:
+        raise HTTPException(status_code=400, detail="Invalid or missing 'filters'")
 
     stream = _ndjson_stream(filters)
     return StreamingResponse(stream, media_type="application/x-ndjson")

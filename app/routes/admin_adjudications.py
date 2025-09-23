@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterator, Literal, Optional, Tuple, TypedDict
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.observability import adjudication_log
@@ -265,7 +265,8 @@ async def list_adjudications(
     )
     if error:
         return error
-    assert filters is not None
+    if filters is None:
+        raise HTTPException(status_code=400, detail="Invalid or missing 'filters'")
 
     limit_val = filters["limit"]
     offset_val = filters["offset"]
@@ -406,7 +407,8 @@ async def export_adjudications(
     )
     if error:
         return error  # type: ignore[return-value]
-    assert filters is not None
+    if filters is None:
+        raise HTTPException(status_code=400, detail="Invalid or missing 'filters'")
 
     stream = _ndjson_stream(filters)
     return StreamingResponse(stream, media_type="application/x-ndjson")
