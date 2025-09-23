@@ -34,6 +34,16 @@ from app.services.verifier.adapters.base import resolve_adapter_from_env
 from app.services.verifier.payload import build_normalized_payload
 
 
+#
+# NOTE ON "0.0.0.0" USAGE:
+# This constant is used ONLY as a placeholder when a client IP cannot be
+# determined from the inbound request. It is subsequently hashed for identity
+# derivation and NEVER used to bind any server socket or open a listener.
+# The `# nosec B104` annotation below documents this non-binding usage.
+#
+UNKNOWN_IP = "0.0.0.0"
+
+
 # ----------------------- helpers ---------------------------------------------
 def _hash(s: str) -> str:
     import hashlib as _h
@@ -111,7 +121,9 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
 
         # Build subject identity (hashed)
         api_key_raw = _api_key_from_headers(request)
-        ip = _client_ip(request) or "0.0.0.0"
+        # Fallback to UNKNOWN_IP only for hashing when client IP is unavailable.
+        # nosec B104 - not a bind address; hashed for subject identity only.
+        ip = _client_ip(request) or UNKNOWN_IP
         sub = Subject(api_key_hash=_hash(api_key_raw) if api_key_raw else "anon", ip_hash=_hash(ip))
 
         # Snapshot and restore body so downstream handlers still receive it
