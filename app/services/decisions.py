@@ -34,6 +34,7 @@ def _best_effort(msg: str, fn: Callable[[], Any]) -> None:
     except Exception as exc:  # pragma: no cover
         _log.debug("%s: %s", msg, exc)
 
+
 # Import SQLAlchemy types only during type checking to avoid runtime/type-assign errors
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
@@ -272,10 +273,11 @@ def ensure_ready() -> None:
     )
     with eng.begin() as conn:
         for raw in stmts:
-            _best_effort(
-                "ensure decisions index",
-                lambda raw=raw: conn.execute(text(raw)),
-            )
+            # mypy can't infer the lambda; give it a tiny typed helper.
+            def _exec_sql(raw_sql: str = raw) -> None:
+                conn.execute(text(raw_sql))
+
+            _best_effort("ensure decisions index", _exec_sql)
 
 
 def is_force_block_enabled_for_tenant(tenant: str) -> bool:
