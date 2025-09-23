@@ -67,7 +67,12 @@ def _get_cfg_dict() -> Dict[str, Any]:
     return {}
 
 
-def _cfg_or_env_int(cfg: Dict[str, Any], cfg_key: str, env_key: str, default: int) -> int:
+def _cfg_or_env_int(
+    cfg: Dict[str, Any],
+    cfg_key: str,
+    env_key: str,
+    default: int,
+) -> int:
     v = cfg.get(cfg_key)
     if v is None:
         v = os.getenv(env_key)
@@ -94,7 +99,12 @@ def _backoff_params() -> tuple[int, int, int, int]:
     base_ms = _cfg_or_env_int(cfg, "webhook_backoff_ms", "WEBHOOK_BACKOFF_BASE_MS", 250)
     base_ms = max(1, base_ms)
 
-    max_ms_raw = _cfg_or_env_int(cfg, "webhook_backoff_max_ms", "WEBHOOK_BACKOFF_MAX_MS", 900_000)
+    max_ms_raw = _cfg_or_env_int(
+        cfg,
+        "webhook_backoff_max_ms",
+        "WEBHOOK_BACKOFF_MAX_MS",
+        900_000,
+    )
     max_ms = max(base_ms, max_ms_raw)
 
     env_attempts_raw = os.getenv("WEBHOOK_MAX_ATTEMPTS")
@@ -114,7 +124,9 @@ def _backoff_params() -> tuple[int, int, int, int]:
     else:
         cfg_attempts = None
 
-    max_attempts = env_attempts if cfg_attempts is None else min(env_attempts, cfg_attempts)
+    max_attempts = (
+        env_attempts if cfg_attempts is None else min(env_attempts, cfg_attempts)
+    )
 
     # IMPORTANT: keep default horizon constant (15m) unless explicitly overridden.
     # Do NOT couple to per-attempt max backoff; callers lowering max_ms should not
@@ -129,6 +141,7 @@ def _backoff_params() -> tuple[int, int, int, int]:
 
     return base_ms, max_ms, max_attempts, horizon_ms
 
+
 # Type signature for a one-shot attempt. Return (ok, status_code, err_kind)
 # err_kind in {"network","timeout","5xx","4xx", "cb_open", None}
 SendOnce = Callable[[], Tuple[bool, int | None, str | None]]
@@ -138,7 +151,11 @@ def _sleep_ms(ms: int) -> None:
     time.sleep(ms / 1000.0)
 
 
-def _decorrelated_jitter_sleep_ms(prev_sleep_ms: int, base_ms: int, max_ms: int) -> int:
+def _decorrelated_jitter_sleep_ms(
+    prev_sleep_ms: int,
+    base_ms: int,
+    max_ms: int,
+) -> int:
     """AWS-style decorrelated jitter backoff."""
 
     low = base_ms
@@ -146,7 +163,10 @@ def _decorrelated_jitter_sleep_ms(prev_sleep_ms: int, base_ms: int, max_ms: int)
     return min(max_ms, int(random.uniform(low, high)))
 
 
-def _should_retry(status_code: int | None, err_kind: str | None) -> Tuple[bool, str | None]:
+def _should_retry(
+    status_code: int | None,
+    err_kind: str | None,
+) -> Tuple[bool, str | None]:
     if err_kind == "cb_open":
         return False, "cb_open"
     if err_kind in ("network", "timeout"):
@@ -218,6 +238,7 @@ def _deliver_with_backoff(
         _sleep_ms(next_sleep)
         sleep_ms = next_sleep
 
+
 # Default dead-letter file path (overridable)
 _DEFAULT_DLQ_PATH = "var/webhook_deadletter.jsonl"
 # Test/back-compat hook: tests may monkeypatch this directly
@@ -243,7 +264,7 @@ _stats: Dict[str, Any] = {
 
 def _sync_pending_queue_length() -> None:
     try:
-        size = float(_q.qsize())
+        size = float(__q.qsize())
     except NotImplementedError:
         size = 0.0
     except Exception as exc:  # pragma: no cover
@@ -450,7 +471,9 @@ def _deliver_with_client(
             resp = client.post(url, content=body_bytes, headers=headers)
             last_code = resp.status_code
             last_exc = None
-            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(
+                time.perf_counter() - t0
+            )
             if 200 <= resp.status_code < 300:
                 reg.on_success(url)
                 webhook_processed_inc()
@@ -461,13 +484,17 @@ def _deliver_with_client(
             last_code = None
             last_exc = "timeout"
             reg.on_failure(url)
-            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(
+                time.perf_counter() - t0
+            )
             err_kind = "timeout"
         except Exception:
             last_code = None
             last_exc = "error"
             reg.on_failure(url)
-            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(
+                time.perf_counter() - t0
+            )
             err_kind = "network"
         else:
             err_kind = None
@@ -515,23 +542,33 @@ def _worker() -> None:
                 break
             try:
                 outcome, status, client, client_conf = _deliver_with_client(
-                    evt, client=client, client_conf=client_conf
+                    evt,
+                    client=client,
+                    client_conf=client_conf,
                 )
                 with _lock:
                     _stats["processed"] += 1
                     _stats["last_status"] = status
                     _stats["last_error"] = "" if outcome == "sent" else status
                 # Delivery outcome metric
-                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(outcome, status).inc()
+                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(
+                    outcome,
+                    status,
+                ).inc()
                 # Ensure "enqueued" shows up in flaky CI paths for failure outcomes
                 if outcome != "sent":
-                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
+                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(
+                        "enqueued"
+                    ).inc()
             except Exception as e:  # pragma: no cover
                 with _lock:
                     _stats["processed"] += 1
                     _stats["last_status"] = "error"
                     _stats["last_error"] = str(e)
-                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels("failed", "error").inc()
+                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(
+                    "failed",
+                    "error",
+                ).inc()
                 telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
             finally:
                 _sync_pending_queue_length()
@@ -569,7 +606,10 @@ def _ensure_worker(*, require_enabled: bool) -> None:
 
 def ensure_started() -> None:
     """Best-effort start of the delivery worker if webhooks are enabled."""
-    _best_effort("ensure webhook worker", lambda: _ensure_worker(require_enabled=True))
+    _best_effort(
+        "ensure webhook worker",
+        lambda: _ensure_worker(require_enabled=True),
+    )
 
 
 def shutdown(timeout: float = 0.5) -> None:
@@ -582,7 +622,10 @@ def shutdown(timeout: float = 0.5) -> None:
             _stats["worker_running"] = False
             return
         _stop_event.set()
-        _best_effort("signal webhook worker stop", lambda: _q.put_nowait(_STOP))
+        _best_effort(
+            "signal webhook worker stop",
+            lambda: _q.put_nowait(_STOP),
+        )
     _best_effort("join webhook worker", lambda: thread.join(timeout=timeout))
     with _lock:
         if _worker_thread is thread and not thread.is_alive():
@@ -619,38 +662,59 @@ def configure(*, reset: bool = False) -> None:
             _stats["last_error"] = ""
             _stats["worker_running"] = False
             try:
-                event_children = list(telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.keys())  # type: ignore[attr-defined]
-                telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]
+                event_children = list(
+                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.keys()  # type: ignore[attr-defined]  # noqa: SLF001
+                )
+                telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]  # noqa: SLF001
             except AttributeError:
                 event_children = []
 
                 def clear_event_children() -> None:
-                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL._children.clear()  # type: ignore[attr-defined]
+                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL._children.clear()  # type: ignore[attr-defined]  # noqa: SLF001
 
-                _best_effort("clear webhook event metric children", clear_event_children)
+                _best_effort(
+                    "clear webhook event metric children",
+                    clear_event_children,
+                )
             else:
                 for labels in event_children:
                     _best_effort(
                         "prime webhook event metric child",
-                        lambda labels=labels: telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(*labels).inc(0),
+                        lambda labels=labels: (
+                            telemetry_metrics.WEBHOOK_EVENTS_TOTAL
+                            .labels(*labels)
+                            .inc(0)
+                        ),
                     )
             try:
-                delivery_children = list(telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.keys())  # type: ignore[attr-defined]
-                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.clear()  # type: ignore[attr-defined]
+                delivery_children = list(
+                    telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.keys()  # type: ignore[attr-defined]  # noqa: SLF001
+                )
+                telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.clear()  # type: ignore[attr-defined]  # noqa: SLF001
             except AttributeError:
                 delivery_children = []
 
                 def clear_delivery_children() -> None:
-                    telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._children.clear()  # type: ignore[attr-defined]
+                    telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._children.clear()  # type: ignore[attr-defined]  # noqa: SLF001
 
-                _best_effort("clear webhook delivery metric children", clear_delivery_children)
+                _best_effort(
+                    "clear webhook delivery metric children",
+                    clear_delivery_children,
+                )
             else:
                 for labels in delivery_children:
                     _best_effort(
                         "prime webhook delivery metric child",
-                        lambda labels=labels: telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(*labels).inc(0),
+                        lambda labels=labels: (
+                            telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL
+                            .labels(*labels)
+                            .inc(0)
+                        ),
                     )
-            _best_effort("clear webhook circuit breaker cache", lambda: get_cb_registry()._ct.clear())
+            _best_effort(
+                "clear webhook circuit breaker cache",
+                lambda: get_cb_registry()._ct.clear(),
+            )
 
     _sync_pending_queue_length()
 
@@ -725,7 +789,10 @@ def requeue_from_dlq(limit: int) -> int:
                     if isinstance(evt, dict):
                         _q.put(evt)
                         requeued += 1
-                        telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels("dlq_replayed", "-").inc()
+                        telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(
+                            "dlq_replayed",
+                            "-",
+                        ).inc()
                     else:
                         survivors.append(line)
                 except Exception:
