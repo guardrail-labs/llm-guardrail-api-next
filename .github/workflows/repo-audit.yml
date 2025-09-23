@@ -22,7 +22,7 @@ jobs:
       - name: Install lightweight tools (best-effort)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ripgrep yamllint
+          sudo apt-get install -y ripgrep yamllint jq
           python3 -m pip install --upgrade pip || true
           python3 -m pip install pip-audit bandit vulture || true
           # --- Optional deep secret scanners (best-effort) ---
@@ -43,7 +43,10 @@ jobs:
       - name: Run gitleaks (non-blocking)
         run: |
           if command -v gitleaks >/dev/null 2>&1; then
-            ./gitleaks detect --no-banner -v --report-format json --report-path gitleaks-report.json || true
+            # Run from PATH; on failure, write a skip marker so artifacts always exist
+            if ! gitleaks detect --no-banner -v --report-format json --report-path gitleaks-report.json; then
+              echo '{"skipped": "gitleaks run failed"}' > gitleaks-report.json
+            fi
           else
             echo '{"skipped": "gitleaks not installed"}' > gitleaks-report.json
           fi
@@ -51,7 +54,9 @@ jobs:
       - name: Run trufflehog (filesystem; non-blocking)
         run: |
           if command -v trufflehog >/dev/null 2>&1; then
-            trufflehog filesystem --no-update --json . > trufflehog-report.json || true
+            if ! trufflehog filesystem --no-update --json . > trufflehog-report.json; then
+              echo '{"skipped": "trufflehog run failed"}' > trufflehog-report.json
+            fi
           else
             echo '{"skipped": "trufflehog not installed"}' > trufflehog-report.json
           fi
