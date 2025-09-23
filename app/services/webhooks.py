@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import queue
 import random
@@ -30,12 +31,22 @@ from app.services.config_store import get_config
 from app.services.webhooks_cb import get_cb_registry
 
 
-def _set_dlq_depth(value: Optional[int | float] = None) -> None:
+_log = logging.getLogger(__name__)
+
+
+def _best_effort(msg: str, fn: Callable[[], Any]) -> None:
     try:
+        fn()
+    except Exception as exc:  # pragma: no cover
+        _log.debug("%s: %s", msg, exc)
+
+
+def _set_dlq_depth(value: Optional[int | float] = None) -> None:
+    def update() -> None:
         target = value if value is not None else webhook_dlq_length_get()
         webhook_dlq_depth.set(max(0, int(target)))
-    except Exception:
-        pass
+
+    _best_effort("set webhook DLQ depth", update)
 
 
 def _get_cfg_dict() -> Dict[str, Any]:
@@ -51,8 +62,8 @@ def _get_cfg_dict() -> Dict[str, Any]:
                 return cfg
             if isinstance(cfg, Mapping):
                 return dict(cfg)
-    except Exception:
-        pass
+    except Exception as exc:  # pragma: no cover
+        _log.debug("load webhook config dict failed: %s", exc)
     return {}
 
 
@@ -62,7 +73,13 @@ def _cfg_or_env_int(cfg: Dict[str, Any], cfg_key: str, env_key: str, default: in
         v = os.getenv(env_key)
     try:
         return int(v) if v is not None else default
-    except Exception:
+    except Exception as exc:  # pragma: no cover
+        _log.debug(
+            "invalid webhook config int for %s/%s: %s",
+            cfg_key,
+            env_key,
+            exc,
+        )
         return default
 
 
@@ -229,18 +246,17 @@ def _sync_pending_queue_length() -> None:
         size = float(_q.qsize())
     except NotImplementedError:
         size = 0.0
-    except Exception:
+    except Exception as exc:  # pragma: no cover
+        _log.debug("compute webhook queue size failed: %s", exc)
         return
-    try:
-        webhook_pending_set(size)
-    except Exception:
-        pass
+    _best_effort("set webhook pending gauge", lambda: webhook_pending_set(size))
 
 
 def _worker_enabled() -> bool:
     try:
         cfg = get_config()
-    except Exception:
+    except Exception as exc:  # pragma: no cover
+        _log.debug("read webhook worker config failed: %s", exc)
         return False
     return bool(cfg.get("webhook_enable")) and bool(cfg.get("webhook_url"))
 
@@ -333,7 +349,8 @@ def _allow_host(url: str, allow_host: str) -> bool:
         host = urlparse(url).hostname or ""
         allow = (allow_host or "").strip()
         return (not allow) or (host == allow)
-    except Exception:
+    except Exception as exc:  # pragma: no cover
+        _log.debug("allow host check failed: %s", exc)
         return False
 
 
@@ -342,7 +359,8 @@ def _dlq_write(evt: Dict[str, Any], reason: str) -> None:
     Append a failed event to DLQ. Synchronized with the same lock used by replay
     to avoid dropping lines during an os.replace rewrite.
     """
-    try:
+
+    def append() -> None:
         path = _dlq_path()
         rec = {"ts": int(time.time()), "reason": reason, "event": evt}
         with _lock:
@@ -351,9 +369,8 @@ def _dlq_write(evt: Dict[str, Any], reason: str) -> None:
                 f.write(json.dumps(rec) + "\n")
             webhook_dlq_length_inc(1)
             _set_dlq_depth()
-    except Exception:
-        # DLQ failures are best-effort; swallow errors.
-        pass
+
+    _best_effort("append webhook DLQ", append)
 
 
 def _deliver(
@@ -410,11 +427,8 @@ def _deliver_with_client(
 
     desired_conf = (timeout_ms, insecure_tls)
     if client is None or client_conf != desired_conf:
-        try:
-            if client is not None:
-                client.close()
-        except Exception:
-            pass
+        if client is not None:
+            _best_effort("close webhook client", client.close)
         client = httpx.Client(
             timeout=timeout_ms / 1000.0,
             verify=not insecure_tls,
@@ -522,11 +536,8 @@ def _worker() -> None:
             finally:
                 _sync_pending_queue_length()
     finally:
-        try:
-            if client is not None:
-                client.close()
-        except Exception:
-            pass
+        if client is not None:
+            _best_effort("close webhook client on shutdown", client.close)
         with _lock:
             global _worker_thread
             if _worker_thread is threading.current_thread():
@@ -558,10 +569,7 @@ def _ensure_worker(*, require_enabled: bool) -> None:
 
 def ensure_started() -> None:
     """Best-effort start of the delivery worker if webhooks are enabled."""
-    try:
-        _ensure_worker(require_enabled=True)
-    except Exception:
-        pass
+    _best_effort("ensure webhook worker", lambda: _ensure_worker(require_enabled=True))
 
 
 def shutdown(timeout: float = 0.5) -> None:
@@ -574,14 +582,8 @@ def shutdown(timeout: float = 0.5) -> None:
             _stats["worker_running"] = False
             return
         _stop_event.set()
-        try:
-            _q.put_nowait(_STOP)
-        except Exception:
-            pass
-    try:
-        thread.join(timeout=timeout)
-    except Exception:
-        pass
+        _best_effort("signal webhook worker stop", lambda: _q.put_nowait(_STOP))
+    _best_effort("join webhook worker", lambda: thread.join(timeout=timeout))
     with _lock:
         if _worker_thread is thread and not thread.is_alive():
             _worker_thread = None
@@ -621,50 +623,46 @@ def configure(*, reset: bool = False) -> None:
                 telemetry_metrics.WEBHOOK_EVENTS_TOTAL._metrics.clear()  # type: ignore[attr-defined]
             except AttributeError:
                 event_children = []
-                try:
-                    child_map = telemetry_metrics.WEBHOOK_EVENTS_TOTAL._children  # type: ignore[attr-defined]
-                    child_map.clear()
-                except Exception:
-                    pass
+
+                def clear_event_children() -> None:
+                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL._children.clear()  # type: ignore[attr-defined]
+
+                _best_effort("clear webhook event metric children", clear_event_children)
             else:
                 for labels in event_children:
-                    try:
-                        telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(*labels).inc(0)
-                    except Exception:
-                        pass
+                    _best_effort(
+                        "prime webhook event metric child",
+                        lambda labels=labels: telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(*labels).inc(0),
+                    )
             try:
                 delivery_children = list(telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.keys())  # type: ignore[attr-defined]
                 telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._metrics.clear()  # type: ignore[attr-defined]
             except AttributeError:
                 delivery_children = []
-                try:
-                    child_map = telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._children  # type: ignore[attr-defined]
-                    child_map.clear()
-                except Exception:
-                    pass
+
+                def clear_delivery_children() -> None:
+                    telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL._children.clear()  # type: ignore[attr-defined]
+
+                _best_effort("clear webhook delivery metric children", clear_delivery_children)
             else:
                 for labels in delivery_children:
-                    try:
-                        telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(*labels).inc(0)
-                    except Exception:
-                        pass
-            try:
-                get_cb_registry()._ct.clear()
-            except Exception:
-                pass
+                    _best_effort(
+                        "prime webhook delivery metric child",
+                        lambda labels=labels: telemetry_metrics.WEBHOOK_DELIVERIES_TOTAL.labels(*labels).inc(0),
+                    )
+            _best_effort("clear webhook circuit breaker cache", lambda: get_cb_registry()._ct.clear())
 
     _sync_pending_queue_length()
 
     # Always sync the DLQ gauge to the current backlog so restarts immediately reflect
     # reality. Previously this only ran for reset=True which left the gauge stale on
     # cold starts.
-    try:
+    def seed_gauges() -> None:
         current_count = dlq_count()
         webhook_dlq_length_set(current_count)
         _set_dlq_depth(current_count)
-    except Exception:
-        # Never fail configure on metrics path.
-        pass
+
+    _best_effort("seed webhook DLQ gauges", seed_gauges)
 
 
 def stats() -> Dict[str, Any]:
