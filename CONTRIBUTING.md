@@ -8,12 +8,17 @@ environment, run checks locally, and submit changes that pass CI smoothly.
 2. Ensure you have Python 3.11+ and either `uv` (preferred) or `pip`.
 3. Install deps:
    ```bash
-   uv sync   # or: pip install -e .[server,test]
+   uv sync
+   # or, with pip:
+   pip install -e .[dev]
    ```
 4. Run the API locally:
    ```bash
-   uv run python -m app.main
-   curl -s http://localhost:8000/healthz
+   # start an ASGI server using the app factory
+   uv run uvicorn app.main:create_app --reload --host 127.0.0.1 --port 8000
+
+   # in another terminal:
+   curl -s http://127.0.0.1:8000/healthz
    ```
 
 ## Development Checks (what CI enforces)
