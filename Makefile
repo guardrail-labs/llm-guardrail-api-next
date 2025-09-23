@@ -55,20 +55,20 @@ demo-stack-clean:
 	@docker compose down -v --remove-orphans
 .PHONY: perf-smoke
 perf-smoke:
-@echo "==> Running perf smoke locally"
-@set -euo pipefail; \
-if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--out'; then \
-  echo "Detected --out support; writing to perf-rc-candidate.json"; \
-  uv run python tools/perf/bench.py --out perf-rc-candidate.json; \
-else \
-  echo "No --out flag detected; capturing stdout to perf-rc-candidate.json"; \
-  uv run python tools/perf/bench.py > perf-rc-candidate.json; \
-fi; \
-if [ ! -s perf-rc-candidate.json ]; then \
-  echo "WARN: perf output is empty; writing minimal placeholder JSON"; \
-  echo '{}' > perf-rc-candidate.json; \
-fi; \
-echo "Wrote perf-rc-candidate.json"
+	@echo "==> Running perf smoke locally"
+	@set -euo pipefail; \
+	if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--out'; then \
+	  echo "Detected --out support; writing to perf-rc-candidate.json"; \
+	  uv run python tools/perf/bench.py --out perf-rc-candidate.json; \
+	else \
+	  echo "No --out flag detected; capturing stdout to perf-rc-candidate.json"; \
+	  uv run python tools/perf/bench.py > perf-rc-candidate.json; \
+	fi; \
+	if [ ! -s perf-rc-candidate.json ]; then \
+	  echo "WARN: perf output is empty; writing minimal placeholder JSON"; \
+	  echo '{}' > perf-rc-candidate.json; \
+	fi; \
+	echo "Wrote perf-rc-candidate.json"
 
 .PHONY: perf-smoke-run
 perf-smoke-run:
