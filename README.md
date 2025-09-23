@@ -3,7 +3,7 @@
 **A firewall for prompts and model outputs.**  
 Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe intent**, **sanitize secrets/PII**, and **prove compliance** with **signed audits** and **directional observability** (ingress vs egress).
 
-> **Ten-second pitch:** Drop this in front of your models to stop jailbreaks & secret leaks without retraining, see **who is risky (user) vs what is risky (model)**, and show a dashboard that executives understand.
+> Drop this in front of your models to stop jailbreaks & secret leaks without retraining, see **who is risky (user) vs what is risky (model)**, and show a dashboard that executives understand.
 
 ---
 
@@ -16,7 +16,7 @@ All enforcement outcomes are observable:
 - **Audit:** every decision is logged via webhooks, metrics, and optional decision store.
 - **Overrides:** admin overrides are explicit and counted.
 
-⚠️ **Note:** Protection depends on the policies you enable. If no relevant packs are configured,
+**Note:** Protection depends on the policies you enable. If no relevant packs are configured,
 the API cannot block content on your behalf. Administrators should ensure the correct packs are
 loaded for their compliance posture.
 
