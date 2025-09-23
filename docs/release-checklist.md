@@ -23,7 +23,10 @@ git push origin v1.0.0-rc1
 ## 3) GitHub Release (draft is fine)
 - Title: `v1.0.0-rc1`
 - Notes (highlights):
-  - Core enforcement is in-band; **disallowed outputs never reach users**.
+  - Enforcement posture: in-band policy enforcement.  
+    When configured packs are active, disallowed outputs are intercepted and
+    mitigated (block/clarify/redact) before returning to the client.  
+    Administrators must ensure the correct packs are enabled for their compliance posture.
   - Perf smoke/compare validated.
   - Webhook signing (v0 body HMAC, optional v1 ts+body; dual mode available).
   - Terraform HA example path & override notes.

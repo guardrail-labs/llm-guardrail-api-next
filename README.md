@@ -7,10 +7,18 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 
 ---
 
-## Security model (short version)
-- Enforcement runs **in-band** with model calls. If a model attempts to produce something disallowed by policy/statute, the API enforces the decision and **the disallowed output never reaches the end user**. Instead, the caller receives the mitigated outcome (e.g., `block`, `clarify`, `redact`) with auditable context.
-- All decisions are auditable (webhooks + metrics + decision store).
-- Admin overrides are explicit and logged.
+## Enforcement posture
+Enforcement runs **in-band** with model calls.  
+When configured policies are active, disallowed outputs are intercepted and the chosen mitigation
+(block, clarify, redact) is returned instead of the raw model output.  
+
+All enforcement outcomes are observable:
+- **Audit:** every decision is logged via webhooks, metrics, and optional decision store.
+- **Overrides:** admin overrides are explicit and counted.
+
+⚠️ **Note:** Protection depends on the policies you enable. If no relevant packs are configured,
+the API cannot block content on your behalf. Administrators should ensure the correct packs are
+loaded for their compliance posture.
 
 See: [`docs/security-model.md`](docs/security-model.md)
 
