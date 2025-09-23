@@ -574,7 +574,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _log.debug("import rulepacks_engine failed: %s", exc)
     else:
-        _best_effort("compile active rulepacks", lambda: rulepacks_engine.compile_active_rulepacks())
+        _best_effort("compile active rulepacks", 
+                     lambda: rulepacks_engine.compile_active_rulepacks()
+                    )
     try:
         from app.services.config_store import load_bindings
     except Exception as exc:
@@ -588,7 +590,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _log.debug("import decisions store failed: %s", exc)
     else:
-        _best_effort("ensure decisions store ready", lambda: decisions_store.ensure_ready())
+        _best_effort("ensure decisions store ready", 
+                     lambda: decisions_store.ensure_ready()
+                    )
 
     _start_prune_task(app)
 
@@ -612,14 +616,18 @@ async def lifespan(app: FastAPI):
     finally:
         await sysmod._shutdown_readiness()
         if _webhooks_module is not None:
-            _best_effort("webhooks module shutdown", lambda: _webhooks_module.shutdown())
+            _best_effort("webhooks module shutdown", 
+                         lambda: _webhooks_module.shutdown()
+                        )
         else:
             try:
                 from app.services import webhooks as _wh_mod
             except Exception as exc:
                 _log.debug("import webhooks module for shutdown failed: %s", exc)
             else:
-                _best_effort("webhooks module shutdown", lambda: _wh_mod.shutdown())
+                _best_effort("webhooks module shutdown", 
+                             lambda: _wh_mod.shutdown()
+                            )
         # Stop prune loop gracefully if running
         try:
             task = getattr(app.state, "prune_task", None)
