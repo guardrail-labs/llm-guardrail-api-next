@@ -2,7 +2,7 @@
 
 ## 1) Run the smoke
 ```bash
-uv run python tools/perf/bench.py --smoke --json out-smoke.json
+make perf-smoke-run
 ```
 
 ## 2) Compare to a baseline
@@ -21,3 +21,5 @@ The comparator:
 The perf smoke job uploads JSON so you can attach them to the RC release. See:
 - `Actions → perf-smoke` run artifacts
 - [`docs/release-checklist.md`](docs/release-checklist.md)
+
+For the pre-RC artifact helper (writes `perf-rc-candidate.json`), run `make perf-smoke`.
