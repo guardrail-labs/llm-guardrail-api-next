@@ -1,0 +1,47 @@
+name: Repo Audit
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Run read-only audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install lightweight tools (best-effort)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ripgrep yamllint
+          python3 -m pip install --upgrade pip || true
+          python3 -m pip install pip-audit bandit vulture || true
+          # Optional: install tflint/terraform/trufflehog/gitleaks if you want deeper scans
+          # curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash || true
+
+      - name: Run audit (non-destructive)
+        run: |
+          chmod +x tools/ci/repo_audit.sh
+          tools/ci/repo_audit.sh repo-audit-report.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-audit-report
+          path: repo-audit-report.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish summary
+        run: |
+          echo "# Repo Audit Summary" >> $GITHUB_STEP_SUMMARY
+          echo "_This run is read-only. See full details in the artifact._" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          # Append first ~300 lines for quick view
+          head -n 300 repo-audit-report.md >> $GITHUB_STEP_SUMMARY
