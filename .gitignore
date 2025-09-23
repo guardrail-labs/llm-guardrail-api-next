@@ -14,3 +14,9 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+# ------------------------------------------------------------------------------
+# Repo audit reports (CI artifacts; never commit)
+# ------------------------------------------------------------------------------
+repo-audit-report.md
+repo-audit/
+
