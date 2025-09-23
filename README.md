@@ -268,8 +268,8 @@ returns a `timeout` outcome that policy maps to a deny decision.
 - ✅ Admin bindings (`/admin/bindings`) with wildcard resolution
 - ✅ One-command packaging (compose + health + dashboards)
 - ✅ Docs & demo (copy/paste to first win)
-- 🛠 Verifier specializations & adjudication logs (roadmap)
-- 🛠 Admin UI & auto-mitigation toggles (roadmap)
+- 🛠 Verifier specializations & adjudication logs (enterprise)
+- 🛠 Admin UI & auto-mitigation toggles (enterprise)
 
 ---
 
