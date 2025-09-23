@@ -4,12 +4,15 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: read  # workflow-level default; safe for checkout
 
 jobs:
   audit:
     name: Run read-only audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read    # for actions/checkout
+      actions: write    # REQUIRED for actions/upload-artifact@v4
     steps:
       - name: Checkout (read-only)
         uses: actions/checkout@v4
@@ -22,8 +25,6 @@ jobs:
           sudo apt-get install -y ripgrep yamllint
           python3 -m pip install --upgrade pip || true
           python3 -m pip install pip-audit bandit vulture || true
-          # Optional: install tflint/terraform/trufflehog/gitleaks if you want deeper scans
-          # curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash || true
 
       - name: Run audit (non-destructive)
         run: |
@@ -43,5 +44,4 @@ jobs:
           echo "# Repo Audit Summary" >> $GITHUB_STEP_SUMMARY
           echo "_This run is read-only. See full details in the artifact._" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          # Append first ~300 lines for quick view
           head -n 300 repo-audit-report.md >> $GITHUB_STEP_SUMMARY
