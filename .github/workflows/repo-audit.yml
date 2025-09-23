@@ -43,10 +43,11 @@ jobs:
       - name: Run gitleaks (non-blocking)
         run: |
           if command -v gitleaks >/dev/null 2>&1; then
-            # Run from PATH; on failure, write a skip marker so artifacts always exist
-            if ! gitleaks detect --no-banner -v --report-format json --report-path gitleaks-report.json; then
-              echo '{"skipped": "gitleaks run failed"}' > gitleaks-report.json
-            fi
+            # gitleaks exits non-zero when leaks are found; do NOT treat that as failure.
+            # Force zero exit but still produce the JSON report.
+            gitleaks detect --no-banner -v --report-format json --report-path gitleaks-report.json --exit-code 0 || true
+            # If for some reason no report was produced, emit a skip marker.
+            test -s gitleaks-report.json || echo '{"skipped": "gitleaks produced no report"}' > gitleaks-report.json
           else
             echo '{"skipped": "gitleaks not installed"}' > gitleaks-report.json
           fi
@@ -54,9 +55,9 @@ jobs:
       - name: Run trufflehog (filesystem; non-blocking)
         run: |
           if command -v trufflehog >/dev/null 2>&1; then
-            if ! trufflehog filesystem --no-update --json . > trufflehog-report.json; then
-              echo '{"skipped": "trufflehog run failed"}' > trufflehog-report.json
-            fi
+            # trufflehog may exit 183 on findings; still capture JSON. Never overwrite a real report.
+            trufflehog filesystem --no-update --json . > trufflehog-report.json || true
+            test -s trufflehog-report.json || echo '{"skipped": "trufflehog produced no report"}' > trufflehog-report.json
           else
             echo '{"skipped": "trufflehog not installed"}' > trufflehog-report.json
           fi
