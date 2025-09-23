@@ -4,11 +4,14 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: read  # safe default for the workflow
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read     # required by actions/checkout
+      actions: write     # required by actions/upload-artifact@v4
     steps:
       - name: Checkout (read-only)
         uses: actions/checkout@v4
@@ -19,9 +22,6 @@ jobs:
           tools/ci/ensure_pinned.py
 
       - name: Upload artifacts
-        permissions:
-          actions: write
-          contents: read
         uses: actions/upload-artifact@v4
         with:
           name: actions-pinning-audit
