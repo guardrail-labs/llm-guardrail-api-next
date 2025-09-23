@@ -264,7 +264,7 @@ _stats: Dict[str, Any] = {
 
 def _sync_pending_queue_length() -> None:
     try:
-        size = float(__q.qsize())
+        size = float(_q.qsize())
     except NotImplementedError:
         size = 0.0
     except Exception as exc:  # pragma: no cover
@@ -718,9 +718,9 @@ def configure(*, reset: bool = False) -> None:
 
     _sync_pending_queue_length()
 
-    # Always sync the DLQ gauge to the current backlog so restarts immediately reflect
-    # reality. Previously this only ran for reset=True which left the gauge stale on
-    # cold starts.
+    # Always sync the DLQ gauge to the current backlog so restarts immediately
+    # reflect reality. Previously this only ran for reset=True which left the
+    # gauge stale on cold starts.
     def seed_gauges() -> None:
         current_count = dlq_count()
         webhook_dlq_length_set(current_count)
