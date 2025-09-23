@@ -197,6 +197,14 @@ Copy-paste demos that hit deny/redaction and show metrics:
 
 ---
 
+## Release checklist (Core RC1)
+
+- [ ] All tests & linters green (pytest, mypy, ruff).
+- [ ] Perf smoke artifacts attached to the release.
+- [ ] **Actions pinning audit** completed (see *Actions → Actions Pinning Audit*); pin any `uses:` not set to a commit SHA.
+
+---
+
 ## License
 
 Apache-2.0 (see `LICENSE`).

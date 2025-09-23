@@ -1,0 +1,37 @@
+name: Actions Pinning Audit
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read  # safe default for the workflow
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read     # required by actions/checkout
+      actions: write     # required by actions/upload-artifact@v4
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v4
+
+      - name: Run unpinned actions scan
+        run: |
+          chmod +x tools/ci/ensure_pinned.py
+          tools/ci/ensure_pinned.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: actions-pinning-audit
+          path: |
+            unpinned-actions.md
+            unpinned-actions.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish summary
+        run: |
+          echo "# Actions Pinning Audit" >> $GITHUB_STEP_SUMMARY
+          head -n 300 unpinned-actions.md >> $GITHUB_STEP_SUMMARY || true
