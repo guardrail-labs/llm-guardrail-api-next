@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy import (
     Column,
@@ -22,6 +23,17 @@ from sqlalchemy.sql import and_, func
 
 from app.observability.metrics import mitigation_override_counter
 from app.services.mitigation_prefs import Mode, resolve_mode, validate_mode
+
+
+_log = logging.getLogger(__name__)
+
+
+def _best_effort(msg: str, fn: Callable[[], Any]) -> None:
+    try:
+        fn()
+    except Exception as exc:  # pragma: no cover
+        _log.debug("%s: %s", msg, exc)
+
 
 # Import SQLAlchemy types only during type checking to avoid runtime/type-assign errors
 if TYPE_CHECKING:
@@ -261,10 +273,11 @@ def ensure_ready() -> None:
     )
     with eng.begin() as conn:
         for raw in stmts:
-            try:
-                conn.execute(text(raw))
-            except Exception:
-                continue
+            # mypy can't infer the lambda; give it a tiny typed helper.
+            def _exec_sql(raw_sql: str = raw) -> None:
+                conn.execute(text(raw_sql))
+
+            _best_effort("ensure decisions index", _exec_sql)
 
 
 def is_force_block_enabled_for_tenant(tenant: str) -> bool:
