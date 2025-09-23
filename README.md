@@ -86,9 +86,10 @@ CI:
 - The job expects a runner or image **that already includes** `fastapi` and `PyYAML`.
 More in [`docs/enterprise-tests.md`](docs/enterprise-tests.md).
 
-## Cutting RC1
-Follow the short checklist to produce an annotated tag and attach perf artifacts:
-- [`docs/release-checklist.md`](docs/release-checklist.md)
+---
+### Contributing & Maintainers
+Release steps live in [`docs/release-checklist.md`](docs/release-checklist.md).  
+See also [`RELEASING.md`](RELEASING.md).
 
 ---
 
