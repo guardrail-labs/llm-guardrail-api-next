@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 import re
 import uuid
-from typing import Tuple
+from typing import Callable, Optional, Tuple, TypeVar
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -16,6 +17,20 @@ from app.services.ratelimit import (
     get_enforce_unknown,
     get_global,
 )
+
+_log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def _best_effort(msg: str, fn: Callable[[], T], default: Optional[T] = None) -> Optional[T]:
+    try:
+        return fn()
+    except Exception as exc:  # pragma: no cover
+        # nosec B110 - rate limit metrics/headers are non-fatal
+        _log.debug("%s: %s", msg, exc)
+        return default
+
 
 PROBE_PATHS = {"/health", "/healthz", "/readyz", "/livez", "/metrics"}
 
@@ -62,21 +77,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         tenant, bot = _extract_identity(request)
         enforce_unknown = get_enforce_unknown(getattr(request.app.state, "settings", None))
         if (tenant == "unknown" and bot == "unknown") and not enforce_unknown:
-            try:
-                RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc()
-            except Exception:
-                pass
+            _best_effort(
+                "inc RATE_LIMIT_SKIPS unknown_identity",
+                lambda: RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc(),
+            )
             return await call_next(request)
 
         ok, retry_after, remaining = limiter.allow(tenant, bot, cost=1.0)
         if ok:
             response = await call_next(request)
-            try:
+            def _set_headers() -> None:
                 limit = f"{limiter.refill_rate:.6g}; burst={limiter.capacity:.6g}"
                 response.headers.setdefault("X-RateLimit-Limit", limit)
                 response.headers.setdefault("X-RateLimit-Remaining", f"{max(0, int(remaining))}")
-            except Exception:
-                pass
+
+            _best_effort("set rate limit headers", _set_headers)
             return response
 
         RATE_LIMIT_BLOCKS.labels(tenant=tenant, bot=bot).inc()
@@ -94,14 +109,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # will emit exactly one decision metric per request, preventing double counting.
         # We still emit the dedicated rate-limit Prometheus metric elsewhere in this
         # middleware (e.g., guardrail_rate_limited_total{...}).
-        try:
+        def _set_state() -> None:
             request.state.guardrail_decision = {
                 "outcome": "block_input_only",
                 "mode": "Tier1",
                 "incident_id": payload.get("incident_id") or f"rl-{tenant}-{bot}",
             }
-        except Exception:
-            pass
+
+        _best_effort("set guardrail_decision state", _set_state)
         return JSONResponse(
             payload,
             status_code=429,

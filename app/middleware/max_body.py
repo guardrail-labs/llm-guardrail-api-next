@@ -1,22 +1,38 @@
 from __future__ import annotations
 
+import logging
 import os
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, TypeVar
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
 
+_log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def _best_effort(msg: str, fn: Callable[[], T], default: Optional[T] = None) -> Optional[T]:
+    try:
+        return fn()
+    except Exception as exc:  # pragma: no cover
+        # nosec B110 - defensive; body size tracking must not crash requests
+        _log.debug("%s: %s", msg, exc)
+        return default
+
+
 def _limit() -> Optional[int]:
     raw = (os.getenv("MAX_REQUEST_BYTES") or "").strip()
     if not raw:
         return None
-    try:
+
+    def _coerce() -> Optional[int]:
         v = int(raw)
         return v if v > 0 else None
-    except Exception:
-        return None
+
+    return _best_effort("parse MAX_REQUEST_BYTES", _coerce, default=None)
 
 
 class MaxBodyMiddleware(BaseHTTPMiddleware):
@@ -33,10 +49,10 @@ class MaxBodyMiddleware(BaseHTTPMiddleware):
 
         cl = request.headers.get("content-length")
         if cl:
-            try:
-                size = int(cl)
-            except Exception:
-                size = None
+            def _parse_content_length() -> int:
+                return int(cl)
+
+            size = _best_effort("parse content-length", _parse_content_length)
             if size is not None and size > self._limit:
                 # return 413 regardless of route/method
                 return JSONResponse({"code": "payload_too_large"}, status_code=413)
