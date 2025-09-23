@@ -1,4 +1,7 @@
-.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic docs-check monitoring-lint
+SHELL := /bin/bash
+TAG ?=
+
+.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic docs-check monitoring-lint audits perf-smoke perf-smoke-run rc
 
 install:
 	pip install -r requirements.txt || pip install .
@@ -52,15 +55,47 @@ demo-stack-clean:
 	@docker compose down -v --remove-orphans
 .PHONY: perf-smoke
 perf-smoke:
+	@echo "==> Running perf smoke locally"
+	uv run python tools/perf/bench.py --smoke --json perf-rc-candidate.json
+	@echo "Wrote perf-rc-candidate.json"
+
+.PHONY: perf-smoke-run
+perf-smoke-run:
 	@python tools/perf/bench.py \
 	  --base "$${BASE:-http://localhost:8000}" \
 	  --token "$${TOKEN:-}" \
 	  -c "$${C:-50}" \
 	  -d "$${DURATION:-60s}" \
 	  --timeout "$${TIMEOUT:-5}" \
-          --limit "$${LIMIT:-50}" \
-          $${INSECURE:+--insecure} \
-          $${OUT:+--out "$$OUT"}
+	  --limit "$${LIMIT:-50}" \
+	  $${INSECURE:+--insecure} \
+	  $${OUT:+--out "$$OUT"}
+
+.PHONY: audits
+audits:
+	@echo "==> Triggering repo audits via GitHub Actions (manual dispatch)…"
+	@echo "    Open Actions UI and run:"
+	@echo "      • Actions Pinning Audit"
+	@echo "      • Repo Audit"
+	@echo "    (These are non-blocking and will upload artifacts.)"
+
+.PHONY: rc
+rc:
+ifeq ($(strip $(TAG)),)
+	$(error Please provide TAG, e.g. make rc TAG=v1.0.0-rc1)
+endif
+	@echo "==> Tagging $(TAG) (annotated) and pushing"
+	git fetch origin
+	git checkout main
+	git pull --ff-only
+	git config user.name "release-bot"
+	git config user.email "release@example.com"
+	git tag -a $(TAG) -m "$(TAG): release candidate"
+	git push origin $(TAG)
+	@echo "==> Done: $(TAG) pushed"
+	@echo "Optionally create a draft GitHub Release and attach perf-rc-candidate.json:"
+	@echo "  gh release create $(TAG) --draft --title \"$(TAG)\" --notes-file docs/release-notes-stub-rc1.md"
+	@echo "  gh release upload $(TAG) perf-rc-candidate.json"
 
 monitoring-lint:
 	@docker run --rm -v "$$(pwd):/work" -w /work prom/prometheus:v2.54.1 \

@@ -6,14 +6,17 @@ It is **not** a full load test—just a quick health/perf check to compare befor
 ## How to run
 
 ```bash
-# Local dev (defaults to http://localhost:8000)
+# Quick RC artifact (writes perf-rc-candidate.json)
 make perf-smoke
 
+# Local dev (defaults to http://localhost:8000)
+make perf-smoke-run
+
 # Against a deployed env
-BASE="https://your-env.example.com" TOKEN="...scoped-service-token..." C=80 DURATION=90s make perf-smoke
+BASE="https://your-env.example.com" TOKEN="...scoped-service-token..." C=80 DURATION=90s make perf-smoke-run
 
 # Save JSON
-OUT=perf-$(date +%Y%m%d-%H%M).json make perf-smoke
+OUT=perf-$(date +%Y%m%d-%H%M).json make perf-smoke-run
 ```
 
 Flags (via env):

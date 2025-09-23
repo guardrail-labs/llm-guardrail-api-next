@@ -8,16 +8,13 @@
 ## 1) Perf artifacts
 Run locally if needed, or download from the latest CI:
 ```bash
-uv run python tools/perf/bench.py --smoke --json out-smoke.json
+make perf-smoke
 ```
-Save/rename as your candidate JSON (e.g., `perf-rc1-candidate.json`).
+This writes `perf-rc-candidate.json` in the repo root; review the results and attach/rename as needed.
 
 ## 2) Tag RC1 with annotation
 ```bash
-git config user.name "release-bot"
-git config user.email "release@example.com"
-git tag -a v1.0.0-rc1 -m "RC1: initial core release candidate"
-git push origin v1.0.0-rc1
+make rc TAG=v1.0.0-rc1
 ```
 
 ## 3) GitHub Release (draft is fine)
