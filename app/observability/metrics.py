@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional, Set, Tuple
+import logging
+from typing import Any, Callable, Optional, Set, Tuple
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 
@@ -23,6 +24,21 @@ _METRICS_LABEL_OVERFLOW = os.getenv("METRICS_LABEL_OVERFLOW", "__overflow__")
 _seen_tenants: Set[str] = set()
 _seen_bots: Set[str] = set()
 _seen_pairs: Set[Tuple[str, str]] = set()
+
+_log = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------------------------------
+# Best-effort helper for observability: do not raise from metrics code paths.
+# We intentionally keep failures non-fatal, but we *do* record debug context
+# to help diagnose misconfigurations in production.
+# -----------------------------------------------------------------------------
+def _best_effort(msg: str, fn: Callable[[], Any]) -> None:
+    try:
+        fn()
+    except Exception as e:  # pragma: no cover
+        # nosec B110 - metrics should never crash request paths; debug for ops.
+        _log.debug("%s: %s", msg, e)
 
 
 def _safe_label(val: str, cache: Set[str]) -> str:
@@ -67,8 +83,8 @@ def _get_or_create_counter(
             existing = names_map.get(name)
             if isinstance(existing, Counter):
                 return existing
-    except Exception:
-        pass
+    except Exception as e:  # pragma: no cover
+        _log.debug("reuse counter %s failed: %s", name, e)
 
     try:
         return Counter(name, doc, labelnames=labelnames, registry=reg)
@@ -80,8 +96,8 @@ def _get_or_create_counter(
                 found = names_map.get(name)
                 if isinstance(found, Counter):
                     return found
-        except Exception:
-            pass
+        except Exception as e:  # pragma: no cover
+            _log.debug("fallback counter lookup %s failed: %s", name, e)
         # Final fallback: create an unregistered counter (won't be exposed).
         return Counter(name, doc, labelnames=labelnames)
 
@@ -151,10 +167,10 @@ admin_audit_total = _get_or_create_counter(
 
 
 def inc_ratelimit_script_reload() -> None:
-    try:
-        GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc()
-    except Exception:
-        pass
+    _best_effort(
+        "inc guardrail_ratelimit_redis_script_reload_total",
+        lambda: GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL.inc(),
+    )
 
 
 def inc_scope_autoconstraint(
@@ -162,15 +178,15 @@ def inc_scope_autoconstraint(
 ) -> None:
     """Increment the autoconstraint counter with guarded labels."""
 
-    try:
+    def _do() -> None:
         guardrail_scope_autoconstraint_total.labels(
             mode=mode or "unknown",
             result=result or "unknown",
             multi="true" if multi else "false",
             endpoint=endpoint or "unknown",
         ).inc()
-    except Exception:
-        pass
+
+    _best_effort("inc guardrail_scope_autoconstraint_total", _do)
 
 
 def _get_or_create_histogram(
@@ -187,8 +203,8 @@ def _get_or_create_histogram(
             existing = names_map.get(name)
             if isinstance(existing, Histogram):
                 return existing
-    except Exception:
-        pass
+    except Exception as e:  # pragma: no cover
+        _log.debug("reuse histogram %s failed: %s", name, e)
 
     try:
         return Histogram(
@@ -205,8 +221,8 @@ def _get_or_create_histogram(
                 found = names_map.get(name)
                 if isinstance(found, Histogram):
                     return found
-        except Exception:
-            pass
+        except Exception as e:  # pragma: no cover
+            _log.debug("fallback histogram lookup %s failed: %s", name, e)
         return Histogram(name, doc, labelnames=labelnames)
 
 
@@ -223,8 +239,8 @@ def _get_or_create_gauge(
             existing = names_map.get(name)
             if isinstance(existing, Gauge):
                 return existing
-    except Exception:
-        pass
+    except Exception as e:  # pragma: no cover
+        _log.debug("reuse gauge %s failed: %s", name, e)
 
     try:
         return Gauge(name, doc, labelnames=labelnames, registry=reg)
@@ -235,8 +251,8 @@ def _get_or_create_gauge(
                 found = names_map.get(name)
                 if isinstance(found, Gauge):
                     return found
-        except Exception:
-            pass
+        except Exception as e:  # pragma: no cover
+            _log.debug("fallback gauge lookup %s failed: %s", name, e)
         return Gauge(name, doc, labelnames=labelnames)
 
 
@@ -333,7 +349,8 @@ def make_verifier_metrics(registry: CollectorRegistry) -> VerifierMetrics:
             labelnames=("provider",),
             registry=registry,
         )
-    except Exception:  # pragma: no cover
+    except Exception as e:  # pragma: no cover
+        _log.debug("create guardrail_verifier_circuit_state failed: %s", e)
         circuit_state = None
 
     return VerifierMetrics(
@@ -389,23 +406,23 @@ def inc_egress_redactions(
 ) -> None:
     if n > 0:
         tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
-        try:
+        def _do() -> None:
             GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(
                 tenant=tenant_l,
                 bot=bot_l,
                 kind=kind,
                 rule_id=rule_id or "",
             ).inc(n)
-        except Exception:
-            pass
+
+        _best_effort("inc guardrail_egress_redactions_total", _do)
 
 
 def inc_mitigation_override(mode: str) -> None:
     if mode in ("block", "clarify", "redact"):
-        try:
-            GUARDRAIL_MITIGATION_OVERRIDE_TOTAL.labels(mode=mode).inc()
-        except Exception:
-            pass
+        _best_effort(
+            "inc guardrail_mitigation_override_total",
+            lambda: GUARDRAIL_MITIGATION_OVERRIDE_TOTAL.labels(mode=mode).inc(),
+        )
 
 
 # ---- Verifier router rank metric (Hybrid-12) ---------------------------------
@@ -424,10 +441,11 @@ def inc_verifier_router_rank(tenant: str, bot: str) -> None:
     which your /metrics route exports.
     """
     tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
-    try:
-        VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant_l, bot=bot_l).inc()
-    except Exception:
-        pass
+
+    _best_effort(
+        "inc verifier_router_rank_total",
+        lambda: VERIFIER_ROUTER_RANK_TOTAL.labels(tenant=tenant_l, bot=bot_l).inc(),
+    )
 
 
 # ---- Webhooks: DLQ length gauge ---------------------------------------------
@@ -439,26 +457,25 @@ _webhook_dlq_length = _get_or_create_gauge(
 
 
 def webhook_dlq_length_set(n: float) -> None:
-    try:
-        _webhook_dlq_length.set(float(n))
-    except Exception:
-        # defensive: never throw from metrics path
-        pass
+    _best_effort(
+        "set guardrail_webhook_dlq_length",
+        lambda: _webhook_dlq_length.set(float(n)),
+    )
 
 
 def webhook_dlq_length_inc(delta: float = 1) -> None:
-    try:
-        _webhook_dlq_length.inc(float(delta))
-    except Exception:
-        pass
+    _best_effort(
+        "inc guardrail_webhook_dlq_length",
+        lambda: _webhook_dlq_length.inc(float(delta)),
+    )
 
 
 def webhook_dlq_length_dec(delta: float = 1) -> None:
-    try:
+    def _do() -> None:
         current = webhook_dlq_length_get()
         _webhook_dlq_length.set(max(0.0, current - float(delta)))
-    except Exception:
-        pass
+
+    _best_effort("dec guardrail_webhook_dlq_length", _do)
 
 
 def webhook_dlq_length_get() -> float:
@@ -466,8 +483,8 @@ def webhook_dlq_length_get() -> float:
         for metric in _webhook_dlq_length.collect():
             for sample in metric.samples:
                 return float(sample.value)
-    except Exception:
-        pass
+    except Exception as e:  # pragma: no cover
+        _log.debug("get guardrail_webhook_dlq_length failed: %s", e)
     return 0.0
 
 
@@ -495,28 +512,28 @@ _webhook_pending_queue_length = _get_or_create_gauge(
 
 
 def webhook_processed_inc(n: float = 1) -> None:
-    try:
-        _webhook_processed_total.inc(float(n))
-    except Exception:
-        pass
+    _best_effort(
+        "inc guardrail_webhook_deliveries_processed_total",
+        lambda: _webhook_processed_total.inc(float(n)),
+    )
 
 
 def webhook_retried_inc(n: float = 1) -> None:
-    try:
-        _webhook_retried_total.inc(float(n))
-    except Exception:
-        pass
+    _best_effort(
+        "inc guardrail_webhook_deliveries_retried_total",
+        lambda: _webhook_retried_total.inc(float(n)),
+    )
 
 
 def webhook_failed_inc(n: float = 1) -> None:
-    try:
-        _webhook_failed_total.inc(float(n))
-    except Exception:
-        pass
+    _best_effort(
+        "inc guardrail_webhook_deliveries_failed_total",
+        lambda: _webhook_failed_total.inc(float(n)),
+    )
 
 
 def webhook_pending_set(n: float) -> None:
-    try:
-        _webhook_pending_queue_length.set(float(n))
-    except Exception:
-        pass
+    _best_effort(
+        "set guardrail_webhook_pending_queue_length",
+        lambda: _webhook_pending_queue_length.set(float(n)),
+    )
