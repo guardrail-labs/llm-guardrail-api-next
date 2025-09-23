@@ -1,20 +1,20 @@
 # Changelog
 
-## v1.0.0-rc1 — Release Candidate
-**Highlights**
-- Core policy enforcement & overrides, secure Admin UI (CSRF/cookies), OIDC + scoped service tokens.
-- Cursor APIs for Decisions/Adjudications with stable ordering; exports & audited deletes.
-- Webhooks with backoff/jitter, DLQ + metrics/alerts.
-- Observability: /healthz, /readyz, Prometheus gauges & example rules, Grafana dashboard.
-- Helm deploy path, GitHub Actions release, SBOM attached.
+## [v1.0.0-rc1] - 2025-09-23
+### Added
+- Security model doc: clarified that disallowed outputs are blocked **in-band** and never reach end users.
+- Perf docs: smoke + compare flow; CI artifacts guidance.
+- Terraform HA example notes (real chart path; override fallback).
+- Repo audits doc (gitleaks/trufflehog/pinning).
+- Enterprise tests doc (opt-in; runner/image expectations).
 
-**Notable fixes since last snapshot**
-- Scope bypass resolved; multi-scope autoconstrain handled across decisions/adjudications.
-- SDK export endpoints corrected; RC workflow permissions; SBOM filename alignment.
-- Docker build robustness (pip retries/cache); perf tool (`bench.py`) ruff/mypy clean.
+### Fixed
+- Webhook metrics/CB handling made robust in CI paths; formatting for ruff.
+- Bandit B101 cleanup: explicit 4xx on invalid inputs (admin routes).
+- Mypy: typed helpers instead of ambiguous lambdas.
 
-**Docs & Ops**
-- SLOs & paging policy docs; Prometheus alert rules tuned (continuous backlog).
-- Terraform HA example (Redis + 2 replicas), CI terraform fmt check.
+### CI
+- Action pinning audit: artifact token/perms fixed; JSON/MD outputs uploaded reliably.
+- Repo audit: gitleaks/trufflehog report preservation on non-zero exits.
 
-> RC phase = feature freeze. Only bug fixes & docs polish land until GA.
+[v1.0.0-rc1]: https://github.com/<org>/<repo>/releases/tag/v1.0.0-rc1
