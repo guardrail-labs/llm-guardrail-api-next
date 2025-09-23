@@ -7,6 +7,83 @@ Sits between submitters (humans/agents) and your LLMs to **detect & block unsafe
 
 ---
 
+## Security model (short version)
+- Enforcement runs **in-band** with model calls. If a model attempts to produce something disallowed by policy/statute, the API enforces the decision and **the disallowed output never reaches the end user**. Instead, the caller receives the mitigated outcome (e.g., `block`, `clarify`, `redact`) with auditable context.
+- All decisions are auditable (webhooks + metrics + decision store).
+- Admin overrides are explicit and logged.
+
+See: [`docs/security-model.md`](docs/security-model.md)
+
+## Quickstart (API only)
+```bash
+# 1) Install
+uv sync  # or: pip install -e .[server]
+
+# 2) Run the API
+uv run python -m app.main  # or your ASGI of choice
+
+# 3) Hit a test route
+curl -s http://localhost:8000/healthz
+```
+
+## Perf smoke & comparing baselines
+Two tiny helpers make it easy to sanity-check perf regressions during release prep.
+
+### Run the smoke test
+```bash
+uv run python tools/perf/bench.py --smoke --json out-smoke.json
+```
+
+### Compare against a baseline
+```bash
+# Baseline (e.g., last good RC pre-tag) vs current
+uv run python tools/perf/compare.py --baseline out-baseline.json --candidate out-smoke.json
+```
+- The compare script computes RPS deltas **relative to baseline**, clamps negative math correctly, and exits 0/1 as appropriate for CI summaries.
+- In CI, the perf-smoke job uploads the JSON artifacts so they can be attached to the RC release. See: [`docs/release-checklist.md`](docs/release-checklist.md)
+
+## Terraform (HA) example
+There’s a minimal HA example you can adapt. We fixed the chart path and added a variable override fallback so you can point at your own registry/values quickly.
+
+```bash
+cd examples/terraform/ha
+terraform init
+terraform apply \
+  -var="helm_chart_path=charts/guardrail-api" \
+  -var="values_file=values.override.yaml"
+```
+
+Notes:
+- The Helm chart path is a **real** location in this repo now.
+- `terraform fmt` is optional in CI; when Terraform isn’t present, CI skips the step.
+- More in [`docs/terraform-ha.md`](docs/terraform-ha.md).
+
+## Repo audit workflows
+This repo includes a non-blocking **repo-audit** workflow that runs secret scanners and hygiene checks and always uploads artifacts:
+- `gitleaks` and `trufflehog` run from PATH; we preserve findings even when tools exit non-zero due to detections.
+- Action pinning audit produces `unpinned-actions.{md,json}` and fails when artifacts are missing.
+- See: [`docs/repo-audits.md`](docs/repo-audits.md)
+
+## Enterprise tests (opt-in)
+Enterprise tests are gated behind `@pytest.mark.enterprise` and a `--run-enterprise` flag. They **don’t** run on default hosted runners and won’t install extra deps.
+
+Local:
+```bash
+pip install fastapi pyyaml
+pytest -m enterprise --run-enterprise
+```
+
+CI:
+- A separate workflow runs only on `run-enterprise` label or manual dispatch.
+- The job expects a runner or image **that already includes** `fastapi` and `PyYAML`.
+More in [`docs/enterprise-tests.md`](docs/enterprise-tests.md).
+
+## Cutting RC1
+Follow the short checklist to produce an annotated tag and attach perf artifacts:
+- [`docs/release-checklist.md`](docs/release-checklist.md)
+
+---
+
 ## Why teams use this
 
 - **Direction-labeled risk:** ingress vs egress metrics expose user-driven attacks vs model drift.
