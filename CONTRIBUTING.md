@@ -15,7 +15,7 @@ environment, run checks locally, and submit changes that pass CI smoothly.
 4. Run the API locally:
    ```bash
    # start an ASGI server using the app factory
-   uv run uvicorn app.main:create_app --reload --host 127.0.0.1 --port 8000
+    uv run uvicorn app.main:create_app --factory --reload --host 127.0.0.1 --port 8000
 
    # in another terminal:
    curl -s http://127.0.0.1:8000/healthz
