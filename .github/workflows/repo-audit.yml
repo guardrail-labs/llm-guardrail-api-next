@@ -25,17 +25,45 @@ jobs:
           sudo apt-get install -y ripgrep yamllint
           python3 -m pip install --upgrade pip || true
           python3 -m pip install pip-audit bandit vulture || true
+          # --- Optional deep secret scanners (best-effort) ---
+          # Install gitleaks
+          curl -sSL https://raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh | bash || true
+          # Install trufflehog (prefer pipx if available)
+          if command -v pipx >/dev/null 2>&1; then
+            pipx install trufflehog || true
+          else
+            python3 -m pip install trufflehog || true
+          fi
 
       - name: Run audit (non-destructive)
         run: |
           chmod +x tools/ci/repo_audit.sh
           tools/ci/repo_audit.sh repo-audit-report.md
 
+      - name: Run gitleaks (non-blocking)
+        run: |
+          if command -v gitleaks >/dev/null 2>&1; then
+            ./gitleaks detect --no-banner -v --report-format json --report-path gitleaks-report.json || true
+          else
+            echo '{"skipped": "gitleaks not installed"}' > gitleaks-report.json
+          fi
+
+      - name: Run trufflehog (filesystem; non-blocking)
+        run: |
+          if command -v trufflehog >/dev/null 2>&1; then
+            trufflehog filesystem --no-update --json . > trufflehog-report.json || true
+          else
+            echo '{"skipped": "trufflehog not installed"}' > trufflehog-report.json
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: repo-audit-report
-          path: repo-audit-report.md
+          name: repo-audit
+          path: |
+            repo-audit-report.md
+            gitleaks-report.json
+            trufflehog-report.json
           if-no-files-found: error
           retention-days: 14
 
@@ -45,3 +73,7 @@ jobs:
           echo "_This run is read-only. See full details in the artifact._" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           head -n 300 repo-audit-report.md >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Secrets Scans (heads-up only)" >> $GITHUB_STEP_SUMMARY
+          echo "- gitleaks: $(jq -r '.skipped // \"report generated\"' gitleaks-report.json 2>/dev/null || echo "report generated")" >> $GITHUB_STEP_SUMMARY
+          echo "- trufflehog: $(jq -r '.skipped // \"report generated\"' trufflehog-report.json 2>/dev/null || echo "report generated")" >> $GITHUB_STEP_SUMMARY
