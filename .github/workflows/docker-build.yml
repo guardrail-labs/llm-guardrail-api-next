@@ -3,10 +3,15 @@ name: Docker Build & Push
 on:
   push:
     branches: [ "main" ]
-    tags: [ "v*" ]            # build/push on version tags like v1.0.0-rc1, v1.0.0
+    tags: [ "v*" ]
   release:
-    types: [published]        # optional: also build/push when a release is published
-  workflow_dispatch: {}       # manual run
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      extra_tag:
+        description: "Optional extra image tag to push (e.g., v1.0.0-rc1)"
+        required: false
+        default: ""
 
 env:
   REGISTRY: ghcr.io
@@ -17,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write         # needed to push to GHCR
+      packages: write
     concurrency:
       group: docker-${{ github.ref }}
       cancel-in-progress: true
@@ -43,13 +48,27 @@ jobs:
           set -euo pipefail
           OWNER_LC="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           REPO="${REGISTRY}/${OWNER_LC}/${IMAGE_NAME}"
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "tags=${REPO}:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "tags=${REPO}:main,${REPO}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags=${REPO}:ci-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
+          TAGS=()
+
+          # Tag for pushes to main
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAGS+=("${REPO}:main")
+            TAGS+=("${REPO}:sha-${GITHUB_SHA::7}")
           fi
+
+          # Tag for version tags (v*)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAGS+=("${REPO}:${{ github.ref_name }}")
+          fi
+
+          # Optional manual extra tag from workflow_dispatch
+          if [[ -n "${{ github.event.inputs.extra_tag }}" ]]; then
+            TAGS+=("${REPO}:${{ github.event.inputs.extra_tag }}")
+          fi
+
+          # Emit comma-separated list
+          echo "tags=$(IFS=, ; echo "${TAGS[*]}")" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
