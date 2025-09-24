@@ -95,15 +95,21 @@ rc:
 ifeq ($(strip $(TAG)),)
 	$(error Please provide TAG, e.g. make rc TAG=v1.0.0-rc1)
 endif
-	@echo "==> Tagging $(TAG) (annotated) and pushing"
-	git fetch origin
-	git checkout main
-	git pull --ff-only
+	@echo "==> Tagging $(TAG) (annotated)"
+	@if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then :; else echo "Not a git repo"; exit 1; fi
 	git config user.name "release-bot"
 	git config user.email "release@example.com"
 	git tag -a $(TAG) -m "$(TAG): release candidate"
-	git push origin $(TAG)
-	@echo "==> Done: $(TAG) pushed"
+	@if git remote | grep -qx origin; then \
+		 echo "==> origin found; pushing $(TAG)"; \
+		 git fetch origin && git checkout main && git pull --ff-only && git push origin $(TAG); \
+		 echo "==> Done: $(TAG) pushed"; \
+	else \
+		 echo "==> No 'origin' remote. Created local tag $(TAG)."; \
+		 echo "Add a remote and push when ready:"; \
+		 echo "  git remote add origin <git-url>"; \
+		 echo "  git push origin $(TAG)"; \
+	fi
 	@echo "Optionally create a draft GitHub Release and attach perf-rc-candidate.json:"
 	@echo "  gh release create $(TAG) --draft --title \"$(TAG)\" --notes-file docs/release-notes-stub-rc1.md"
 	@echo "  gh release upload $(TAG) perf-rc-candidate.json"
