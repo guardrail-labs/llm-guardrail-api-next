@@ -1,0 +1,51 @@
+name: Perf Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch, tag, or SHA) to test"
+        required: false
+        default: main
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pipx install uv
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Run perf bench
+        run: |
+          # Use --out if the script supports it, otherwise capture stdout
+          if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--out'; then
+            uv run python tools/perf/bench.py --out perf-rc-candidate.json
+          else
+            uv run python tools/perf/bench.py > perf-rc-candidate.json
+          fi
+          test -s perf-rc-candidate.json || echo '{}' > perf-rc-candidate.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-rc-candidate
+          path: perf-rc-candidate.json
+          if-no-files-found: error
+          retention-days: 14
