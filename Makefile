@@ -102,7 +102,11 @@ endif
 	git tag -a $(TAG) -m "$(TAG): release candidate"
 	@if git remote | grep -qx origin; then \
 		 echo "==> origin found; pushing $(TAG)"; \
-		 git fetch origin && git checkout main && git pull --ff-only && git push origin $(TAG); \
+		 set -euo pipefail; \
+		 git fetch origin && \
+		 git checkout main && \
+		 git pull --ff-only && \
+		 git push origin $(TAG); \
 		 echo "==> Done: $(TAG) pushed"; \
 	else \
 		 echo "==> No 'origin' remote. Created local tag $(TAG)."; \
