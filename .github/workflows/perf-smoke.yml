@@ -36,15 +36,46 @@ jobs:
           # Sanity: show installed httpx
           uv run python -c "import httpx,sys; print('httpx', httpx.__version__)"
 
+      - name: Start API (background)
+        run: |
+          set -euo pipefail
+          uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 &
+          echo $! > uvicorn.pid
+          # wait for healthz
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/healthz >/dev/null; then
+              echo "API is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API failed to start in time"
+          exit 1
+
       - name: Run perf bench
         run: |
-          # Use --out if the script supports it, otherwise capture stdout
+          # Use --out if the script supports it; otherwise capture stdout
           if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--out'; then
-            uv run python tools/perf/bench.py --out perf-rc-candidate.json
+            # Prefer passing base URL if supported
+            if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--base'; then
+              uv run python tools/perf/bench.py --base http://127.0.0.1:8000 --out perf-rc-candidate.json
+            else
+              BASE_URL=http://127.0.0.1:8000 uv run python tools/perf/bench.py --out perf-rc-candidate.json
+            fi
           else
-            uv run python tools/perf/bench.py > perf-rc-candidate.json
+            if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--base'; then
+              uv run python tools/perf/bench.py --base http://127.0.0.1:8000 > perf-rc-candidate.json
+            else
+              BASE_URL=http://127.0.0.1:8000 uv run python tools/perf/bench.py > perf-rc-candidate.json
+            fi
           fi
           test -s perf-rc-candidate.json || echo '{}' > perf-rc-candidate.json
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f uvicorn.pid ]; then kill "$(cat uvicorn.pid)" || true; fi
+          pkill -f "uvicorn app.main:create_app" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

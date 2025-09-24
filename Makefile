@@ -56,19 +56,43 @@ demo-stack-clean:
 .PHONY: perf-smoke
 perf-smoke:
 	@echo "==> Running perf smoke locally"
+	@# Start API in background if nothing is listening on 8000
 	@set -euo pipefail; \
 	if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--out'; then \
 	  echo "Detected --out support; writing to perf-rc-candidate.json"; \
-	  uv run python tools/perf/bench.py --out perf-rc-candidate.json; \
+	  OUTFLAG=1; \
 	else \
 	  echo "No --out flag detected; capturing stdout to perf-rc-candidate.json"; \
-	  uv run python tools/perf/bench.py > perf-rc-candidate.json; \
+	  OUTFLAG=0; \
+	fi; \
+	if ! curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1; then \
+	  echo "Starting API on 127.0.0.1:8000"; \
+	  uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 & \
+	  echo $$! > .uvicorn.pid; \
+	  for i in $$(seq 1 30); do \
+	    if curl -fsS http://127.0.0.1:8000/healthz >/dev/null; then break; fi; \
+	    sleep 1; \
+	  done; \
+	fi; \
+	if [ $$OUTFLAG -eq 1 ]; then \
+	  if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--base'; then \
+	    uv run python tools/perf/bench.py --base http://127.0.0.1:8000 --out perf-rc-candidate.json; \
+	  else \
+	    BASE_URL=http://127.0.0.1:8000 uv run python tools/perf/bench.py --out perf-rc-candidate.json; \
+	  fi; \
+	else \
+	  if uv run python tools/perf/bench.py --help 2>/dev/null | grep -q -- '--base'; then \
+	    uv run python tools/perf/bench.py --base http://127.0.0.1:8000 > perf-rc-candidate.json; \
+	  else \
+	    BASE_URL=http://127.0.0.1:8000 uv run python tools/perf/bench.py > perf-rc-candidate.json; \
+	  fi; \
 	fi; \
 	if [ ! -s perf-rc-candidate.json ]; then \
 	  echo "WARN: perf output is empty; writing minimal placeholder JSON"; \
 	  echo '{}' > perf-rc-candidate.json; \
 	fi; \
-	echo "Wrote perf-rc-candidate.json"
+	echo "Wrote perf-rc-candidate.json"; \
+	if [ -f .uvicorn.pid ]; then kill $$(cat .uvicorn.pid) || true; rm -f .uvicorn.pid; fi
 
 .PHONY: perf-smoke-run
 perf-smoke-run:
