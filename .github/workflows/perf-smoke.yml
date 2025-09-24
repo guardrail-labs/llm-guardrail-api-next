@@ -29,8 +29,12 @@ jobs:
       - name: Install uv
         run: pipx install uv
 
-      - name: Sync deps
-        run: uv sync
+      - name: Sync deps (dev extras)
+        run: |
+          # Include optional dev dependencies (provides httpx for the bench script)
+          uv sync --extra dev
+          # Sanity: show installed httpx
+          uv run python -c "import httpx,sys; print('httpx', httpx.__version__)"
 
       - name: Run perf bench
         run: |
