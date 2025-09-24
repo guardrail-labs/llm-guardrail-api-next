@@ -1,38 +1,34 @@
-# Release checklist (RC1)
+# Release checklist
 
-## 0) Green signals
-- Ruff + mypy + bandit: ✅
-- CI (unit + perf smoke): ✅
-- Repo audit artifacts uploaded: ✅
+This document describes the steps to cut a release candidate (RC) for the Guardrail API.
 
-## 1) Perf artifacts
-Run locally if needed, or download from the latest CI:
-```bash
-make perf-smoke
-```
-This writes `perf-rc-candidate.json` in the repo root; review the results and attach/rename as needed.
+## Pre-RC checks
 
-## 2) Tag RC1 with annotation
-```bash
-make rc TAG=v1.0.0-rc1
-```
+- [ ] All CI checks (Ruff, mypy, bandit, tests) green on `main`.
+- [ ] Re-run audits:
+  - [ ] **Actions Pinning Audit** (artifact uploaded).
+  - [ ] **Repo Audit** (artifact uploaded).
+- [ ] Generate perf smoke JSON on the commit you intend to tag:
+  ```bash
+  make perf-smoke
+  ```
+- [ ] Review `perf-rc-candidate.json` (non-empty, valid JSON).
 
-## 3) GitHub Release (draft is fine)
-- Title: `v1.0.0-rc1`
-- Notes (highlights):
-  - Enforcement posture: in-band policy enforcement.  
-    When configured packs are active, disallowed outputs are intercepted and
-    mitigated (block/clarify/redact) before returning to the client.  
-    Administrators must ensure the correct packs are enabled for their compliance posture.
-  - Perf smoke/compare validated.
-  - Webhook signing (v0 body HMAC, optional v1 ts+body; dual mode available).
-  - Terraform HA example path & override notes.
-- Attach artifacts:
-  - `perf-rc1-candidate.json`
-  - (Optional) previous baseline JSON for comparison
-- Publish (or keep draft until enterprise runner is wired).
+## Tag & release
 
-## 4) Post-tag sanity
-- Re-run “Actions Pinning Audit” → artifacts present
-- Re-run “Repo Audit” → artifacts present
-- Smoke test API `/healthz` on the tagged container/image
+- [ ] Tag the RC with an annotated tag:
+  ```bash
+  make rc TAG=v1.0.0-rc1
+  ```
+- [ ] Create a draft GitHub Release:
+  ```bash
+  gh release create v1.0.0-rc1 --draft \
+    --title "v1.0.0-rc1" \
+    --notes-file docs/release-notes-stub-rc1.md
+  gh release upload v1.0.0-rc1 perf-rc-candidate.json
+  ```
+- [ ] Review the draft release and perf artifact.
+- [ ] (Optional) Publish the draft release when ready.
+- [ ] (Optional) Flip repo visibility to **Public** in GitHub Settings when the project is ready for debut.
+
+Refs: `.github/ISSUE_TEMPLATE/pre-rc-checklist.md`, `Makefile`
