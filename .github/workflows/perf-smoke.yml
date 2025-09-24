@@ -36,10 +36,17 @@ jobs:
           # Sanity: show installed httpx
           uv run python -c "import httpx,sys; print('httpx', httpx.__version__)"
 
+      - name: Install runtime deps needed at import (PyJWT)
+        run: |
+          # app.security.service_tokens imports 'jwt' (PyJWT)
+          uv pip install --quiet pyjwt
+          uv run python -c "import jwt, sys; print('pyjwt OK')"
+
       - name: Start API (background)
         run: |
           set -euo pipefail
-          uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 &
+          # Start API with logs captured
+          uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
           echo $! > uvicorn.pid
           # wait for healthz
           for i in $(seq 1 60); do
@@ -47,9 +54,15 @@ jobs:
               echo "API is up"
               exit 0
             fi
+            if ! kill -0 "$(cat uvicorn.pid)" 2>/dev/null; then
+              echo "Uvicorn crashed during startup. Recent logs:"
+              tail -n 200 uvicorn.log || true
+              exit 1
+            fi
             sleep 1
           done
-          echo "API failed to start in time"
+          echo "API failed to start in time. Recent logs:"
+          tail -n 200 uvicorn.log || true
           exit 1
 
       - name: Run perf bench
@@ -76,6 +89,9 @@ jobs:
         run: |
           if [ -f uvicorn.pid ]; then kill "$(cat uvicorn.pid)" || true; fi
           pkill -f "uvicorn app.main:create_app" || true
+          echo "::group::uvicorn.log (tail)"
+          tail -n 300 uvicorn.log || true
+          echo "::endgroup::"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
