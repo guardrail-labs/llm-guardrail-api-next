@@ -11,7 +11,6 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: llm-guardrail-api-next
-  OWNER_LC: ${{ toLower(github.repository_owner) }}
 
 jobs:
   build:
@@ -37,20 +36,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Compute image tags
+      - name: Compute image tags (lowercase owner)
         id: meta
         shell: bash
         run: |
-          REPO="${{ env.REGISTRY }}/${{ env.OWNER_LC }}/${{ env.IMAGE_NAME }}"
+          set -euo pipefail
+          OWNER_LC="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          REPO="${REGISTRY}/${OWNER_LC}/${IMAGE_NAME}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            # e.g., ghcr.io/wesmilam/llm-guardrail-api-next:v1.0.0-rc1
-            echo "tags=${REPO}:${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "tags=${REPO}:${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # keep a moving tag for main and a traceable sha tag
-            echo "tags=${REPO}:main,${REPO}:sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            echo "tags=${REPO}:main,${REPO}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           else
-            # fallback for other refs / manual runs
-            echo "tags=${REPO}:ci-${GITHUB_RUN_ID}" >> $GITHUB_OUTPUT
+            echo "tags=${REPO}:ci-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
