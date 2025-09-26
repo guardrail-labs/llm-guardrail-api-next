@@ -466,7 +466,7 @@ def _get_or_create_histogram(
                     return found
         except Exception as e:  # pragma: no cover
             _log.debug("fallback histogram lookup %s failed: %s", name, e)
-        return Histogram(name, doc, labelnames=labelnames)
+    return Histogram(name, doc, labelnames=labelnames)
 
 
 def _get_or_create_gauge(
@@ -497,6 +497,59 @@ def _get_or_create_gauge(
         except Exception as e:  # pragma: no cover
             _log.debug("fallback gauge lookup %s failed: %s", name, e)
         return Gauge(name, doc, labelnames=labelnames)
+
+
+# --- Probing / leakage heuristics --------------------------------------------
+
+_probe_rate_exceeded_total = _get_or_create_counter(
+    "guardrail_probe_rate_exceeded_total",
+    "Requests where the per-session rate window was exceeded",
+    ("tenant", "bot"),
+)
+_probe_rate_hits = _get_or_create_gauge(
+    "guardrail_probe_rate_hits",
+    "Requests counted in the current rolling window (best-effort)",
+    ("tenant", "bot"),
+)
+_probe_leakage_hits_total = _get_or_create_counter(
+    "guardrail_probe_leakage_hits_total",
+    "Count of leakage-hint matches observed in incoming JSON strings",
+    ("tenant", "bot"),
+)
+_probe_similarity_hits_total = _get_or_create_counter(
+    "guardrail_probe_similarity_hits_total",
+    "Near-duplicate similarity hits across consecutive requests",
+    ("tenant", "bot"),
+)
+
+
+def probing_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    rate_exceeded: int = 0,
+    rate_hits: int = 0,
+    leakage_hits: int = 0,
+    similarity_hits: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if rate_exceeded:
+            _probe_rate_exceeded_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                rate_exceeded
+            )
+        _probe_rate_hits.labels(tenant=tenant_l, bot=bot_l).set(rate_hits)
+        if leakage_hits:
+            _probe_leakage_hits_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                leakage_hits
+            )
+        if similarity_hits:
+            _probe_similarity_hits_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                similarity_hits
+            )
+
+    _best_effort("inc probing ingress metrics", _do)
 
 
 # --- Ops/health gauges -------------------------------------------------------
