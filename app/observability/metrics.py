@@ -99,6 +99,52 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
+# --- Metadata / headers metrics ------------------------------------------------
+
+_metadata_headers_changed_total = _get_or_create_counter(
+    "guardrail_metadata_headers_changed_total",
+    "Headers sanitized/normalized at ingress",
+    ("tenant", "bot"),
+)
+_metadata_filenames_sanitized_total = _get_or_create_counter(
+    "guardrail_metadata_filenames_sanitized_total",
+    "Filenames sanitized in headers or JSON",
+    ("tenant", "bot"),
+)
+_metadata_truncated_total = _get_or_create_counter(
+    "guardrail_metadata_truncated_total",
+    "Values truncated due to length limits",
+    ("tenant", "bot"),
+)
+
+
+def metadata_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    headers_changed: int = 0,
+    filenames_sanitized: int = 0,
+    truncated: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if headers_changed:
+            _metadata_headers_changed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(headers_changed)
+        if filenames_sanitized:
+            _metadata_filenames_sanitized_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(filenames_sanitized)
+        if truncated:
+            _metadata_truncated_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                truncated
+            )
+
+    _best_effort("inc metadata ingress metrics", _do)
+
+
 # --- Tokenizer-aware scan metrics -------------------------------------------
 
 
