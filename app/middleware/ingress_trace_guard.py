@@ -1,8 +1,9 @@
+# app/middleware/ingress_trace_guard.py
 from __future__ import annotations
 
 import re
 import secrets
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, List, Tuple
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -33,11 +34,12 @@ def _new_request_id() -> str:
 
 class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
     """
-    - Validates traceparent; drops header if malformed.
-    - Ensures X-Request-ID exists and matches a safe pattern.
-    - Rewrites inbound headers so downstream sees sanitized values.
-    - Sets sanitized X-Request-ID on response; only propagates valid traceparent.
-    - Emits Prometheus counters for drops/normalizations.
+    - Validates traceparent; drops invalid inbound header.
+    - Ensures a safe X-Request-ID; rewrites inbound header to sanitized value.
+    - Exposes request.state.request_id for downstream use.
+    - On egress, always sets sanitized X-Request-ID.
+      For traceparent: set only if inbound was valid and no downstream override.
+    - Emits counters via trace_guard_violation_report(kind=...).
     """
 
     async def dispatch(
@@ -45,16 +47,16 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        # Snapshot header values
+        # Snapshot headers in a case-insensitive dict.
         headers = {k.lower(): v for k, v in request.headers.items()}
 
-        # Validate traceparent strictly
+        # Validate inbound traceparent.
         tp_in = headers.get(_HDR_TRACEPARENT)
         tp_valid = bool(tp_in and _RE_TRACEPARENT.match(tp_in or ""))
         if tp_in is not None and not tp_valid:
             trace_guard_violation_report(kind="traceparent_invalid")
 
-        # Normalize / create X-Request-ID
+        # Normalize / create X-Request-ID.
         rid_in = headers.get(_HDR_REQ_ID)
         if rid_in is None or not _RE_REQ_ID.match(rid_in):
             kind = "request_id_new" if rid_in is None else "request_id_invalid"
@@ -63,15 +65,18 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         else:
             rid = rid_in
 
-        # Expose on request.state for downstream use
+        # Expose on request.state for downstream code.
         try:
-            request.state.request_id = rid
+            request.state.request_id = rid  # type: ignore[attr-defined]
         except Exception:
+            # Best-effort only; do not fail request on state issues.
             pass
 
-        # --- Rewrite inbound request headers so downstream sees sanitized values ---
-        scope_pairs = request.scope.get("headers", [])
-        new_pairs: list[tuple[bytes, bytes]] = []
+        # --- Rewrite inbound headers so downstream sees sanitized values ---
+        scope_pairs: List[Tuple[bytes, bytes]] = list(
+            request.scope.get("headers", [])
+        )
+        new_pairs: List[Tuple[bytes, bytes]] = []
         seen_req_id = False
         changed = False
 
@@ -82,13 +87,12 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
 
             if kl == _HDR_TRACEPARENT:
                 if tp_valid and tp_in:
-                    # Normalize whitespace for traceparent
                     val = tp_in.strip()
                     if v != val:
                         changed = True
                     new_pairs.append((kb, val.encode("latin-1")))
                 else:
-                    # Drop invalid traceparent
+                    # Drop invalid traceparent entirely.
                     changed = True
                 continue
 
@@ -96,34 +100,40 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
                 seen_req_id = True
                 if v != rid:
                     changed = True
-                # Use canonical header name but keep original casing for safety
-                new_pairs.append((_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1")))
+                # Canonicalize value; keep header name casing minimal.
+                new_pairs.append(
+                    (_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1"))
+                )
                 continue
 
             new_pairs.append((kb, vb))
 
         if not seen_req_id:
             changed = True
-            new_pairs.append((_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1")))
+            new_pairs.append(
+                (_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1"))
+            )
 
         if changed:
             request.scope["headers"] = new_pairs
-            # Invalidate Starlette's cached Headers so downstream sees updates
+            # Invalidate Starlette's cached Headers object if present.
             if hasattr(request, "_headers"):
                 try:
-                    delattr(request, "_headers")  # type: ignore[attr-defined]
+                    delattr(request, "_headers")
                 except Exception:
                     pass
 
-        # Call downstream
+        # Call downstream stack.
         resp = await call_next(request)
 
         # --- Propagate sanitized headers on response ---
+        # Always enforce sanitized request id.
         resp.headers["X-Request-ID"] = rid
-        if tp_valid and tp_in:
+
+        # Respect downstream traceparent override: only set if missing.
+        existing_tp = resp.headers.get("traceparent")
+        if not existing_tp and tp_valid and tp_in:
             resp.headers["traceparent"] = tp_in.strip()
-        else:
-            # Ensure invalid traceparent is not leaked on egress
-            resp.headers.pop("traceparent", None)
+        # If downstream set one, keep it regardless of inbound validity.
 
         return resp
