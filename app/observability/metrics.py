@@ -102,6 +102,70 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
+_unicode_strings_sanitized_total = _get_or_create_counter(
+    "guardrail_unicode_strings_sanitized_total",
+    "Count of strings sanitized in ingress pipeline",
+    ("tenant", "bot"),
+)
+_unicode_zero_width_removed_total = _get_or_create_counter(
+    "guardrail_unicode_zero_width_removed_total",
+    "Total zero-width/formatting codepoints removed at ingress",
+    ("tenant", "bot"),
+)
+_unicode_bidi_controls_removed_total = _get_or_create_counter(
+    "guardrail_unicode_bidi_controls_removed_total",
+    "Total bidi control codepoints removed at ingress",
+    ("tenant", "bot"),
+)
+_unicode_confusables_mapped_total = _get_or_create_counter(
+    "guardrail_unicode_confusables_mapped_total",
+    "Total basic confusable characters mapped to ASCII at ingress",
+    ("tenant", "bot"),
+)
+_unicode_mixed_script_inputs_total = _get_or_create_counter(
+    "guardrail_unicode_mixed_script_inputs_total",
+    "Number of payloads exhibiting mixed Latin/Cyrillic/Greek scripts",
+    ("tenant", "bot"),
+)
+
+
+def unicode_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    strings_seen: int = 0,
+    zero_width_removed: int = 0,
+    bidi_controls_removed: int = 0,
+    confusables_mapped: int = 0,
+    mixed_scripts: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if strings_seen:
+            _unicode_strings_sanitized_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(strings_seen)
+        if zero_width_removed:
+            _unicode_zero_width_removed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(zero_width_removed)
+        if bidi_controls_removed:
+            _unicode_bidi_controls_removed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(bidi_controls_removed)
+        if confusables_mapped:
+            _unicode_confusables_mapped_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(confusables_mapped)
+        if mixed_scripts:
+            _unicode_mixed_script_inputs_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(mixed_scripts)
+
+    _best_effort("inc unicode ingress metrics", _do)
+
+
 GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL = _get_or_create_counter(
     "guardrail_ratelimit_redis_script_reload_total",
     "Count of Redis rate-limit Lua reloads triggered by NOSCRIPT.",

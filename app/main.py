@@ -23,6 +23,7 @@ from starlette.responses import Response as StarletteResponse
 from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
+from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
@@ -801,6 +802,7 @@ def create_app() -> FastAPI:
     except Exception as exc:
         log.warning("Admin /me route unavailable: %s", exc)
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(UnicodeIngressSanitizer)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
     try:
