@@ -100,6 +100,22 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
+# --- Trace guard metrics -------------------------------------------------------
+
+_trace_guard_violation_total = _get_or_create_counter(
+    "guardrail_trace_guard_violation_total",
+    "Ingress trace/request-id headers normalized or dropped",
+    ("kind",),
+)
+
+
+def trace_guard_violation_report(*, kind: str) -> None:
+    def _do() -> None:
+        _trace_guard_violation_total.labels(kind=kind).inc()
+
+    _best_effort("trace guard violation", _do)
+
+
 # --- Metadata / headers metrics ------------------------------------------------
 
 # --- Ingress path guard metrics -------------------------------------------------
