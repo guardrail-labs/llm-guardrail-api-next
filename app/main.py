@@ -25,18 +25,18 @@ from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
-from app.middleware.ingress_metadata import IngressMetadataMiddleware
-from app.middleware.ingress_path_guard import IngressPathGuardMiddleware
-from app.middleware.ingress_trace_guard import IngressTraceGuardMiddleware
+from app.middleware.idempotency import IdempotencyMiddleware
+from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
 from app.middleware.ingress_decode import DecodeIngressMiddleware
-from app.middleware.ingress_risk import IngressRiskMiddleware
-from app.middleware.ingress_unicode import UnicodeIngressSanitizer
-from app.middleware.ingress_token_scan import IngressTokenScanMiddleware
 from app.middleware.ingress_emoji_zwj import IngressEmojiZWJMiddleware
 from app.middleware.ingress_markup_plaintext import IngressMarkupPlaintextMiddleware
-from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
+from app.middleware.ingress_metadata import IngressMetadataMiddleware
+from app.middleware.ingress_path_guard import IngressPathGuardMiddleware
 from app.middleware.ingress_probing import IngressProbingMiddleware
-from app.middleware.idempotency import IdempotencyMiddleware
+from app.middleware.ingress_risk import IngressRiskMiddleware
+from app.middleware.ingress_token_scan import IngressTokenScanMiddleware
+from app.middleware.ingress_trace_guard import IngressTraceGuardMiddleware
+from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
@@ -56,6 +56,7 @@ try:  # pragma: no cover
         REGISTRY as _PromRegistryObj,
         Histogram as _PromHistogramCls,
     )
+
     PromHistogram: Any | None = _PromHistogramCls
     PromRegistry: Any | None = _PromRegistryObj
 except Exception:  # pragma: no cover
@@ -177,6 +178,7 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         finally:
             if self._hist is not None:
+
                 def _observe() -> None:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
@@ -186,6 +188,13 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
 
 
 _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
+_QUOTA_HEADERS = (
+    "X-Quota-Day",
+    "X-Quota-Hour",
+    "X-Quota-Min",
+    "X-Quota-Remaining",
+    "X-Quota-Reset",
+)
 
 
 def _safe_headers_copy(src_headers) -> dict[str, str]:
@@ -209,8 +218,17 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
         "X-RateLimit-Remaining": "3600",
         "X-RateLimit-Reset": str(now + 60),
     }
+    quota_defaults = {
+        "X-Quota-Day": "0",
+        "X-Quota-Hour": "0",
+        "X-Quota-Min": "0",
+        "X-Quota-Remaining": "0",
+        "X-Quota-Reset": "60",
+    }
     for k in _RATE_HEADERS:
         out.setdefault(k, defaults[k])
+    for k in _QUOTA_HEADERS:
+        out.setdefault(k, quota_defaults[k])
     return out
 
 
@@ -341,7 +359,7 @@ def _include_all_route_modules(app: FastAPI) -> int:
             try:
                 mod = importlib.import_module(name)
                 visited.add(name)
-            except Exception as exc:
+            except Exception:
                 _log.debug("module import failed: %s", name, exc_info=True)
                 continue
             try:
@@ -469,10 +487,12 @@ def _install_bindings_fallback(app: FastAPI) -> None:
 
 # ---------------- Bindings-aware guard for POST /guardrail --------------------
 
+
 def _extract_block_tokens_from_yaml(p: str) -> List[str]:
     tokens: List[str] = []
     try:
         import yaml
+
         data = yaml.safe_load(Path(p).read_text(encoding="utf-8"))
     except Exception:
         data = None
@@ -541,6 +561,7 @@ class _BindingsGuardMiddleware(BaseHTTPMiddleware):
 
 # ------------------------ Error helpers & app factory -------------------------
 
+
 def _status_code_to_code(status: int) -> str:
     if status == 400:
         return "bad_request"
@@ -587,9 +608,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _log.debug("import rulepacks_engine failed: %s", exc)
     else:
-        _best_effort("compile active rulepacks", 
-                     lambda: rulepacks_engine.compile_active_rulepacks()
-                    )
+        _best_effort(
+            "compile active rulepacks", lambda: rulepacks_engine.compile_active_rulepacks()
+        )
     try:
         from app.services.config_store import load_bindings
     except Exception as exc:
@@ -603,9 +624,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _log.debug("import decisions store failed: %s", exc)
     else:
-        _best_effort("ensure decisions store ready", 
-                     lambda: decisions_store.ensure_ready()
-                    )
+        _best_effort("ensure decisions store ready", lambda: decisions_store.ensure_ready())
 
     _start_prune_task(app)
 
@@ -629,18 +648,14 @@ async def lifespan(app: FastAPI):
     finally:
         await sysmod._shutdown_readiness()
         if _webhooks_module is not None:
-            _best_effort("webhooks module shutdown", 
-                         lambda: _webhooks_module.shutdown()
-                        )
+            _best_effort("webhooks module shutdown", lambda: _webhooks_module.shutdown())
         else:
             try:
                 from app.services import webhooks as _wh_mod
             except Exception as exc:
                 _log.debug("import webhooks module for shutdown failed: %s", exc)
             else:
-                _best_effort("webhooks module shutdown", 
-                             lambda: _wh_mod.shutdown()
-                            )
+                _best_effort("webhooks module shutdown", lambda: _wh_mod.shutdown())
         # Stop prune loop gracefully if running
         try:
             task = getattr(app.state, "prune_task", None)
@@ -654,6 +669,7 @@ async def lifespan(app: FastAPI):
         # Clean shutdown for tracer/exporter if present.
         try:
             from opentelemetry import trace as _trace
+
             provider = _trace.get_tracer_provider()
             shutdown = getattr(provider, "shutdown", None)
             if callable(shutdown):
@@ -685,6 +701,7 @@ def create_app() -> FastAPI:
     except Exception as exc:
         _log.debug("import RBACError failed: %s", exc)
     else:
+
         async def handle_rbac_error(request: Request, exc: Exception) -> JSONResponse:
             return JSONResponse(status_code=403, content={"detail": str(exc)})
 
@@ -1062,8 +1079,10 @@ def create_app() -> FastAPI:
     # ---- Ensure only our /metrics is registered and uses v0.0.4 ----
     try:
         from starlette.routing import Route
+
         app.router.routes = [
-            r for r in app.router.routes
+            r
+            for r in app.router.routes
             if not (isinstance(r, Route) and getattr(r, "path", "") == "/metrics")
         ]
     except Exception as exc:
@@ -1103,6 +1122,7 @@ app = create_app()
 async def _start_prune() -> None:
     _start_prune_task(app)
 
+
 # ---- Existing PR includes preserved below ----
 
 sec_headers_mod = __import__(
@@ -1136,6 +1156,7 @@ if getattr(app.state, "exports_loaded_exports", False):
 
 try:
     from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
+
     if _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
         app.add_middleware(
             _StarletteGZip,

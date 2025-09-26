@@ -102,6 +102,15 @@ def test_headers_present_and_health_skipped(monkeypatch):
     assert blocked.headers.get("Retry-After") is not None
     assert "X-RateLimit-Limit" in blocked.headers
     assert blocked.headers.get("X-RateLimit-Remaining") == "0"
+    quota_keys = {k.title() for k in blocked.headers if k.lower().startswith("x-quota-")}
+    assert quota_keys == {
+        "X-Quota-Day",
+        "X-Quota-Hour",
+        "X-Quota-Min",
+        "X-Quota-Remaining",
+        "X-Quota-Reset",
+    }
+    assert blocked.headers.get("X-Quota-Remaining") == "0"
 
     health = client.get("/health")
     assert health.status_code == 200
