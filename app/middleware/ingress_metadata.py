@@ -101,13 +101,12 @@ class IngressMetadataMiddleware(BaseHTTPMiddleware):
 
         if headers_changed or filenames_sanitized or truncated:
             request.scope["headers"] = scope_headers
-            # Invalidate cached Headers so downstream sees sanitized values
+            # Invalidate cached Headers so downstream sees sanitized values:
+            # delete the attribute (do NOT set to None).
             if hasattr(request, "_headers"):
-                setattr(request, "_headers", None)
+                delattr(request, "_headers")
 
-        # Fallback tenant/bot from sanitized headers if not provided later
-        # (Downstream can still read request.headers as usual.)
-        # Process JSON filename keys (uses request.headers safely now)
+        # Safe to access request.headers now
         ctype = request.headers.get("content-type", "").lower()
         if "application/json" in ctype:
             raw = await request.body()
