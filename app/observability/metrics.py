@@ -278,6 +278,73 @@ def decode_ingress_report(
     _best_effort("inc decode ingress metrics", _do)
 
 
+# --- Markup ingress metrics --------------------------------------------------
+
+
+_markup_fields_with_markup_total = _get_or_create_counter(
+    "guardrail_markup_fields_with_markup_total",
+    "JSON string fields that appeared to contain markup (HTML/SVG) at ingress",
+    ("tenant", "bot"),
+)
+_markup_scripts_removed_total = _get_or_create_counter(
+    "guardrail_markup_scripts_removed_total",
+    "Count of script blocks removed during markup stripping",
+    ("tenant", "bot"),
+)
+_markup_styles_removed_total = _get_or_create_counter(
+    "guardrail_markup_styles_removed_total",
+    "Count of style blocks removed during markup stripping",
+    ("tenant", "bot"),
+)
+_markup_foreign_removed_total = _get_or_create_counter(
+    "guardrail_markup_foreign_removed_total",
+    "Count of foreignObject blocks removed during markup stripping",
+    ("tenant", "bot"),
+)
+_markup_tags_removed_total = _get_or_create_counter(
+    "guardrail_markup_tags_removed_total",
+    "Increment when residual tags were stripped (coarse indicator)",
+    ("tenant", "bot"),
+)
+
+
+def markup_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    fields_with_markup: int = 0,
+    scripts_removed: int = 0,
+    styles_removed: int = 0,
+    foreign_removed: int = 0,
+    tags_removed: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if fields_with_markup:
+            _markup_fields_with_markup_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(fields_with_markup)
+        if scripts_removed:
+            _markup_scripts_removed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(scripts_removed)
+        if styles_removed:
+            _markup_styles_removed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(styles_removed)
+        if foreign_removed:
+            _markup_foreign_removed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(foreign_removed)
+        if tags_removed:
+            _markup_tags_removed_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(tags_removed)
+
+    _best_effort("inc markup ingress metrics", _do)
+
+
 GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL = _get_or_create_counter(
     "guardrail_ratelimit_redis_script_reload_total",
     "Count of Redis rate-limit Lua reloads triggered by NOSCRIPT.",
