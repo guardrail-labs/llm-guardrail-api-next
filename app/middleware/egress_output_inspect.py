@@ -1,7 +1,7 @@
 # app/middleware/egress_output_inspect.py
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple, cast
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -18,7 +18,8 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
       - zero-width/Bidi/confusable indicators (via sanitize_text stats)
       - emoji TAG/ZWJ hidden ASCII (no mutation)
       - HTML/SVG markup presence
-    Does NOT change the body. Adds a diagnostic header:
+
+    Does NOT change the body content. Adds a diagnostic header:
       X-Guardrail-Egress-Flags: emoji,zwc,markup
     Emits Prometheus counters via egress_output_report().
     """
@@ -34,6 +35,27 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             or ct.startswith("text/")
         )
 
+    async def _read_body_bytes(self, resp: Response) -> bytes:
+        """
+        Starlette Response often streams via body_iterator. Consume it to bytes.
+        If not present, fall back to resp.body (may be b"").
+        """
+        # Access via Any so mypy doesn't require a typed attribute.
+        r_any = cast(Any, resp)
+        iterator = getattr(r_any, "body_iterator", None)
+        if iterator is None:
+            body = getattr(resp, "body", b"")
+            return body if isinstance(body, (bytes, bytearray)) else b""
+
+        collected = bytearray()
+        async for chunk in iterator:
+            if chunk:
+                collected += chunk
+                if len(collected) > self.max_bytes:
+                    # Stop collecting further; we won't inspect large bodies.
+                    break
+        return bytes(collected)
+
     async def dispatch(
         self,
         request: Request,
@@ -41,18 +63,30 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         resp = await call_next(request)
 
-        # Only inspect if we can access a concrete body without streaming.
-        # Avoid touching internals like `body_iterator` to stay mypy-safe.
-        body: bytes | None = getattr(resp, "body", None)
         ctype = resp.headers.get("content-type", "")
+        # Capture body regardless, then decide if we inspect.
+        body = await self._read_body_bytes(resp)
 
         if not body or not self._is_texty(ctype) or len(body) > self.max_bytes:
-            return resp
+            # Return the same payload and headers untouched.
+            return Response(
+                content=body,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                media_type=resp.media_type,
+                background=resp.background,
+            )
 
         try:
             text = body.decode("utf-8", errors="replace")
         except Exception:
-            return resp
+            return Response(
+                content=body,
+                status_code=resp.status_code,
+                headers=dict(resp.headers),
+                media_type=resp.media_type,
+                background=resp.background,
+            )
 
         # 1) Unicode controls / bidi / zero-width (stats only)
         _, ustats = sanitize_text(text)
@@ -90,7 +124,8 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             markup=markup_hit,
         )
 
-        # Add compact diagnostic header (non-breaking)
+        # Prepare headers with diagnostic flags
+        headers: Dict[str, str] = dict(resp.headers)
         flags: list[str] = []
         if emoji_hit:
             flags.append("emoji")
@@ -99,8 +134,15 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         if markup_hit:
             flags.append("markup")
         if flags:
-            prev = resp.headers.get("x-guardrail-egress-flags")
+            prev = headers.get("x-guardrail-egress-flags")
             joined = ",".join(flags) if not prev else f"{prev},{','.join(flags)}"
-            resp.headers["X-Guardrail-Egress-Flags"] = joined
+            headers["X-Guardrail-Egress-Flags"] = joined
 
-        return resp
+        # Return a fresh Response with same content and updated headers.
+        return Response(
+            content=body,
+            status_code=resp.status_code,
+            headers=headers,
+            media_type=resp.media_type,
+            background=resp.background,
+        )
