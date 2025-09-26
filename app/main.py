@@ -29,6 +29,7 @@ from app.middleware.ingress_risk import IngressRiskMiddleware
 from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_token_scan import IngressTokenScanMiddleware
 from app.middleware.ingress_markup_plaintext import IngressMarkupPlaintextMiddleware
+from app.middleware.ingress_probing import IngressProbingMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
@@ -814,6 +815,8 @@ def create_app() -> FastAPI:
     app.add_middleware(IngressTokenScanMiddleware)
     # Extract plaintext from HTML/SVG so scanners can evaluate true text
     app.add_middleware(IngressMarkupPlaintextMiddleware)
+    # Probing/leakage heuristics (rate + pattern + near-duplicate)
+    app.add_middleware(IngressProbingMiddleware)
     # Session risk scoring after scanners (does not mutate payload)
     app.add_middleware(IngressRiskMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
