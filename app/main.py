@@ -29,6 +29,7 @@ from app.middleware.ingress_decode import DecodeIngressMiddleware
 from app.middleware.ingress_risk import IngressRiskMiddleware
 from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_token_scan import IngressTokenScanMiddleware
+from app.middleware.ingress_emoji_zwj import IngressEmojiZWJMiddleware
 from app.middleware.ingress_markup_plaintext import IngressMarkupPlaintextMiddleware
 from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
 from app.middleware.ingress_probing import IngressProbingMiddleware
@@ -815,6 +816,8 @@ def create_app() -> FastAPI:
     app.add_middleware(DecodeIngressMiddleware)
     # Tokenizer-aware scanning for split sensitive terms
     app.add_middleware(IngressTokenScanMiddleware)
+    # Emoji ZWJ/TAG detector to surface hidden ASCII
+    app.add_middleware(IngressEmojiZWJMiddleware)
     # Extract plaintext from HTML/SVG so scanners can evaluate true text
     app.add_middleware(IngressMarkupPlaintextMiddleware)
     # Peek into small base64 archives to expose filenames and text samples
