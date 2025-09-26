@@ -119,6 +119,60 @@ _metadata_truncated_total = _get_or_create_counter(
 )
 
 
+# --- Egress output inspection metrics --------------------------------------
+
+_egress_zero_width_total = _get_or_create_counter(
+    "guardrail_egress_zero_width_total",
+    "Responses where zero-width characters were observed (output inspection)",
+)
+_egress_bidi_total = _get_or_create_counter(
+    "guardrail_egress_bidi_total",
+    "Responses where bidi controls were observed (output inspection)",
+)
+_egress_confusable_total = _get_or_create_counter(
+    "guardrail_egress_confusable_total",
+    "Responses with confusable-mapping signals (output inspection)",
+)
+_egress_emoji_hidden_bytes_total = _get_or_create_counter(
+    "guardrail_egress_emoji_hidden_bytes_total",
+    "Total bytes of ASCII revealed from emoji TAG sequences in responses",
+)
+_egress_emoji_zwj_total = _get_or_create_counter(
+    "guardrail_egress_emoji_zwj_total",
+    "Zero-width joiners observed in responses (emoji sequences)",
+)
+_egress_markup_total = _get_or_create_counter(
+    "guardrail_egress_markup_total",
+    "Responses that appeared to contain HTML/SVG markup",
+)
+
+
+def egress_output_report(
+    *,
+    zero_width: int = 0,
+    bidi: int = 0,
+    confusable: int = 0,
+    emoji_hidden_bytes: int = 0,
+    emoji_zwj: int = 0,
+    markup: int = 0,
+) -> None:
+    def _do() -> None:
+        if zero_width:
+            _egress_zero_width_total.inc(zero_width)
+        if bidi:
+            _egress_bidi_total.inc(bidi)
+        if confusable:
+            _egress_confusable_total.inc(confusable)
+        if emoji_hidden_bytes:
+            _egress_emoji_hidden_bytes_total.inc(emoji_hidden_bytes)
+        if emoji_zwj:
+            _egress_emoji_zwj_total.inc(emoji_zwj)
+        if markup:
+            _egress_markup_total.inc(markup)
+
+    _best_effort("inc egress output metrics", _do)
+
+
 def metadata_ingress_report(
     *,
     tenant: str = "",

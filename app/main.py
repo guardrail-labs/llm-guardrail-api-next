@@ -22,6 +22,7 @@ from starlette.responses import Response as StarletteResponse
 
 from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
+from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
 from app.middleware.ingress_metadata import IngressMetadataMiddleware
@@ -826,6 +827,8 @@ def create_app() -> FastAPI:
     app.add_middleware(IngressProbingMiddleware)
     # Session risk scoring after scanners (does not mutate payload)
     app.add_middleware(IngressRiskMiddleware)
+    # Egress: inspect text/JSON outputs for hidden controls/markup (no mutation)
+    app.add_middleware(EgressOutputInspectMiddleware)
     # Final egress stage: normalize timing for sensitive responses
     app.add_middleware(EgressTimingMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
