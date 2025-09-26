@@ -9,6 +9,13 @@ def test_decode_base64_simple():
     assert stats["changed"] == 1
 
 
+def test_decode_base64_urlsafe_without_padding():
+    s, stats = decode_string_once("eyJmb29fYmFyIjoiYmF6LXh5eiJ9")
+    assert s == '{"foo_bar":"baz-xyz"}'
+    assert stats["decoded_base64"] == 1
+    assert stats["changed"] == 1
+
+
 def test_decode_hex_simple():
     # "test" -> 74657374
     s, stats = decode_string_once("74657374")
