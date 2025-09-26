@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, List, Tuple
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -10,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.sanitizers.metadata import sanitize_header_value, sanitize_filename
 from app.observability.metrics import metadata_ingress_report
 
+# Header names
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"
 
@@ -21,6 +22,56 @@ _CD_FILENAME_RE = re.compile(
     r'filename\*?=(?:"?)([^";\r\n]+)',
     flags=re.IGNORECASE,
 )
+
+
+def _sanitize_scope_headers(
+    raw: List[Tuple[bytes, bytes]],
+) -> Tuple[List[Tuple[bytes, bytes]], int, int, int, str, str]:
+    """
+    Sanitize headers using scope-level list to avoid Headers cache issues.
+    Returns (new_headers, headers_changed, filenames_sanitized, truncated,
+             tenant, bot) where tenant/bot are taken from sanitized values.
+    """
+    headers_changed = 0
+    filenames_sanitized = 0
+    truncated = 0
+    tenant = ""
+    bot = ""
+
+    new_headers: List[Tuple[bytes, bytes]] = []
+    for kb, vb in raw or []:
+        key = kb.decode("latin-1")
+        val = vb.decode("latin-1")
+
+        sval, hst = sanitize_header_value(val)
+        if hst.get("truncated", 0):
+            truncated += 1
+        if hst.get("changed", 0):
+            headers_changed += 1
+
+        # Content-Disposition filename handling
+        if key.lower() == "content-disposition":
+
+            def _fix_filename(m: re.Match[str]) -> str:
+                fname = m.group(1)
+                safe, fst = sanitize_filename(fname)
+                nonlocal filenames_sanitized, truncated
+                filenames_sanitized += 1
+                truncated += fst.get("truncated", 0)
+                return f'filename="{safe}"'
+
+            sval = _CD_FILENAME_RE.sub(_fix_filename, sval)
+
+        # Capture tenant/bot from sanitized values
+        lower_key = key.lower()
+        if lower_key == _HDR_TENANT.lower():
+            tenant = sval
+        elif lower_key == _HDR_BOT.lower():
+            bot = sval
+
+        new_headers.append((key.encode("latin-1"), sval.encode("latin-1")))
+
+    return new_headers, headers_changed, filenames_sanitized, truncated, tenant, bot
 
 
 class IngressMetadataMiddleware(BaseHTTPMiddleware):
@@ -37,43 +88,26 @@ class IngressMetadataMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable],
     ):
-        tenant = request.headers.get(_HDR_TENANT, "")
-        bot = request.headers.get(_HDR_BOT, "")
+        # Sanitize scope-level headers BEFORE accessing request.headers
+        raw_headers = list(request.scope.get("headers", []))
+        (
+            scope_headers,
+            headers_changed,
+            filenames_sanitized,
+            truncated,
+            tenant,
+            bot,
+        ) = _sanitize_scope_headers(raw_headers)
 
-        headers_changed = 0
-        filenames_sanitized = 0
-        truncated = 0
-
-        # Sanitize headers in-place on scope
-        scope_headers = []
-        for kb, vb in request.scope.get("headers", []):
-            key = kb.decode("latin-1")
-            val = vb.decode("latin-1")
-            sval, hst = sanitize_header_value(val)
-            if hst.get("truncated", 0):
-                truncated += 1
-            if hst.get("changed", 0):
-                headers_changed += 1
-
-            # Content-Disposition filename handling
-            if key.lower() == "content-disposition":
-                def _fix_filename(m):
-                    fname = m.group(1)
-                    safe, fst = sanitize_filename(fname)
-                    nonlocal filenames_sanitized, truncated
-                    filenames_sanitized += 1
-                    truncated += fst.get("truncated", 0)
-                    return f'filename="{safe}"'
-
-                sval = _CD_FILENAME_RE.sub(_fix_filename, sval)
-
-            scope_headers.append((key.encode("latin-1"), sval.encode("latin-1")))
-
-        # Replace headers if any change; else keep original
         if headers_changed or filenames_sanitized or truncated:
             request.scope["headers"] = scope_headers
+            # Invalidate cached Headers so downstream sees sanitized values
+            if hasattr(request, "_headers"):
+                setattr(request, "_headers", None)
 
-        # JSON body filename keys
+        # Fallback tenant/bot from sanitized headers if not provided later
+        # (Downstream can still read request.headers as usual.)
+        # Process JSON filename keys (uses request.headers safely now)
         ctype = request.headers.get("content-type", "").lower()
         if "application/json" in ctype:
             raw = await request.body()
@@ -119,7 +153,7 @@ class IngressMetadataMiddleware(BaseHTTPMiddleware):
 
                         request = Request(request.scope, receive)
 
-        # Emit metrics once per request
+        # If tenant/bot are still empty, it's fine; label limiter will bucket
         metadata_ingress_report(
             tenant=tenant,
             bot=bot,
