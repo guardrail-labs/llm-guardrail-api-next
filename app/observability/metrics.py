@@ -66,6 +66,7 @@ def _limit_tenant_bot_labels(tenant: str, bot: str) -> Tuple[str, str]:
     return _METRICS_LABEL_OVERFLOW, _METRICS_LABEL_OVERFLOW
 
 
+
 def _get_or_create_counter(
     name: str,
     doc: str,
@@ -449,6 +450,35 @@ webhook_dlq_depth = _get_or_create_gauge(
     "guardrail_webhook_dlq_depth",
     "Number of items currently in the webhook DLQ.",
 )
+
+
+# --- Session risk metrics ----------------------------------------------------
+
+_session_risk_score = _get_or_create_gauge(
+    "guardrail_session_risk_score",
+    "Current risk score for a session",
+    ("tenant", "bot"),
+)
+_session_risk_delta_total = _get_or_create_counter(
+    "guardrail_session_risk_delta_total",
+    "Cumulative risk increments observed",
+    ("tenant", "bot"),
+)
+
+
+def session_risk_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    session: str = "",
+    base: float = 0.0,
+    delta: float = 0.0,
+    score: float = 0.0,
+) -> None:
+    t, b = _limit_tenant_bot_labels(tenant, bot)
+    if delta:
+        _session_risk_delta_total.labels(tenant=t, bot=b).inc(delta)
+    _session_risk_score.labels(tenant=t, bot=b).set(score)
 
 
 # ---- Verifier provider metrics (existing set) --------------------------------

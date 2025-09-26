@@ -24,8 +24,9 @@ from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.ingress_metadata import IngressMetadataMiddleware
-from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_decode import DecodeIngressMiddleware
+from app.middleware.ingress_risk import IngressRiskMiddleware
+from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_token_scan import IngressTokenScanMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.quota import QuotaMiddleware
@@ -810,6 +811,8 @@ def create_app() -> FastAPI:
     app.add_middleware(DecodeIngressMiddleware)
     # Tokenizer-aware scanning for split sensitive terms
     app.add_middleware(IngressTokenScanMiddleware)
+    # Session risk scoring after scanners (does not mutate payload)
+    app.add_middleware(IngressRiskMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
     try:
