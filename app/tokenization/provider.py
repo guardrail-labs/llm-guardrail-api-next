@@ -5,9 +5,9 @@ from typing import List
 # Optional dependency: if tiktoken is present we'll use it.
 # We do not add a hard dependency; fallback is a simple tokenizer.
 try:
-    import tiktoken  # type: ignore
+    import tiktoken   
 except Exception:  # pragma: no cover
-    tiktoken = None  # type: ignore
+    tiktoken = None 
 
 
 def _fallback_tokenize(text: str) -> List[str]:
