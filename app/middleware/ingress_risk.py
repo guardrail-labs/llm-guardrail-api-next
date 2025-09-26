@@ -1,3 +1,4 @@
+# app/middleware/ingress_risk.py
 from __future__ import annotations
 
 import json
@@ -8,27 +9,28 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.observability.metrics import session_risk_report
 from app.risk.session_risk import session_risk_store
-from app.services.config_store import get_config
+from app.settings import get_config
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"
 _HDR_SESSION = "X-Guardrail-Session"
+
 
 def _labels(req: Request) -> tuple[str, str, str]:
     h = req.headers
     tenant = h.get(_HDR_TENANT, "")
     bot = h.get(_HDR_BOT, "")
     sess = h.get(_HDR_SESSION, "")
-    # Best-effort session fallback: IP + UA hash (coarse)
+    # Best-effort session fallback: IP + UA prefix (coarse)
     if not sess:
         ip = req.client.host if req.client else ""
         ua = h.get("user-agent", "")
         sess = f"{ip}:{ua[:64]}"
     return tenant, bot, sess
 
+
 def _suspicion_score_from_json(data: object) -> float:
-    # Very light heuristic: add tiny increments for “hot” indicators.
-    # Token scan metrics and other middlewares already capture detail.
+    # Very light heuristic to nudge risk; scanners already handle details.
     if not isinstance(data, (dict, list, str)):
         return 0.0
     s = 0.0
@@ -50,11 +52,11 @@ def _suspicion_score_from_json(data: object) -> float:
         s += _suspicion_score_from_json(v)
     return s
 
+
 class IngressRiskMiddleware(BaseHTTPMiddleware):
     """
-    Compute and update a short-lived session risk score per request,
-    based on light heuristics and previously accumulated risk.
-    Emits Prometheus metrics. Does not mutate payloads.
+    Short-lived session risk score per requester that decays over time.
+    Emits Prometheus metrics; does not mutate payloads.
     """
 
     async def dispatch(
@@ -67,12 +69,12 @@ class IngressRiskMiddleware(BaseHTTPMiddleware):
         half_life = float(cfg.get("risk_half_life_seconds", 180.0))
         ttl = float(cfg.get("risk_ttl_seconds", 900.0))
 
-        # Start from decayed score
         store = session_risk_store()
         base = store.decay_and_get(tenant, bot, sess, half_life)
 
-        # Peek JSON once (other middlewares may also read body)
+        # Peek JSON once (replay body afterward)
         delta = 0.0
+        raw = None
         ctype = request.headers.get("content-type", "").lower()
         if "application/json" in ctype:
             raw = await request.body()
@@ -86,12 +88,25 @@ class IngressRiskMiddleware(BaseHTTPMiddleware):
 
         # Bump score and emit metric
         score = store.bump(tenant, bot, sess, delta, ttl_seconds=ttl)
-        session_risk_report(tenant=tenant, bot=bot, session=sess, base=base, delta=delta, score=score)
+        session_risk_report(
+            tenant=tenant,
+            bot=bot,
+            session=sess,
+            base=base,
+            delta=delta,
+            score=score,
+        )
 
-        # Re-inject original body if we consumed it
+        # Re-inject original body if consumed
         async def receive() -> dict:
-            return {"type": "http.request", "body": raw if "raw" in locals() else b"", "more_body": False}
-        if "raw" in locals():
+            body = raw if raw is not None else b""
+            return {
+                "type": "http.request",
+                "body": body,
+                "more_body": False,
+            }
+
+        if raw is not None:
             request = Request(request.scope, receive)
 
         return await call_next(request)
