@@ -1,7 +1,7 @@
 # app/middleware/egress_output_inspect.py
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Iterable, Tuple, cast
+from typing import Any, Awaitable, Callable, Dict, cast
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -15,13 +15,16 @@ from app.sanitizers.markup import looks_like_markup, strip_markup_to_text
 class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
     """
     Inspect small JSON/text responses for:
-      - zero-width/Bidi/confusable indicators (via sanitize_text stats)
-      - emoji TAG/ZWJ hidden ASCII (no mutation)
+      - zero-width/Bidi/confusable indicators (signals only)
+      - emoji TAG/ZWJ hidden ASCII (signals only)
       - HTML/SVG markup presence
 
-    Does NOT change the body content. Adds a diagnostic header:
+    Does NOT change the body content. Adds header:
       X-Guardrail-Egress-Flags: emoji,zwc,markup
     Emits Prometheus counters via egress_output_report().
+
+    IMPORTANT: Streaming responses are passed through untouched to avoid
+    introducing Content-Length or altering transfer semantics.
     """
 
     # Only inspect bodies up to this size (bytes)
@@ -35,12 +38,26 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             or ct.startswith("text/")
         )
 
+    def _is_streaming(self, resp: Response, ctype: str) -> bool:
+        """
+        Consider response streaming if:
+          - content-type is event-stream, OR
+          - a body iterator exists AND no explicit Content-Length header.
+        In these cases we must not buffer or rebuild the response.
+        """
+        if "text/event-stream" in (ctype or "").lower():
+            return True
+        r_any = cast(Any, resp)
+        has_iter = getattr(r_any, "body_iterator", None) is not None
+        no_len = "content-length" not in {k.lower() for k in resp.headers.keys()}
+        return bool(has_iter and no_len)
+
     async def _read_body_bytes(self, resp: Response) -> bytes:
         """
-        Starlette Response often streams via body_iterator. Consume it to bytes.
-        If not present, fall back to resp.body (may be b"").
+        Consume a (non-streaming) response into bytes.
+        If a body iterator exists, we read it fully up to max_bytes.
+        Otherwise we use resp.body.
         """
-        # Access via Any so mypy doesn't require a typed attribute.
         r_any = cast(Any, resp)
         iterator = getattr(r_any, "body_iterator", None)
         if iterator is None:
@@ -52,7 +69,6 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             if chunk:
                 collected += chunk
                 if len(collected) > self.max_bytes:
-                    # Stop collecting further; we won't inspect large bodies.
                     break
         return bytes(collected)
 
@@ -62,13 +78,16 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         resp = await call_next(request)
-
         ctype = resp.headers.get("content-type", "")
-        # Capture body regardless, then decide if we inspect.
+
+        # Never touch streaming responses (preserve chunked semantics).
+        if self._is_streaming(resp, ctype):
+            return resp
+
+        # Capture body then decide if we inspect.
         body = await self._read_body_bytes(resp)
 
         if not body or not self._is_texty(ctype) or len(body) > self.max_bytes:
-            # Return the same payload and headers untouched.
             return Response(
                 content=body,
                 status_code=resp.status_code,
@@ -94,7 +113,7 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         bidi = int(ustats.get("bidi_controls_removed", 0) > 0)
         conf = int(ustats.get("confusables_mapped", 0) > 0)
 
-        # 2) Emoji TAG/ZWJ derived ASCII (do not inject)
+        # 2) Emoji TAG/ZWJ derived ASCII (signals only)
         revealed, estats = analyze_emoji_sequences(text)
         emoji_hidden_bytes = len(revealed.encode("utf-8")) if revealed else 0
         emoji_hit = int(emoji_hidden_bytes > 0 or estats.get("zwj", 0) > 0)
@@ -124,7 +143,7 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             markup=markup_hit,
         )
 
-        # Prepare headers with diagnostic flags
+        # Add compact diagnostic header (non-breaking)
         headers: Dict[str, str] = dict(resp.headers)
         flags: list[str] = []
         if emoji_hit:
@@ -138,7 +157,6 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             joined = ",".join(flags) if not prev else f"{prev},{','.join(flags)}"
             headers["X-Guardrail-Egress-Flags"] = joined
 
-        # Return a fresh Response with same content and updated headers.
         return Response(
             content=body,
             status_code=resp.status_code,
