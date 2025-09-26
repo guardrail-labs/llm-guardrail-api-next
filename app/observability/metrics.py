@@ -102,6 +102,22 @@ def _get_or_create_counter(
 
 # --- Metadata / headers metrics ------------------------------------------------
 
+# --- Ingress path guard metrics -------------------------------------------------
+
+_ingress_path_violation_total = _get_or_create_counter(
+    "guardrail_ingress_path_violation_total",
+    "Ingress requests blocked due to suspicious URL path",
+    ("reason",),
+)
+
+
+def ingress_path_violation_report(*, reason: str) -> None:
+    def _do() -> None:
+        _ingress_path_violation_total.labels(reason=reason).inc()
+
+    _best_effort("ingress path violation", _do)
+
+
 _metadata_headers_changed_total = _get_or_create_counter(
     "guardrail_metadata_headers_changed_total",
     "Headers sanitized/normalized at ingress",
