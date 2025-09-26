@@ -173,6 +173,66 @@ def token_scan_report(
     _best_effort("inc token scan metrics", _do)
 
 
+# --- Emoji ZWJ / TAG metrics ---------------------------------------------------
+
+_emoji_fields_total = _get_or_create_counter(
+    "guardrail_emoji_fields_total",
+    "JSON string fields inspected for emoji ZWJ/TAG patterns",
+    ("tenant", "bot"),
+)
+_emoji_tag_sequences_total = _get_or_create_counter(
+    "guardrail_emoji_tag_sequences_total",
+    "Emoji TAG sequences observed (with optional CANCEL TAG)",
+    ("tenant", "bot"),
+)
+_emoji_zwj_total = _get_or_create_counter(
+    "guardrail_emoji_zwj_total",
+    "Zero-width joiners observed in JSON strings",
+    ("tenant", "bot"),
+)
+_emoji_controls_total = _get_or_create_counter(
+    "guardrail_emoji_controls_total",
+    "Emoji-related control code points observed (ZWJ/ZWNJ/ZWSP/VS16/KEYCAP/TAG)",
+    ("tenant", "bot"),
+)
+_emoji_hidden_text_bytes_total = _get_or_create_counter(
+    "guardrail_emoji_hidden_text_bytes_total",
+    "Bytes of ASCII revealed from TAG sequences",
+    ("tenant", "bot"),
+)
+
+
+def emoji_zwj_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    fields: int = 0,
+    tag_sequences: int = 0,
+    zwj_count: int = 0,
+    controls: int = 0,
+    hidden_bytes: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if fields:
+            _emoji_fields_total.labels(tenant=tenant_l, bot=bot_l).inc(fields)
+        if tag_sequences:
+            _emoji_tag_sequences_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                tag_sequences
+            )
+        if zwj_count:
+            _emoji_zwj_total.labels(tenant=tenant_l, bot=bot_l).inc(zwj_count)
+        if controls:
+            _emoji_controls_total.labels(tenant=tenant_l, bot=bot_l).inc(controls)
+        if hidden_bytes:
+            _emoji_hidden_text_bytes_total.labels(
+                tenant=tenant_l, bot=bot_l
+            ).inc(hidden_bytes)
+
+    _best_effort("inc emoji zwj ingress metrics", _do)
+
+
 _unicode_strings_sanitized_total = _get_or_create_counter(
     "guardrail_unicode_strings_sanitized_total",
     "Count of strings sanitized in ingress pipeline",
