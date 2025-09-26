@@ -1,4 +1,6 @@
+# app/sanitizers/unicode_sanitizer.py
 from __future__ import annotations
+
 from typing import Any, Dict, Tuple, Union
 import unicodedata
 
@@ -16,6 +18,7 @@ _ZERO_WIDTH = (
     "\u200E"  # LRM
     "\u200F"  # RLM
 )
+
 _BIDI = (
     "\u202A"  # LRE
     "\u202B"  # RLE
@@ -29,16 +32,60 @@ _BIDI = (
 )
 
 # Minimal, high-signal homoglyphs map (Greek/Cyrillic → ASCII Latin).
-# This is intentionally compact to avoid false positives while catching common abuses.
-_CONFUSABLES_BASIC = {
-    # Cyrillic
-    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "N", "О": "O", "Р": "P", "С": "C", "Т": "T", "Х": "X",
-    "а": "a", "с": "c", "е": "e", "о": "o", "р": "p", "х": "x", "у": "y", "к": "k", "т": "t", "н": "h",
-    # Greek
-    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O",
-    "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
-    "α": "a", "β": "b", "γ": "y", "δ": "d", "ε": "e", "ι": "i", "ο": "o", "ρ": "p", "τ": "t", "υ": "y", "χ": "x",
+# Intentionally compact to avoid false positives while catching common abuses.
+_CONFUSABLES_BASIC: Dict[str, str] = {
+    # Cyrillic (upper)
+    "А": "A",
+    "В": "B",
+    "Е": "E",
+    "К": "K",
+    "М": "M",
+    "Н": "N",
+    "О": "O",
+    "Р": "P",
+    "С": "C",
+    "Т": "T",
+    "Х": "X",
+    # Cyrillic (lower)
+    "а": "a",
+    "с": "c",
+    "е": "e",
+    "о": "o",
+    "р": "p",
+    "х": "x",
+    "у": "y",
+    "к": "k",
+    "т": "t",
+    "н": "h",
+    # Greek (upper)
+    "Α": "A",
+    "Β": "B",
+    "Ε": "E",
+    "Ζ": "Z",
+    "Η": "H",
+    "Ι": "I",
+    "Κ": "K",
+    "Μ": "M",
+    "Ν": "N",
+    "Ο": "O",
+    "Ρ": "P",
+    "Τ": "T",
+    "Υ": "Y",
+    "Χ": "X",
+    # Greek (lower)
+    "α": "a",
+    "β": "b",
+    "γ": "y",
+    "δ": "d",
+    "ε": "e",
+    "ι": "i",
+    "ο": "o",
+    "ρ": "p",
+    "τ": "t",
+    "υ": "y",
+    "χ": "x",
 }
+
 
 def _script_tag(ch: str) -> str:
     try:
@@ -53,16 +100,18 @@ def _script_tag(ch: str) -> str:
         return "GREEK"
     return "OTHER"
 
+
 def sanitize_text(s: str) -> Tuple[str, Dict[str, int]]:
     """
     Returns (sanitized_text, stats).
+
     Steps:
       1) NFKC normalize
       2) Remove zero-width & bidi controls
       3) Map a compact set of homoglyph confusables → ASCII
-      4) Track mixed-script presence across Latin/Cyrillic/Greek (for telemetry)
+      4) Track mixed-script presence (Latin/Cyrillic/Greek) for telemetry
     """
-    stats = {
+    stats: Dict[str, int] = {
         "normalized": 0,
         "zero_width_removed": 0,
         "bidi_controls_removed": 0,
@@ -76,31 +125,35 @@ def sanitize_text(s: str) -> Tuple[str, Dict[str, int]]:
     if s != original:
         stats["normalized"] = 1
 
-    # Remove control chars
+    # Remove zero-width & formatting controls
     before = len(s)
     s = s.translate({ord(c): None for c in _ZERO_WIDTH})
     stats["zero_width_removed"] = before - len(s)
 
+    # Remove bidi controls
     before = len(s)
     s = s.translate({ord(c): None for c in _BIDI})
     stats["bidi_controls_removed"] = before - len(s)
 
     # Confusables lite mapping
-    mapped = []
+    mapped_chars = []
     mapped_count = 0
     for ch in s:
         repl = _CONFUSABLES_BASIC.get(ch)
         if repl is not None and repl != ch:
-            mapped.append(repl)
+            mapped_chars.append(repl)
             mapped_count += 1
         else:
-            mapped.append(ch)
-    s = "".join(mapped)
+            mapped_chars.append(ch)
+    s = "".join(mapped_chars)
     stats["confusables_mapped"] = mapped_count
 
     # Mixed script telemetry (Latin/Cyrillic/Greek)
-    scripts = { _script_tag(ch) for ch in s if ch.isalpha() }
-    if {"LATIN","CYRILLIC"} <= scripts or {"LATIN","GREEK"} <= scripts or {"CYRILLIC","GREEK"} <= scripts:
+    scripts = {_script_tag(ch) for ch in s if ch.isalpha()}
+    latin_cyr = {"LATIN", "CYRILLIC"}
+    latin_grk = {"LATIN", "GREEK"}
+    cyr_grk = {"CYRILLIC", "GREEK"}
+    if (latin_cyr <= scripts) or (latin_grk <= scripts) or (cyr_grk <= scripts):
         stats["mixed_scripts"] = 1
 
     if s != original:
@@ -108,13 +161,13 @@ def sanitize_text(s: str) -> Tuple[str, Dict[str, int]]:
 
     return s, stats
 
+
 def sanitize_payload(obj: JsonLike) -> Tuple[JsonLike, Dict[str, int]]:
     """
     Recursively sanitize any JSON-like structure.
     Returns (sanitized_obj, aggregate_stats).
     """
-
-    agg = {
+    agg: Dict[str, int] = {
         "strings_seen": 0,
         "strings_changed": 0,
         "normalized": 0,
@@ -124,58 +177,56 @@ def sanitize_payload(obj: JsonLike) -> Tuple[JsonLike, Dict[str, int]]:
         "mixed_scripts": 0,
     }
 
-    _text_keys = (
-        "normalized",
-        "zero_width_removed",
-        "bidi_controls_removed",
-        "confusables_mapped",
-        "mixed_scripts",
-    )
-
-    def _merge_text_stats(stats: Dict[str, int]) -> None:
-        for key in _text_keys:
-            agg[key] += stats.get(key, 0)
-        if stats.get("changed", 0):
+    def _merge(d: Dict[str, int]) -> None:
+        agg["normalized"] += d.get("normalized", 0)
+        agg["zero_width_removed"] += d.get("zero_width_removed", 0)
+        agg["bidi_controls_removed"] += d.get("bidi_controls_removed", 0)
+        agg["confusables_mapped"] += d.get("confusables_mapped", 0)
+        agg["mixed_scripts"] += d.get("mixed_scripts", 0)
+        if d.get("changed", 0):
             agg["strings_changed"] += 1
-
-    def _merge_payload_stats(stats: Dict[str, int]) -> None:
-        for key in (
-            "strings_seen",
-            "strings_changed",
-            "normalized",
-            "zero_width_removed",
-            "bidi_controls_removed",
-            "confusables_mapped",
-            "mixed_scripts",
-        ):
-            agg[key] += stats.get(key, 0)
 
     if isinstance(obj, str):
         agg["strings_seen"] = 1
-        sanitized, text_stats = sanitize_text(obj)
-        _merge_text_stats(text_stats)
-        return sanitized, agg
+        s, st = sanitize_text(obj)
+        _merge(st)
+        return s, agg
 
     if isinstance(obj, list):
-        out = []
+        out_list = []
         for item in obj:
-            sanitized_item, item_stats = sanitize_payload(item)
-            out.append(sanitized_item)
-            _merge_payload_stats(item_stats)
-        return out, agg
+            v, st = sanitize_payload(item)
+            _merge(st)
+            agg["strings_seen"] += st.get("strings_seen", 0)
+            out_list.append(v)
+        return out_list, agg
 
     if isinstance(obj, dict):
-        out: Dict[str, Any] = {}
-        for key, value in obj.items():
-            new_key = key
-            if isinstance(key, str):
-                agg["strings_seen"] += 1
-                new_key, key_stats = sanitize_text(key)
-                _merge_text_stats(key_stats)
-            sanitized_value, value_stats = sanitize_payload(value)
-            _merge_payload_stats(value_stats)
-            out[new_key] = sanitized_value
-        return out, agg
+        out_dict: Dict[str, Any] = {}
+        for k, v in obj.items():
+            # Sanitize keys if strings
+            k_seen = 0
+            kstats: Dict[str, int] = {}
+            kk = k
+            if isinstance(k, str):
+                kk, kst = sanitize_text(k)
+                kstats = {
+                    "normalized": kst.get("normalized", 0),
+                    "zero_width_removed": kst.get("zero_width_removed", 0),
+                    "bidi_controls_removed": kst.get("bidi_controls_removed", 0),
+                    "confusables_mapped": kst.get("confusables_mapped", 0),
+                    "mixed_scripts": kst.get("mixed_scripts", 0),
+                    "changed": kst.get("changed", 0),
+                }
+                k_seen = 1
 
-    # primitives (int, float, bool, None)
+            vv, vst = sanitize_payload(v)
+            _merge(vst)
+            _merge(kstats)
+
+            agg["strings_seen"] += vst.get("strings_seen", 0) + k_seen
+            out_dict[kk] = vv
+        return out_dict, agg
+
+    # Primitives
     return obj, agg
