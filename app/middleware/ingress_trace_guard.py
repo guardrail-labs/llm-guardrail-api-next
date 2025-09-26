@@ -73,7 +73,7 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
 
         # Stash for downstream code.
         try:
-            request.state.request_id = rid  # type: ignore[attr-defined]
+            request.state.request_id = rid  
         except Exception:
             pass
 
