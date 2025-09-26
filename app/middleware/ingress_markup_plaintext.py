@@ -76,7 +76,7 @@ class IngressMarkupPlaintextMiddleware(BaseHTTPMiddleware):
 
         # Attach derived plaintexts for downstream scanners (non-breaking)
         if plaintexts:
-            request.state.guardrail_plaintexts = plaintexts  # type: ignore[attr-defined]
+            request.state.guardrail_plaintexts = plaintexts  
 
         # Re-inject body if consumed
         if raw is not None:
