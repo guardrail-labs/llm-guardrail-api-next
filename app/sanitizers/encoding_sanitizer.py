@@ -11,6 +11,7 @@ _MAX_DECODE_BYTES = 64 * 1024  # 64 KiB safety cap
 
 # Heuristic patterns for encoded strings
 _RE_BASE64 = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+_RE_BASE64_URLSAFE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
 _RE_HEX = re.compile(r"^[0-9A-Fa-f]+$")
 # Consider URL-encoded if it has %XX patterns or pluses and decodes to more ASCII
 _RE_URL_HINT = re.compile(r"%(?:[0-9A-Fa-f]{2})")
@@ -36,13 +37,19 @@ def _maybe_decode_base64(text: str) -> Tuple[str, int]:
     if len(t) % 2 == 0 and _RE_HEX.match(t):
         # Prefer hex decoding for pure hex strings to avoid false positives.
         return text, 0
-    if len(t) % 4 != 0:
-        return text, 0
-    if not _RE_BASE64.match(t):
-        return text, 0
-    try:
-        data = base64.b64decode(t, validate=True)
-    except (binascii.Error, ValueError):
+    data: bytes | None = None
+    if (len(t) % 4) == 0 and _RE_BASE64.match(t):
+        try:
+            data = base64.b64decode(t, validate=True)
+        except (binascii.Error, ValueError):
+            return text, 0
+    elif (len(t) % 4) != 1 and _RE_BASE64_URLSAFE.match(t):
+        padded = t + "=" * ((4 - (len(t) % 4)) % 4)
+        try:
+            data = base64.b64decode(padded, altchars=b"-_", validate=True)
+        except (binascii.Error, ValueError):
+            return text, 0
+    else:
         return text, 0
     if not data or len(data) > _MAX_DECODE_BYTES:
         return text, 0
