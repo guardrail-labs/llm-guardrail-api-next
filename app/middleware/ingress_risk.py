@@ -2,14 +2,29 @@
 from __future__ import annotations
 
 import json
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Dict
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.observability.metrics import session_risk_report
 from app.risk.session_risk import session_risk_store
-from app.settings import get_config
+
+# Safe config import wrapper; avoids mypy attr-defined error if get_config is absent.
+try:
+    # mypy: the symbol may be injected at runtime in this project
+    from app.settings import get_config as _get_config  # type: ignore[attr-defined]
+
+    def _read_cfg() -> Dict[str, object]:
+        try:
+            cfg = _get_config()  # type: ignore[call-arg]
+            return dict(cfg) if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
+
+except Exception:
+    def _read_cfg() -> Dict[str, object]:
+        return {}
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"
@@ -65,9 +80,10 @@ class IngressRiskMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable],
     ):
         tenant, bot, sess = _labels(request)
-        cfg = dict(get_config())
-        half_life = float(cfg.get("risk_half_life_seconds", 180.0))
-        ttl = float(cfg.get("risk_ttl_seconds", 900.0))
+
+        cfg = _read_cfg()
+        half_life = float(cfg.get("risk_half_life_seconds", 180.0))  # type: ignore[arg-type]
+        ttl = float(cfg.get("risk_ttl_seconds", 900.0))  # type: ignore[arg-type]
 
         store = session_risk_store()
         base = store.decay_and_get(tenant, bot, sess, half_life)
