@@ -23,6 +23,7 @@ from starlette.responses import Response as StarletteResponse
 from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
+from app.middleware.ingress_metadata import IngressMetadataMiddleware
 from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_decode import DecodeIngressMiddleware
 from app.middleware.ingress_token_scan import IngressTokenScanMiddleware
@@ -803,6 +804,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_me.router)
     except Exception as exc:
         log.warning("Admin /me route unavailable: %s", exc)
+    app.add_middleware(IngressMetadataMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(UnicodeIngressSanitizer)
     app.add_middleware(DecodeIngressMiddleware)
