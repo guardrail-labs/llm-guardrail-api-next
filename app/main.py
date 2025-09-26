@@ -26,6 +26,7 @@ from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
 from app.middleware.ingress_metadata import IngressMetadataMiddleware
+from app.middleware.ingress_path_guard import IngressPathGuardMiddleware
 from app.middleware.ingress_decode import DecodeIngressMiddleware
 from app.middleware.ingress_risk import IngressRiskMiddleware
 from app.middleware.ingress_unicode import UnicodeIngressSanitizer
@@ -811,6 +812,8 @@ def create_app() -> FastAPI:
         app.include_router(admin_me.router)
     except Exception as exc:
         log.warning("Admin /me route unavailable: %s", exc)
+    # Block traversal/double-encoding attacks up-front
+    app.add_middleware(IngressPathGuardMiddleware)
     app.add_middleware(IngressMetadataMiddleware)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(UnicodeIngressSanitizer)
