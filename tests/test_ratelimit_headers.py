@@ -41,12 +41,16 @@ def test_ratelimit_headers_and_429(monkeypatch):
     assert allowed.status_code in (200, 202, 207)
     assert allowed.headers.get("X-RateLimit-Limit") == "1; burst=1"
     assert allowed.headers.get("X-RateLimit-Remaining") == "0"
+    assert allowed.headers.get("X-Quota-Remaining") == "0"
+    assert allowed.headers.get("X-Quota-Reset") is not None
 
     blocked = client.post("/guardrail/", json={"prompt": "again"}, headers=headers)
     assert blocked.status_code == 429
     assert blocked.headers.get("Retry-After") == "1"
     assert blocked.headers.get("X-RateLimit-Limit") == "1; burst=1"
     assert blocked.headers.get("X-RateLimit-Remaining") == "0"
+    assert blocked.headers.get("X-Quota-Remaining") == "0"
+    assert blocked.headers.get("X-Quota-Reset") == "1"
 
     payload = blocked.json()
     assert payload["detail"] == "Rate limit exceeded"
