@@ -17,7 +17,7 @@ try:
 
     def _read_cfg() -> Dict[str, object]:
         try:
-            cfg = _get_config()  # type: ignore[call-arg]
+            cfg = _get_config()  
             return dict(cfg) if isinstance(cfg, dict) else {}
         except Exception:
             return {}
