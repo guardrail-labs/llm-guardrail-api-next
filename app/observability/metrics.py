@@ -66,10 +66,6 @@ def _limit_tenant_bot_labels(tenant: str, bot: str) -> Tuple[str, str]:
     return _METRICS_LABEL_OVERFLOW, _METRICS_LABEL_OVERFLOW
 
 
-
-# ---- Helpers to avoid duplicate registration ---------------------------------
-
-
 def _get_or_create_counter(
     name: str,
     doc: str,
@@ -101,6 +97,33 @@ def _get_or_create_counter(
             _log.debug("fallback counter lookup %s failed: %s", name, e)
         # Final fallback: create an unregistered counter (won't be exposed).
         return Counter(name, doc, labelnames=labelnames)
+
+
+# --- Tokenizer-aware scan metrics -------------------------------------------
+
+
+_token_scan_hits_total = _get_or_create_counter(
+    "guardrail_token_scan_hits_total",
+    "Tokenizer-aware matches for configured terms",
+    ("tenant", "bot", "term"),
+)
+
+
+def token_scan_report(
+    *, tenant: str = "", bot: str = "", hits: dict[str, int] | None = None
+) -> None:
+    if not hits:
+        return
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        for term, count in hits.items():
+            if count:
+                _token_scan_hits_total.labels(
+                    tenant=tenant_l, bot=bot_l, term=term
+                ).inc(count)
+
+    _best_effort("inc token scan metrics", _do)
 
 
 _unicode_strings_sanitized_total = _get_or_create_counter(
