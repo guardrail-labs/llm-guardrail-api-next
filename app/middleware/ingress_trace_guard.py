@@ -1,8 +1,9 @@
+# app/middleware/ingress_trace_guard.py
 from __future__ import annotations
 
 import re
-import secrets
-from typing import Awaitable, Callable
+import uuid
+from typing import Awaitable, Callable, List, Tuple
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -19,24 +20,30 @@ _RE_TRACEPARENT = re.compile(
     r"[ \t]*$"
 )
 
-# Accept 16..64 hex chars for request id (covers common proxy formats).
-_RE_REQ_ID = re.compile(r"^[a-f0-9]{16,64}$", re.IGNORECASE)
+# Allow common hex-ids and UUIDs, but only *log* if they don't match.
+_RE_REQ_ID = re.compile(
+    r"^(?:[a-f0-9]{16,64}|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
 
 _HDR_REQ_ID = "x-request-id"
 _HDR_TRACEPARENT = "traceparent"
 
 
 def _new_request_id() -> str:
-    # 16 bytes => 32 hex chars.
-    return secrets.token_hex(16)
+    # Tests require a proper UUID format when we generate a request id.
+    return str(uuid.uuid4())
 
 
 class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
     """
-    - Validates traceparent; drops header if malformed.
-    - Ensures X-Request-ID exists and matches a safe pattern.
-    - Exposes request.state.request_id and sets X-Request-ID on response.
-    - Emits Prometheus counters for drops/normalizations.
+    - Validates inbound traceparent; drops invalid before downstream sees it.
+    - Logs violations for malformed X-Request-ID but *does not replace it*.
+    - If X-Request-ID is missing, generates a UUID4 and injects it.
+    - Exposes request.state.request_id.
+    - On egress, only sets headers if missing to preserve downstream overrides.
     """
 
     async def dispatch(
@@ -44,35 +51,84 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        # Snapshot header values; do not mutate Starlette's cached headers.
         headers = {k.lower(): v for k, v in request.headers.items()}
 
-        # 1) Validate traceparent strictly; drop if invalid
-        tp = headers.get(_HDR_TRACEPARENT)
-        tp_valid = bool(tp and _RE_TRACEPARENT.match(tp or ""))
-        if tp is not None and not tp_valid:
+        # --- traceparent validation (inbound rewrite/drop) ---
+        tp_in = headers.get(_HDR_TRACEPARENT)
+        tp_valid = bool(tp_in and _RE_TRACEPARENT.match(tp_in or ""))
+        if tp_in is not None and not tp_valid:
             trace_guard_violation_report(kind="traceparent_invalid")
-            # We avoid propagating invalid traceparent on the response.
 
-        # 2) Normalize / create X-Request-ID
-        rid = headers.get(_HDR_REQ_ID)
-        if rid is None or not _RE_REQ_ID.match(rid):
-            kind = "request_id_new" if rid is None else "request_id_invalid"
-            trace_guard_violation_report(kind=kind)
+        # --- request id handling ---
+        rid_in = headers.get(_HDR_REQ_ID)
+        if rid_in is None:
+            trace_guard_violation_report(kind="request_id_new")
             rid = _new_request_id()
+            rid_missing = True
+        else:
+            rid = rid_in
+            rid_missing = False
+            if not _RE_REQ_ID.match(rid_in):
+                trace_guard_violation_report(kind="request_id_invalid")
 
-        # Expose on request.state for downstream use
+        # Stash for downstream code.
         try:
-            request.state.request_id = rid
+            request.state.request_id = rid  
         except Exception:
             pass
 
-        # Call downstream
+        # --- rewrite inbound headers for downstream ---
+        scope_pairs: List[Tuple[bytes, bytes]] = list(
+            request.scope.get("headers", [])
+        )
+        new_pairs: List[Tuple[bytes, bytes]] = []
+        changed = False
+
+        for kb, vb in scope_pairs:
+            k = kb.decode("latin-1")
+            v = vb.decode("latin-1")
+            kl = k.lower()
+
+            if kl == _HDR_TRACEPARENT:
+                if tp_valid and tp_in:
+                    val = tp_in.strip()
+                    if v != val:
+                        changed = True
+                    new_pairs.append((kb, val.encode("latin-1")))
+                else:
+                    # Drop invalid inbound traceparent entirely.
+                    changed = True
+                continue
+
+            if kl == _HDR_REQ_ID:
+                # Do not override client-supplied request id even if malformed.
+                new_pairs.append((kb, vb))
+                continue
+
+            new_pairs.append((kb, vb))
+
+        if rid_missing:
+            changed = True
+            new_pairs.append(
+                (_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1"))
+            )
+
+        if changed:
+            request.scope["headers"] = new_pairs
+            if hasattr(request, "_headers"):
+                try:
+                    delattr(request, "_headers")
+                except Exception:
+                    pass
+
+        # --- downstream ---
         resp = await call_next(request)
 
-        # 3) Propagate sanitized headers on response
-        resp.headers.setdefault("X-Request-ID", rid)
-        if tp_valid and tp:
-            resp.headers.setdefault("traceparent", tp.strip())
+        # --- egress propagation preserving downstream overrides ---
+        if "X-Request-ID" not in resp.headers:
+            resp.headers["X-Request-ID"] = rid
+
+        if "traceparent" not in resp.headers and tp_valid and tp_in:
+            resp.headers["traceparent"] = tp_in.strip()
 
         return resp
