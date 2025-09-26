@@ -113,7 +113,7 @@ class IngressArchivePeekMiddleware(BaseHTTPMiddleware):
                         setattr(
                             request.state,
                             "guardrail_plaintexts",
-                            list(existing) + derived,  # type: ignore[list-item]
+                            list(existing) + derived,  
                         )
 
         # Replay body if consumed
