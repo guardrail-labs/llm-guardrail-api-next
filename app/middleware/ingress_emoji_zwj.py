@@ -83,7 +83,7 @@ class IngressEmojiZWJMiddleware(BaseHTTPMiddleware):
             setattr(
                 request.state,
                 "guardrail_plaintexts",
-                list(existing) + derived_texts,  # type: ignore[list-item]
+                list(existing) + derived_texts, 
             )
 
         # Optionally mark sensitive to trigger timing normalization
