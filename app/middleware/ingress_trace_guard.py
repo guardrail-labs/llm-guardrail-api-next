@@ -82,7 +82,6 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
             request.scope.get("headers", [])
         )
         new_pairs: List[Tuple[bytes, bytes]] = []
-        seen_req_id = False
         changed = False
 
         for kb, vb in scope_pairs:
@@ -102,7 +101,6 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
                 continue
 
             if kl == _HDR_REQ_ID:
-                seen_req_id = True
                 # Do not override client-supplied request id even if malformed.
                 new_pairs.append((kb, vb))
                 continue
@@ -127,11 +125,9 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         resp = await call_next(request)
 
         # --- egress propagation preserving downstream overrides ---
-        # X-Request-ID: set only if not already set by downstream.
         if "X-Request-ID" not in resp.headers:
             resp.headers["X-Request-ID"] = rid
 
-        # traceparent: set only if downstream didn't set it and inbound was valid.
         if "traceparent" not in resp.headers and tp_valid and tp_in:
             resp.headers["traceparent"] = tp_in.strip()
 
