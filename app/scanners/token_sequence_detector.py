@@ -14,7 +14,9 @@ def _window_hits(tokens: List[str], terms: Set[str]) -> Dict[str, int]:
     Slide over token sequences; join consecutive tokens (no separator)
     and check for exact term matches after casefold.
 
-    To bound cost, we only join up to a length close to the longest term.
+    The search window is bounded using the canonical (normalized) length so
+    punctuation or whitespace inside the tokens does not prematurely stop the
+    scan.
     """
     if not tokens or not terms:
         return {}
@@ -37,14 +39,15 @@ def _window_hits(tokens: List[str], terms: Set[str]) -> Dict[str, int]:
 
     n = len(tokens)
     for i in range(n):
-        piece = ""
+        piece_norm = ""
         for j in range(i, n):
-            piece += tokens[j]
-            if len(piece) > max_len:
+            piece_norm += _norm(tokens[j])
+
+            if len(piece_norm) > max_len:
                 break
-            norm_piece = _norm(piece)
-            if norm_piece in tnorm_to_orig:
-                for orig in tnorm_to_orig[norm_piece]:
+
+            if piece_norm in tnorm_to_orig:
+                for orig in tnorm_to_orig[piece_norm]:
                     hits[orig] += 1
     # Drop zero entries
     return {k: v for k, v in hits.items() if v > 0}
