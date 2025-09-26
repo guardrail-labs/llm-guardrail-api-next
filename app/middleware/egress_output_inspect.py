@@ -1,4 +1,3 @@
-# app/middleware/egress_output_inspect.py
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, cast
@@ -18,16 +17,12 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
       - zero-width/Bidi/confusable indicators (signals only)
       - emoji TAG/ZWJ hidden ASCII (signals only)
       - HTML/SVG markup presence
-
-    Does NOT change the body content. Adds header:
-      X-Guardrail-Egress-Flags: emoji,zwc,markup
+    Does NOT change the body content.
+    Adds header: X-Guardrail-Egress-Flags: emoji,zwc,markup
     Emits Prometheus counters via egress_output_report().
-
-    IMPORTANT: Streaming responses are passed through untouched to avoid
-    introducing Content-Length or altering transfer semantics.
+    Streaming responses are passed through untouched.
     """
 
-    # Only inspect bodies up to this size (bytes)
     max_bytes = 128 * 1024
 
     def _is_texty(self, content_type: str) -> bool:
@@ -39,12 +34,6 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         )
 
     def _is_streaming(self, resp: Response, ctype: str) -> bool:
-        """
-        Consider response streaming if:
-          - content-type is event-stream, OR
-          - a body iterator exists AND no explicit Content-Length header.
-        In these cases we must not buffer or rebuild the response.
-        """
         if "text/event-stream" in (ctype or "").lower():
             return True
         r_any = cast(Any, resp)
@@ -53,11 +42,6 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         return bool(has_iter and no_len)
 
     async def _read_body_bytes(self, resp: Response) -> bytes:
-        """
-        Consume a (non-streaming) response into bytes.
-        If a body iterator exists, we read it fully up to max_bytes.
-        Otherwise we use resp.body.
-        """
         r_any = cast(Any, resp)
         iterator = getattr(r_any, "body_iterator", None)
         if iterator is None:
@@ -67,7 +51,13 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         collected = bytearray()
         async for chunk in iterator:
             if chunk:
-                collected += chunk
+                if isinstance(chunk, bytes):
+                    data = chunk
+                elif isinstance(chunk, str):
+                    data = chunk.encode("utf-8")
+                else:
+                    data = bytes(chunk)
+                collected += data
                 if len(collected) > self.max_bytes:
                     break
         return bytes(collected)
@@ -80,11 +70,10 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
         resp = await call_next(request)
         ctype = resp.headers.get("content-type", "")
 
-        # Never touch streaming responses (preserve chunked semantics).
+        # Do not touch streaming; preserve transfer semantics.
         if self._is_streaming(resp, ctype):
             return resp
 
-        # Capture body then decide if we inspect.
         body = await self._read_body_bytes(resp)
 
         if not body or not self._is_texty(ctype) or len(body) > self.max_bytes:
@@ -107,18 +96,18 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
                 background=resp.background,
             )
 
-        # 1) Unicode controls / bidi / zero-width (stats only)
+        # Unicode controls / bidi / zero-width (stats only)
         _, ustats = sanitize_text(text)
         zero_width = int(ustats.get("zero_width_removed", 0) > 0)
         bidi = int(ustats.get("bidi_controls_removed", 0) > 0)
         conf = int(ustats.get("confusables_mapped", 0) > 0)
 
-        # 2) Emoji TAG/ZWJ derived ASCII (signals only)
+        # Emoji TAG/ZWJ derived ASCII (signals only)
         revealed, estats = analyze_emoji_sequences(text)
         emoji_hidden_bytes = len(revealed.encode("utf-8")) if revealed else 0
         emoji_hit = int(emoji_hidden_bytes > 0 or estats.get("zwj", 0) > 0)
 
-        # 3) Markup presence
+        # Markup presence
         markup_hit = 0
         if looks_like_markup(text):
             _, mstats = strip_markup_to_text(text)
