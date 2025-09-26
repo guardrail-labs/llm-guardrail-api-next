@@ -74,7 +74,7 @@ class IngressProbingMiddleware(BaseHTTPMiddleware):
 
         store = session_risk_store()
         last_key = f"__last_text__:{tenant}:{bot}:{sess}"
-        last_text = getattr(store, last_key, "")  # type: ignore[attr-defined]
+        last_text = getattr(store, last_key, "")  
         if texts and last_text:
             for text in texts:
                 if (
@@ -87,7 +87,7 @@ class IngressProbingMiddleware(BaseHTTPMiddleware):
         if texts:
             for text in texts:
                 if len(text) >= MIN_TEXT_LEN_FOR_SIM:
-                    setattr(store, last_key, text)  # type: ignore[attr-defined]
+                    setattr(store, last_key, text)  
                     break
 
         delta = 0.0
