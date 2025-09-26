@@ -27,6 +27,7 @@ from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
 from app.middleware.ingress_metadata import IngressMetadataMiddleware
 from app.middleware.ingress_path_guard import IngressPathGuardMiddleware
+from app.middleware.ingress_trace_guard import IngressTraceGuardMiddleware
 from app.middleware.ingress_decode import DecodeIngressMiddleware
 from app.middleware.ingress_risk import IngressRiskMiddleware
 from app.middleware.ingress_unicode import UnicodeIngressSanitizer
@@ -812,10 +813,16 @@ def create_app() -> FastAPI:
         app.include_router(admin_me.router)
     except Exception as exc:
         log.warning("Admin /me route unavailable: %s", exc)
-    # Block traversal/double-encoding attacks up-front
-    app.add_middleware(IngressPathGuardMiddleware)
-    app.add_middleware(IngressMetadataMiddleware)
+    # Starlette executes middleware in reverse registration order.
+    # Desired runtime ingress order:
+    #   PathGuard -> TraceGuard -> Metadata -> (OTEL if used) -> RequestID
+    # Register in inverse order to achieve this at runtime:
     app.add_middleware(RequestIDMiddleware)
+    if _truthy(os.getenv("OTEL_ENABLED", "false")):
+        app.add_middleware(TracingMiddleware)
+    app.add_middleware(IngressMetadataMiddleware)
+    app.add_middleware(IngressTraceGuardMiddleware)
+    app.add_middleware(IngressPathGuardMiddleware)
     app.add_middleware(UnicodeIngressSanitizer)
     app.add_middleware(DecodeIngressMiddleware)
     # Tokenizer-aware scanning for split sensitive terms
@@ -834,8 +841,6 @@ def create_app() -> FastAPI:
     app.add_middleware(EgressOutputInspectMiddleware)
     # Final egress stage: normalize timing for sensitive responses
     app.add_middleware(EgressTimingMiddleware)
-    if _truthy(os.getenv("OTEL_ENABLED", "false")):
-        app.add_middleware(TracingMiddleware)
     try:
         from app.middleware.rate_limit import RateLimitMiddleware
     except Exception as exc:
