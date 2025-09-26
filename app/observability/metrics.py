@@ -66,6 +66,7 @@ def _limit_tenant_bot_labels(tenant: str, bot: str) -> Tuple[str, str]:
     return _METRICS_LABEL_OVERFLOW, _METRICS_LABEL_OVERFLOW
 
 
+
 # ---- Helpers to avoid duplicate registration ---------------------------------
 
 
@@ -164,6 +165,47 @@ def unicode_ingress_report(
             ).inc(mixed_scripts)
 
     _best_effort("inc unicode ingress metrics", _do)
+
+
+# --- Decode ingress metrics --------------------------------------------------
+
+
+_decode_base64_total = _get_or_create_counter(
+    "guardrail_decode_base64_total",
+    "Count of strings decoded from base64 at ingress",
+    ("tenant", "bot"),
+)
+_decode_hex_total = _get_or_create_counter(
+    "guardrail_decode_hex_total",
+    "Count of strings decoded from hex at ingress",
+    ("tenant", "bot"),
+)
+_decode_url_total = _get_or_create_counter(
+    "guardrail_decode_url_total",
+    "Count of strings decoded from url-encoding at ingress",
+    ("tenant", "bot"),
+)
+
+
+def decode_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    decoded_base64: int = 0,
+    decoded_hex: int = 0,
+    decoded_url: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if decoded_base64:
+            _decode_base64_total.labels(tenant=tenant_l, bot=bot_l).inc(decoded_base64)
+        if decoded_hex:
+            _decode_hex_total.labels(tenant=tenant_l, bot=bot_l).inc(decoded_hex)
+        if decoded_url:
+            _decode_url_total.labels(tenant=tenant_l, bot=bot_l).inc(decoded_url)
+
+    _best_effort("inc decode ingress metrics", _do)
 
 
 GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL = _get_or_create_counter(
