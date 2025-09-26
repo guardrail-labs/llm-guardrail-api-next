@@ -67,7 +67,7 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
 
         # Expose on request.state for downstream code.
         try:
-            request.state.request_id = rid  # type: ignore[attr-defined]
+            request.state.request_id = rid 
         except Exception:
             # Best-effort only; do not fail request on state issues.
             pass
