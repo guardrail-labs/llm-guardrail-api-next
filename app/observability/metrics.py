@@ -278,6 +278,78 @@ def decode_ingress_report(
     _best_effort("inc decode ingress metrics", _do)
 
 
+# --- Archive ingress metrics -------------------------------------------------
+
+_arch_candidates_total = _get_or_create_counter(
+    "guardrail_archive_candidates_total",
+    "JSON (filename,base64) pairs considered for archive peeking",
+    ("tenant", "bot"),
+)
+_arch_detected_total = _get_or_create_counter(
+    "guardrail_archives_detected_total",
+    "Valid archives detected and inspected",
+    ("tenant", "bot"),
+)
+_arch_filenames_total = _get_or_create_counter(
+    "guardrail_archive_filenames_total",
+    "Total filenames listed from inspected archives",
+    ("tenant", "bot"),
+)
+_arch_text_samples_total = _get_or_create_counter(
+    "guardrail_archive_text_samples_total",
+    "Total text samples extracted from inspected archives",
+    ("tenant", "bot"),
+)
+_arch_nested_blocked_total = _get_or_create_counter(
+    "guardrail_archive_nested_blocked_total",
+    "Nested archives blocked by limits",
+    ("tenant", "bot"),
+)
+_arch_errors_total = _get_or_create_counter(
+    "guardrail_archive_errors_total",
+    "Errors encountered while peeking archives",
+    ("tenant", "bot"),
+)
+
+
+def archive_ingress_report(
+    *,
+    tenant: str = "",
+    bot: str = "",
+    candidates: int = 0,
+    archives_detected: int = 0,
+    filenames: int = 0,
+    text_samples: int = 0,
+    nested_blocked: int = 0,
+    errors: int = 0,
+) -> None:
+    tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
+    def _do() -> None:
+        if candidates:
+            _arch_candidates_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                candidates
+            )
+        if archives_detected:
+            _arch_detected_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                archives_detected
+            )
+        if filenames:
+            _arch_filenames_total.labels(tenant=tenant_l, bot=bot_l).inc(filenames)
+        if text_samples:
+            _arch_text_samples_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                text_samples
+            )
+        if nested_blocked:
+            _arch_nested_blocked_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                nested_blocked
+            )
+        if errors:
+            _arch_errors_total.labels(tenant=tenant_l, bot=bot_l).inc(errors)
+
+    _best_effort("inc archive ingress metrics", _do)
+
+
 # --- Markup ingress metrics --------------------------------------------------
 
 
