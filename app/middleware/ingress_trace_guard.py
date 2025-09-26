@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-import secrets
+import uuid
 from typing import Awaitable, Callable, List, Tuple
 
 from fastapi import Request, Response
@@ -20,26 +20,30 @@ _RE_TRACEPARENT = re.compile(
     r"[ \t]*$"
 )
 
-# Accept 16..64 hex chars for request id (covers common proxy formats).
-_RE_REQ_ID = re.compile(r"^[a-f0-9]{16,64}$", re.IGNORECASE)
+# Allow common hex-ids and UUIDs, but only *log* if they don't match.
+_RE_REQ_ID = re.compile(
+    r"^(?:[a-f0-9]{16,64}|"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
 
 _HDR_REQ_ID = "x-request-id"
 _HDR_TRACEPARENT = "traceparent"
 
 
 def _new_request_id() -> str:
-    # 16 bytes => 32 hex chars.
-    return secrets.token_hex(16)
+    # Tests require a proper UUID format when we generate a request id.
+    return str(uuid.uuid4())
 
 
 class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
     """
-    - Validates traceparent; drops invalid inbound header.
-    - Ensures a safe X-Request-ID; rewrites inbound header to sanitized value.
-    - Exposes request.state.request_id for downstream use.
-    - On egress, always sets sanitized X-Request-ID.
-      For traceparent: set only if inbound was valid and no downstream override.
-    - Emits counters via trace_guard_violation_report(kind=...).
+    - Validates inbound traceparent; drops invalid before downstream sees it.
+    - Logs violations for malformed X-Request-ID but *does not replace it*.
+    - If X-Request-ID is missing, generates a UUID4 and injects it.
+    - Exposes request.state.request_id.
+    - On egress, only sets headers if missing to preserve downstream overrides.
     """
 
     async def dispatch(
@@ -47,32 +51,33 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        # Snapshot headers in a case-insensitive dict.
         headers = {k.lower(): v for k, v in request.headers.items()}
 
-        # Validate inbound traceparent.
+        # --- traceparent validation (inbound rewrite/drop) ---
         tp_in = headers.get(_HDR_TRACEPARENT)
         tp_valid = bool(tp_in and _RE_TRACEPARENT.match(tp_in or ""))
         if tp_in is not None and not tp_valid:
             trace_guard_violation_report(kind="traceparent_invalid")
 
-        # Normalize / create X-Request-ID.
+        # --- request id handling ---
         rid_in = headers.get(_HDR_REQ_ID)
-        if rid_in is None or not _RE_REQ_ID.match(rid_in):
-            kind = "request_id_new" if rid_in is None else "request_id_invalid"
-            trace_guard_violation_report(kind=kind)
+        if rid_in is None:
+            trace_guard_violation_report(kind="request_id_new")
             rid = _new_request_id()
+            rid_missing = True
         else:
             rid = rid_in
+            rid_missing = False
+            if not _RE_REQ_ID.match(rid_in):
+                trace_guard_violation_report(kind="request_id_invalid")
 
-        # Expose on request.state for downstream code.
+        # Stash for downstream code.
         try:
-            request.state.request_id = rid 
+            request.state.request_id = rid  # type: ignore[attr-defined]
         except Exception:
-            # Best-effort only; do not fail request on state issues.
             pass
 
-        # --- Rewrite inbound headers so downstream sees sanitized values ---
+        # --- rewrite inbound headers for downstream ---
         scope_pairs: List[Tuple[bytes, bytes]] = list(
             request.scope.get("headers", [])
         )
@@ -92,23 +97,19 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
                         changed = True
                     new_pairs.append((kb, val.encode("latin-1")))
                 else:
-                    # Drop invalid traceparent entirely.
+                    # Drop invalid inbound traceparent entirely.
                     changed = True
                 continue
 
             if kl == _HDR_REQ_ID:
                 seen_req_id = True
-                if v != rid:
-                    changed = True
-                # Canonicalize value; keep header name casing minimal.
-                new_pairs.append(
-                    (_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1"))
-                )
+                # Do not override client-supplied request id even if malformed.
+                new_pairs.append((kb, vb))
                 continue
 
             new_pairs.append((kb, vb))
 
-        if not seen_req_id:
+        if rid_missing:
             changed = True
             new_pairs.append(
                 (_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1"))
@@ -116,24 +117,22 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
 
         if changed:
             request.scope["headers"] = new_pairs
-            # Invalidate Starlette's cached Headers object if present.
             if hasattr(request, "_headers"):
                 try:
                     delattr(request, "_headers")
                 except Exception:
                     pass
 
-        # Call downstream stack.
+        # --- downstream ---
         resp = await call_next(request)
 
-        # --- Propagate sanitized headers on response ---
-        # Always enforce sanitized request id.
-        resp.headers["X-Request-ID"] = rid
+        # --- egress propagation preserving downstream overrides ---
+        # X-Request-ID: set only if not already set by downstream.
+        if "X-Request-ID" not in resp.headers:
+            resp.headers["X-Request-ID"] = rid
 
-        # Respect downstream traceparent override: only set if missing.
-        existing_tp = resp.headers.get("traceparent")
-        if not existing_tp and tp_valid and tp_in:
+        # traceparent: set only if downstream didn't set it and inbound was valid.
+        if "traceparent" not in resp.headers and tp_valid and tp_in:
             resp.headers["traceparent"] = tp_in.strip()
-        # If downstream set one, keep it regardless of inbound validity.
 
         return resp
