@@ -1,4 +1,4 @@
-from app.scanners.token_sequence_detector import find_terms_tokenized
+from app.scanners.token_sequence_detector import _window_hits, find_terms_tokenized
 
 
 def test_token_window_simple_split():
@@ -17,3 +17,9 @@ def test_no_terms_configured():
     # If caller passes empty terms, nothing is matched
     hits = find_terms_tokenized("anything", [])
     assert hits == {}
+
+
+def test_token_window_handles_punctuation_tokens():
+    tokens = ["pa", "-", "ss", "-", "word"]
+    hits = _window_hits(tokens, {"password"})
+    assert hits.get("password", 0) >= 1
