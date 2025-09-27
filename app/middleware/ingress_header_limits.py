@@ -5,6 +5,16 @@ from typing import Iterable, Tuple
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.observability.metrics import ingress_header_limit_blocked
+
+try:  # pragma: no cover - fallback for optional import during tests
+    from app.observability.metrics import _limit_tenant_bot_labels
+except Exception:  # pragma: no cover
+
+    def _limit_tenant_bot_labels(tenant: str, bot: str) -> tuple[str, str]:
+        return (tenant[:32], bot[:32])
+
+
 from app.services.config_store import get_config
 
 
@@ -42,7 +52,14 @@ class IngressHeaderLimitsMiddleware:
         headers = tuple(raw_headers)
 
         if max_count and len(headers) > max_count:
-            await self._reject(scope, receive, send, "too many headers")
+            _record_header_limit_block(scope, "count")
+            await self._reject(
+                scope,
+                receive,
+                send,
+                reason="count",
+                detail="Request header limit exceeded: too many headers",
+            )
             return
 
         if max_value:
@@ -50,12 +67,52 @@ class IngressHeaderLimitsMiddleware:
                 if value is None:
                     continue
                 if len(value) > max_value:
-                    await self._reject(scope, receive, send, "header value too large")
+                    _record_header_limit_block(scope, "value_len")
+                    await self._reject(
+                        scope,
+                        receive,
+                        send,
+                        reason="value_len",
+                        detail="Request header limit exceeded: header value too large",
+                    )
                     return
 
         await self.app(scope, receive, send)
 
-    async def _reject(self, scope: Scope, receive: Receive, send: Send, reason: str) -> None:
-        response = PlainTextResponse(f"Request header limit exceeded: {reason}", status_code=431)
+    async def _reject(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        *,
+        reason: str,
+        detail: str,
+    ) -> None:
+        response = PlainTextResponse(detail, status_code=431)
         response.headers["Connection"] = "close"
+        response.headers["X-Guardrail-Header-Limit-Blocked"] = reason
         await response(scope, receive, send)
+
+
+def _tenant_bot(scope: Scope) -> tuple[str, str]:
+    try:
+        from starlette.requests import Request
+
+        request = Request(scope)
+        tenant = request.headers.get("X-Guardrail-Tenant", "") or ""
+        bot = request.headers.get("X-Guardrail-Bot", "") or ""
+        return _limit_tenant_bot_labels(tenant, bot)
+    except Exception:  # pragma: no cover
+        return ("", "")
+
+
+def _record_header_limit_block(scope: Scope, reason: str) -> None:
+    try:
+        tenant, bot = _tenant_bot(scope)
+        ingress_header_limit_blocked.labels(
+            tenant=tenant,
+            bot=bot,
+            reason=reason,
+        ).inc()
+    except Exception:  # pragma: no cover
+        return

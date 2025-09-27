@@ -126,6 +126,12 @@ duplicate_header_blocked = _get_or_create_counter(
     ("tenant", "bot", "name"),
 )
 
+ingress_header_limit_blocked = _get_or_create_counter(
+    "guardrail_ingress_header_limit_blocked_total",
+    "Requests blocked by header limits middleware.",
+    ("tenant", "bot", "reason"),
+)
+
 _trace_guard_violation_total = _get_or_create_counter(
     "guardrail_trace_guard_violation_total",
     "Ingress trace/request-id headers normalized or dropped",
