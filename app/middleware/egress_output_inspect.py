@@ -6,9 +6,9 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.observability.metrics import egress_output_report
-from app.sanitizers.unicode_sanitizer import sanitize_text
-from app.sanitizers.unicode_emoji import analyze_emoji_sequences
 from app.sanitizers.markup import looks_like_markup, strip_markup_to_text
+from app.sanitizers.unicode_emoji import analyze_emoji_sequences
+from app.sanitizers.unicode_sanitizer import sanitize_text
 
 
 class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
@@ -20,7 +20,7 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
     Does NOT change the body content.
     Adds header: X-Guardrail-Egress-Flags: emoji,zwc,markup
     Emits Prometheus counters via egress_output_report().
-    Streaming responses are passed through untouched.
+    Streaming responses are passed through untouched, aside from header hygiene.
     """
 
     max_bytes = 128 * 1024
@@ -33,13 +33,9 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             or ct.startswith("text/")
         )
 
-    def _is_streaming(self, resp: Response, ctype: str) -> bool:
-        if "text/event-stream" in (ctype or "").lower():
-            return True
+    def _is_streaming(self, resp: Response) -> bool:
         r_any = cast(Any, resp)
-        has_iter = getattr(r_any, "body_iterator", None) is not None
-        no_len = "content-length" not in {k.lower() for k in resp.headers.keys()}
-        return bool(has_iter and no_len)
+        return getattr(r_any, "body_iterator", None) is not None
 
     async def _read_body_bytes(self, resp: Response) -> bytes:
         r_any = cast(Any, resp)
@@ -69,9 +65,14 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         resp = await call_next(request)
         ctype = resp.headers.get("content-type", "")
+        media_type = resp.media_type or ""
 
-        # Do not touch streaming; preserve transfer semantics.
-        if self._is_streaming(resp, ctype):
+        is_streaming = self._is_streaming(resp)
+        is_sse = "text/event-stream" in media_type.lower() or "text/event-stream" in ctype.lower()
+
+        if is_streaming or is_sse:
+            if "content-length" in resp.headers:
+                del resp.headers["Content-Length"]
             return resp
 
         body = await self._read_body_bytes(resp)
