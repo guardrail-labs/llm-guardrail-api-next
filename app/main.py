@@ -30,6 +30,7 @@ from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
 from app.middleware.ingress_decode import DecodeIngressMiddleware
 from app.middleware.ingress_emoji_zwj import IngressEmojiZWJMiddleware
+from app.middleware.ingress_header_limits import IngressHeaderLimitsMiddleware
 from app.middleware.ingress_markup_plaintext import IngressMarkupPlaintextMiddleware
 from app.middleware.ingress_metadata import IngressMetadataMiddleware
 from app.middleware.ingress_path_guard import IngressPathGuardMiddleware
@@ -834,13 +835,15 @@ def create_app() -> FastAPI:
         log.warning("Admin /me route unavailable: %s", exc)
     # Starlette executes middleware in reverse registration order.
     # Desired runtime ingress order:
-    #   PathGuard -> HeaderCanonicalize -> TraceGuard -> Metadata -> (OTEL if used) -> RequestID
+    #   PathGuard -> HeaderCanonicalize -> HeaderLimits -> TraceGuard -> Metadata
+    #   -> (OTEL) -> RequestID
     # Register in inverse order to achieve this at runtime:
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
     app.add_middleware(IngressMetadataMiddleware)
     app.add_middleware(IngressTraceGuardMiddleware)
+    app.add_middleware(IngressHeaderLimitsMiddleware)
     app.add_middleware(HeaderCanonicalizeMiddleware)
     app.add_middleware(IngressPathGuardMiddleware)
     app.add_middleware(UnicodeIngressSanitizer)
