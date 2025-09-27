@@ -109,19 +109,19 @@ def _is_emoji(char: str) -> bool:
     return False
 
 
-def _scan(sample: str, skeleton: str) -> set[str]:
+def _scan(raw: str, normalized: str) -> set[str]:
     flags: set[str] = set()
-    if any(char in _ZWC for char in sample):
+    if any(char in _ZWC for char in raw):
         flags.add("zwc")
-    if any(char in _BIDI for char in sample):
+    if any(char in _BIDI for char in raw):
         flags.add("bidi")
-    if any(_is_emoji(char) for char in sample):
+    if any(_is_emoji(char) for char in raw):
         flags.add("emoji")
-    if skeleton != sample:
+    skel_raw = _skeleton(raw)
+    if skel_raw != raw or normalized != raw:
         flags.add("confusables")
-    scripts = {_script(char) for char in sample if char.isalpha()}
-    primary = {script for script in scripts if script != "Other"}
-    if len(primary) >= 2:
+    scripts = {_script(char) for char in raw if char.isalpha()}
+    if len({"Latin", "Cyrillic", "Greek"}.intersection(scripts)) >= 2:
         flags.add("mixed")
     return flags
 
@@ -189,8 +189,8 @@ class IngressUnicodeSanitizerMiddleware:
         sample = " ".join(sample_parts)
 
         normalized = _normalize(sample)
-        skeleton = _skeleton(normalized)
-        flags = _scan(normalized, skeleton)
+        skeleton = _skeleton(sample)
+        flags = _scan(sample, normalized)
         flag_header_value = ",".join(sorted(flags))
 
         scope.setdefault("state", {})
