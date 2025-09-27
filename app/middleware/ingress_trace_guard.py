@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Awaitable, Callable, List, Tuple
+from typing import Awaitable, Callable, Dict, List, Tuple
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -38,9 +38,10 @@ _HDR_TRACEPARENT = "traceparent"
 
 
 def _tenant_bot_from_headers(request: Request) -> tuple[str, str]:
-    tenant = request.headers.get("X-Guardrail-Tenant", "") or ""
-    bot = request.headers.get("X-Guardrail-Bot", "") or ""
-    return _limit_tenant_bot_labels(tenant, bot)
+    canon: Dict[str, str] = getattr(request.state, "headers_canon", {}) or {}
+    tenant = canon.get("X-Guardrail-Tenant") or request.headers.get("X-Guardrail-Tenant", "")
+    bot = canon.get("X-Guardrail-Bot") or request.headers.get("X-Guardrail-Bot", "")
+    return _limit_tenant_bot_labels(tenant or "", bot or "")
 
 
 def _new_request_id() -> str:
@@ -63,9 +64,10 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         headers = {k.lower(): v for k, v in request.headers.items()}
+        canon: Dict[str, str] = getattr(request.state, "headers_canon", {}) or {}
 
         # --- traceparent validation (inbound rewrite/drop) ---
-        tp_in = headers.get(_HDR_TRACEPARENT)
+        tp_in = canon.get("traceparent") or headers.get(_HDR_TRACEPARENT)
         tp_valid = bool(tp_in and _RE_TRACEPARENT.match(tp_in or ""))
         if tp_in is not None and not tp_valid:
             trace_guard_violation_report(kind="traceparent_invalid")
@@ -73,7 +75,7 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
             ingress_invalid_traceparent.labels(tenant=tenant, bot=bot).inc()
 
         # --- request id handling ---
-        rid_in = headers.get(_HDR_REQ_ID)
+        rid_in = canon.get("X-Request-ID") or headers.get(_HDR_REQ_ID)
         if rid_in is None:
             trace_guard_violation_report(kind="request_id_new")
             tenant, bot = _tenant_bot_from_headers(request)
