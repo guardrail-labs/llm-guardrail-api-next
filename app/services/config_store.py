@@ -143,6 +143,7 @@ class ConfigDict(TypedDict, total=False):
     ingress_max_header_value_bytes: int
     ingress_duplicate_header_guard_mode: str
     ingress_duplicate_header_unique: List[str]
+    ingress_duplicate_header_metric_allowlist: List[str]
     ingress_unicode_sanitizer_enabled: bool
     ingress_unicode_header_sample_bytes: int
     ingress_unicode_query_sample_bytes: int
@@ -184,6 +185,21 @@ DUPLICATE_HEADER_UNIQUE_DEFAULT: List[str] = [
     "x-guardrail-bot",
 ]
 
+DUPLICATE_HEADER_METRIC_ALLOWLIST_DEFAULT: List[str] = [
+    "content-length",
+    "transfer-encoding",
+    "host",
+    "authorization",
+    "x-request-id",
+    "traceparent",
+    "x-guardrail-tenant",
+    "x-guardrail-bot",
+    "content-type",
+    "accept",
+    "cookie",
+    "set-cookie",
+]
+
 
 _CONFIG_DEFAULTS: ConfigDict = {
     "shadow_enable": False,
@@ -195,6 +211,9 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "ingress_max_header_value_bytes": 0,
     "ingress_duplicate_header_guard_mode": "off",
     "ingress_duplicate_header_unique": list(DUPLICATE_HEADER_UNIQUE_DEFAULT),
+    # Headers allowed to appear as individual metric label values. Keep this list
+    # short and stable to avoid cardinality spikes.
+    "ingress_duplicate_header_metric_allowlist": list(DUPLICATE_HEADER_METRIC_ALLOWLIST_DEFAULT),
     "ingress_unicode_sanitizer_enabled": False,
     "ingress_unicode_header_sample_bytes": 4096,
     "ingress_unicode_query_sample_bytes": 4096,
@@ -234,6 +253,7 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "ingress_max_header_value_bytes": "INGRESS_MAX_HEADER_VALUE_BYTES",
     "ingress_duplicate_header_guard_mode": "INGRESS_DUPLICATE_HEADER_GUARD_MODE",
     "ingress_duplicate_header_unique": "INGRESS_DUPLICATE_HEADER_UNIQUE",
+    "ingress_duplicate_header_metric_allowlist": "INGRESS_DUPLICATE_HEADER_METRIC_ALLOWLIST",
     "ingress_unicode_sanitizer_enabled": "INGRESS_UNICODE_SANITIZER_ENABLED",
     "ingress_unicode_header_sample_bytes": "INGRESS_UNICODE_HEADER_SAMPLE_BYTES",
     "ingress_unicode_query_sample_bytes": "INGRESS_UNICODE_QUERY_SAMPLE_BYTES",
@@ -413,6 +433,28 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
             if items:
                 deduped = list(dict.fromkeys(items))
                 normalized["ingress_duplicate_header_unique"] = deduped
+
+    if "ingress_duplicate_header_metric_allowlist" in data:
+        raw_allow = data.get("ingress_duplicate_header_metric_allowlist")
+        if raw_allow is None:
+            normalized["ingress_duplicate_header_metric_allowlist"] = list(
+                DUPLICATE_HEADER_METRIC_ALLOWLIST_DEFAULT
+            )
+        else:
+            if isinstance(raw_allow, str):
+                iterable_allow: Iterable[Any] = raw_allow.split(",")
+            elif isinstance(raw_allow, Iterable):
+                iterable_allow = raw_allow
+            else:
+                iterable_allow = [raw_allow]
+            allow_items: list[str] = []
+            for item in iterable_allow:
+                token = str(item).strip().lower()
+                if token:
+                    allow_items.append(token)
+            if allow_items:
+                deduped_allow = list(dict.fromkeys(allow_items))
+                normalized["ingress_duplicate_header_metric_allowlist"] = deduped_allow
 
     if "ingress_unicode_sanitizer_enabled" in data:
         bool_val = _coerce_bool(data.get("ingress_unicode_sanitizer_enabled"))
