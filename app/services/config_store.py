@@ -141,6 +141,10 @@ class ConfigDict(TypedDict, total=False):
     ingress_header_limits_enabled: bool
     ingress_max_header_count: int
     ingress_max_header_value_bytes: int
+    ingress_unicode_sanitizer_enabled: bool
+    ingress_unicode_header_sample_bytes: int
+    ingress_unicode_query_sample_bytes: int
+    ingress_unicode_path_sample_chars: int
     webhook_enable: bool
     webhook_url: str
     webhook_secret: str
@@ -168,6 +172,10 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "ingress_header_limits_enabled": False,
     "ingress_max_header_count": 0,
     "ingress_max_header_value_bytes": 0,
+    "ingress_unicode_sanitizer_enabled": False,
+    "ingress_unicode_header_sample_bytes": 4096,
+    "ingress_unicode_query_sample_bytes": 4096,
+    "ingress_unicode_path_sample_chars": 1024,
     "webhook_enable": False,
     "webhook_url": "",
     "webhook_secret": "",
@@ -199,6 +207,10 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "ingress_header_limits_enabled": "INGRESS_HEADER_LIMITS_ENABLED",
     "ingress_max_header_count": "INGRESS_MAX_HEADER_COUNT",
     "ingress_max_header_value_bytes": "INGRESS_MAX_HEADER_VALUE_BYTES",
+    "ingress_unicode_sanitizer_enabled": "INGRESS_UNICODE_SANITIZER_ENABLED",
+    "ingress_unicode_header_sample_bytes": "INGRESS_UNICODE_HEADER_SAMPLE_BYTES",
+    "ingress_unicode_query_sample_bytes": "INGRESS_UNICODE_QUERY_SAMPLE_BYTES",
+    "ingress_unicode_path_sample_chars": "INGRESS_UNICODE_PATH_SAMPLE_CHARS",
     "webhook_enable": "WEBHOOK_ENABLE",
     "webhook_url": "WEBHOOK_URL",
     "webhook_secret": "WEBHOOK_SECRET",
@@ -324,6 +336,26 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         int_val = _coerce_int(data.get("ingress_max_header_value_bytes"))
         if int_val is not None and int_val >= 0:
             normalized["ingress_max_header_value_bytes"] = int_val
+
+    if "ingress_unicode_sanitizer_enabled" in data:
+        bool_val = _coerce_bool(data.get("ingress_unicode_sanitizer_enabled"))
+        if bool_val is not None:
+            normalized["ingress_unicode_sanitizer_enabled"] = bool_val
+
+    if "ingress_unicode_header_sample_bytes" in data:
+        int_val = _coerce_int(data.get("ingress_unicode_header_sample_bytes"))
+        if int_val is not None and int_val >= 0:
+            normalized["ingress_unicode_header_sample_bytes"] = int_val
+
+    if "ingress_unicode_query_sample_bytes" in data:
+        int_val = _coerce_int(data.get("ingress_unicode_query_sample_bytes"))
+        if int_val is not None and int_val >= 0:
+            normalized["ingress_unicode_query_sample_bytes"] = int_val
+
+    if "ingress_unicode_path_sample_chars" in data:
+        int_val = _coerce_int(data.get("ingress_unicode_path_sample_chars"))
+        if int_val is not None and int_val >= 0:
+            normalized["ingress_unicode_path_sample_chars"] = int_val
 
     if "webhook_enable" in data:
         bool_val = _coerce_bool(data.get("webhook_enable"))
