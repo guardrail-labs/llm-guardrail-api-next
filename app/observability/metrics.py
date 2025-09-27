@@ -102,6 +102,19 @@ def _get_or_create_counter(
 
 # --- Trace guard metrics -------------------------------------------------------
 
+unicode_flagged = _get_or_create_counter(
+    "guardrail_ingress_unicode_flagged_total",
+    "Requests with unicode risk flags detected.",
+    ("tenant", "bot", "mode", "flag"),
+)
+
+
+unicode_blocked = _get_or_create_counter(
+    "guardrail_ingress_unicode_blocked_total",
+    "Requests blocked due to unicode policy.",
+    ("tenant", "bot", "flag"),
+)
+
 _trace_guard_violation_total = _get_or_create_counter(
     "guardrail_trace_guard_violation_total",
     "Ingress trace/request-id headers normalized or dropped",

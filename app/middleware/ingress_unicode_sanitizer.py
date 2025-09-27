@@ -5,8 +5,11 @@ from typing import Iterable, Tuple
 from urllib.parse import unquote_plus
 
 from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.middleware.ingress_trace_guard import _tenant_bot_from_headers
+from app.observability.metrics import unicode_blocked, unicode_flagged
 from app.services.config_store import get_config
 
 _ZWC = {
@@ -201,6 +204,44 @@ class IngressUnicodeSanitizerMiddleware:
         }
         setattr(request.state, "unicode", state_payload)
 
+        allowed_flags = {"bidi", "zwc", "emoji", "confusables", "mixed"}
+        mode_raw = config.get("ingress_unicode_enforce_mode", "off")
+        mode = str(mode_raw or "off").strip().lower()
+        if mode not in {"off", "log", "block"}:
+            mode = "off"
+
+        raw_enforce = config.get("ingress_unicode_enforce_flags", ["bidi", "zwc"])
+        enforce_flags: set[str] = set()
+        if isinstance(raw_enforce, str):
+            tokens = [s.strip().lower() for s in raw_enforce.split(",") if s.strip()]
+            enforce_flags = {token for token in tokens if token in allowed_flags}
+        elif isinstance(raw_enforce, (list, tuple, set)):
+            tokens = [str(item).strip().lower() for item in raw_enforce if str(item).strip()]
+            enforce_flags = {token for token in tokens if token in allowed_flags}
+
+        hit = sorted(enforce_flags.intersection(flags))
+        audit_header: bytes | None = None
+        if hit:
+            tenant, bot = _tenant_bot_from_headers(request)
+            for flag_name in hit:
+                unicode_flagged.labels(tenant=tenant, bot=bot, mode=mode, flag=flag_name).inc()
+
+            if mode == "block":
+                for flag_name in hit:
+                    unicode_blocked.labels(tenant=tenant, bot=bot, flag=flag_name).inc()
+                response = PlainTextResponse(
+                    "Blocked: risky unicode in request metadata", status_code=400
+                )
+                flags_value = ",".join(hit)
+                response.headers["X-Guardrail-Unicode-Blocked"] = f"flags={flags_value}"
+                response.headers["X-Guardrail-Ingress-Flags"] = flag_header_value
+                response.headers["Connection"] = "close"
+                await response(scope, receive, send)
+                return
+
+            if mode == "log":
+                audit_header = f"flags={','.join(hit)}".encode("utf-8")
+
         async def send_wrapper(message: Message) -> None:
             if message.get("type") == "http.response.start":
                 headers_list = list(message.get("headers") or [])
@@ -210,6 +251,13 @@ class IngressUnicodeSanitizerMiddleware:
                         flag_header_value.encode("utf-8"),
                     )
                 )
+                if audit_header is not None:
+                    headers_list.append(
+                        (
+                            b"x-guardrail-unicode-audit",
+                            audit_header,
+                        )
+                    )
                 message["headers"] = headers_list
             await send(message)
 
