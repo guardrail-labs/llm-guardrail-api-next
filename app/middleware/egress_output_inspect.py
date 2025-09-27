@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, MutableMapping
-from typing import Any, Awaitable, Callable, cast
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
+from typing import Any, cast
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -50,26 +50,33 @@ def _merge_flags(headers: MutableMapping[str, str], flags: set[str]) -> None:
     headers["X-Guardrail-Egress-Flags"] = joined
 
 
-def _accumulate_sample(buf: bytearray, chunk: Any, limit: int) -> None:
+def _ensure_bytes(chunk: Any) -> bytes:
+    if isinstance(chunk, bytes):
+        return chunk
+    if isinstance(chunk, bytearray):
+        return bytes(chunk)
+    if isinstance(chunk, str):
+        return chunk.encode("utf-8")
+    return bytes(chunk)
+
+
+def _accumulate_sample(buf: bytearray, chunk: bytes, limit: int) -> None:
     if limit <= len(buf):
         return
-    if isinstance(chunk, (bytes, bytearray)):
-        take = min(limit - len(buf), len(chunk))
-        if take:
-            buf += chunk[:take]
-    elif isinstance(chunk, str):
-        encoded = chunk.encode("utf-8")
-        take = min(limit - len(buf), len(encoded))
-        if take:
-            buf += encoded[:take]
+    take = min(limit - len(buf), len(chunk))
+    if take:
+        buf += chunk[:take]
 
 
 async def _prepare_stream_async(
-    iterable: AsyncIterator[Any], limit: int
-) -> tuple[AsyncIterator[Any], bytearray]:
-    prefix: list[Any] = []
+    iterable: AsyncIterator[Any],
+    limit: int,
+) -> tuple[AsyncIterator[bytes], bytearray]:
+    prefix: list[bytes] = []
     sample = bytearray()
     exhausted = False
+    aclose = getattr(iterable, "aclose", None)
+    close = getattr(iterable, "close", None)
 
     while len(sample) < limit:
         try:
@@ -77,75 +84,81 @@ async def _prepare_stream_async(
         except StopAsyncIteration:
             exhausted = True
             break
-        prefix.append(chunk)
-        _accumulate_sample(sample, chunk, limit)
+        chunk_bytes = _ensure_bytes(chunk)
+        prefix.append(chunk_bytes)
+        _accumulate_sample(sample, chunk_bytes, limit)
         if len(sample) >= limit:
             break
 
-    async def generator() -> AsyncIterator[Any]:
+    async def generator() -> AsyncIterator[bytes]:
         nonlocal exhausted
         try:
-            for chunk in prefix:
-                yield chunk
+            for chunk_bytes in prefix:
+                yield chunk_bytes
             if not exhausted:
                 try:
                     async for chunk in iterable:
-                        yield chunk
+                        chunk_bytes = _ensure_bytes(chunk)
+                        yield chunk_bytes
                 except Exception:
                     raise
                 else:
                     exhausted = True
         finally:
             if not exhausted:
-                aclose = getattr(iterable, "aclose", None)
-                if aclose is not None:
-                    try:
+                try:
+                    if callable(aclose):
                         await aclose()
-                    except Exception:
-                        pass
+                    elif callable(close):
+                        close()
+                except Exception:
+                    pass
 
     return generator(), sample
 
 
 async def _prepare_stream_sync(
-    iterable: Iterator[Any], limit: int
-) -> tuple[AsyncIterator[Any], bytearray]:
-    prefix: list[Any] = []
+    iterable: Iterable[Any],
+    limit: int,
+) -> tuple[AsyncIterator[bytes], bytearray]:
+    iterator = iter(iterable)
+    prefix: list[bytes] = []
     sample = bytearray()
     exhausted = False
+    close = getattr(iterator, "close", None)
 
     while len(sample) < limit:
         try:
-            chunk = next(iterable)
+            chunk = next(iterator)
         except StopIteration:
             exhausted = True
             break
-        prefix.append(chunk)
-        _accumulate_sample(sample, chunk, limit)
+        chunk_bytes = _ensure_bytes(chunk)
+        prefix.append(chunk_bytes)
+        _accumulate_sample(sample, chunk_bytes, limit)
         if len(sample) >= limit:
             break
 
-    async def generator() -> AsyncIterator[Any]:
+    async def generator() -> AsyncIterator[bytes]:
         nonlocal exhausted
         try:
-            for chunk in prefix:
-                yield chunk
+            for chunk_bytes in prefix:
+                yield chunk_bytes
             if not exhausted:
                 try:
-                    for chunk in iterable:
-                        yield chunk
+                    for chunk in iterator:
+                        chunk_bytes = _ensure_bytes(chunk)
+                        yield chunk_bytes
                 except Exception:
                     raise
                 else:
                     exhausted = True
         finally:
-            if not exhausted:
-                close = getattr(iterable, "close", None)
-                if close is not None:
-                    try:
-                        close()
-                    except Exception:
-                        pass
+            if not exhausted and callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     return generator(), sample
 
@@ -160,28 +173,26 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         resp = await call_next(request)
         headers = cast(MutableMapping[str, str], resp.headers)
-        content_type = resp.headers.get("Content-Type") or resp.media_type
+        content_type = headers.get("Content-Type") or resp.media_type
         resp_any = cast(Any, resp)
         body_iter = getattr(resp_any, "body_iterator", None)
         is_stream = body_iter is not None
 
         if is_stream or _is_sse(content_type):
-            if "Content-Length" in resp.headers:
-                del resp.headers["Content-Length"]
+            if "Content-Length" in headers:
+                del headers["Content-Length"]
 
         limit = settings.EGRESS_INSPECT_MAX_BYTES
         if limit <= 0 or _looks_binary(content_type):
             return resp
 
         if is_stream and body_iter is not None:
-            sample = bytearray()
             if hasattr(body_iter, "__anext__"):
-                new_iter, sample = await _prepare_stream_async(body_iter, limit)
+                async_iter = cast(AsyncIterator[Any], body_iter)
+                new_iter, sample = await _prepare_stream_async(async_iter, limit)
             else:
-                new_iter, sample = await _prepare_stream_sync(
-                    cast(Iterator[Any], body_iter),
-                    limit,
-                )
+                iterable = cast(Iterable[Any], body_iter)
+                new_iter, sample = await _prepare_stream_sync(iterable, limit)
             resp_any.body_iterator = new_iter
             if sample:
                 text = sample.decode("utf-8", errors="replace")

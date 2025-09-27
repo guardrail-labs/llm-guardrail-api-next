@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unicodedata as ud
-from typing import Iterable, Tuple
+from collections.abc import Iterable
 from urllib.parse import unquote_plus
 
 from starlette.requests import Request
@@ -74,7 +74,7 @@ def _to_int(value: object) -> int:
     try:
         if isinstance(value, bool):
             return int(value)
-        if isinstance(value, (int, float)):
+        if isinstance(value, int | float):
             return int(value)
         return int(str(value).strip())
     except Exception:
@@ -112,24 +112,19 @@ def _is_emoji(char: str) -> bool:
     return False
 
 
-def _scan(raw: str, normalized: str) -> set[str]:
-    flags: set[str] = set()
-    if any(char in _ZWC for char in raw):
-        flags.add("zwc")
-    if any(char in _BIDI for char in raw):
-        flags.add("bidi")
-    if any(_is_emoji(char) for char in raw):
-        flags.add("emoji")
+def _scan(raw: str, normalized: str) -> dict[str, bool]:
+    flags: dict[str, bool] = {}
+    flags["zwc"] = any(char in _ZWC for char in raw)
+    flags["bidi"] = any(char in _BIDI for char in raw)
+    flags["emoji"] = any(_is_emoji(char) for char in raw)
     skel_raw = _skeleton(raw)
-    if skel_raw != raw or normalized != raw:
-        flags.add("confusables")
+    flags["confusables"] = skel_raw != raw or normalized != raw
     scripts = {_script(char) for char in raw if char.isalpha()}
-    if len({"Latin", "Cyrillic", "Greek"}.intersection(scripts)) >= 2:
-        flags.add("mixed")
+    flags["mixed"] = len({"Latin", "Cyrillic", "Greek"}.intersection(scripts)) >= 2
     return flags
 
 
-def _sample_headers(headers: Iterable[Tuple[bytes, bytes]], cap_bytes: int) -> str:
+def _sample_headers(headers: Iterable[tuple[bytes, bytes]], cap_bytes: int) -> str:
     if cap_bytes <= 0:
         return ""
     parts: list[str] = []
@@ -185,7 +180,7 @@ class IngressUnicodeSanitizerMiddleware:
         else:
             query_sample = ""
 
-        headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or ()
+        headers: Iterable[tuple[bytes, bytes]] = scope.get("headers") or ()
         header_sample = _sample_headers(headers, header_cap)
 
         sample_parts = [part for part in (path_sample, query_sample, header_sample) if part]
@@ -194,15 +189,16 @@ class IngressUnicodeSanitizerMiddleware:
         normalized = _normalize(sample)
         skeleton = _skeleton(sample)
         flags = _scan(sample, normalized)
-        flag_header_value = ",".join(sorted(flags))
+        active_flags = {name for name, enabled in flags.items() if enabled}
+        flag_header_value = ",".join(sorted(active_flags))
 
         scope.setdefault("state", {})
-        state_payload = {
+        unicode_state = {
             "normalized": normalized,
             "skeleton": skeleton,
-            "flags": set(flags),
+            "flags": set(active_flags),
         }
-        setattr(request.state, "unicode", state_payload)
+        setattr(request.state, "unicode", unicode_state)
 
         allowed_flags = {"bidi", "zwc", "emoji", "confusables", "mixed"}
         mode_raw = config.get("ingress_unicode_enforce_mode", "off")
@@ -215,11 +211,11 @@ class IngressUnicodeSanitizerMiddleware:
         if isinstance(raw_enforce, str):
             tokens = [s.strip().lower() for s in raw_enforce.split(",") if s.strip()]
             enforce_flags = {token for token in tokens if token in allowed_flags}
-        elif isinstance(raw_enforce, (list, tuple, set)):
+        elif isinstance(raw_enforce, list | tuple | set):
             tokens = [str(item).strip().lower() for item in raw_enforce if str(item).strip()]
             enforce_flags = {token for token in tokens if token in allowed_flags}
 
-        hit = sorted(enforce_flags.intersection(flags))
+        hit = sorted(enforce_flags.intersection(active_flags))
         audit_header: bytes | None = None
         if hit:
             tenant, bot = _tenant_bot_from_headers(request)
@@ -240,7 +236,7 @@ class IngressUnicodeSanitizerMiddleware:
                 return
 
             if mode == "log":
-                audit_header = f"flags={','.join(hit)}".encode("utf-8")
+                audit_header = f"flags={','.join(hit)}".encode()
 
         async def send_wrapper(message: Message) -> None:
             if message.get("type") == "http.response.start":

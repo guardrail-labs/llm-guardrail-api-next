@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Mapping
+from collections.abc import Mapping
 
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -23,8 +23,8 @@ def _canon_name(name: str) -> str:
     return "-".join(parts) if parts else low
 
 
-def canonicalize(headers: Mapping[str, str]) -> Dict[str, str]:
-    out: Dict[str, str] = {}
+def canonicalize(headers: Mapping[str, str]) -> dict[str, str]:
+    out: dict[str, str] = {}
     for key, value in headers.items():
         canon_key = _canon_name(key)
         if not canon_key:

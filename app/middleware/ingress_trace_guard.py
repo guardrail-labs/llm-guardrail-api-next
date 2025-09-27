@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Awaitable, Callable, Dict, List, Tuple
+from collections.abc import Awaitable, Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -38,10 +38,11 @@ _HDR_TRACEPARENT = "traceparent"
 
 
 def _tenant_bot_from_headers(request: Request) -> tuple[str, str]:
-    canon: Dict[str, str] = getattr(request.state, "headers_canon", {}) or {}
+    canon: dict[str, str] = getattr(request.state, "headers_canon", {}) or {}
     tenant = canon.get("X-Guardrail-Tenant") or request.headers.get("X-Guardrail-Tenant", "")
     bot = canon.get("X-Guardrail-Bot") or request.headers.get("X-Guardrail-Bot", "")
-    return _limit_tenant_bot_labels(tenant or "", bot or "")
+    tenant_clean, bot_clean = _limit_tenant_bot_labels(tenant or "", bot or "")
+    return tenant_clean, bot_clean
 
 
 def _new_request_id() -> str:
@@ -64,7 +65,7 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         headers = {k.lower(): v for k, v in request.headers.items()}
-        canon: Dict[str, str] = getattr(request.state, "headers_canon", {}) or {}
+        canon: dict[str, str] = getattr(request.state, "headers_canon", {}) or {}
 
         # --- traceparent validation (inbound rewrite/drop) ---
         tp_in = canon.get("traceparent") or headers.get(_HDR_TRACEPARENT)
@@ -89,18 +90,19 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
                 trace_guard_violation_report(kind="request_id_invalid")
 
         # Stash for downstream code.
+        request_id: str = rid
         try:
-            request.state.request_id = rid
+            request.state.request_id = request_id
         except Exception:
             pass
         try:
-            request.scope["request_id"] = rid
+            request.scope["request_id"] = request_id
         except Exception:
             pass
 
         # --- rewrite inbound headers for downstream ---
-        scope_pairs: List[Tuple[bytes, bytes]] = list(request.scope.get("headers", []))
-        new_pairs: List[Tuple[bytes, bytes]] = []
+        scope_pairs: list[tuple[bytes, bytes]] = list(request.scope.get("headers", []))
+        new_pairs: list[tuple[bytes, bytes]] = []
         changed = False
 
         for kb, vb in scope_pairs:

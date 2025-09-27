@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from collections.abc import Iterable
 
 from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -11,7 +11,7 @@ from app.services.config_store import get_config
 def _to_int(value: object) -> int:
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return int(value)
     try:
         return int(str(value).strip())
@@ -38,7 +38,7 @@ class IngressHeaderLimitsMiddleware:
         max_count = _to_int(cfg.get("ingress_max_header_count", 0))
         max_value = _to_int(cfg.get("ingress_max_header_value_bytes", 0))
 
-        raw_headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or ()
+        raw_headers: Iterable[tuple[bytes, bytes]] = scope.get("headers") or ()
         headers = tuple(raw_headers)
 
         if max_count and len(headers) > max_count:
@@ -47,15 +47,19 @@ class IngressHeaderLimitsMiddleware:
 
         if max_value:
             for _, value in headers:
-                if value is None:
-                    continue
                 if len(value) > max_value:
                     await self._reject(scope, receive, send, "header value too large")
                     return
 
         await self.app(scope, receive, send)
 
-    async def _reject(self, scope: Scope, receive: Receive, send: Send, reason: str) -> None:
+    async def _reject(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        reason: str,
+    ) -> None:
         response = PlainTextResponse(f"Request header limit exceeded: {reason}", status_code=431)
         response.headers["Connection"] = "close"
         await response(scope, receive, send)

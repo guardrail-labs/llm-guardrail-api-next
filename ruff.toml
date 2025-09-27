@@ -1,7 +1,7 @@
 # Ruff configuration
 # Keep it pragmatic to avoid noisy failures while enforcing basics.
 line-length = 100
-fix = false
+target-version = "py311"
 
 [format]
 quote-style = "double"
@@ -10,8 +10,9 @@ skip-magic-trailing-comma = false
 line-ending = "lf"
 
 [lint]
-select = ["E", "F", "I"]  # pycodestyle errors, pyflakes, import sorting
-ignore = []
+select = ["E", "F", "I", "UP", "PERF"]
+fixable = ["ALL"]
+ignore = ["UP006", "UP015", "UP035", "UP038", "UP045"]
 
 [lint.isort]
 known-first-party = ["app", "tests"]

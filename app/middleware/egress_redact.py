@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import AsyncIterator
-from typing import Any, Callable, Dict, cast
+from collections.abc import AsyncIterator, Callable, Mapping
+from typing import Any, cast
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -32,19 +32,19 @@ def _redact_enabled(request: Request) -> bool:
     return os.getenv("EGRESS_REDACT_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _merge_counts(target: Dict[str, int], counts: Dict[str, int]) -> None:
+def _merge_counts(target: dict[str, int], counts: dict[str, int]) -> None:
     for key, value in counts.items():
         if value:
             target[key] = target.get(key, 0) + int(value)
 
 
-def _emit_metrics(counts: Dict[str, int], tenant: str, bot: str, kind: str) -> None:
+def _emit_metrics(counts: dict[str, int], tenant: str, bot: str, kind: str) -> None:
     for rule_id, count in counts.items():
         if count:
             inc_egress_redactions(tenant, bot, kind, n=int(count), rule_id=rule_id)
 
 
-def _emit_decision_hooks(request: Request, counts: Dict[str, int]) -> None:
+def _emit_decision_hooks(request: Request, counts: dict[str, int]) -> None:
     total_replacements = sum(int(value or 0) for value in counts.values())
     if not total_replacements:
         return
@@ -69,24 +69,14 @@ def _emit_decision_hooks(request: Request, counts: Dict[str, int]) -> None:
         pass
 
     tenant_value = (
-        tenant_state
-        if tenant_state is not None
-        else request.headers.get(TENANT_HEADER, "unknown")
+        tenant_state if tenant_state is not None else request.headers.get(TENANT_HEADER, "unknown")
     )
-    bot_value = (
-        bot_state
-        if bot_state is not None
-        else request.headers.get(BOT_HEADER, "unknown")
-    )
+    bot_value = bot_state if bot_state is not None else request.headers.get(BOT_HEADER, "unknown")
 
     try:
         from app.services import decisions as decisions_store
 
-        redactions = [
-            {"rule_id": rid, "count": int(ct)}
-            for rid, ct in counts.items()
-            if ct
-        ]
+        redactions = [{"rule_id": rid, "count": int(ct)} for rid, ct in counts.items() if ct]
         if not redactions:
             return
         decisions_store.record(
@@ -100,7 +90,7 @@ def _emit_decision_hooks(request: Request, counts: Dict[str, int]) -> None:
         pass
 
 
-def _redact_obj(value: Any, counts: Dict[str, int]) -> Any:
+def _redact_obj(value: Any, counts: dict[str, int]) -> Any:
     if isinstance(value, str):
         redacted, rule_counts = redact_text(value)
         _merge_counts(counts, rule_counts)
@@ -113,29 +103,42 @@ def _redact_obj(value: Any, counts: Dict[str, int]) -> Any:
 
 
 async def _restore_body(response: Response, body: bytes) -> None:
-    async def _aiter():
+    async def _aiter() -> AsyncIterator[bytes]:
         yield body
 
     response.headers["content-length"] = str(len(body))
     setattr(response, "body_iterator", _aiter())
 
 
-def _choose_encoding(headers: Dict[str, str]) -> str:
+def _choose_encoding(headers: Mapping[str, str]) -> str:
     content_type = (headers.get("content-type") or "").lower()
     if "charset=" in content_type:
         try:
-            return (
-                content_type.split("charset=", 1)[1].split(";", 1)[0].strip()
-                or "utf-8"
-            )
+            return content_type.split("charset=", 1)[1].split(";", 1)[0].strip() or "utf-8"
         except Exception:
             return "utf-8"
     return "utf-8"
 
 
+def _update_carry(buffer: bytearray, data: bytes, limit: int) -> bytes | None:
+    if not data:
+        return None
+    if limit <= 0:
+        buffer.clear()
+        return data
+    if len(data) > limit:
+        emit = data[:-limit]
+        buffer.clear()
+        buffer.extend(data[-limit:])
+        return emit
+    buffer.clear()
+    buffer.extend(data)
+    return None
+
+
 async def _windowed_redact_gen(
     chunks_async_iter: AsyncIterator[Any],
-    apply_redactions: Callable[[str], tuple[str, Dict[str, int]]],
+    apply_redactions: Callable[[str], tuple[str, dict[str, int]]],
     encoding: str,
     window_bytes: int,
 ) -> AsyncIterator[bytes]:
@@ -144,7 +147,7 @@ async def _windowed_redact_gen(
     enc = encoding or "utf-8"
     carry_limit = max(int(window_bytes or 0), 1)
     scan_tail = ""
-    pending = ""
+    pending = bytearray()
     first_chunk = True
 
     async for chunk in chunks_async_iter:
@@ -165,29 +168,22 @@ async def _windowed_redact_gen(
             _metrics_redaction.inc_overlap()
         first_chunk = False
 
-        if len(redacted) > carry_limit:
-            emit = redacted[:-carry_limit]
-            pending = redacted[-carry_limit:]
-        else:
-            emit = ""
-            pending = redacted
-
+        encoded = redacted.encode(enc)
+        emit = _update_carry(pending, encoded, carry_limit)
         if emit:
-            yield emit.encode(enc)
+            yield emit
 
         scan_tail = work_text[-carry_limit:] if len(work_text) > carry_limit else work_text
 
     if pending:
-        yield pending.encode(enc)
+        yield bytes(pending)
 
 
 class EgressRedactMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         if not _redact_enabled(request):
             return response
@@ -228,10 +224,10 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
                 window_bytes = 256
             window_bytes = max(window_bytes, 1)
 
-            stream_counts: Dict[str, int] = {}
+            stream_counts: dict[str, int] = {}
             encoding = _choose_encoding(dict(response.headers))
 
-            def _apply(text: str) -> tuple[str, Dict[str, int]]:
+            def _apply(text: str) -> tuple[str, dict[str, int]]:
                 redacted_text, rule_counts = redact_text(text)
                 _merge_counts(stream_counts, rule_counts)
                 return redacted_text, rule_counts
@@ -368,7 +364,7 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
         headers.pop("content-length", None)
 
         if "json" in content_type:
-            json_counts: Dict[str, int] = {}
+            json_counts: dict[str, int] = {}
             try:
                 parsed = json.loads(text)
             except Exception:
