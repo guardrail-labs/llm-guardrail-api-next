@@ -138,6 +138,9 @@ class ConfigDict(TypedDict, total=False):
     shadow_policy_path: str
     shadow_timeout_ms: int
     shadow_sample_rate: float
+    ingress_header_limits_enabled: bool
+    ingress_max_header_count: int
+    ingress_max_header_value_bytes: int
     webhook_enable: bool
     webhook_url: str
     webhook_secret: str
@@ -162,6 +165,9 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "shadow_policy_path": "",
     "shadow_timeout_ms": 100,
     "shadow_sample_rate": 1.0,
+    "ingress_header_limits_enabled": False,
+    "ingress_max_header_count": 0,
+    "ingress_max_header_value_bytes": 0,
     "webhook_enable": False,
     "webhook_url": "",
     "webhook_secret": "",
@@ -190,6 +196,9 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "shadow_policy_path": "SHADOW_POLICY_PATH",
     "shadow_timeout_ms": "SHADOW_TIMEOUT_MS",
     "shadow_sample_rate": "SHADOW_SAMPLE_RATE",
+    "ingress_header_limits_enabled": "INGRESS_HEADER_LIMITS_ENABLED",
+    "ingress_max_header_count": "INGRESS_MAX_HEADER_COUNT",
+    "ingress_max_header_value_bytes": "INGRESS_MAX_HEADER_VALUE_BYTES",
     "webhook_enable": "WEBHOOK_ENABLE",
     "webhook_url": "WEBHOOK_URL",
     "webhook_secret": "WEBHOOK_SECRET",
@@ -300,6 +309,21 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         if float_val is not None:
             clamped = max(0.0, min(1.0, float_val))
             normalized["shadow_sample_rate"] = clamped
+
+    if "ingress_header_limits_enabled" in data:
+        bool_val = _coerce_bool(data.get("ingress_header_limits_enabled"))
+        if bool_val is not None:
+            normalized["ingress_header_limits_enabled"] = bool_val
+
+    if "ingress_max_header_count" in data:
+        int_val = _coerce_int(data.get("ingress_max_header_count"))
+        if int_val is not None and int_val >= 0:
+            normalized["ingress_max_header_count"] = int_val
+
+    if "ingress_max_header_value_bytes" in data:
+        int_val = _coerce_int(data.get("ingress_max_header_value_bytes"))
+        if int_val is not None and int_val >= 0:
+            normalized["ingress_max_header_value_bytes"] = int_val
 
     if "webhook_enable" in data:
         bool_val = _coerce_bool(data.get("webhook_enable"))
@@ -462,6 +486,18 @@ def _env_overrides() -> ConfigDict:
             float_val = _coerce_float(raw)
             if float_val is not None:
                 overrides[key] = max(0.0, min(1.0, float_val))
+        elif key == "ingress_header_limits_enabled":
+            bool_val = _coerce_bool(raw)
+            if bool_val is not None:
+                overrides[key] = bool_val
+        elif key == "ingress_max_header_count":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
+        elif key == "ingress_max_header_value_bytes":
+            int_val = _coerce_int(raw)
+            if int_val is not None and int_val >= 0:
+                overrides[key] = int_val
         elif key == "webhook_enable":
             bool_val = _coerce_bool(raw)
             if bool_val is not None:
