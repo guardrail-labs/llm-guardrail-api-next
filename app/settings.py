@@ -187,3 +187,8 @@ HIDDEN_TEXT_FORMATS = os.getenv("HIDDEN_TEXT_FORMATS", "").strip()
 # Optional minimum reasons required to trigger (default 1)
 HIDDEN_TEXT_MIN_MATCH = int(os.getenv("HIDDEN_TEXT_MIN_MATCH", "1") or "1")
 
+# Cap bytes for egress inspection peek (0 disables)
+EGRESS_INSPECT_MAX_BYTES = int(
+    os.getenv("EGRESS_INSPECT_MAX_BYTES", "4096") or "4096"
+)
+
