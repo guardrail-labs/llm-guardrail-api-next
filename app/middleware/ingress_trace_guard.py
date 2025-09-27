@@ -8,7 +8,12 @@ from typing import Awaitable, Callable, List, Tuple
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.observability.metrics import trace_guard_violation_report
+from app.observability.metrics import (
+    _limit_tenant_bot_labels,
+    ingress_invalid_traceparent,
+    ingress_reqid_generated,
+    trace_guard_violation_report,
+)
 
 # W3C traceparent: version-traceid-spanid-flags (lower-hex, fixed lengths).
 _RE_TRACEPARENT = re.compile(
@@ -30,6 +35,12 @@ _RE_REQ_ID = re.compile(
 
 _HDR_REQ_ID = "x-request-id"
 _HDR_TRACEPARENT = "traceparent"
+
+
+def _tenant_bot_from_headers(request: Request) -> tuple[str, str]:
+    tenant = request.headers.get("X-Guardrail-Tenant", "") or ""
+    bot = request.headers.get("X-Guardrail-Bot", "") or ""
+    return _limit_tenant_bot_labels(tenant, bot)
 
 
 def _new_request_id() -> str:
@@ -58,11 +69,15 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
         tp_valid = bool(tp_in and _RE_TRACEPARENT.match(tp_in or ""))
         if tp_in is not None and not tp_valid:
             trace_guard_violation_report(kind="traceparent_invalid")
+            tenant, bot = _tenant_bot_from_headers(request)
+            ingress_invalid_traceparent.labels(tenant=tenant, bot=bot).inc()
 
         # --- request id handling ---
         rid_in = headers.get(_HDR_REQ_ID)
         if rid_in is None:
             trace_guard_violation_report(kind="request_id_new")
+            tenant, bot = _tenant_bot_from_headers(request)
+            ingress_reqid_generated.labels(tenant=tenant, bot=bot).inc()
             rid = _new_request_id()
             rid_missing = True
         else:
