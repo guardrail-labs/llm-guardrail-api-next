@@ -21,6 +21,16 @@ class JsonFormatter(logging.Formatter):
             base["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(base, ensure_ascii=False)
 
+
+def _request_id_from_request(request: Request) -> str:
+    rid = getattr(request.state, "request_id", None)
+    if rid is None:
+        rid = request.scope.get("request_id")
+    if rid is None:
+        rid = request.headers.get("X-Request-ID")
+    return str(rid) if rid else ""
+
+
 def install_json_logging(app: FastAPI) -> None:
     root = logging.getLogger()
     root.setLevel(logging.INFO)
@@ -37,6 +47,7 @@ def install_json_logging(app: FastAPI) -> None:
         start = time.perf_counter()
         response: Response = await call_next(request)
         dur_ms = (time.perf_counter() - start) * 1000
+        rid = _request_id_from_request(request)
         logging.getLogger("access").info(
             json.dumps(
                 {
@@ -44,6 +55,7 @@ def install_json_logging(app: FastAPI) -> None:
                     "path": request.url.path,
                     "status": response.status_code,
                     "duration_ms": round(dur_ms, 2),
+                    "request_id": rid,
                 }
             )
         )

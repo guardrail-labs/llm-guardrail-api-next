@@ -73,14 +73,16 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
 
         # Stash for downstream code.
         try:
-            request.state.request_id = rid  
+            request.state.request_id = rid
+        except Exception:
+            pass
+        try:
+            request.scope["request_id"] = rid
         except Exception:
             pass
 
         # --- rewrite inbound headers for downstream ---
-        scope_pairs: List[Tuple[bytes, bytes]] = list(
-            request.scope.get("headers", [])
-        )
+        scope_pairs: List[Tuple[bytes, bytes]] = list(request.scope.get("headers", []))
         new_pairs: List[Tuple[bytes, bytes]] = []
         changed = False
 
@@ -109,9 +111,7 @@ class IngressTraceGuardMiddleware(BaseHTTPMiddleware):
 
         if rid_missing:
             changed = True
-            new_pairs.append(
-                (_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1"))
-            )
+            new_pairs.append((_HDR_REQ_ID.encode("latin-1"), rid.encode("latin-1")))
 
         if changed:
             request.scope["headers"] = new_pairs
