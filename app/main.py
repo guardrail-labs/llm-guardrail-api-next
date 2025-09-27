@@ -25,6 +25,7 @@ from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
+from app.middleware.header_canonicalize import HeaderCanonicalizeMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
 from app.middleware.ingress_decode import DecodeIngressMiddleware
@@ -178,11 +179,12 @@ class _LatencyMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         finally:
             if self._hist is not None:
+                hist = self._hist
 
                 def _observe() -> None:
                     dur = max(time.perf_counter() - start, 0.0)
                     safe_route = route_label(request.url.path)
-                    self._hist.labels(route=safe_route, method=request.method).observe(dur)
+                    hist.labels(route=safe_route, method=request.method).observe(dur)
 
                 _best_effort("observe latency", _observe)
 
@@ -832,13 +834,14 @@ def create_app() -> FastAPI:
         log.warning("Admin /me route unavailable: %s", exc)
     # Starlette executes middleware in reverse registration order.
     # Desired runtime ingress order:
-    #   PathGuard -> TraceGuard -> Metadata -> (OTEL if used) -> RequestID
+    #   PathGuard -> HeaderCanonicalize -> TraceGuard -> Metadata -> (OTEL if used) -> RequestID
     # Register in inverse order to achieve this at runtime:
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)
     app.add_middleware(IngressMetadataMiddleware)
     app.add_middleware(IngressTraceGuardMiddleware)
+    app.add_middleware(HeaderCanonicalizeMiddleware)
     app.add_middleware(IngressPathGuardMiddleware)
     app.add_middleware(UnicodeIngressSanitizer)
     app.add_middleware(DecodeIngressMiddleware)
