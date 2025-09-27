@@ -83,11 +83,26 @@ async def _prepare_stream_async(
             break
 
     async def generator() -> AsyncIterator[Any]:
-        for chunk in prefix:
-            yield chunk
-        if not exhausted:
-            async for chunk in iterable:
+        nonlocal exhausted
+        try:
+            for chunk in prefix:
                 yield chunk
+            if not exhausted:
+                try:
+                    async for chunk in iterable:
+                        yield chunk
+                except Exception:
+                    raise
+                else:
+                    exhausted = True
+        finally:
+            if not exhausted:
+                aclose = getattr(iterable, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:
+                        pass
 
     return generator(), sample
 
@@ -111,11 +126,26 @@ async def _prepare_stream_sync(
             break
 
     async def generator() -> AsyncIterator[Any]:
-        for chunk in prefix:
-            yield chunk
-        if not exhausted:
-            for chunk in iterable:
+        nonlocal exhausted
+        try:
+            for chunk in prefix:
                 yield chunk
+            if not exhausted:
+                try:
+                    for chunk in iterable:
+                        yield chunk
+                except Exception:
+                    raise
+                else:
+                    exhausted = True
+        finally:
+            if not exhausted:
+                close = getattr(iterable, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
     return generator(), sample
 
@@ -149,7 +179,8 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
                 new_iter, sample = await _prepare_stream_async(body_iter, limit)
             else:
                 new_iter, sample = await _prepare_stream_sync(
-                    cast(Iterator[Any], body_iter), limit
+                    cast(Iterator[Any], body_iter),
+                    limit,
                 )
             resp_any.body_iterator = new_iter
             if sample:
