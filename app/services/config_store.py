@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Mapping, Optional, TypedDict, cast
+from typing import Any, Dict, Iterable, List, Mapping, Optional, TypedDict, cast
 
 import yaml
 
@@ -141,6 +141,8 @@ class ConfigDict(TypedDict, total=False):
     ingress_header_limits_enabled: bool
     ingress_max_header_count: int
     ingress_max_header_value_bytes: int
+    ingress_duplicate_header_guard_mode: str
+    ingress_duplicate_header_unique: List[str]
     ingress_unicode_sanitizer_enabled: bool
     ingress_unicode_header_sample_bytes: int
     ingress_unicode_query_sample_bytes: int
@@ -170,6 +172,18 @@ _UNICODE_ENFORCE_MODES = {"off", "log", "block"}
 _UNICODE_FLAG_KEYS = {"bidi", "zwc", "emoji", "confusables", "mixed"}
 _UNICODE_DEFAULT_FLAGS: List[str] = ["bidi", "zwc"]
 
+DUPLICATE_HEADER_GUARD_MODES = {"off", "log", "block"}
+DUPLICATE_HEADER_UNIQUE_DEFAULT: List[str] = [
+    "content-length",
+    "transfer-encoding",
+    "host",
+    "authorization",
+    "x-request-id",
+    "traceparent",
+    "x-guardrail-tenant",
+    "x-guardrail-bot",
+]
+
 
 _CONFIG_DEFAULTS: ConfigDict = {
     "shadow_enable": False,
@@ -179,6 +193,8 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "ingress_header_limits_enabled": False,
     "ingress_max_header_count": 0,
     "ingress_max_header_value_bytes": 0,
+    "ingress_duplicate_header_guard_mode": "off",
+    "ingress_duplicate_header_unique": list(DUPLICATE_HEADER_UNIQUE_DEFAULT),
     "ingress_unicode_sanitizer_enabled": False,
     "ingress_unicode_header_sample_bytes": 4096,
     "ingress_unicode_query_sample_bytes": 4096,
@@ -216,6 +232,8 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "ingress_header_limits_enabled": "INGRESS_HEADER_LIMITS_ENABLED",
     "ingress_max_header_count": "INGRESS_MAX_HEADER_COUNT",
     "ingress_max_header_value_bytes": "INGRESS_MAX_HEADER_VALUE_BYTES",
+    "ingress_duplicate_header_guard_mode": "INGRESS_DUPLICATE_HEADER_GUARD_MODE",
+    "ingress_duplicate_header_unique": "INGRESS_DUPLICATE_HEADER_UNIQUE",
     "ingress_unicode_sanitizer_enabled": "INGRESS_UNICODE_SANITIZER_ENABLED",
     "ingress_unicode_header_sample_bytes": "INGRESS_UNICODE_HEADER_SAMPLE_BYTES",
     "ingress_unicode_query_sample_bytes": "INGRESS_UNICODE_QUERY_SAMPLE_BYTES",
@@ -366,6 +384,35 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         int_val = _coerce_int(data.get("ingress_max_header_value_bytes"))
         if int_val is not None and int_val >= 0:
             normalized["ingress_max_header_value_bytes"] = int_val
+
+    if "ingress_duplicate_header_guard_mode" in data:
+        raw = data.get("ingress_duplicate_header_guard_mode")
+        if raw is None:
+            normalized["ingress_duplicate_header_guard_mode"] = "off"
+        else:
+            mode = str(raw).strip().lower()
+            if mode in DUPLICATE_HEADER_GUARD_MODES:
+                normalized["ingress_duplicate_header_guard_mode"] = mode
+
+    if "ingress_duplicate_header_unique" in data:
+        raw_unique = data.get("ingress_duplicate_header_unique")
+        if raw_unique is None:
+            normalized["ingress_duplicate_header_unique"] = list(DUPLICATE_HEADER_UNIQUE_DEFAULT)
+        else:
+            if isinstance(raw_unique, str):
+                iterable: Iterable[Any] = raw_unique.split(",")
+            elif isinstance(raw_unique, Iterable):
+                iterable = raw_unique
+            else:
+                iterable = [raw_unique]
+            items: list[str] = []
+            for item in iterable:
+                token = str(item).strip().lower()
+                if token:
+                    items.append(token)
+            if items:
+                deduped = list(dict.fromkeys(items))
+                normalized["ingress_duplicate_header_unique"] = deduped
 
     if "ingress_unicode_sanitizer_enabled" in data:
         bool_val = _coerce_bool(data.get("ingress_unicode_sanitizer_enabled"))
@@ -529,9 +576,7 @@ def _write_config_locked(state: Mapping[str, Any]) -> None:
     for key in _CONFIG_DEFAULTS.keys():
         if key in state:
             payload[key] = state[key]
-    _ADMIN_CONFIG_PATH.write_text(
-        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
-    )
+    _ADMIN_CONFIG_PATH.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
 def _ensure_config_loaded_locked() -> None:

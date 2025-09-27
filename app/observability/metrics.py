@@ -1,16 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
-import logging
 from typing import Any, Callable, Optional, Set, Tuple
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 
 _CARD_MAX_RAW = (
-    os.getenv("METRICS_LABEL_CARD_MAX")
-    or os.getenv("METRICS_LABEL_CARDINALITY_MAX")
-    or "1000"
+    os.getenv("METRICS_LABEL_CARD_MAX") or os.getenv("METRICS_LABEL_CARDINALITY_MAX") or "1000"
 )
 _METRICS_LABEL_CARD_MAX = int(_CARD_MAX_RAW or "1000")
 _PAIR_MAX_RAW = (
@@ -66,7 +64,6 @@ def _limit_tenant_bot_labels(tenant: str, bot: str) -> Tuple[str, str]:
     return _METRICS_LABEL_OVERFLOW, _METRICS_LABEL_OVERFLOW
 
 
-
 def _get_or_create_counter(
     name: str,
     doc: str,
@@ -115,6 +112,20 @@ unicode_blocked = _get_or_create_counter(
     ("tenant", "bot", "flag"),
 )
 
+
+duplicate_header_seen = _get_or_create_counter(
+    "guardrail_ingress_duplicate_header_total",
+    "Duplicate header names seen on ingress.",
+    ("tenant", "bot", "mode", "name"),
+)
+
+
+duplicate_header_blocked = _get_or_create_counter(
+    "guardrail_ingress_duplicate_header_blocked_total",
+    "Requests blocked due to duplicate unique headers.",
+    ("tenant", "bot", "name"),
+)
+
 _trace_guard_violation_total = _get_or_create_counter(
     "guardrail_trace_guard_violation_total",
     "Ingress trace/request-id headers normalized or dropped",
@@ -133,6 +144,7 @@ ingress_invalid_traceparent = _get_or_create_counter(
     "Malformed or invalid traceparent headers seen on ingress.",
     ("tenant", "bot"),
 )
+
 
 def trace_guard_violation_report(*, kind: str) -> None:
     def _do() -> None:
@@ -242,17 +254,13 @@ def metadata_ingress_report(
 
     def _do() -> None:
         if headers_changed:
-            _metadata_headers_changed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(headers_changed)
+            _metadata_headers_changed_total.labels(tenant=tenant_l, bot=bot_l).inc(headers_changed)
         if filenames_sanitized:
-            _metadata_filenames_sanitized_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(filenames_sanitized)
-        if truncated:
-            _metadata_truncated_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                truncated
+            _metadata_filenames_sanitized_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                filenames_sanitized
             )
+        if truncated:
+            _metadata_truncated_total.labels(tenant=tenant_l, bot=bot_l).inc(truncated)
 
     _best_effort("inc metadata ingress metrics", _do)
 
@@ -277,9 +285,7 @@ def token_scan_report(
     def _do() -> None:
         for term, count in hits.items():
             if count:
-                _token_scan_hits_total.labels(
-                    tenant=tenant_l, bot=bot_l, term=term
-                ).inc(count)
+                _token_scan_hits_total.labels(tenant=tenant_l, bot=bot_l, term=term).inc(count)
 
     _best_effort("inc token scan metrics", _do)
 
@@ -329,17 +335,13 @@ def emoji_zwj_ingress_report(
         if fields:
             _emoji_fields_total.labels(tenant=tenant_l, bot=bot_l).inc(fields)
         if tag_sequences:
-            _emoji_tag_sequences_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                tag_sequences
-            )
+            _emoji_tag_sequences_total.labels(tenant=tenant_l, bot=bot_l).inc(tag_sequences)
         if zwj_count:
             _emoji_zwj_total.labels(tenant=tenant_l, bot=bot_l).inc(zwj_count)
         if controls:
             _emoji_controls_total.labels(tenant=tenant_l, bot=bot_l).inc(controls)
         if hidden_bytes:
-            _emoji_hidden_text_bytes_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(hidden_bytes)
+            _emoji_hidden_text_bytes_total.labels(tenant=tenant_l, bot=bot_l).inc(hidden_bytes)
 
     _best_effort("inc emoji zwj ingress metrics", _do)
 
@@ -385,25 +387,21 @@ def unicode_ingress_report(
 
     def _do() -> None:
         if strings_seen:
-            _unicode_strings_sanitized_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(strings_seen)
+            _unicode_strings_sanitized_total.labels(tenant=tenant_l, bot=bot_l).inc(strings_seen)
         if zero_width_removed:
-            _unicode_zero_width_removed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(zero_width_removed)
+            _unicode_zero_width_removed_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                zero_width_removed
+            )
         if bidi_controls_removed:
-            _unicode_bidi_controls_removed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(bidi_controls_removed)
+            _unicode_bidi_controls_removed_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                bidi_controls_removed
+            )
         if confusables_mapped:
-            _unicode_confusables_mapped_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(confusables_mapped)
+            _unicode_confusables_mapped_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                confusables_mapped
+            )
         if mixed_scripts:
-            _unicode_mixed_script_inputs_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(mixed_scripts)
+            _unicode_mixed_script_inputs_total.labels(tenant=tenant_l, bot=bot_l).inc(mixed_scripts)
 
     _best_effort("inc unicode ingress metrics", _do)
 
@@ -498,23 +496,15 @@ def archive_ingress_report(
 
     def _do() -> None:
         if candidates:
-            _arch_candidates_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                candidates
-            )
+            _arch_candidates_total.labels(tenant=tenant_l, bot=bot_l).inc(candidates)
         if archives_detected:
-            _arch_detected_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                archives_detected
-            )
+            _arch_detected_total.labels(tenant=tenant_l, bot=bot_l).inc(archives_detected)
         if filenames:
             _arch_filenames_total.labels(tenant=tenant_l, bot=bot_l).inc(filenames)
         if text_samples:
-            _arch_text_samples_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                text_samples
-            )
+            _arch_text_samples_total.labels(tenant=tenant_l, bot=bot_l).inc(text_samples)
         if nested_blocked:
-            _arch_nested_blocked_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                nested_blocked
-            )
+            _arch_nested_blocked_total.labels(tenant=tenant_l, bot=bot_l).inc(nested_blocked)
         if errors:
             _arch_errors_total.labels(tenant=tenant_l, bot=bot_l).inc(errors)
 
@@ -565,25 +555,17 @@ def markup_ingress_report(
 
     def _do() -> None:
         if fields_with_markup:
-            _markup_fields_with_markup_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(fields_with_markup)
+            _markup_fields_with_markup_total.labels(tenant=tenant_l, bot=bot_l).inc(
+                fields_with_markup
+            )
         if scripts_removed:
-            _markup_scripts_removed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(scripts_removed)
+            _markup_scripts_removed_total.labels(tenant=tenant_l, bot=bot_l).inc(scripts_removed)
         if styles_removed:
-            _markup_styles_removed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(styles_removed)
+            _markup_styles_removed_total.labels(tenant=tenant_l, bot=bot_l).inc(styles_removed)
         if foreign_removed:
-            _markup_foreign_removed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(foreign_removed)
+            _markup_foreign_removed_total.labels(tenant=tenant_l, bot=bot_l).inc(foreign_removed)
         if tags_removed:
-            _markup_tags_removed_total.labels(
-                tenant=tenant_l, bot=bot_l
-            ).inc(tags_removed)
+            _markup_tags_removed_total.labels(tenant=tenant_l, bot=bot_l).inc(tags_removed)
 
     _best_effort("inc markup ingress metrics", _do)
 
@@ -659,9 +641,7 @@ def inc_ratelimit_script_reload() -> None:
     )
 
 
-def inc_scope_autoconstraint(
-    *, mode: str, result: str, multi: bool, endpoint: str
-) -> None:
+def inc_scope_autoconstraint(*, mode: str, result: str, multi: bool, endpoint: str) -> None:
     """Increment the autoconstraint counter with guarded labels."""
 
     def _do() -> None:
@@ -779,18 +759,12 @@ def probing_ingress_report(
 
     def _do() -> None:
         if rate_exceeded:
-            _probe_rate_exceeded_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                rate_exceeded
-            )
+            _probe_rate_exceeded_total.labels(tenant=tenant_l, bot=bot_l).inc(rate_exceeded)
         _probe_rate_hits.labels(tenant=tenant_l, bot=bot_l).set(rate_hits)
         if leakage_hits:
-            _probe_leakage_hits_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                leakage_hits
-            )
+            _probe_leakage_hits_total.labels(tenant=tenant_l, bot=bot_l).inc(leakage_hits)
         if similarity_hits:
-            _probe_similarity_hits_total.labels(tenant=tenant_l, bot=bot_l).inc(
-                similarity_hits
-            )
+            _probe_similarity_hits_total.labels(tenant=tenant_l, bot=bot_l).inc(similarity_hits)
 
     _best_effort("inc probing ingress metrics", _do)
 
@@ -974,6 +948,7 @@ def inc_egress_redactions(
 ) -> None:
     if n > 0:
         tenant_l, bot_l = _limit_tenant_bot_labels(tenant, bot)
+
         def _do() -> None:
             GUARDRAIL_EGRESS_REDACTIONS_TOTAL.labels(
                 tenant=tenant_l,
