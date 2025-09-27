@@ -50,26 +50,33 @@ def _merge_flags(headers: MutableMapping[str, str], flags: set[str]) -> None:
     headers["X-Guardrail-Egress-Flags"] = joined
 
 
-def _accumulate_sample(buf: bytearray, chunk: Any, limit: int) -> None:
-    if limit <= len(buf):
+def _accum(buf: bytearray, chunk: Any, limit: int, charset: str) -> None:
+    if limit <= 0 or len(buf) >= limit:
         return
     if isinstance(chunk, (bytes, bytearray)):
-        take = min(limit - len(buf), len(chunk))
-        if take:
-            buf += chunk[:take]
+        data = bytes(chunk)
     elif isinstance(chunk, str):
-        encoded = chunk.encode("utf-8")
-        take = min(limit - len(buf), len(encoded))
-        if take:
-            buf += encoded[:take]
+        data = chunk.encode(charset, errors="replace")
+    else:
+        try:
+            data = bytes(chunk)
+        except Exception:
+            data = str(chunk).encode(charset, errors="replace")
+    take = min(limit - len(buf), len(data))
+    if take:
+        buf += data[:take]
 
 
-async def _prepare_stream_async(
-    iterable: AsyncIterator[Any], limit: int
-) -> tuple[AsyncIterator[Any], bytearray]:
+async def _wrap_async_stream(
+    iterable: AsyncIterator[Any],
+    resp: Response,
+    limit: int,
+    content_type: str | None,
+) -> AsyncIterator[Any]:
     prefix: list[Any] = []
     sample = bytearray()
     exhausted = False
+    charset = getattr(resp, "charset", None) or "utf-8"
 
     while len(sample) < limit:
         try:
@@ -78,9 +85,9 @@ async def _prepare_stream_async(
             exhausted = True
             break
         prefix.append(chunk)
-        _accumulate_sample(sample, chunk, limit)
-        if len(sample) >= limit:
-            break
+        _accum(sample, chunk, limit, charset)
+
+    _apply_sample_flags(resp, sample, limit, content_type, charset)
 
     async def generator() -> AsyncIterator[Any]:
         nonlocal exhausted
@@ -90,12 +97,14 @@ async def _prepare_stream_async(
             if not exhausted:
                 try:
                     async for chunk in iterable:
+                        _accum(sample, chunk, limit, charset)
                         yield chunk
                 except Exception:
                     raise
                 else:
                     exhausted = True
         finally:
+            _apply_sample_flags(resp, sample, limit, content_type, charset)
             if not exhausted:
                 aclose = getattr(iterable, "aclose", None)
                 if aclose is not None:
@@ -104,15 +113,19 @@ async def _prepare_stream_async(
                     except Exception:
                         pass
 
-    return generator(), sample
+    return generator()
 
 
-async def _prepare_stream_sync(
-    iterable: Iterator[Any], limit: int
-) -> tuple[AsyncIterator[Any], bytearray]:
+async def _wrap_sync_stream(
+    iterable: Iterator[Any],
+    resp: Response,
+    limit: int,
+    content_type: str | None,
+) -> AsyncIterator[Any]:
     prefix: list[Any] = []
     sample = bytearray()
     exhausted = False
+    charset = getattr(resp, "charset", None) or "utf-8"
 
     while len(sample) < limit:
         try:
@@ -121,9 +134,9 @@ async def _prepare_stream_sync(
             exhausted = True
             break
         prefix.append(chunk)
-        _accumulate_sample(sample, chunk, limit)
-        if len(sample) >= limit:
-            break
+        _accum(sample, chunk, limit, charset)
+
+    _apply_sample_flags(resp, sample, limit, content_type, charset)
 
     async def generator() -> AsyncIterator[Any]:
         nonlocal exhausted
@@ -133,12 +146,14 @@ async def _prepare_stream_sync(
             if not exhausted:
                 try:
                     for chunk in iterable:
+                        _accum(sample, chunk, limit, charset)
                         yield chunk
                 except Exception:
                     raise
                 else:
                     exhausted = True
         finally:
+            _apply_sample_flags(resp, sample, limit, content_type, charset)
             if not exhausted:
                 close = getattr(iterable, "close", None)
                 if close is not None:
@@ -147,7 +162,21 @@ async def _prepare_stream_sync(
                     except Exception:
                         pass
 
-    return generator(), sample
+    return generator()
+
+
+def _apply_sample_flags(
+    resp: Response,
+    sample: bytearray,
+    limit: int,
+    content_type: str | None,
+    charset: str,
+) -> None:
+    if limit <= 0 or not sample or _looks_binary(content_type):
+        return
+    text = sample.decode(charset, errors="replace")
+    headers = cast(MutableMapping[str, str], resp.headers)
+    _merge_flags(headers, _scan_flags(text))
 
 
 class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
@@ -174,29 +203,32 @@ class EgressOutputInspectMiddleware(BaseHTTPMiddleware):
             return resp
 
         if is_stream and body_iter is not None:
-            sample = bytearray()
             if hasattr(body_iter, "__anext__"):
-                new_iter, sample = await _prepare_stream_async(body_iter, limit)
-            else:
-                new_iter, sample = await _prepare_stream_sync(
-                    cast(Iterator[Any], body_iter),
+                resp_any.body_iterator = await _wrap_async_stream(
+                    cast(AsyncIterator[Any], body_iter),
+                    resp,
                     limit,
+                    content_type,
                 )
-            resp_any.body_iterator = new_iter
-            if sample:
-                text = sample.decode("utf-8", errors="replace")
-                _merge_flags(headers, _scan_flags(text))
+            else:
+                resp_any.body_iterator = await _wrap_sync_stream(
+                    cast(Iterator[Any], body_iter),
+                    resp,
+                    limit,
+                    content_type,
+                )
             return resp
 
         body = getattr(resp, "body", b"") or b""
+        charset = getattr(resp, "charset", None) or "utf-8"
         if isinstance(body, str):
-            body_bytes = body.encode("utf-8")
+            body_bytes = body.encode(charset, errors="replace")
         else:
             body_bytes = cast(bytes, body)
 
         if len(body_bytes) > limit:
             return resp
 
-        text = body_bytes.decode("utf-8", errors="replace")
+        text = body_bytes.decode(charset, errors="replace")
         _merge_flags(headers, _scan_flags(text))
         return resp
