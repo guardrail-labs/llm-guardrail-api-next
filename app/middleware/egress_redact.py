@@ -141,10 +141,11 @@ async def _windowed_redact_gen(
 ) -> AsyncIterator[bytes]:
     from app.observability import metrics_redaction as _metrics_redaction
 
-    carry = ""
-    first_chunk = True
     enc = encoding or "utf-8"
-    window = max(int(window_bytes or 0), 1)
+    carry_limit = max(int(window_bytes or 0), 1)
+    scan_tail = ""
+    pending = ""
+    first_chunk = True
 
     async for chunk in chunks_async_iter:
         if isinstance(chunk, bytes):
@@ -156,26 +157,28 @@ async def _windowed_redact_gen(
 
         _metrics_redaction.add_scanned(len(chunk_bytes))
 
-        decoded = chunk_bytes.decode(enc, errors="ignore")
-        combined = carry + decoded
-        redacted, _rule_counts = apply_redactions(combined)
-
-        if len(redacted) > window:
-            out_text = redacted[:-window]
-            carry = redacted[-window:]
-        else:
-            out_text = ""
-            carry = redacted
+        decoded = chunk_bytes.decode(enc, errors="replace")
+        work_text = scan_tail + decoded
+        redacted, _rule_counts = apply_redactions(work_text)
 
         if not first_chunk:
             _metrics_redaction.inc_overlap()
         first_chunk = False
 
-        if out_text:
-            yield out_text.encode(enc)
+        if len(redacted) > carry_limit:
+            emit = redacted[:-carry_limit]
+            pending = redacted[-carry_limit:]
+        else:
+            emit = ""
+            pending = redacted
 
-    if carry:
-        yield carry.encode(enc)
+        if emit:
+            yield emit.encode(enc)
+
+        scan_tail = work_text[-carry_limit:] if len(work_text) > carry_limit else work_text
+
+    if pending:
+        yield pending.encode(enc)
 
 
 class EgressRedactMiddleware(BaseHTTPMiddleware):
@@ -218,11 +221,12 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
             bot = request.headers.get(BOT_HEADER, "default")
             kind_label = content_type.split(";", 1)[0] or "text/plain"
 
-            window_bytes_raw = os.getenv("EGRESS_REDACT_WINDOW_BYTES", "4096")
+            window_bytes_raw = os.getenv("EGRESS_REDACT_WINDOW_BYTES", "256")
             try:
                 window_bytes = int(window_bytes_raw)
             except (TypeError, ValueError):
-                window_bytes = 4096
+                window_bytes = 256
+            window_bytes = max(window_bytes, 1)
 
             stream_counts: Dict[str, int] = {}
             encoding = _choose_encoding(dict(response.headers))
@@ -239,6 +243,19 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
                     ):
                         yield out
                 finally:
+                    close_fn = getattr(chunks_iter, "aclose", None)
+                    if callable(close_fn):
+                        try:
+                            await close_fn()
+                        except Exception:
+                            pass
+                    else:
+                        sync_close = getattr(chunks_iter, "close", None)
+                        if callable(sync_close):
+                            try:
+                                sync_close()
+                            except Exception:
+                                pass
                     if stream_counts:
                         _emit_metrics(stream_counts, tenant, bot, kind_label)
                         _emit_decision_hooks(request, stream_counts)
