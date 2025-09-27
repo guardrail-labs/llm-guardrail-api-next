@@ -51,3 +51,17 @@ sum by (tenant,bot)(rate(guardrail_ingress_trace_request_id_generated_total[5m])
 1. Identify tenant/bot and offending reason.
 2. Inspect recent traffic for anomalous clients/proxies.
 3. If false positives, tune limits per-env; otherwise block abusive sources.
+
+## Duplicate headers
+**Metrics**
+- guardrail_ingress_duplicate_header_total{tenant,bot,mode,name}
+- guardrail_ingress_duplicate_header_blocked_total{tenant,bot,name}
+
+**Alerts**
+- See `deploy/prometheus/alerts_duplicate_headers.yaml`.
+
+**Runbook**
+1. Identify tenant/bot and repeated header names in logs/metrics.
+2. Check proxy/gateway config (merge rules, hop-by-hop headers, case folding).
+3. If accidental, normalize/strip at the edge. If abuse, enable `block` mode.
+4. Tune thresholds per-tenant if noisy.

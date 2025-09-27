@@ -39,3 +39,20 @@ def test_header_limit_alerts_have_metric_snippets() -> None:
         "HeaderLimitsBlocksGlobal",
     ]:
         assert name in text
+
+
+def test_duplicate_header_alerts_file_exists() -> None:
+    p = Path("deploy/prometheus/alerts_duplicate_headers.yaml")
+    assert p.exists()
+
+
+def test_duplicate_header_alerts_have_metric_snippets() -> None:
+    txt = Path("deploy/prometheus/alerts_duplicate_headers.yaml").read_text(encoding="utf-8")
+    assert "guardrail_ingress_duplicate_header_blocked_total" in txt
+    assert "guardrail_ingress_duplicate_header_total" in txt
+    for name in [
+        "DuplicateHeaderBlocksHigh",
+        "DuplicateHeaderBlocksGlobal",
+        "DuplicateHeaderSeenSpike",
+    ]:
+        assert name in txt

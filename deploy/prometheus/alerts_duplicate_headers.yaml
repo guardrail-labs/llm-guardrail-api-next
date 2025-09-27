@@ -1,0 +1,47 @@
+groups:
+  - name: guardrail-duplicate-headers
+    rules:
+      - alert: DuplicateHeaderBlocksHigh
+        expr: |
+          sum by (tenant, bot) (
+            rate(guardrail_ingress_duplicate_header_blocked_total[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: guardrail
+          component: ingress
+        annotations:
+          summary: "Duplicate-header blocks high for {{ $labels.tenant }}/{{ $labels.bot }}"
+          description: >
+            Requests blocked due to duplicate unique headers exceeded 0.05/s over 5m.
+            Investigate upstream proxies or client misuse.
+      - alert: DuplicateHeaderBlocksGlobal
+        expr: |
+          sum (
+            rate(guardrail_ingress_duplicate_header_blocked_total[10m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: critical
+          service: guardrail
+          component: ingress
+        annotations:
+          summary: "Global spike in duplicate-header blocks"
+          description: >
+            System-wide blocks rising; likely proxy/middleware misconfig or abuse.
+      - alert: DuplicateHeaderSeenSpike
+        expr: |
+          sum by (tenant, bot) (
+            rate(guardrail_ingress_duplicate_header_total[5m])
+          ) > 0.50
+        for: 10m
+        labels:
+          severity: info
+          service: guardrail
+          component: ingress
+        annotations:
+          summary: "Increase in duplicate headers for {{ $labels.tenant }}/{{ $labels.bot }}"
+          description: >
+            Duplicate headers observed at a high rate. Not blocking unless configured, but
+            worth checking for request smuggling attempts or proxy quirks.
