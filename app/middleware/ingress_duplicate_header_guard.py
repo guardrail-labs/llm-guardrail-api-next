@@ -58,12 +58,26 @@ class IngressDuplicateHeaderGuardMiddleware:
             await self.app(scope, receive, send)
             return
 
+        allow_cfg = config.get("ingress_duplicate_header_metric_allowlist")
+        if isinstance(allow_cfg, Iterable) and not isinstance(allow_cfg, (str, bytes)):
+            allow_source = allow_cfg
+        else:
+            allow_source = ()
+        allow: set[str] = set()
+        for item in allow_source:
+            token = str(item).strip().lower()
+            if token:
+                allow.add(token)
+
         unique_cfg = config.get("ingress_duplicate_header_unique")
         if isinstance(unique_cfg, Iterable) and not isinstance(unique_cfg, (str, bytes)):
             source = unique_cfg
         else:
             source = DUPLICATE_HEADER_UNIQUE_DEFAULT
         unique = {str(item).strip().lower() for item in source}
+
+        def _bucket(name: str) -> str:
+            return name if name in allow or name in unique else "_other"
 
         request = Request(scope, receive=receive)
         tenant_label, bot_label = _tenant_bot_labels(request)
@@ -73,7 +87,7 @@ class IngressDuplicateHeaderGuardMiddleware:
                 tenant=tenant_label,
                 bot=bot_label,
                 mode=mode,
-                name=name,
+                name=_bucket(name),
             ).inc()
 
         blocked = sorted(name for name in duplicates if name in unique)
