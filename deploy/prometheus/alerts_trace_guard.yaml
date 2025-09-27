@@ -1,0 +1,70 @@
+groups:
+  - name: guardrail-trace-guard
+    rules:
+      - alert: HighInvalidTraceparentRate
+        expr: |
+          sum by (tenant, bot) (
+            rate(guardrail_ingress_trace_invalid_traceparent_total[5m])
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          service: guardrail
+          component: ingress-trace
+        annotations:
+          summary: "Invalid traceparent rate high for {{ $labels.tenant }}/{{ $labels.bot }}"
+          description: >
+            The rate of invalid traceparent headers exceeded 0.10/s over 5m.
+            Investigate upstream proxies/SDKs sending malformed context.
+          runbook_url: https://example.com/guardrail/runbooks/trace-guard
+
+      - alert: HighInvalidTraceparentRateGlobal
+        expr: |
+          sum (
+            rate(guardrail_ingress_trace_invalid_traceparent_total[5m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: critical
+          service: guardrail
+          component: ingress-trace
+        annotations:
+          summary: "Global invalid traceparent spike"
+          description: >
+            Global invalid traceparent rate exceeded 1/s over 10m.
+            Possible upstream outage or configuration drift.
+          runbook_url: https://example.com/guardrail/runbooks/trace-guard
+
+      - alert: HighRequestIdGenerationRate
+        expr: |
+          sum by (tenant, bot) (
+            rate(guardrail_ingress_trace_request_id_generated_total[5m])
+          ) > 0.50
+        for: 10m
+        labels:
+          severity: warning
+          service: guardrail
+          component: ingress-trace
+        annotations:
+          summary: "High RID generation for {{ $labels.tenant }}/{{ $labels.bot }}"
+          description: >
+            Many requests lack X-Request-ID; middleware is generating them.
+            Encourage clients to supply stable IDs to improve traceability.
+          runbook_url: https://example.com/guardrail/runbooks/trace-guard
+
+      - alert: HighRequestIdGenerationRateGlobal
+        expr: |
+          sum (
+            rate(guardrail_ingress_trace_request_id_generated_total[5m])
+          ) > 5
+        for: 15m
+        labels:
+          severity: info
+          service: guardrail
+          component: ingress-trace
+        annotations:
+          summary: "Global spike in generated request IDs"
+          description: >
+            Many clients are missing X-Request-ID. Investigate recent deploys,
+            load balancer header policies, or SDK changes.
+          runbook_url: https://example.com/guardrail/runbooks/trace-guard
