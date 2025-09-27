@@ -119,3 +119,19 @@ def test_detects_emoji_in_path(make_app) -> None:
         assert "emoji" in body["flags"]
     finally:
         set_config(initial, replace=True)
+
+
+def test_confusables_detected_before_normalization(make_app) -> None:
+    initial = dict(get_config())
+    try:
+        set_config(_enable(), replace=True)
+        confusable_path = "/unicode-state/state/\uff21\uff22\uff23"
+        with _client(make_app) as client:
+            response = client.get(confusable_path)
+        assert response.status_code in (200, 404)
+        flags_header = response.headers.get("X-Guardrail-Ingress-Flags", "")
+        assert "confusables" in flags_header.split(",")
+        body = response.json()
+        assert "confusables" in body["flags"]
+    finally:
+        set_config(initial, replace=True)
