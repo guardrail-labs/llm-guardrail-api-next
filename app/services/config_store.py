@@ -145,6 +145,8 @@ class ConfigDict(TypedDict, total=False):
     ingress_unicode_header_sample_bytes: int
     ingress_unicode_query_sample_bytes: int
     ingress_unicode_path_sample_chars: int
+    ingress_unicode_enforce_mode: str
+    ingress_unicode_enforce_flags: List[str]
     webhook_enable: bool
     webhook_url: str
     webhook_secret: str
@@ -164,6 +166,11 @@ class ConfigDict(TypedDict, total=False):
     admin_api_key: str
 
 
+_UNICODE_ENFORCE_MODES = {"off", "log", "block"}
+_UNICODE_FLAG_KEYS = {"bidi", "zwc", "emoji", "confusables", "mixed"}
+_UNICODE_DEFAULT_FLAGS: List[str] = ["bidi", "zwc"]
+
+
 _CONFIG_DEFAULTS: ConfigDict = {
     "shadow_enable": False,
     "shadow_policy_path": "",
@@ -176,6 +183,8 @@ _CONFIG_DEFAULTS: ConfigDict = {
     "ingress_unicode_header_sample_bytes": 4096,
     "ingress_unicode_query_sample_bytes": 4096,
     "ingress_unicode_path_sample_chars": 1024,
+    "ingress_unicode_enforce_mode": "off",
+    "ingress_unicode_enforce_flags": list(_UNICODE_DEFAULT_FLAGS),
     "webhook_enable": False,
     "webhook_url": "",
     "webhook_secret": "",
@@ -211,6 +220,8 @@ _CONFIG_ENV_MAP: Dict[str, str] = {
     "ingress_unicode_header_sample_bytes": "INGRESS_UNICODE_HEADER_SAMPLE_BYTES",
     "ingress_unicode_query_sample_bytes": "INGRESS_UNICODE_QUERY_SAMPLE_BYTES",
     "ingress_unicode_path_sample_chars": "INGRESS_UNICODE_PATH_SAMPLE_CHARS",
+    "ingress_unicode_enforce_mode": "INGRESS_UNICODE_ENFORCE_MODE",
+    "ingress_unicode_enforce_flags": "INGRESS_UNICODE_ENFORCE_FLAGS",
     "webhook_enable": "WEBHOOK_ENABLE",
     "webhook_url": "WEBHOOK_URL",
     "webhook_secret": "WEBHOOK_SECRET",
@@ -295,6 +306,25 @@ def _parse_policy_packs(val: Any) -> Optional[List[str]]:
     return None
 
 
+def _parse_unicode_enforce_flags(val: Any) -> Optional[List[str]]:
+    if val is None:
+        return None
+    tokens: List[str]
+    if isinstance(val, str):
+        tokens = [s.strip().lower() for s in val.split(",") if s and s.strip()]
+    elif isinstance(val, (list, tuple, set)):
+        tokens = [str(item).strip().lower() for item in val if str(item).strip()]
+    else:
+        return None
+    seen: set[str] = set()
+    filtered: List[str] = []
+    for token in tokens:
+        if token in _UNICODE_FLAG_KEYS and token not in seen:
+            seen.add(token)
+            filtered.append(token)
+    return filtered or None
+
+
 def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
     normalized: Dict[str, Any] = {}
 
@@ -356,6 +386,22 @@ def _normalize_config(data: Mapping[str, Any]) -> ConfigDict:
         int_val = _coerce_int(data.get("ingress_unicode_path_sample_chars"))
         if int_val is not None and int_val >= 0:
             normalized["ingress_unicode_path_sample_chars"] = int_val
+
+    if "ingress_unicode_enforce_mode" in data:
+        raw = data.get("ingress_unicode_enforce_mode")
+        if raw is None:
+            normalized["ingress_unicode_enforce_mode"] = "off"
+        else:
+            mode = str(raw).strip().lower()
+            if mode in _UNICODE_ENFORCE_MODES:
+                normalized["ingress_unicode_enforce_mode"] = mode
+
+    if "ingress_unicode_enforce_flags" in data:
+        flags = _parse_unicode_enforce_flags(data.get("ingress_unicode_enforce_flags"))
+        if flags is not None:
+            normalized["ingress_unicode_enforce_flags"] = flags
+        elif data.get("ingress_unicode_enforce_flags") is None:
+            normalized["ingress_unicode_enforce_flags"] = list(_UNICODE_DEFAULT_FLAGS)
 
     if "webhook_enable" in data:
         bool_val = _coerce_bool(data.get("webhook_enable"))
@@ -530,6 +576,14 @@ def _env_overrides() -> ConfigDict:
             int_val = _coerce_int(raw)
             if int_val is not None and int_val >= 0:
                 overrides[key] = int_val
+        elif key == "ingress_unicode_enforce_mode":
+            mode = str(raw).strip().lower()
+            if mode in _UNICODE_ENFORCE_MODES:
+                overrides[key] = mode
+        elif key == "ingress_unicode_enforce_flags":
+            flags = _parse_unicode_enforce_flags(raw)
+            if flags is not None:
+                overrides[key] = flags
         elif key == "webhook_enable":
             bool_val = _coerce_bool(raw)
             if bool_val is not None:
