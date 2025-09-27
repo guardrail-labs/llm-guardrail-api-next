@@ -1,0 +1,42 @@
+groups:
+  - name: guardrail-header-limits
+    rules:
+      - alert: HighHeaderCountBlocks
+        expr: |
+          sum by (tenant, bot) (
+            rate(guardrail_ingress_header_limit_blocked_total{reason="count"}[5m])
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          service: guardrail
+          component: ingress
+        annotations:
+          summary: "Header count blocks high for {{ $labels.tenant }}/{{ $labels.bot }}"
+          description: "Requests blocked by header count limit exceeded 0.10/s over 5m."
+      - alert: HighHeaderValueLenBlocks
+        expr: |
+          sum by (tenant, bot) (
+            rate(guardrail_ingress_header_limit_blocked_total{reason="value_len"}[5m])
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          service: guardrail
+          component: ingress
+        annotations:
+          summary: "Header value-length blocks high for {{ $labels.tenant }}/{{ $labels.bot }}"
+          description: "Requests blocked by header value size limit exceeded 0.10/s over 5m."
+      - alert: HeaderLimitsBlocksGlobal
+        expr: |
+          sum (
+            rate(guardrail_ingress_header_limit_blocked_total[10m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: info
+          service: guardrail
+          component: ingress
+        annotations:
+          summary: "Global spike in header-limit blocks"
+          description: "Potential abusive clients or misconfigured proxies."

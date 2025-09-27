@@ -35,3 +35,19 @@ sum by (tenant,bot)(rate(guardrail_ingress_trace_request_id_generated_total[5m])
 3. **Sample requests**: confirm malformed `traceparent` or missing RID.
 4. **Advise clients**: fix propagation; ensure `X-Request-ID` policy is applied.
 5. **Tune thresholds**: if noise, adjust per-tenant alert levels.
+
+## Header limits
+**Metric**
+- `guardrail_ingress_header_limit_blocked_total{tenant,bot,reason}`
+
+**Reasons**
+- `count` — total header lines exceeded `ingress_max_header_count`
+- `value_len` — a header value exceeded `ingress_max_header_value_bytes`
+
+**Alerts**
+- See `deploy/prometheus/alerts_header_limits.yaml` for default thresholds.
+
+**Runbook**
+1. Identify tenant/bot and offending reason.
+2. Inspect recent traffic for anomalous clients/proxies.
+3. If false positives, tune limits per-env; otherwise block abusive sources.
