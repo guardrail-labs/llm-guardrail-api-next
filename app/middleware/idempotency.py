@@ -292,5 +292,10 @@ class IdempotencyMiddleware:
                         ctype=ctype,
                     )
 
-        # Run downstream with our replaying receive + capturing send
-        await self.app(scope, _receive_replay, _send_wrapper)
+        # Run downstream with our replaying receive + capturing send.
+        # If the inner app raises, make sure to clear the in-progress key so retry can proceed.
+        try:
+            await self.app(scope, _receive_replay, _send_wrapper)
+        except Exception:
+            await _STORE.delete(key)
+            raise
