@@ -148,7 +148,7 @@ class IdempotencyMiddleware:
             hdrs.append((b"x-idempotency-status", tag.encode("utf-8")))
 
         async def send_wrapper(message: Dict[str, Any]) -> None:
-            nonlocal captured_start, sent_start, is_stream
+            nonlocal captured_start, sent_start, is_stream, buf
             t = message.get("type")
 
             if t == "http.response.start":
