@@ -1,0 +1,57 @@
+{
+  "title": "Guardrail — Security Overview",
+  "tags": ["guardrail", "security"],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Invalid traceparent rate (by tenant/bot)",
+      "targets": [{
+        "expr": "sum by (tenant,bot)(rate(guardrail_ingress_trace_invalid_traceparent_total[5m]))"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Generated request-id rate (by tenant/bot)",
+      "targets": [{
+        "expr": "sum by (tenant,bot)(rate(guardrail_ingress_trace_request_id_generated_total[5m]))"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Duplicate headers blocked (by tenant/bot)",
+      "targets": [{
+        "expr": "sum by (tenant,bot)(rate(guardrail_ingress_duplicate_header_blocked_total[5m]))"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Duplicate headers seen (by tenant/bot)",
+      "targets": [{
+        "expr": "sum by (tenant,bot)(rate(guardrail_ingress_duplicate_header_total[5m]))"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Header limits blocked (reason)",
+      "targets": [{
+        "expr": "sum by (tenant,bot,reason)(rate(guardrail_ingress_header_limit_blocked_total[5m]))"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Unicode flagged (mode/flag)",
+      "targets": [{
+        "expr": "sum by (tenant,bot,mode,flag)(rate(guardrail_ingress_unicode_flagged_total[5m]))"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Unicode blocked (flag)",
+      "targets": [{
+        "expr": "sum by (tenant,bot,flag)(rate(guardrail_ingress_unicode_blocked_total[5m]))"
+      }]
+    }
+  ],
+  "schemaVersion": 38,
+  "version": 1
+}
