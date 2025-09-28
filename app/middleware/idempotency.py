@@ -183,9 +183,17 @@ class IdempotencyMiddleware:
                 # Detect content-type and normalize headers for persistence
                 try:
                     hdrs_bytes: List[Tuple[bytes, bytes]] = captured_start["headers"]  # type: ignore[index]
-                    hdrs = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in hdrs_bytes}
+                    hdrs = {
+                        k.decode("latin-1").lower(): v.decode("latin-1")
+                        for k, v in hdrs_bytes
+                    }
                     ctype_holder["ctype"] = hdrs.get("content-type", "")
-                    persist_headers = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in hdrs_bytes]
+                    # break long line with a tiny loop (ruff E501)
+                    persist_headers = []
+                    for k, v in hdrs_bytes:
+                        persist_headers.append(
+                            (k.decode("latin-1"), v.decode("latin-1"))
+                        )
                 except Exception:
                     ctype_holder["ctype"] = ""
                     persist_headers = []
@@ -201,7 +209,11 @@ class IdempotencyMiddleware:
                     if is_stream:
                         _inject_headers(captured_start, "skipped:stream")
                     else:
-                        tag = "stored" if not (max_req and len(body) > max_req) else "skipped:size"
+                        tag = (
+                            "stored"
+                            if not (max_req and len(body) > max_req)
+                            else "skipped:size"
+                        )
                         _inject_headers(captured_start, tag)
                     await send(captured_start)
                     sent_start = True
