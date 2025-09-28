@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import importlib
 import re
-from typing import Any, Dict, List, MutableMapping, Tuple
+from typing import Any, Dict, List, MutableMapping, Tuple, cast
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -124,7 +124,7 @@ class IdempotencyMiddleware:
                 idempotency_conflict.labels(
                     tenant=tenant, bot=bot, reason="in_progress"
                 ).inc()
-                resp: Response = PlainTextResponse("Idempotency in progress", status_code=409)
+                resp = PlainTextResponse("Idempotency in progress", status_code=409)
                 resp.headers["Retry-After"] = str(retry_after)
                 resp.headers["X-Idempotency-Status"] = "in_progress"
                 resp.headers["Idempotency-Key"] = key
@@ -182,18 +182,16 @@ class IdempotencyMiddleware:
 
                 # Detect content-type and normalize headers for persistence
                 try:
-                    hdrs_bytes: List[Tuple[bytes, bytes]] = captured_start["headers"]  # type: ignore[index]
+                    hdrs_bytes = cast(List[Tuple[bytes, bytes]], captured_start["headers"])
                     hdrs = {
                         k.decode("latin-1").lower(): v.decode("latin-1")
                         for k, v in hdrs_bytes
                     }
                     ctype_holder["ctype"] = hdrs.get("content-type", "")
-                    # break long line with a tiny loop (ruff E501)
+                    # build persist_headers without long lines
                     persist_headers = []
                     for k, v in hdrs_bytes:
-                        persist_headers.append(
-                            (k.decode("latin-1"), v.decode("latin-1"))
-                        )
+                        persist_headers.append((k.decode("latin-1"), v.decode("latin-1")))
                 except Exception:
                     ctype_holder["ctype"] = ""
                     persist_headers = []
