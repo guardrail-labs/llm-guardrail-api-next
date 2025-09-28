@@ -126,7 +126,8 @@ class IdempotencyMiddleware:
                 idempotency_conflict.labels(
                     tenant=tenant, bot=bot, reason="in_progress"
                 ).inc()
-                resp: Response = PlainTextResponse("Idempotency in progress", status_code=409)
+                # NOTE: don't re-annotate 'resp' (avoid mypy no-redef)
+                resp = PlainTextResponse("Idempotency in progress", status_code=409)
                 resp.headers["Retry-After"] = str(retry_after)
                 resp.headers["X-Idempotency-Status"] = "in_progress"
                 resp.headers["Idempotency-Key"] = key
@@ -185,7 +186,9 @@ class IdempotencyMiddleware:
                 # Detect content-type and normalize headers for persistence
                 try:
                     hdrs_bytes = cast(List[Tuple[bytes, bytes]], captured_start["headers"])
-                    hdrs = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in hdrs_bytes}
+                    hdrs = {
+                        k.decode("latin-1").lower(): v.decode("latin-1") for k, v in hdrs_bytes
+                    }
                     ctype_holder["ctype"] = hdrs.get("content-type", "")
                     persist_headers = []
                     for k, v in hdrs_bytes:
@@ -205,7 +208,11 @@ class IdempotencyMiddleware:
                     if is_stream:
                         _inject_headers(captured_start, "skipped:stream")
                     else:
-                        tag = "stored" if not (max_req and len(body) > max_req) else "skipped:size"
+                        tag = (
+                            "stored"
+                            if not (max_req and len(body) > max_req)
+                            else "skipped:size"
+                        )
                         _inject_headers(captured_start, tag)
                     await send(captured_start)
                     sent_start = True
