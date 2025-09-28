@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "locked": false,
+  "note": "Run bench/egress_bench.py and copy desired results here, then set locked=true.",
+  "scenarios": []
+}
