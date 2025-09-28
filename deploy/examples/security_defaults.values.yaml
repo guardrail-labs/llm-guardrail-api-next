@@ -1,0 +1,16 @@
+env:
+  INGRESS_DUPLICATE_HEADER_GUARD_MODE: "log"
+  INGRESS_DUPLICATE_HEADER_UNIQUE: >
+    content-length,transfer-encoding,host,authorization,x-request-id,traceparent,
+    x-guardrail-tenant,x-guardrail-bot
+  INGRESS_DUPLICATE_HEADER_METRIC_ALLOWLIST: >
+    content-length,transfer-encoding,host,authorization,x-request-id,traceparent,
+    x-guardrail-tenant,x-guardrail-bot,content-type,accept,cookie,set-cookie
+
+  INGRESS_HEADER_LIMITS_ENABLED: "true"
+  INGRESS_MAX_HEADER_COUNT: "200"
+  INGRESS_MAX_HEADER_VALUE_BYTES: "8192"
+
+  INGRESS_UNICODE_SANITIZER_ENABLED: "true"
+  INGRESS_UNICODE_ENFORCE_MODE: "log"
+  INGRESS_UNICODE_ENFORCE_FLAGS: "bidi,zwc"
