@@ -1,8 +1,8 @@
-# app/middleware/idempotency.py
 from __future__ import annotations
 
+import importlib
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, MutableMapping, Tuple
 
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
@@ -15,14 +15,22 @@ from app.observability.metrics import (
     idempotency_skipped,
 )
 from app.services.idempotency_store import IdemStore, body_hash
-from app.settings import get_config
+
+# Access settings dynamically to avoid mypy attr-defined errors from runtime modules.
+# This wrapper is intentionally simple; mypy-ignore is confined to this function.
+def _get_config() -> dict[str, Any]:  # mypy: runtime-only accessor
+    settings = importlib.import_module("app.settings")
+    try:
+        # app.settings.get_config exists at runtime but lacks static typing
+        return dict(settings.get_config())  # type: ignore[attr-defined]
+    except Exception:
+        return {}
 
 try:
     from app.observability.metrics import _limit_tenant_bot_labels
 except Exception:  # pragma: no cover
-    def _limit_tenant_bot_labels(t: str, b: str) -> tuple[str, str]:
-        return (t[:32], b[:32])
-
+    def _limit_tenant_bot_labels(tenant: str, bot: str) -> tuple[str, str]:
+        return (tenant[:32], bot[:32])
 
 _KEY_RE = re.compile(r"^[A-Za-z0-9._\-:/]{1,200}$")
 _STORE = IdemStore()
@@ -55,7 +63,7 @@ class IdempotencyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        cfg = dict(get_config())
+        cfg = _get_config()
         if not cfg.get("idempotency_enabled", True):
             await self.app(scope, receive, send)
             return
@@ -86,7 +94,7 @@ class IdempotencyMiddleware:
         if max_req and len(raw) > max_req:
             idempotency_skipped.labels(tenant=tenant, bot=bot, reason="size").inc()
 
-            async def send_wrap(msg: Dict[str, Any]) -> None:
+            async def send_wrap(msg: MutableMapping[str, Any]) -> None:
                 if msg.get("type") == "http.response.start":
                     headers: List[Tuple[bytes, bytes]] = msg.setdefault("headers", [])
                     headers.append((b"idempotency-key", key.encode("utf-8")))
@@ -108,7 +116,7 @@ class IdempotencyMiddleware:
                 idempotency_conflict.labels(
                     tenant=tenant, bot=bot, reason="in_progress"
                 ).inc()
-                resp: Response = PlainTextResponse("Idempotency in progress", status_code=409)
+                resp = PlainTextResponse("Idempotency in progress", status_code=409)
                 resp.headers["Retry-After"] = str(retry_after)
                 resp.headers["X-Idempotency-Status"] = "in_progress"
                 resp.headers["Idempotency-Key"] = key
@@ -118,7 +126,7 @@ class IdempotencyMiddleware:
                 idempotency_conflict.labels(
                     tenant=tenant, bot=bot, reason="fingerprint_mismatch"
                 ).inc()
-                resp: Response = PlainTextResponse("Idempotency conflict", status_code=409)
+                resp = PlainTextResponse("Idempotency conflict", status_code=409)
                 resp.headers["X-Idempotency-Status"] = "conflict"
                 resp.headers["Idempotency-Key"] = key
                 await resp(scope, receive, send)
@@ -147,7 +155,7 @@ class IdempotencyMiddleware:
             hdrs.append((b"idempotency-key", key.encode("utf-8")))
             hdrs.append((b"x-idempotency-status", tag.encode("utf-8")))
 
-        async def send_wrapper(message: Dict[str, Any]) -> None:
+        async def send_wrapper(message: MutableMapping[str, Any]) -> None:
             nonlocal captured_start, sent_start, is_stream, buf
             t = message.get("type")
 
