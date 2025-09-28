@@ -1,3 +1,5 @@
+import shlex
+import subprocess
 from pathlib import Path
 
 
@@ -31,3 +33,25 @@ def test_dashboard_contains_metrics() -> None:
         "guardrail_ingress_unicode_blocked_total",
     ]:
         assert metric in txt
+
+
+def test_env_example_is_sourceable() -> None:
+    env_path = Path("deploy/examples/security_defaults.env")
+    assert env_path.exists()
+    # Source in bash and print selected vars to ensure values round-trip
+    cmd = (
+        f"set -a; source {shlex.quote(str(env_path))}; "
+        "printf '%s\\n' \"$INGRESS_DUPLICATE_HEADER_GUARD_MODE\" "
+        '"$INGRESS_DUPLICATE_HEADER_UNIQUE" '
+        '"$INGRESS_DUPLICATE_HEADER_METRIC_ALLOWLIST" '
+        '"$INGRESS_UNICODE_ENFORCE_FLAGS"'
+    )
+    out = subprocess.check_output(["bash", "-c", cmd], text=True)
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    assert lines[0] == "log"
+    # Ensure the long lists contain key tokens and no literal newlines
+    assert "x-request-id" in lines[1]
+    assert "\n" not in lines[1]
+    assert "content-type" in lines[2]
+    assert "\n" not in lines[2]
+    assert lines[3] == "bidi,zwc"
