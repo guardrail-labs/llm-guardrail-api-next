@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover
         return (tenant[:32], bot[:32])
 
 
-_KEY_RE = re.compile(r"^[A-Za-z0-9._\\-:/]{1,200}$")
+_KEY_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
 _STORE: IdemStore = IdemStore()
 
 
@@ -214,6 +214,7 @@ class IdempotencyMiddleware:
             key=key,
             status=int(status_holder["status"]),
             body=bytes(buf),
+            headers=[],  # accepted by store; not persisted yet
             ctype=str(ctype_holder["ctype"] or ""),
             fp=fp,
             ttl=ttl,
