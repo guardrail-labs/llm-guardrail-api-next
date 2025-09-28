@@ -140,22 +140,25 @@ class IdempotencyMiddleware:
                 await resp(scope, receive, send)
                 return
 
-            # Replayed
-            idempotency_replayed.labels(tenant=tenant, bot=bot, method=method).inc()
+        # Replayed
+        idempotency_replayed.labels(tenant=tenant, bot=bot, method=method).inc()
 
-            # Start from stored headers (preserve custom route headers)
-            hdr_list: List[Tuple[str, str]] = list(rec.headers or [])
-            # Ensure Content-Type present/consistent
-            if rec.ctype:
-                # Avoid duplicate differing ctype entries
-                if not any(k.lower() == "content-type" for k, _ in hdr_list):
-                    hdr_list.append(("Content-Type", rec.ctype))
-            # Add idempotency headers for replay
-            hdr_list.append(("Idempotency-Key", key))
-            hdr_list.append(("Idempotency-Replayed", "true"))
+        # Start from stored headers (preserve custom route headers)
+        # Build a mapping for Response (mypy expects Mapping[str, str])
+        hdr_map: Dict[str, str] = {}
+        for k, v in (rec.headers or []):
+            hdr_map[k] = v
 
-            await Response(rec.body, rec.status, headers=hdr_list)(scope, receive, send)
-            return
+        # Ensure Content-Type present/consistent
+        if rec.ctype:
+            hdr_map["Content-Type"] = rec.ctype
+
+        # Add idempotency headers for replay
+        hdr_map["Idempotency-Key"] = key
+        hdr_map["Idempotency-Replayed"] = "true"
+
+        await Response(rec.body, rec.status, headers=hdr_map)(scope, receive, send)
+        return
 
         # No existing record — mark in progress and capture response
         await _STORE.put_in_progress(key, fp, ttl)
