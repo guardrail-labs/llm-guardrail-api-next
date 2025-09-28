@@ -12,19 +12,11 @@ from typing import (
     List,
     Optional,
     Tuple,
+    cast,
 )
 
 from starlette.responses import JSONResponse, PlainTextResponse, Response
-
-# Type alias for an ASGI app, wrapped to keep line length <= 100
-ASGIApp = Callable[
-    [
-        dict,
-        Callable[[], Awaitable[dict]],
-        Callable[[dict], Awaitable[None]],
-    ],
-    Awaitable[None],
-]
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Accept up to 200 chars, word-ish plus - and _
 _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
@@ -87,7 +79,7 @@ class IdemStore:
 _STORE = IdemStore()
 
 
-def _get_header(scope: dict, name: str) -> str:
+def _get_header(scope: Scope, name: str) -> str:
     headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or []
     target = name.lower().encode("latin-1")
     for k, v in headers:
@@ -106,9 +98,7 @@ def _hash_fingerprint(method: str, path: str, body: bytes) -> str:
     return h.hexdigest()
 
 
-def _decode_headers(
-    headers: Iterable[Tuple[bytes, bytes]]
-) -> List[Tuple[str, str]]:
+def _decode_headers(headers: Iterable[Tuple[bytes, bytes]]) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for k, v in headers:
         out.append((k.decode("latin-1"), v.decode("latin-1")))
@@ -149,9 +139,9 @@ class IdempotencyMiddleware:
 
     async def __call__(
         self,
-        scope: dict,
-        receive: Callable[[], Awaitable[dict]],
-        send: Callable[[dict], Awaitable[None]],
+        scope: Scope,
+        receive: Receive,
+        send: Send,
     ) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
@@ -185,10 +175,11 @@ class IdempotencyMiddleware:
         async def _recv_all() -> None:
             nonlocal more, disconnect
             while more and not disconnect:
-                message = await receive()
+                message: Message = await receive()
                 typ = message.get("type")
                 if typ == "http.request":
-                    body_chunks.append(message.get("body", b"") or b"")
+                    body_bytes = cast(bytes, message.get("body") or b"")
+                    body_chunks.append(body_bytes)
                     more = bool(message.get("more_body"))
                 elif typ == "http.disconnect":
                     disconnect = True
@@ -200,7 +191,7 @@ class IdempotencyMiddleware:
         # New receive that replays the buffered body to the downstream app.
         sent_buffer = False
 
-        async def _receive_replay() -> dict:
+        async def _receive_replay() -> Message:
             nonlocal sent_buffer
             if not sent_buffer:
                 sent_buffer = True
@@ -211,8 +202,8 @@ class IdempotencyMiddleware:
                 }
             return {"type": "http.request", "body": b"", "more_body": False}
 
-        method = scope.get("method", "GET")
-        path = scope.get("path", "/")
+        method = cast(str, scope.get("method", "GET"))
+        path = cast(str, scope.get("path", "/"))
         fp = _hash_fingerprint(method, path, buffered_body)
 
         # Look up the key
@@ -263,13 +254,13 @@ class IdempotencyMiddleware:
         captured_headers_bytes: List[Tuple[bytes, bytes]] = []
         captured_body: List[bytes] = []
 
-        async def _send_wrapper(message: dict) -> None:
+        async def _send_wrapper(message: Message) -> None:
             nonlocal captured_status, captured_headers_bytes
 
             if message["type"] == "http.response.start":
                 captured_status = int(message.get("status", 200))
                 raw_headers: List[Tuple[bytes, bytes]] = list(
-                    message.get("headers") or []
+                    cast(Iterable[Tuple[bytes, bytes]], message.get("headers") or [])
                 )
                 # Inject first-run idempotency headers
                 raw_headers.append((b"idempotency-key", key.encode("latin-1")))
@@ -282,15 +273,13 @@ class IdempotencyMiddleware:
                 message["headers"] = raw_headers
 
             elif message["type"] == "http.response.body":
-                captured_body.append(message.get("body") or b"")
+                body_part = cast(bytes, message.get("body") or b"")
+                captured_body.append(body_part)
 
             await send(message)
 
             # When the body stream ends, persist the response
-            if (
-                message["type"] == "http.response.body"
-                and not message.get("more_body")
-            ):
+            if message["type"] == "http.response.body" and not message.get("more_body"):
                 # Decode to strings for storage
                 decoded_headers = _decode_headers(captured_headers_bytes)
                 ctype = ""
