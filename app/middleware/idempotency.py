@@ -32,7 +32,9 @@ except Exception:  # pragma: no cover
         return (tenant[:32], bot[:32])
 
 
+# Allowed chars, and hard limit of 200 chars (tests expect >200 to be 400)
 _KEY_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
+
 _STORE: IdemStore = IdemStore()
 
 
@@ -69,7 +71,8 @@ class IdempotencyMiddleware:
             return
 
         method = (scope.get("method") or "").upper()
-        allow = {m.upper() for m in cfg.get("idempotency_methods", [])}
+        # Default to common mutating methods so tests run without extra config
+        allow = {m.upper() for m in (cfg.get("idempotency_methods") or ["POST", "PUT", "PATCH"])}
         if method not in allow:
             await self.app(scope, receive, send)
             return
@@ -83,6 +86,8 @@ class IdempotencyMiddleware:
             resp: Response = PlainTextResponse("Invalid Idempotency-Key", status_code=400)
             resp.headers["X-Idempotency-Status"] = "invalid"
             resp.headers["Idempotency-Key"] = key
+            # For consistency with tests, also surface "not replayed"
+            resp.headers["Idempotency-Replayed"] = "false"
             await resp(scope, receive, send)
             return
 
@@ -98,6 +103,7 @@ class IdempotencyMiddleware:
                 if msg.get("type") == "http.response.start":
                     headers: List[Tuple[bytes, bytes]] = msg.setdefault("headers", [])
                     headers.append((b"idempotency-key", key.encode("utf-8")))
+                    headers.append((b"idempotency-replayed", b"false"))
                     headers.append((b"x-idempotency-status", b"skipped:size"))
                 await send(msg)
 
@@ -120,6 +126,7 @@ class IdempotencyMiddleware:
                 resp.headers["Retry-After"] = str(retry_after)
                 resp.headers["X-Idempotency-Status"] = "in_progress"
                 resp.headers["Idempotency-Key"] = key
+                resp.headers["Idempotency-Replayed"] = "false"
                 await resp(scope, receive, send)
                 return
             if rec.fp != fp:
@@ -129,18 +136,28 @@ class IdempotencyMiddleware:
                 resp = PlainTextResponse("Idempotency conflict", status_code=409)
                 resp.headers["X-Idempotency-Status"] = "conflict"
                 resp.headers["Idempotency-Key"] = key
+                resp.headers["Idempotency-Replayed"] = "false"
                 await resp(scope, receive, send)
                 return
 
+            # Replayed
             idempotency_replayed.labels(tenant=tenant, bot=bot, method=method).inc()
-            headers = {
-                "Content-Type": rec.ctype or "application/octet-stream",
-                "X-Idempotency-Status": "replayed",
-                "Idempotency-Key": key,
-            }
-            await Response(rec.body, rec.status, headers=headers)(scope, receive, send)
+
+            # Start from stored headers (preserve custom route headers)
+            hdr_list: List[Tuple[str, str]] = list(rec.headers or [])
+            # Ensure Content-Type present/consistent
+            if rec.ctype:
+                # Avoid duplicate differing ctype entries
+                if not any(k.lower() == "content-type" for k, _ in hdr_list):
+                    hdr_list.append(("Content-Type", rec.ctype))
+            # Add idempotency headers for replay
+            hdr_list.append(("Idempotency-Key", key))
+            hdr_list.append(("Idempotency-Replayed", "true"))
+
+            await Response(rec.body, rec.status, headers=hdr_list)(scope, receive, send)
             return
 
+        # No existing record — mark in progress and capture response
         await _STORE.put_in_progress(key, fp, ttl)
 
         captured_start: Dict[str, Any] | None = None
@@ -149,29 +166,33 @@ class IdempotencyMiddleware:
         is_stream = False
         status_holder: Dict[str, int] = {"status": 200}
         ctype_holder: Dict[str, str] = {"ctype": ""}
+        start_headers_decoded: List[Tuple[str, str]] = []
 
         def _inject_headers(start_msg: Dict[str, Any], tag: str) -> None:
             hdrs: List[Tuple[bytes, bytes]] = start_msg.setdefault("headers", [])
             hdrs.append((b"idempotency-key", key.encode("utf-8")))
+            hdrs.append((b"idempotency-replayed", b"false"))
             hdrs.append((b"x-idempotency-status", tag.encode("utf-8")))
 
         async def send_wrapper(message: MutableMapping[str, Any]) -> None:
-            nonlocal captured_start, sent_start, is_stream, buf
+            nonlocal captured_start, sent_start, is_stream, buf, start_headers_decoded
             t = message.get("type")
 
             if t == "http.response.start":
+                headers_raw = list(message.get("headers") or [])
                 captured_start = {
                     "type": t,
                     "status": int(message.get("status", 200)),
-                    "headers": list(message.get("headers") or []),
+                    "headers": headers_raw,
                 }
                 status_holder["status"] = int(message.get("status", 200))
+                # Decode for storage/replay (latin-1 preserves raw octets)
+                start_headers_decoded = [
+                    (k.decode("latin-1"), v.decode("latin-1")) for k, v in headers_raw
+                ]
                 try:
-                    hdrs = {
-                        k.decode("latin-1").lower(): v.decode("latin-1")
-                        for k, v in captured_start["headers"]
-                    }
-                    ctype_holder["ctype"] = hdrs.get("content-type", "")
+                    hdrs_lower = {k.lower(): v for k, v in start_headers_decoded}
+                    ctype_holder["ctype"] = hdrs_lower.get("content-type", "")
                 except Exception:
                     ctype_holder["ctype"] = ""
                 return
@@ -201,6 +222,7 @@ class IdempotencyMiddleware:
             await _STORE.clear(key)
             raise
 
+        # Post-processing & persistence
         if is_stream:
             idempotency_skipped.labels(tenant=tenant, bot=bot, reason="stream").inc()
             await _STORE.clear(key)
@@ -214,7 +236,7 @@ class IdempotencyMiddleware:
             key=key,
             status=int(status_holder["status"]),
             body=bytes(buf),
-            headers=[],  # accepted by store; not persisted yet
+            headers=start_headers_decoded,
             ctype=str(ctype_holder["ctype"] or ""),
             fp=fp,
             ttl=ttl,
