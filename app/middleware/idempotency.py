@@ -1,272 +1,257 @@
+# app/middleware/idempotency.py
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
-import os
-import threading
-import time
-from collections import OrderedDict
-from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Iterable, Optional, cast
+import importlib
+import re
+from typing import Any, Dict, List, MutableMapping, Tuple
 
-from fastapi.responses import JSONResponse, Response
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response as StarletteResponse
+from starlette.responses import PlainTextResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.middleware.request_id import get_request_id
-
-
-@dataclass
-class _CachedResponse:
-    status: int
-    body: bytes
-    headers: Dict[str, str]
+from app.observability import metrics as metrics_mod
+from app.services.idempotency_store import IdemStore, body_hash
 
 
-class _InMemoryStore:
-    def __init__(self) -> None:
-        self._data: Dict[str, tuple[float, _CachedResponse]] = {}
-        self._lock = threading.Lock()
+class _NoopCounter:
+    def labels(self, **_: Any) -> "_NoopCounter":
+        return self
 
-    def get(self, key: str) -> Optional[_CachedResponse]:
-        now = time.time()
-        with self._lock:
-            record = self._data.get(key)
-            if not record:
-                return None
-            expires_at, cached = record
-            if expires_at <= now:
-                self._data.pop(key, None)
-                return None
-            return cached
-
-    def set(self, key: str, value: _CachedResponse, ttl: int) -> None:
-        expires_at = time.time() + max(ttl, 1)
-        with self._lock:
-            self._data[key] = (expires_at, value)
+    def inc(self, *_: Any, **__: Any) -> None:
+        return None
 
 
-RequestHandler = Callable[[Request], Awaitable[StarletteResponse]]
+_NOOP_COUNTER = _NoopCounter()
+
+idempotency_conflict = getattr(metrics_mod, "idempotency_conflict", _NOOP_COUNTER)
+idempotency_replayed = getattr(metrics_mod, "idempotency_replayed", _NOOP_COUNTER)
+idempotency_seen = getattr(metrics_mod, "idempotency_seen", _NOOP_COUNTER)
+idempotency_skipped = getattr(metrics_mod, "idempotency_skipped", _NOOP_COUNTER)
 
 
-class _RedisStore:
-    def __init__(self, url: str, ttl: int) -> None:
-        import redis
-
-        self._cli = redis.from_url(url)
-        self._ttl = max(ttl, 1)
-
-    def get(self, key: str) -> Optional[_CachedResponse]:
-        try:
-            raw = self._cli.get(key)
-        except Exception:
-            return None
-        if not raw:
-            return None
-        try:
-            parsed = json.loads(raw)
-            body = base64.b64decode(parsed.get("body") or b"")
-            headers = parsed.get("headers") or {}
-            status = int(parsed.get("status") or 200)
-            if not isinstance(headers, dict):
-                headers = {}
-            return _CachedResponse(status=status, body=body, headers=headers)
-        except Exception:
-            return None
-
-    def set(self, key: str, value: _CachedResponse, ttl: int) -> None:
-        payload = {
-            "status": value.status,
-            "body": base64.b64encode(value.body).decode("ascii"),
-            "headers": value.headers,
-        }
-        try:
-            self._cli.setex(key, max(ttl, 1), json.dumps(payload))
-        except Exception:
-            pass
+def _get_config() -> dict[str, Any]:
+    """Runtime settings accessor that avoids static attr-defined issues."""
+    settings = importlib.import_module("app.settings")
+    cfg_fn = getattr(settings, "get_config", None)
+    return dict(cfg_fn()) if callable(cfg_fn) else {}
 
 
-def _error_response(detail: str) -> JSONResponse:
-    payload = {
-        "code": "bad_request",
-        "detail": detail,
-        "request_id": get_request_id() or "",
-    }
-    headers = {"X-Request-ID": payload["request_id"]}
-    return JSONResponse(payload, status_code=400, headers=headers)
+try:
+    # Provided by metrics module in prod; fallback in tests.
+    from app.observability.metrics import _limit_tenant_bot_labels
+except Exception:  # pragma: no cover
+
+    def _limit_tenant_bot_labels(tenant: str, bot: str) -> tuple[str, str]:
+        return (tenant[:32], bot[:32])
 
 
-def _hash_body(body: bytes) -> str:
-    return hashlib.sha256(body).hexdigest()
+# Accept ASCII tokens up to 200 chars
+_KEY_RE = re.compile(r"^[A-Za-z0-9._\-:/]{1,200}$")
+_STORE: IdemStore = IdemStore()
 
 
-def _tenant_from(request: Request) -> str:
-    headers = request.headers
-    tenant = (
-        headers.get("X-Tenant-ID")
-        or headers.get("X-Tenant-Id")
-        or headers.get("X-Tenant")
-        or getattr(request.state, "tenant", "")
-    )
-    return str(tenant or "")
+def _tenant_bot(req: Request) -> tuple[str, str]:
+    t = req.headers.get("X-Guardrail-Tenant", "") or ""
+    b = req.headers.get("X-Guardrail-Bot", "") or ""
+    return _limit_tenant_bot_labels(t, b)
 
 
-def _bot_from(request: Request) -> str:
-    headers = request.headers
-    bot = (
-        headers.get("X-Bot-ID")
-        or headers.get("X-Bot-Id")
-        or headers.get("X-Bot")
-        or getattr(request.state, "bot", "")
-    )
-    return str(bot or "")
+def _reinject_body(body: bytes) -> Receive:
+    sent = {"done": False}
+
+    async def _receive() -> Dict[str, Any]:
+        if sent["done"]:
+            return {"type": "http.request"}
+        sent["done"] = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return _receive
 
 
-def _eligible_path(path: str) -> bool:
-    normalized = path.rstrip("/") or "/"
-    if normalized.startswith("/v1/batch/"):
-        return True
-    return normalized in {"/v1/guardrail"}
+class IdempotencyMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
 
-_HOP_BY_HOP_HEADER_NAMES = {
-    "content-length",
-    "transfer-encoding",
-    "date",
-    "server",
-}
+        cfg = _get_config()
+        if not cfg.get("idempotency_enabled", True):
+            await self.app(scope, receive, send)
+            return
 
+        method = (scope.get("method") or "").upper()
+        allow_cfg = cfg.get("idempotency_methods")
+        allow = {m.upper() for m in allow_cfg} if allow_cfg else {"POST", "PUT", "PATCH"}
+        if method not in allow:
+            await self.app(scope, receive, send)
+            return
 
-def _preserved_headers(source: Iterable[tuple[str, str]]) -> Dict[str, str]:
-    preserved: "OrderedDict[str, tuple[str, str]]" = OrderedDict()
-    for key, value in source:
-        lower = key.lower()
-        if lower in _HOP_BY_HOP_HEADER_NAMES:
-            continue
-        if lower not in preserved:
-            preserved[lower] = (key, value)
-    return {original: val for original, val in preserved.values()}
-
-
-_STORE_SINGLETON: _InMemoryStore | _RedisStore | None = None
-
-
-def _load_store(ttl: int):
-    global _STORE_SINGLETON
-    if _STORE_SINGLETON is not None:
-        return _STORE_SINGLETON
-    url = os.getenv("IDEMPOTENCY_REDIS_URL") or os.getenv("REDIS_URL")
-    if not url:
-        _STORE_SINGLETON = _InMemoryStore()
-        return _STORE_SINGLETON
-    try:
-        _STORE_SINGLETON = _RedisStore(url, ttl)
-        return _STORE_SINGLETON
-    except Exception:
-        _STORE_SINGLETON = _InMemoryStore()
-        return _STORE_SINGLETON
-
-
-class IdempotencyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app) -> None:
-        super().__init__(app)
-        ttl_raw = os.getenv("IDEMPOTENCY_TTL_SECONDS", "")
-        try:
-            ttl = int(ttl_raw)
-        except Exception:
-            ttl = 86400
-        if ttl <= 0:
-            ttl = 86400
-        self._ttl = ttl
-        self._store = _load_store(ttl)
-
-    async def dispatch(
-        self, request: Request, call_next: RequestHandler
-    ) -> StarletteResponse:
-        if request.method.upper() != "POST":
-            return await call_next(request)
-        path = request.url.path
-        if not _eligible_path(path):
-            return await call_next(request)
-
-        key = request.headers.get("X-Idempotency-Key")
+        req = Request(scope, receive=receive)
+        # Accept both standard and legacy header names
+        key = req.headers.get("Idempotency-Key") or req.headers.get("X-Idempotency-Key")
         if not key:
-            return await call_next(request)
-        if len(key) > 200:
-            return _error_response("invalid idempotency key")
+            await self.app(scope, receive, send)
+            return
+        if not _KEY_RE.match(key):
+            resp: Response = PlainTextResponse("Invalid Idempotency-Key", status_code=400)
+            resp.headers["X-Idempotency-Status"] = "invalid"
+            resp.headers["Idempotency-Key"] = key
+            resp.headers["Idempotency-Replayed"] = "false"
+            await resp(scope, receive, send)
+            return
 
-        body = await request.body()
-        fingerprint = self._fingerprint(request, key, body)
-        cached = self._store.get(fingerprint)
-        if cached is not None:
-            replay = Response(content=cached.body, status_code=cached.status)
-            for name, value in cached.headers.items():
-                replay.headers[name] = value
-            replay.headers["Idempotency-Replayed"] = "true"
-            return replay
+        tenant, bot = _tenant_bot(req)
+        idempotency_seen.labels(tenant=tenant, bot=bot, method=method).inc()
 
-        response = await call_next(request)
-        if "Idempotency-Replayed" not in response.headers:
-            response.headers["Idempotency-Replayed"] = "false"
-        status = getattr(response, "status_code", 200)
-        if status >= 500:
-            return response
+        max_req = int(cfg.get("idempotency_body_max_bytes", 131072) or 0)
+        raw = await req.body()
+        if max_req and len(raw) > max_req:
+            idempotency_skipped.labels(tenant=tenant, bot=bot, reason="size").inc()
 
-        body_iterator = getattr(response, "body_iterator", None)
-        if body_iterator is not None:
-            content_length = response.headers.get("content-length")
-            if content_length is None:
-                return response
-            chunks: list[bytes] = []
-            iterator = cast(AsyncIterator[Any], body_iterator)
+            async def send_wrap(msg: MutableMapping[str, Any]) -> None:
+                if msg.get("type") == "http.response.start":
+                    headers: List[Tuple[bytes, bytes]] = msg.setdefault("headers", [])
+                    headers.append((b"idempotency-key", key.encode("utf-8")))
+                    headers.append((b"idempotency-replayed", b"false"))
+                    headers.append((b"x-idempotency-status", b"skipped:size"))
+                await send(msg)
 
-            async def _collect() -> None:
-                async for chunk in iterator:
-                    if isinstance(chunk, (bytes, bytearray)):
-                        chunks.append(bytes(chunk))
-                    elif isinstance(chunk, str):
-                        chunks.append(chunk.encode("utf-8"))
-                    else:
-                        chunks.append(bytes(chunk))
+            await self.app(scope, _reinject_body(raw), send_wrap)
+            return
 
-            await _collect()
+        path = scope.get("path") or ""
+        fp = "|".join([method, path, tenant, bot, body_hash(raw)])
 
-            async def _aiter():
-                for chunk in chunks:
-                    yield chunk
+        ttl = int(cfg.get("idempotency_ttl_seconds", 86400) or 0)
+        retry_after = int(cfg.get("idempotency_in_progress_retry_after", 1) or 1)
 
-            setattr(response, "body_iterator", _aiter())
-            body_bytes = b"".join(chunks)
-        else:
-            body_bytes = getattr(response, "body", b"")
-            if not isinstance(body_bytes, (bytes, bytearray)):
+        rec = await _STORE.get(key)
+        if rec:
+            if rec.state == "in_progress":
+                idempotency_conflict.labels(
+                    tenant=tenant, bot=bot, reason="in_progress"
+                ).inc()
+                resp = PlainTextResponse("Idempotency in progress", status_code=409)
+                resp.headers["Retry-After"] = str(retry_after)
+                resp.headers["X-Idempotency-Status"] = "in_progress"
+                resp.headers["Idempotency-Key"] = key
+                resp.headers["Idempotency-Replayed"] = "false"
+                await resp(scope, receive, send)
+                return
+            if rec.fp != fp:
+                idempotency_conflict.labels(
+                    tenant=tenant, bot=bot, reason="fingerprint_mismatch"
+                ).inc()
+                resp = PlainTextResponse("Idempotency conflict", status_code=409)
+                resp.headers["X-Idempotency-Status"] = "conflict"
+                resp.headers["Idempotency-Key"] = key
+                resp.headers["Idempotency-Replayed"] = "false"
+                await resp(scope, receive, send)
+                return
+
+            # Replayed (done + same fingerprint)
+            idempotency_replayed.labels(tenant=tenant, bot=bot, method=method).inc()
+
+            # Start from stored headers (preserve custom/CORS/security headers)
+            hdr_map: Dict[str, str] = {}
+            for k, v in (rec.headers or []):
+                hdr_map[k] = v
+            if rec.ctype:
+                hdr_map["Content-Type"] = rec.ctype
+            hdr_map["Idempotency-Key"] = key
+            hdr_map["Idempotency-Replayed"] = "true"
+
+            await Response(rec.body, rec.status, headers=hdr_map)(scope, receive, send)
+            return
+
+        # First run: mark in-progress
+        await _STORE.put_in_progress(key, fp, ttl)
+
+        captured_start: Dict[str, Any] | None = None
+        sent_start = False
+        buf = bytearray()
+        is_stream = False
+        status_holder: Dict[str, int] = {"status": 200}
+        ctype_holder: Dict[str, str] = {"ctype": ""}
+        stored_headers: List[Tuple[str, str]] = []
+        captured_headers: List[Tuple[bytes, bytes]] = []
+
+        def _inject_headers(start_msg: Dict[str, Any], tag: str) -> None:
+            hdrs: List[Tuple[bytes, bytes]] = start_msg.setdefault("headers", [])
+            hdrs.append((b"idempotency-key", key.encode("utf-8")))
+            hdrs.append((b"idempotency-replayed", b"false"))
+            hdrs.append((b"x-idempotency-status", tag.encode("utf-8")))
+
+        async def send_wrapper(message: MutableMapping[str, Any]) -> None:
+            nonlocal captured_start, sent_start, is_stream, buf, stored_headers, captured_headers
+            t = message.get("type")
+
+            if t == "http.response.start":
+                captured_headers = list(message.get("headers") or [])
+                captured_start = {
+                    "type": t,
+                    "status": int(message.get("status", 200)),
+                    "headers": captured_headers,
+                }
+                status_holder["status"] = int(message.get("status", 200))
                 try:
-                    body_bytes = bytes(body_bytes)
+                    # decode once for ctype + eventual storage
+                    dec = [
+                        (k.decode("latin-1"), v.decode("latin-1"))
+                        for (k, v) in captured_headers
+                    ]
+                    stored_headers = dec
+                    ctype_lower = {k.lower(): v for (k, v) in dec}
+                    ctype_holder["ctype"] = ctype_lower.get("content-type", "")
                 except Exception:
-                    body_bytes = b""
+                    stored_headers = []
+                    ctype_holder["ctype"] = ""
+                return
 
-        headers = _preserved_headers(response.headers.items())
-        headers.setdefault("Idempotency-Replayed", "false")
-        cached_record = _CachedResponse(
-            status=status,
-            body=bytes(body_bytes),
-            headers=dict(headers),
+            if t == "http.response.body":
+                body = message.get("body") or b""
+                more = bool(message.get("more_body"))
+                if more:
+                    is_stream = True
+                if not sent_start and captured_start is not None:
+                    if is_stream:
+                        _inject_headers(captured_start, "skipped:stream")
+                    else:
+                        tag = "stored" if not (max_req and len(body) > max_req) else "skipped:size"
+                        _inject_headers(captured_start, tag)
+                    await send(captured_start)
+                    sent_start = True
+                buf += body
+                await send(message)
+                return
+
+            await send(message)
+
+        try:
+            await self.app(scope, _reinject_body(raw), send_wrapper)
+        except Exception:
+            await _STORE.clear(key)
+            raise
+
+        if is_stream:
+            idempotency_skipped.labels(tenant=tenant, bot=bot, reason="stream").inc()
+            await _STORE.clear(key)
+            return
+        if max_req and len(buf) > max_req:
+            idempotency_skipped.labels(tenant=tenant, bot=bot, reason="size").inc()
+            await _STORE.clear(key)
+            return
+
+        await _STORE.complete(
+            key=key,
+            status=int(status_holder["status"]),
+            body=bytes(buf),
+            headers=stored_headers,
+            ctype=str(ctype_holder["ctype"] or ""),
+            fp=fp,
+            ttl=ttl,
         )
-        self._store.set(fingerprint, cached_record, self._ttl)
 
-        for name, value in headers.items():
-            response.headers[name] = value
-        return response
-
-    def _fingerprint(self, request: Request, key: str, body: bytes) -> str:
-        method = request.method.upper()
-        path = request.url.path.rstrip("/") or "/"
-        tenant = _tenant_from(request)
-        bot = _bot_from(request)
-        body_hash = _hash_body(body or b"")
-        parts = ["idem", method, path, tenant, bot, body_hash, key]
-        joined = ":".join(parts)
-        digest = hashlib.sha256(joined.encode("utf-8", errors="ignore")).hexdigest()
-        return f"idem:{digest}"

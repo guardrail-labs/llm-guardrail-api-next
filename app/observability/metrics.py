@@ -97,6 +97,33 @@ def _get_or_create_counter(
         return Counter(name, doc, labelnames=labelnames)
 
 
+# --- Idempotency middleware metrics --------------------------------------------
+
+idempotency_seen = _get_or_create_counter(
+    "guardrail_idempotency_seen_total",
+    "HTTP requests processed by the idempotency middleware.",
+    ("tenant", "bot", "method"),
+)
+
+idempotency_skipped = _get_or_create_counter(
+    "guardrail_idempotency_skipped_total",
+    "Requests skipped from idempotency storage due to size or streaming.",
+    ("tenant", "bot", "reason"),
+)
+
+idempotency_replayed = _get_or_create_counter(
+    "guardrail_idempotency_replayed_total",
+    "Responses replayed from the idempotency middleware store.",
+    ("tenant", "bot", "method"),
+)
+
+idempotency_conflict = _get_or_create_counter(
+    "guardrail_idempotency_conflict_total",
+    "Conflicts encountered when processing idempotent requests.",
+    ("tenant", "bot", "reason"),
+)
+
+
 # --- Trace guard metrics -------------------------------------------------------
 
 unicode_flagged = _get_or_create_counter(
