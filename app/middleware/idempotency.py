@@ -85,8 +85,11 @@ class IdempotencyMiddleware:
             return
 
         # Validate key format early (tests expect JSON body on error).
-        if not _KEY_RE.match(key):
-            resp: Response = JSONResponse({"error": "Invalid Idempotency-Key"}, status_code=400)
+       if not _KEY_RE.match(key):
+           resp: Response = JSONResponse(
+               {"code": "bad_request", "message": "Invalid Idempotency-Key"},
+               status_code=400,
+            )
             resp.headers["X-Idempotency-Status"] = "invalid"
             resp.headers["Idempotency-Key"] = key
             resp.headers["Idempotency-Replayed"] = "false"
