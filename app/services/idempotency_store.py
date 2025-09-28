@@ -19,7 +19,7 @@ class IdemRecord:
         headers: Optional[List[Tuple[str, str]]] = None,
         ttl: int = 0,
     ) -> None:
-        self.state = state
+        self.state = state  # "in_progress" | "done"
         self.status = status
         self.body = body
         self.ctype = ctype
@@ -49,22 +49,20 @@ class IdemStore:
             self._data[key] = IdemRecord("in_progress", fp=fp, ttl=ttl)
 
     async def complete(
--       self, key: str, status: int, body: bytes, ctype: str, fp: str, ttl: int
-+       self,
-+       key: str,
-+       status: int,
-+       body: bytes,
-+       headers: list[tuple[str, str]] | None,  # accepted but not stored
-+       ctype: str,
-+       fp: str,
-+       ttl: int,
+        self,
+        key: str,
+        status: int,
+        body: bytes,
+        headers: Optional[List[Tuple[str, str]]],
+        ctype: str,
+        fp: str,
+        ttl: int,
     ) -> None:
--       async with self._lock:
--           self._data[key] = IdemRecord("done", status, body, ctype, fp, ttl)
-+       async with self._lock:
-+           # `headers` intentionally unused; we only persist status/body/ctype/fp
-+           self._data[key] = IdemRecord("done", status, body, ctype, fp, ttl)
-            
+        async with self._lock:
+            # We store status/body/ctype/fp; headers are accepted for future use.
+            self._data[key] = IdemRecord(
+                "done", status=status, body=body, ctype=ctype, fp=fp, headers=headers, ttl=ttl
+            )
 
     async def clear(self, key: str) -> None:
         async with self._lock:
