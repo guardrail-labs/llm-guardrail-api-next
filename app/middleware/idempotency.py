@@ -76,14 +76,16 @@ class IdempotencyMiddleware:
             return
 
         req = Request(scope, receive=receive)
-        key = req.headers.get("Idempotency-Key")
+
+        # Accept both header names used across the code/tests.
+        key = req.headers.get("Idempotency-Key") or req.headers.get("X-Idempotency-Key")
         if not key:
             await self.app(scope, receive, send)
             return
 
-        # Validate key format early (tests expect JSON body)
+        # Validate key format early (tests expect JSON body on error).
         if not _KEY_RE.match(key):
-            resp: Response = JSONResponse({"error": "Invalid Idempotency-Key"}, status_code=400)
+            resp = JSONResponse({"error": "Invalid Idempotency-Key"}, status_code=400)
             resp.headers["X-Idempotency-Status"] = "invalid"
             resp.headers["Idempotency-Key"] = key
             resp.headers["Idempotency-Replayed"] = "false"
@@ -96,7 +98,7 @@ class IdempotencyMiddleware:
         max_req = int(cfg.get("idempotency_body_max_bytes", 131072) or 0)
         raw = await req.body()
 
-        # If too large to store, mark skipped but still process the request
+        # If too large to store, mark skipped but still process the request.
         if max_req and len(raw) > max_req:
             idempotency_skipped.labels(tenant=tenant, bot=bot, reason="size").inc()
 
@@ -182,16 +184,19 @@ class IdempotencyMiddleware:
 
                 # Detect content-type and normalize headers for persistence
                 try:
-                    hdrs_bytes = cast(List[Tuple[bytes, bytes]], captured_start["headers"])
+                    hdrs_bytes = cast(
+                        List[Tuple[bytes, bytes]], captured_start["headers"]
+                    )
                     hdrs = {
                         k.decode("latin-1").lower(): v.decode("latin-1")
                         for k, v in hdrs_bytes
                     }
                     ctype_holder["ctype"] = hdrs.get("content-type", "")
-                    # build persist_headers without long lines
                     persist_headers = []
                     for k, v in hdrs_bytes:
-                        persist_headers.append((k.decode("latin-1"), v.decode("latin-1")))
+                        persist_headers.append(
+                            (k.decode("latin-1"), v.decode("latin-1"))
+                        )
                 except Exception:
                     ctype_holder["ctype"] = ""
                     persist_headers = []
