@@ -12,11 +12,19 @@ from typing import (
     List,
     Optional,
     Tuple,
-    cast,
 )
 
 from starlette.responses import JSONResponse, PlainTextResponse, Response
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Type alias for an ASGI app, wrapped to keep line length <= 100
+ASGIApp = Callable[
+    [
+        dict,
+        Callable[[], Awaitable[dict]],
+        Callable[[dict], Awaitable[None]],
+    ],
+    Awaitable[None],
+]
 
 # Accept up to 200 chars, word-ish plus - and _
 _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
@@ -55,6 +63,15 @@ class IdemStore:
             if key not in self._recs:
                 self._recs[key] = IdempotencyRecord(key=key, fp=fp, state="in_progress")
 
+    async def reset_in_progress(self, key: str, fp: str, _ttl: int) -> None:
+        """Force a key into in-progress state (overwrites any existing record)."""
+        async with self._lock:
+            self._recs[key] = IdempotencyRecord(key=key, fp=fp, state="in_progress")
+
+    async def delete(self, key: str) -> None:
+        async with self._lock:
+            self._recs.pop(key, None)
+
     async def complete(
         self,
         key: str,
@@ -79,7 +96,7 @@ class IdemStore:
 _STORE = IdemStore()
 
 
-def _get_header(scope: Scope, name: str) -> str:
+def _get_header(scope: dict, name: str) -> str:
     headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or []
     target = name.lower().encode("latin-1")
     for k, v in headers:
@@ -106,10 +123,10 @@ def _decode_headers(headers: Iterable[Tuple[bytes, bytes]]) -> List[Tuple[str, s
 
 
 def _headers_to_dict(headers: Iterable[Tuple[str, str]]) -> Dict[str, str]:
-    # Collapses duplicates; sufficient for tests (no multi-value headers asserted).
+    # Collapses duplicates and normalizes names to lowercase; sufficient for tests.
     d: Dict[str, str] = {}
     for k, v in headers:
-        d[k] = v
+        d[k.lower()] = v
     return d
 
 
@@ -122,7 +139,8 @@ class IdempotencyMiddleware:
       - Idempotency-Replayed: "false"
     - Subsequent requests with same key + same fingerprint are replayed from store with:
       - Idempotency-Replayed: "true"
-    - If a different fingerprint is seen for the same key, returns 409 conflict.
+    - If a different fingerprint is seen for the same key, we treat it as a new run
+      (overwrite store).
     - If a request arrives while first is in progress, returns 409 with Retry-After.
     - Invalid key (>200 chars or bad charset) returns 400 with standard envelope.
     """
@@ -139,9 +157,9 @@ class IdempotencyMiddleware:
 
     async def __call__(
         self,
-        scope: Scope,
-        receive: Receive,
-        send: Send,
+        scope: dict,
+        receive: Callable[[], Awaitable[dict]],
+        send: Callable[[dict], Awaitable[None]],
     ) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
@@ -161,7 +179,7 @@ class IdempotencyMiddleware:
                 "Idempotency-Replayed": "false",
             }
             await JSONResponse(
-                {"code": "bad_request", "message": "Invalid Idempotency-Key"},
+                {"code": "bad_request", "detail": "invalid idempotency key"},
                 status_code=400,
                 headers=headers,
             )(scope, receive, send)
@@ -175,11 +193,10 @@ class IdempotencyMiddleware:
         async def _recv_all() -> None:
             nonlocal more, disconnect
             while more and not disconnect:
-                message: Message = await receive()
+                message = await receive()
                 typ = message.get("type")
                 if typ == "http.request":
-                    body_bytes = cast(bytes, message.get("body") or b"")
-                    body_chunks.append(body_bytes)
+                    body_chunks.append(message.get("body", b"") or b"")
                     more = bool(message.get("more_body"))
                 elif typ == "http.disconnect":
                     disconnect = True
@@ -191,7 +208,7 @@ class IdempotencyMiddleware:
         # New receive that replays the buffered body to the downstream app.
         sent_buffer = False
 
-        async def _receive_replay() -> Message:
+        async def _receive_replay() -> dict:
             nonlocal sent_buffer
             if not sent_buffer:
                 sent_buffer = True
@@ -202,8 +219,8 @@ class IdempotencyMiddleware:
                 }
             return {"type": "http.request", "body": b"", "more_body": False}
 
-        method = cast(str, scope.get("method", "GET"))
-        path = cast(str, scope.get("path", "/"))
+        method = scope.get("method", "GET")
+        path = scope.get("path", "/")
         fp = _hash_fingerprint(method, path, buffered_body)
 
         # Look up the key
@@ -221,46 +238,40 @@ class IdempotencyMiddleware:
                 )(scope, _receive_replay, send)
                 return
 
-            if rec.fp != fp:
-                headers = {
-                    "X-Idempotency-Status": "conflict",
-                    "Idempotency-Key": key,
-                    "Idempotency-Replayed": "false",
-                }
-                await PlainTextResponse(
-                    "Idempotency conflict", status_code=409, headers=headers
+            if rec.fp == fp and rec.state == "done":
+                # Replayed (same fingerprint, done)
+                base_map = _headers_to_dict(rec.headers or [])
+                if rec.ctype:
+                    base_map["content-type"] = rec.ctype
+                # Ensure exactly one of each idempotency header
+                base_map["idempotency-key"] = key
+                base_map["idempotency-replayed"] = "true"
+
+                await Response(
+                    rec.body, status_code=rec.status or 200, headers=base_map
                 )(scope, _receive_replay, send)
                 return
 
-            # Replayed (same fingerprint, done)
-            base_map = _headers_to_dict(rec.headers or [])
-            if rec.ctype:
-                base_map["Content-Type"] = rec.ctype
-            base_map["Idempotency-Key"] = key
-            base_map["Idempotency-Replayed"] = "true"
-
-            await Response(
-                rec.body, status_code=rec.status or 200, headers=base_map
-            )(scope, _receive_replay, send)
-            return
-
-        # First run for this key: mark as in-progress
-        await _STORE.put_in_progress(key, fp, self.ttl)
+            # Same key but different fingerprint: treat as a fresh run
+            await _STORE.reset_in_progress(key, fp, self.ttl)
+        else:
+            # First run for this key: mark as in-progress
+            await _STORE.put_in_progress(key, fp, self.ttl)
 
         # Capture downstream response to:
         #  - inject idempotency headers on-the-fly
-        #  - persist for replay
+        #  - persist for replay (if not 5xx)
         captured_status: int = 200
         captured_headers_bytes: List[Tuple[bytes, bytes]] = []
         captured_body: List[bytes] = []
 
-        async def _send_wrapper(message: Message) -> None:
+        async def _send_wrapper(message: dict) -> None:
             nonlocal captured_status, captured_headers_bytes
 
             if message["type"] == "http.response.start":
                 captured_status = int(message.get("status", 200))
                 raw_headers: List[Tuple[bytes, bytes]] = list(
-                    cast(Iterable[Tuple[bytes, bytes]], message.get("headers") or [])
+                    message.get("headers") or []
                 )
                 # Inject first-run idempotency headers
                 raw_headers.append((b"idempotency-key", key.encode("latin-1")))
@@ -273,13 +284,14 @@ class IdempotencyMiddleware:
                 message["headers"] = raw_headers
 
             elif message["type"] == "http.response.body":
-                body_part = cast(bytes, message.get("body") or b"")
-                captured_body.append(body_part)
+                captured_body.append(message.get("body") or b"")
 
             await send(message)
 
-            # When the body stream ends, persist the response
-            if message["type"] == "http.response.body" and not message.get("more_body"):
+            # When the body stream ends, persist the response if not a 5xx
+            if message["type"] == "http.response.body" and not message.get(
+                "more_body"
+            ):
                 # Decode to strings for storage
                 decoded_headers = _decode_headers(captured_headers_bytes)
                 ctype = ""
@@ -288,13 +300,17 @@ class IdempotencyMiddleware:
                         ctype = value
                         break
 
-                await _STORE.complete(
-                    key=key,
-                    status=captured_status,
-                    body=b"".join(captured_body),
-                    headers=decoded_headers,
-                    ctype=ctype,
-                )
+                if 500 <= captured_status <= 599:
+                    # Do not store failing responses; allow retries to run fresh.
+                    await _STORE.delete(key)
+                else:
+                    await _STORE.complete(
+                        key=key,
+                        status=captured_status,
+                        body=b"".join(captured_body),
+                        headers=decoded_headers,
+                        ctype=ctype,
+                    )
 
         # Run downstream with our replaying receive + capturing send
         await self.app(scope, _receive_replay, _send_wrapper)
