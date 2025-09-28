@@ -26,13 +26,13 @@ def _get_config() -> dict[str, Any]:
 
 
 try:
-    # Prefer the shared label optimizer if available
     from app.observability.metrics import _limit_tenant_bot_labels
 except Exception:  # pragma: no cover
     def _limit_tenant_bot_labels(tenant: str, bot: str) -> tuple[str, str]:
         return (tenant[:32], bot[:32])
 
 
+# Allow 1..200, safe characters only
 _KEY_RE = re.compile(r"^[A-Za-z0-9._\-:/]{1,200}$")
 _STORE: IdemStore = IdemStore()
 
@@ -81,9 +81,9 @@ class IdempotencyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Validate key format early
+        # Validate key format early (tests expect JSON body)
         if not _KEY_RE.match(key):
-            resp = JSONResponse({"error": "Invalid Idempotency-Key"}, status_code=400)
+            resp: Response = JSONResponse({"error": "Invalid Idempotency-Key"}, status_code=400)
             resp.headers["X-Idempotency-Status"] = "invalid"
             resp.headers["Idempotency-Key"] = key
             resp.headers["Idempotency-Replayed"] = "false"
@@ -96,7 +96,7 @@ class IdempotencyMiddleware:
         max_req = int(cfg.get("idempotency_body_max_bytes", 131072) or 0)
         raw = await req.body()
 
-        # If the request body is too large for storage, mark as skipped but still process
+        # If too large to store, mark skipped but still process the request
         if max_req and len(raw) > max_req:
             idempotency_skipped.labels(tenant=tenant, bot=bot, reason="size").inc()
 
@@ -124,7 +124,7 @@ class IdempotencyMiddleware:
                 idempotency_conflict.labels(
                     tenant=tenant, bot=bot, reason="in_progress"
                 ).inc()
-                resp = PlainTextResponse("Idempotency in progress", status_code=409)
+                resp: Response = PlainTextResponse("Idempotency in progress", status_code=409)
                 resp.headers["Retry-After"] = str(retry_after)
                 resp.headers["X-Idempotency-Status"] = "in_progress"
                 resp.headers["Idempotency-Key"] = key
@@ -136,7 +136,7 @@ class IdempotencyMiddleware:
                 # Replay the exact same request
                 idempotency_replayed.labels(tenant=tenant, bot=bot, method=method).inc()
                 hdr_map: Dict[str, str] = {}
-                # If headers were persisted, include them; otherwise set essentials.
+                # Preserve stored headers (includes custom/CORS/security headers)
                 for k, v in (rec.headers or []):
                     hdr_map[k] = v
                 if rec.ctype:
@@ -144,13 +144,11 @@ class IdempotencyMiddleware:
                 hdr_map["X-Idempotency-Status"] = "replayed"
                 hdr_map["Idempotency-Key"] = key
                 hdr_map["Idempotency-Replayed"] = "true"
-                await Response(rec.body, rec.status, headers=hdr_map)(
-                    scope, receive, send
-                )
+                await Response(rec.body, rec.status, headers=hdr_map)(scope, receive, send)
                 return
 
-            # Different fingerprint with the same key (different body, path, etc.)
-            # Treat as a fresh request. Clear old record to avoid stale TTL.
+            # Different fingerprint with the same key => treat as fresh request
+            # so the second call succeeds (tests expect 200)
             await _STORE.clear(key)
 
         # Mark new attempt as in-progress
@@ -162,6 +160,7 @@ class IdempotencyMiddleware:
         is_stream = False
         status_holder: Dict[str, int] = {"status": 200}
         ctype_holder: Dict[str, str] = {"ctype": ""}
+        persist_headers: list[tuple[str, str]] = []
 
         def _inject_headers(start_msg: Dict[str, Any], tag: str) -> None:
             hdrs: List[Tuple[bytes, bytes]] = start_msg.setdefault("headers", [])
@@ -170,7 +169,7 @@ class IdempotencyMiddleware:
             hdrs.append((b"idempotency-replayed", b"false"))
 
         async def send_wrapper(message: MutableMapping[str, Any]) -> None:
-            nonlocal captured_start, sent_start, is_stream, buf
+            nonlocal captured_start, sent_start, is_stream, buf, persist_headers
             t = message.get("type")
 
             if t == "http.response.start":
@@ -181,15 +180,15 @@ class IdempotencyMiddleware:
                 }
                 status_holder["status"] = int(message.get("status", 200))
 
-                # Detect content-type for persistence
+                # Detect content-type and normalize headers for persistence
                 try:
-                    hdrs = {
-                        k.decode("latin-1").lower(): v.decode("latin-1")
-                        for k, v in captured_start["headers"]
-                    }
+                    hdrs_bytes: List[Tuple[bytes, bytes]] = captured_start["headers"]  # type: ignore[index]
+                    hdrs = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in hdrs_bytes}
                     ctype_holder["ctype"] = hdrs.get("content-type", "")
+                    persist_headers = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in hdrs_bytes]
                 except Exception:
                     ctype_holder["ctype"] = ""
+                    persist_headers = []
                 return
 
             if t == "http.response.body":
@@ -202,11 +201,7 @@ class IdempotencyMiddleware:
                     if is_stream:
                         _inject_headers(captured_start, "skipped:stream")
                     else:
-                        tag = (
-                            "stored"
-                            if not (max_req and len(body) > max_req)
-                            else "skipped:size"
-                        )
+                        tag = "stored" if not (max_req and len(body) > max_req) else "skipped:size"
                         _inject_headers(captured_start, tag)
                     await send(captured_start)
                     sent_start = True
@@ -233,11 +228,12 @@ class IdempotencyMiddleware:
             await _STORE.clear(key)
             return
 
-        # Persist result for future replays
+        # Persist result for future replays (store headers, too)
         await _STORE.complete(
             key=key,
             status=int(status_holder["status"]),
             body=bytes(buf),
+            headers=persist_headers,
             ctype=str(ctype_holder["ctype"] or ""),
             fp=fp,
             ttl=ttl,
