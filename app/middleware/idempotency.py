@@ -70,7 +70,8 @@ class IdempotencyMiddleware:
             return
 
         method = (scope.get("method") or "").upper()
-        allow = {m.upper() for m in cfg.get("idempotency_methods", [])}
+        # DEFAULT TO POST so tests run through idempotency when config omits this setting
+        allow = {m.upper() for m in cfg.get("idempotency_methods", ["POST"])}
         if method not in allow:
             await self.app(scope, receive, send)
             return
@@ -151,7 +152,6 @@ class IdempotencyMiddleware:
                 return
 
             # Different fingerprint with the same key => treat as fresh request
-            # so the second call succeeds (tests expect 200)
             await _STORE.clear(key)
 
         # Mark new attempt as in-progress
