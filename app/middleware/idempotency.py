@@ -1,3 +1,4 @@
+# app/middleware/idempotency.py
 from __future__ import annotations
 
 import importlib
@@ -16,15 +17,13 @@ from app.observability.metrics import (
 )
 from app.services.idempotency_store import IdemStore, body_hash
 
-# Access settings dynamically to avoid mypy attr-defined errors from runtime modules.
-# This wrapper is intentionally simple; mypy-ignore is confined to this function.
-def _get_config() -> dict[str, Any]:  # mypy: runtime-only accessor
+
+def _get_config() -> dict[str, Any]:
+    """Runtime settings accessor that avoids static attr-defined issues."""
     settings = importlib.import_module("app.settings")
-    try:
-        # app.settings.get_config exists at runtime but lacks static typing
-        return dict(settings.get_config())  # type: ignore[attr-defined]
-    except Exception:
-        return {}
+    cfg_fn = getattr(settings, "get_config", None)
+    return dict(cfg_fn()) if callable(cfg_fn) else {}
+
 
 try:
     from app.observability.metrics import _limit_tenant_bot_labels
@@ -32,8 +31,9 @@ except Exception:  # pragma: no cover
     def _limit_tenant_bot_labels(tenant: str, bot: str) -> tuple[str, str]:
         return (tenant[:32], bot[:32])
 
-_KEY_RE = re.compile(r"^[A-Za-z0-9._\-:/]{1,200}$")
-_STORE = IdemStore()
+
+_KEY_RE = re.compile(r"^[A-Za-z0-9._\\-:/]{1,200}$")
+_STORE: IdemStore = IdemStore()
 
 
 def _tenant_bot(req: Request) -> tuple[str, str]:
@@ -211,10 +211,10 @@ class IdempotencyMiddleware:
             return
 
         await _STORE.complete(
-            key,
-            int(status_holder["status"]),
-            bytes(buf),
-            str(ctype_holder["ctype"] or ""),
-            fp,
-            ttl,
+            key=key,
+            status=int(status_holder["status"]),
+            body=bytes(buf),
+            ctype=str(ctype_holder["ctype"] or ""),
+            fp=fp,
+            ttl=ttl,
         )
