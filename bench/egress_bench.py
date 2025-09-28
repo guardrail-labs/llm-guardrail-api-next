@@ -86,89 +86,103 @@ def run() -> Dict[str, Any]:
     """Execute benchmark scenarios and persist JSON artifacts."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     app = _make_app()
-    client = TestClient(app)
+    with TestClient(app) as client:
+        # Warm up routes once so measurements exclude cold-start effects.
+        warm_text = client.get(
+            "/bench/stream-text",
+            params={"size": 8_192, "chunk": 512, "charset": "utf-8"},
+        )
+        warm_text.raise_for_status()
+        _ = warm_text.text
+        warm_bin = client.get(
+            "/bench/stream-bin",
+            params={"size": 8_192, "chunk": 512},
+        )
+        warm_bin.raise_for_status()
+        _ = warm_bin.content
 
-    sizes = [256_000]
-    chunks = [64, 1_024, 16_384]
-    charsets = ["utf-8", "latin-1"]
+        sizes = [256_000]
+        chunks = [64, 1_024, 16_384]
+        charsets = ["utf-8", "latin-1"]
 
-    scenarios: List[Dict[str, Any]] = []
+        scenarios: List[Dict[str, Any]] = []
 
-    for total in sizes:
-        for chunk_size in chunks:
-            for charset in charsets:
-                times: List[float] = []
-                bytes_rx = 0
+        for total in sizes:
+            for chunk_size in chunks:
+                for charset in charsets:
+                    times: List[float] = []
+                    bytes_rx = 0
+                    runs = 5
+                    for _ in range(runs):
+                        start = time.perf_counter()
+                        response = client.get(
+                            "/bench/stream-text",
+                            params={
+                                "size": total,
+                                "chunk": chunk_size,
+                                "charset": charset,
+                            },
+                        )
+                        response.raise_for_status()
+                        text = response.text
+                        bytes_rx = max(bytes_rx, len(text.encode(charset, "replace")))
+                        end = time.perf_counter()
+                        times.append(end - start)
+                    throughput = bytes_rx / median(times) / (1024 * 1024)
+                    scenarios.append(
+                        {
+                            "id": f"text/{charset}/chunk={chunk_size}",
+                            "bytes": bytes_rx,
+                            "runs": runs,
+                            "p50": _percentile(times, 0.50),
+                            "p90": _percentile(times, 0.90),
+                            "p95": _percentile(times, 0.95),
+                            "p99": _percentile(times, 0.99),
+                            "throughput_mb_s_med": throughput,
+                        }
+                    )
+
+                times_bin: List[float] = []
+                bytes_bin = 0
                 runs = 5
                 for _ in range(runs):
                     start = time.perf_counter()
                     response = client.get(
-                        "/bench/stream-text",
-                        params={
-                            "size": total,
-                            "chunk": chunk_size,
-                            "charset": charset,
-                        },
+                        "/bench/stream-bin",
+                        params={"size": total, "chunk": chunk_size},
                     )
                     response.raise_for_status()
-                    text = response.text
-                    bytes_rx = max(bytes_rx, len(text.encode(charset, "replace")))
+                    data = response.content
+                    bytes_bin = max(bytes_bin, len(data))
                     end = time.perf_counter()
-                    times.append(end - start)
-                throughput = bytes_rx / median(times) / (1024 * 1024)
+                    times_bin.append(end - start)
+                throughput_bin = bytes_bin / median(times_bin) / (1024 * 1024)
                 scenarios.append(
                     {
-                        "id": f"text/{charset}/chunk={chunk_size}",
-                        "bytes": bytes_rx,
+                        "id": f"bin/chunk={chunk_size}",
+                        "bytes": bytes_bin,
                         "runs": runs,
-                        "p50": _percentile(times, 0.50),
-                        "p90": _percentile(times, 0.90),
-                        "p95": _percentile(times, 0.95),
-                        "p99": _percentile(times, 0.99),
-                        "throughput_mb_s_med": throughput,
+                        "p50": _percentile(times_bin, 0.50),
+                        "p90": _percentile(times_bin, 0.90),
+                        "p95": _percentile(times_bin, 0.95),
+                        "p99": _percentile(times_bin, 0.99),
+                        "throughput_mb_s_med": throughput_bin,
                     }
                 )
 
-            times_bin: List[float] = []
-            bytes_bin = 0
-            runs = 5
-            for _ in range(runs):
-                start = time.perf_counter()
-                response = client.get(
-                    "/bench/stream-bin", params={"size": total, "chunk": chunk_size}
-                )
-                response.raise_for_status()
-                data = response.content
-                bytes_bin = max(bytes_bin, len(data))
-                end = time.perf_counter()
-                times_bin.append(end - start)
-            throughput_bin = bytes_bin / median(times_bin) / (1024 * 1024)
-            scenarios.append(
-                {
-                    "id": f"bin/chunk={chunk_size}",
-                    "bytes": bytes_bin,
-                    "runs": runs,
-                    "p50": _percentile(times_bin, 0.50),
-                    "p90": _percentile(times_bin, 0.90),
-                    "p95": _percentile(times_bin, 0.95),
-                    "p99": _percentile(times_bin, 0.99),
-                    "throughput_mb_s_med": throughput_bin,
-                }
-            )
-
-    result = {
-        "version": 1,
-        "ts": int(time.time()),
-        "host": os.uname().nodename if hasattr(os, "uname") else "",
-        "scenarios": scenarios,
-    }
-    timestamp = result["ts"]
-    path = RESULTS_DIR / f"egress_{timestamp}.json"
-    payload = json.dumps(result, indent=2)
-    path.write_text(payload, encoding="utf-8")
-    (RESULTS_DIR / "last.json").write_text(payload, encoding="utf-8")
-    print(f"Wrote {path}")
-    return result
+        result = {
+            "version": 1,
+            "ts": int(time.time()),
+            "host": os.uname().nodename if hasattr(os, "uname") else "",
+            "scenarios": scenarios,
+        }
+        timestamp = result["ts"]
+        path = RESULTS_DIR / f"egress_{timestamp}.json"
+        payload = json.dumps(result, indent=2)
+        path.write_text(payload, encoding="utf-8")
+        (RESULTS_DIR / "last.json").write_text(payload, encoding="utf-8")
+        print(f"Wrote {path}")
+        return result
 
 
 if __name__ == "__main__":
