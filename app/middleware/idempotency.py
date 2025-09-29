@@ -1,301 +1,284 @@
+"""Idempotency middleware leveraging an asynchronous store."""
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
-from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
+import time
+from typing import Awaitable, Callable, Dict, Iterable, Tuple
 
-from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.types import Message, Receive, Scope, Send
 
-# Type alias for an ASGI app (use Starlette's types to satisfy mypy)
+from app.idempotency.store import IdemStore, StoredResponse
+from app.observability.metrics_idempotency import (
+    IDEMP_BODY_TOO_LARGE,
+    IDEMP_CONFLICTS,
+    IDEMP_ERRORS,
+    IDEMP_EVICTIONS,
+    IDEMP_HITS,
+    IDEMP_IN_PROGRESS,
+    IDEMP_LOCK_WAIT,
+    IDEMP_MISSES,
+    IDEMP_REPLAYS,
+    IDEMP_STREAMING_SKIPPED,
+)
+
 ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
-
-# Accept up to 200 chars, word-ish plus - and _
-_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+_VALID = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
 
 
-@dataclass
-class IdempotencyRecord:
-    key: str
-    fp: str
-    state: str  # "in_progress" | "done"
-    status: Optional[int] = None
-    body: bytes = b""
-    ctype: str = ""
-    # Stored response headers as list of (name, value) strings
-    headers: Optional[List[Tuple[str, str]]] = None
+def _valid_key(s: str) -> bool:
+    if not (1 <= len(s) <= 200):
+        return False
+    return all(ch in _VALID for ch in s)
 
 
-class IdemStore:
-    """
-    Very small in-memory store sufficient for tests.
-
-    Real deployments should use a shared store (e.g., Redis) and proper TTL/atomic ops.
-    """
-
-    def __init__(self) -> None:
-        self._recs: Dict[str, IdempotencyRecord] = {}
-        self._lock = asyncio.Lock()
-
-    async def get(self, key: str) -> Optional[IdempotencyRecord]:
-        async with self._lock:
-            return self._recs.get(key)
-
-    async def put_in_progress(self, key: str, fp: str, _ttl: int) -> None:
-        """Mark a key as in-progress if not already present."""
-        async with self._lock:
-            if key not in self._recs:
-                self._recs[key] = IdempotencyRecord(key=key, fp=fp, state="in_progress")
-
-    async def reset_in_progress(self, key: str, fp: str, _ttl: int) -> None:
-        """Force a key into in-progress state (overwrites any existing record)."""
-        async with self._lock:
-            self._recs[key] = IdempotencyRecord(key=key, fp=fp, state="in_progress")
-
-    async def delete(self, key: str) -> None:
-        async with self._lock:
-            self._recs.pop(key, None)
-
-    async def complete(
-        self,
-        key: str,
-        status: int,
-        body: bytes,
-        headers: List[Tuple[str, str]],
-        ctype: str,
-    ) -> None:
-        async with self._lock:
-            rec = self._recs.get(key)
-            if rec is None:
-                rec = IdempotencyRecord(key=key, fp="", state="in_progress")
-                self._recs[key] = rec
-            rec.status = status
-            rec.body = body
-            rec.headers = headers
-            rec.ctype = ctype
-            rec.state = "done"
-
-
-_STORE = IdemStore()
-
-
-def _get_header(scope: Scope, name: str) -> str:
-    headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or []
-    target = name.lower().encode("latin-1")
-    for k, v in headers:
-        if k.lower() == target:
-            return v.decode("latin-1")
-    return ""
-
-
-def _hash_fingerprint(method: str, path: str, body: bytes) -> str:
-    h = hashlib.sha256()
-    h.update(method.encode("utf-8"))
-    h.update(b"\n")
-    h.update(path.encode("utf-8"))
-    h.update(b"\n")
-    h.update(body or b"")
-    return h.hexdigest()
-
-
-def _decode_headers(headers: Iterable[Tuple[bytes, bytes]]) -> List[Tuple[str, str]]:
-    out: List[Tuple[str, str]] = []
-    for k, v in headers:
-        out.append((k.decode("latin-1"), v.decode("latin-1")))
-    return out
-
-
-def _headers_to_dict(headers: Iterable[Tuple[str, str]]) -> Dict[str, str]:
-    # Collapses duplicates and normalizes names to lowercase; sufficient for tests.
-    d: Dict[str, str] = {}
-    for k, v in headers:
-        d[k.lower()] = v
-    return d
+def _sha256(data: bytes) -> str:
+    digest = hashlib.sha256()
+    digest.update(data)
+    return digest.hexdigest()
 
 
 class IdempotencyMiddleware:
-    """
-    Implements idempotency by key.
-
-    - First request with a new (valid) key runs and is stored. Response headers include:
-      - Idempotency-Key
-      - Idempotency-Replayed: "false"
-    - Subsequent requests with same key + same fingerprint are replayed from store with:
-      - Idempotency-Replayed: "true"
-    - If a different fingerprint is seen for the same key, we treat it as a new run
-      (overwrite store).
-    - If a request arrives while first is in progress, returns 409 with Retry-After.
-    - Invalid key (>200 chars or bad charset) returns 400 with standard envelope.
-    """
+    """Replay identical requests based on idempotency key + body fingerprint."""
 
     def __init__(
         self,
         app: ASGIApp,
-        ttl_seconds: int = 60,
-        retry_after_seconds: int = 2,
+        store: IdemStore,
+        *,
+        ttl_s: int,
+        methods: Iterable[str],
+        max_body: int,
+        cache_streaming: bool,
+        tenant_provider: Callable[[Scope], str] = lambda scope: "default",
     ) -> None:
         self.app = app
-        self.ttl = ttl_seconds
-        self.retry_after = retry_after_seconds
+        self.store = store
+        self.ttl_s = ttl_s
+        self.methods = {m.upper() for m in methods}
+        self.max_body = max_body
+        self.cache_streaming = cache_streaming
+        self.tenant_provider = tenant_provider
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
 
-        # Only act if a key is provided
-        key = _get_header(scope, "X-Idempotency-Key")
-        if not key:
+        method = scope.get("method", "GET").upper()
+        if method not in self.methods:
             await self.app(scope, receive, send)
             return
 
-        # Validate the key early
-        if not _KEY_RE.match(key):
-            headers = {
-                "X-Idempotency-Status": "invalid",
-                "Idempotency-Key": key,
-                "Idempotency-Replayed": "false",
-            }
-            await JSONResponse(
-                {"code": "bad_request", "detail": "invalid idempotency key"},
-                status_code=400,
-                headers=headers,
-            )(scope, receive, send)
+        raw_headers: Iterable[Tuple[bytes, bytes]] = scope.get("headers") or []
+        headers = {k.decode("latin1"): v.decode("latin1") for k, v in raw_headers}
+        key = headers.get("x-idempotency-key")
+        if not key or not _valid_key(key):
+            await self._send_bad_request(send)
             return
 
-        # Drain and buffer the body so we can compute a fingerprint and still pass it downstream.
-        body_chunks: List[bytes] = []
-        more = True
-        disconnect = False
+        tenant = self.tenant_provider(scope)
 
-        async def _recv_all() -> None:
-            nonlocal more, disconnect
-            while more and not disconnect:
-                message = await receive()
-                typ = message.get("type")
-                if typ == "http.request":
-                    body_chunks.append(message.get("body", b"") or b"")
-                    more = bool(message.get("more_body"))
-                elif typ == "http.disconnect":
-                    disconnect = True
-                    break
+        body = await self._receive_body(receive)
+        body_len = len(body)
+        body_fp = _sha256(body)
 
-        await _recv_all()
-        buffered_body = b"".join(body_chunks)
-
-        # New receive that replays the buffered body to the downstream app.
-        sent_buffer = False
-
-        async def _receive_replay() -> Message:
-            nonlocal sent_buffer
-            if not sent_buffer:
-                sent_buffer = True
-                return {
-                    "type": "http.request",
-                    "body": buffered_body,
-                    "more_body": False,
-                }
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        method = scope.get("method", "GET")
-        path = scope.get("path", "/")
-        fp = _hash_fingerprint(method, path, buffered_body)
-
-        # Look up the key
-        rec = await _STORE.get(key)
-        if rec:
-            if rec.state == "in_progress":
-                headers = {
-                    "Retry-After": str(self.retry_after),
-                    "X-Idempotency-Status": "in_progress",
-                    "Idempotency-Key": key,
-                    "Idempotency-Replayed": "false",
-                }
-                await PlainTextResponse(
-                    "Idempotency in progress", status_code=409, headers=headers
-                )(scope, _receive_replay, send)
-                return
-
-            if rec.fp == fp and rec.state == "done":
-                # Replayed (same fingerprint, done)
-                base_map = _headers_to_dict(rec.headers or [])
-                if rec.ctype:
-                    base_map["content-type"] = rec.ctype
-                # Ensure exactly one of each idempotency header
-                base_map["idempotency-key"] = key
-                base_map["idempotency-replayed"] = "true"
-
-                await Response(
-                    rec.body, status_code=rec.status or 200, headers=base_map
-                )(scope, _receive_replay, send)
-                return
-
-            # Same key but different fingerprint: treat as a fresh run
-            await _STORE.reset_in_progress(key, fp, self.ttl)
-        else:
-            # First run for this key: mark as in-progress
-            await _STORE.put_in_progress(key, fp, self.ttl)
-
-        # Capture downstream response to:
-        #  - inject idempotency headers on-the-fly
-        #  - persist for replay (if not 5xx)
-        captured_status: int = 200
-        captured_headers_bytes: List[Tuple[bytes, bytes]] = []
-        captured_body: List[bytes] = []
-
-        async def _send_wrapper(message: Message) -> None:
-            nonlocal captured_status, captured_headers_bytes
-
-            if message["type"] == "http.response.start":
-                captured_status = int(message.get("status", 200))
-                raw_headers: List[Tuple[bytes, bytes]] = list(
-                    message.get("headers") or []
-                )
-                # Inject first-run idempotency headers
-                raw_headers.append((b"idempotency-key", key.encode("latin-1")))
-                raw_headers.append((b"idempotency-replayed", b"false"))
-
-                # Save for persistence (before we mutate further)
-                captured_headers_bytes = list(raw_headers)
-
-                # Replace the message headers with our augmented list
-                message["headers"] = raw_headers
-
-            elif message["type"] == "http.response.body":
-                captured_body.append(message.get("body") or b"")
-
-            await send(message)
-
-            # When the body stream ends, persist the response if not a 5xx
-            if message["type"] == "http.response.body" and not message.get(
-                "more_body"
-            ):
-                # Decode to strings for storage
-                decoded_headers = _decode_headers(captured_headers_bytes)
-                ctype = ""
-                for name, value in decoded_headers:
-                    if name.lower() == "content-type":
-                        ctype = value
-                        break
-
-                if 500 <= captured_status <= 599:
-                    # Do not store failing responses; allow retries to run fresh.
-                    await _STORE.delete(key)
-                else:
-                    await _STORE.complete(
-                        key=key,
-                        status=captured_status,
-                        body=b"".join(captured_body),
-                        headers=decoded_headers,
-                        ctype=ctype,
-                    )
-
-        # Run downstream with our replaying receive + capturing send.
-        # If the inner app raises, make sure to clear the in-progress key so retry can proceed.
+        cached = None
         try:
-            await self.app(scope, _receive_replay, _send_wrapper)
+            cached = await self.store.get(key)
         except Exception:
-            await _STORE.delete(key)
-            raise
+            IDEMP_ERRORS.labels(phase="get").inc()
+        else:
+            if cached and cached.body_sha256 and cached.body_sha256 != body_fp:
+                IDEMP_CONFLICTS.labels(method=method, tenant=tenant).inc()
+                cached = None
+
+        if cached:
+            IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+            await self._send_stored(send, key, cached)
+            IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+            return
+
+        IDEMP_MISSES.labels(method=method, tenant=tenant).inc()
+
+        cacheable = body_len <= self.max_body
+        if not cacheable:
+            IDEMP_BODY_TOO_LARGE.labels(tenant=tenant).inc()
+
+        leader = False
+        try:
+            leader = await self.store.acquire_leader(key, self.ttl_s, body_fp)
+        except Exception:
+            IDEMP_ERRORS.labels(phase="acquire").inc()
+
+        if leader:
+            IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
+            try:
+                try:
+                    (
+                        status,
+                        resp_headers,
+                        resp_body,
+                        is_streaming,
+                    ) = await self._run_downstream(scope, body)
+                except Exception:
+                    await self._safe_release(key, tenant, "exception")
+                    raise
+
+                if is_streaming and not self.cache_streaming:
+                    IDEMP_STREAMING_SKIPPED.labels(method=method, tenant=tenant).inc()
+                    await self._send_raw(send, key, status, resp_headers, resp_body, replay=False)
+                    await self._safe_release(key, tenant, "streaming")
+                    return
+
+                if cacheable and 200 <= status < 500:
+                    stored = StoredResponse(
+                        status=status,
+                        headers=resp_headers,
+                        body=resp_body,
+                        content_type=resp_headers.get("content-type"),
+                        stored_at=time.time(),
+                        body_sha256=body_fp,
+                    )
+                    try:
+                        await self.store.put(key, stored, self.ttl_s)
+                    except Exception:
+                        IDEMP_ERRORS.labels(phase="put").inc()
+                        await self._safe_release(key, tenant, "put_error")
+                else:
+                    reason = "upstream_error" if status >= 500 else "not_cached"
+                    await self._safe_release(key, tenant, reason)
+                await self._send_raw(send, key, status, resp_headers, resp_body, replay=False)
+            finally:
+                IDEMP_IN_PROGRESS.labels(tenant=tenant).dec()
+        else:
+            try:
+                meta = await self.store.meta(key)
+            except Exception:
+                IDEMP_ERRORS.labels(phase="meta").inc()
+                meta = {}
+            else:
+                fingerprint = meta.get("payload_fingerprint") if isinstance(meta, dict) else None
+                if fingerprint and fingerprint != body_fp:
+                    IDEMP_CONFLICTS.labels(method=method, tenant=tenant).inc()
+
+            start = time.time()
+            await self._wait_for_value(key, timeout=self.ttl_s)
+            IDEMP_LOCK_WAIT.observe(max(time.time() - start, 0.0))
+            try:
+                cached_after = await self.store.get(key)
+            except Exception:
+                IDEMP_ERRORS.labels(phase="get").inc()
+                cached_after = None
+            if cached_after:
+                IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+                await self._send_stored(send, key, cached_after)
+                IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+            else:
+                status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
+                await self._send_raw(send, key, status, resp_headers, resp_body, replay=False)
+
+    async def _safe_release(self, key: str, tenant: str, reason: str) -> None:
+        try:
+            await self.store.release(key)
+        except Exception:
+            IDEMP_ERRORS.labels(phase="release").inc()
+        IDEMP_EVICTIONS.labels(tenant=tenant, reason=reason).inc()
+
+    async def _receive_body(self, receive: Receive) -> bytes:
+        body_chunks = []
+        more = True
+        while more:
+            message = await receive()
+            if message["type"] == "http.request":
+                chunk = message.get("body", b"") or b""
+                if chunk:
+                    body_chunks.append(chunk)
+                more = bool(message.get("more_body"))
+            elif message["type"] == "http.disconnect":
+                break
+        return b"".join(body_chunks)
+
+    async def _wait_for_value(self, key: str, timeout: int) -> None:
+        deadline = time.time() + timeout
+        delay = 0.01
+        while time.time() < deadline:
+            try:
+                if await self.store.get(key):
+                    return
+            except Exception:
+                IDEMP_ERRORS.labels(phase="get").inc()
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 0.2)
+
+    async def _run_downstream(
+        self, scope: Scope, body: bytes
+    ) -> Tuple[int, Dict[str, str], bytes, bool]:
+        resp_headers: Dict[str, str] = {}
+        body_chunks = []
+        is_streaming = False
+        status_holder = {"code": 200}
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal is_streaming
+            if message["type"] == "http.response.start":
+                status_holder["code"] = int(message.get("status", 200))
+                for name, value in message.get("headers", []) or []:
+                    resp_headers[name.decode("latin1").lower()] = value.decode("latin1")
+            elif message["type"] == "http.response.body":
+                if message.get("more_body"):
+                    is_streaming = True
+                chunk = message.get("body", b"") or b""
+                if chunk:
+                    body_chunks.append(chunk)
+
+        async def receive_wrapper() -> Message:
+            if receive_wrapper._sent:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            receive_wrapper._sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        receive_wrapper._sent = False  # type: ignore[attr-defined]
+
+        await self.app(scope, receive_wrapper, send_wrapper)
+        return status_holder["code"], resp_headers, b"".join(body_chunks), is_streaming
+
+    async def _send_bad_request(self, send: Send) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 400,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'{"code":"bad_request","detail":"invalid idempotency key"}',
+            }
+        )
+
+    async def _send_stored(self, send: Send, key: str, stored: StoredResponse) -> None:
+        headers = [(k.encode("latin1"), v.encode("latin1")) for k, v in stored.headers.items()]
+        headers.append((b"idempotency-key", key.encode("latin1")))
+        headers.append((b"idempotency-replayed", b"true"))
+        await send({"type": "http.response.start", "status": stored.status, "headers": headers})
+        await send({"type": "http.response.body", "body": stored.body})
+
+    async def _send_raw(
+        self,
+        send: Send,
+        key: str,
+        status: int,
+        headers: Dict[str, str],
+        body: bytes,
+        *,
+        replay: bool,
+    ) -> None:
+        hdrs = [(k.encode("latin1"), v.encode("latin1")) for k, v in headers.items()]
+        hdrs.append((b"idempotency-key", key.encode("latin1")))
+        hdrs.append((b"idempotency-replayed", b"true" if replay else b"false"))
+        await send({"type": "http.response.start", "status": status, "headers": hdrs})
+        await send({"type": "http.response.body", "body": body})

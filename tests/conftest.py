@@ -6,12 +6,15 @@ import sys
 from pathlib import Path
 
 import pytest
+from fakeredis.aioredis import FakeRedis
 from starlette.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.idempotency.redis_store import RedisIdemStore  # noqa: E402
+from app import runtime as runtime_mod  # noqa: E402
 from app.main import create_app  # noqa: E402
 
 
@@ -25,6 +28,23 @@ def _disable_rate_limit(monkeypatch):
         monkeypatch.setattr(rl, "_global_limiter", None, raising=False)
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _fake_idempotency_store(monkeypatch):
+    fake = FakeRedis()
+    store = RedisIdemStore(fake)
+    monkeypatch.setattr(runtime_mod, "_redis", fake, raising=False)
+    monkeypatch.setattr(runtime_mod, "_store", store, raising=False)
+
+    def _redis_client():
+        return fake
+
+    def _idem_store():
+        return store
+
+    monkeypatch.setattr(runtime_mod, "redis_client", _redis_client, raising=False)
+    monkeypatch.setattr(runtime_mod, "idem_store", _idem_store, raising=False)
 
 
 @pytest.fixture()

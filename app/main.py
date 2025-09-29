@@ -20,6 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
+from app import settings
 from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
@@ -51,6 +52,7 @@ from app.middleware.tenant_bot import TenantBotMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.routes.admin_scope_api import router as admin_scope_router
 from app.routes.egress import router as egress_router
+from app.runtime import idem_store
 from app.services.bindings.utils import (
     compute_version_for_path as _compute_version_for_path,
     propagate_bindings as _propagate_bindings,
@@ -726,6 +728,15 @@ def create_app() -> FastAPI:
         log.warning("Health routes unavailable: %s", exc)
     app.include_router(admin_scope_router)
     try:
+        from app.routes import admin_idempotency
+    except Exception as exc:
+        _log.debug("import admin_idempotency failed: %s", exc)
+    else:
+        _best_effort(
+            "include admin_idempotency",
+            lambda: app.include_router(admin_idempotency.router),
+        )
+    try:
         from app.routes.admin_policy_packs import router as admin_policy_packs_router
     except Exception as exc:
         _log.debug("import admin_policy_packs_router failed: %s", exc)
@@ -895,7 +906,21 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
     app.add_middleware(HttpStatusMetricsMiddleware)
-    app.add_middleware(IdempotencyMiddleware)
+    if settings.IDEMP_ENABLED:
+        try:
+            store = idem_store()
+        except Exception as exc:
+            log.warning("Idempotency store unavailable: %s", exc)
+        else:
+            app.add_middleware(
+                IdempotencyMiddleware,
+                store=store,
+                ttl_s=settings.IDEMP_TTL_SECONDS,
+                methods=settings.IDEMP_METHODS,
+                max_body=settings.IDEMP_MAX_BODY_BYTES,
+                cache_streaming=settings.IDEMP_CACHE_STREAMING,
+                tenant_provider=lambda scope: "default",
+            )
 
     # --- Admin bindings: prefer real router, else fallback ---
     admin_router = None
