@@ -192,3 +192,14 @@ EGRESS_INSPECT_MAX_BYTES = int(
     os.getenv("EGRESS_INSPECT_MAX_BYTES", "4096") or "4096"
 )
 
+IDEMP_ENABLED = os.getenv("IDEMP_ENABLED", "true").lower() == "true"
+IDEMP_METHODS = tuple(
+    os.getenv("IDEMP_METHODS", "POST,PUT").replace(" ", "").split(",")
+)
+IDEMP_TTL_SECONDS = int(os.getenv("IDEMP_TTL_SECONDS", "120"))
+IDEMP_MAX_BODY_BYTES = int(os.getenv("IDEMP_MAX_BODY_BYTES", "1048576"))  # 1 MiB
+IDEMP_CACHE_STREAMING = os.getenv("IDEMP_CACHE_STREAMING", "false").lower() == "true"
+IDEMP_REDIS_URL = os.getenv("IDEMP_REDIS_URL", "redis://localhost:6379/0")
+IDEMP_REDIS_NAMESPACE = os.getenv("IDEMP_REDIS_NAMESPACE", "idem")
+IDEMP_RECENT_ZSET_MAX = int(os.getenv("IDEMP_RECENT_ZSET_MAX", "5000"))
+
