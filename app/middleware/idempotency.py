@@ -127,13 +127,25 @@ class IdempotencyMiddleware:
         if leader:
             IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
             try:
-                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                    scope, body
-                )
+                # Ensure the lock is released if downstream raises.
+                try:
+                    status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                        scope, body
+                    )
+                except Exception:
+                    try:
+                        await self.store.release(idem_key)
+                    except Exception:
+                        IDEMP_ERRORS.labels(phase="release").inc()
+                    raise
 
-                # Streaming policy: dedupe only, do not cache.
+                # Streaming policy: dedupe only, do not cache -> release lock.
                 if is_streaming and not self.cache_streaming:
                     IDEMP_STREAMING_SKIPPED.labels(method=method, tenant=tenant).inc()
+                    try:
+                        await self.store.release(idem_key)
+                    except Exception:
+                        IDEMP_ERRORS.labels(phase="release").inc()
                     await self._send_raw(
                         send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
                     )
@@ -149,12 +161,16 @@ class IdempotencyMiddleware:
                         body_sha256=body_fp,
                     )
                     try:
+                        # put() will also clear the lock/state
                         await self.store.put(idem_key, stored, self.ttl_s)
                     except Exception:
                         IDEMP_ERRORS.labels(phase="put").inc()
-                elif status >= 500:
-                    # Ensure retry can proceed.
-                    await self.store.release(idem_key)
+                else:
+                    # Non-cacheable success or 5xx -> release lock so followers proceed.
+                    try:
+                        await self.store.release(idem_key)
+                    except Exception:
+                        IDEMP_ERRORS.labels(phase="release").inc()
 
                 await self._send_raw(
                     send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
@@ -210,8 +226,11 @@ class IdempotencyMiddleware:
                             await self.store.put(idem_key, stored2, self.ttl_s)
                         except Exception:
                             IDEMP_ERRORS.labels(phase="put").inc()
-                    elif status >= 500:
-                        await self.store.release(idem_key)
+                    else:
+                        try:
+                            await self.store.release(idem_key)
+                        except Exception:
+                            IDEMP_ERRORS.labels(phase="release").inc()
 
                     await self._send_raw(
                         send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
