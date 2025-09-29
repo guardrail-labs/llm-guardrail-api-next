@@ -8,7 +8,6 @@ import time
 from typing import (
     Dict,
     Iterable,
-    List,
     Mapping,
     MutableMapping,
     Optional,
@@ -128,24 +127,13 @@ class IdempotencyMiddleware:
         if leader:
             IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
             try:
-                try:
-                    status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                        scope, body
-                    )
-                except Exception:
-                    try:
-                        await self.store.release(idem_key)
-                    except Exception:
-                        IDEMP_ERRORS.labels(phase="release").inc()
-                    raise
+                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                    scope, body
+                )
 
                 # Streaming policy: dedupe only, do not cache.
                 if is_streaming and not self.cache_streaming:
                     IDEMP_STREAMING_SKIPPED.labels(method=method, tenant=tenant).inc()
-                    try:
-                        await self.store.release(idem_key)
-                    except Exception:
-                        IDEMP_ERRORS.labels(phase="release").inc()
                     await self._send_raw(
                         send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
                     )
@@ -166,15 +154,7 @@ class IdempotencyMiddleware:
                         IDEMP_ERRORS.labels(phase="put").inc()
                 elif status >= 500:
                     # Ensure retry can proceed.
-                    try:
-                        await self.store.release(idem_key)
-                    except Exception:
-                        IDEMP_ERRORS.labels(phase="release").inc()
-                else:
-                    try:
-                        await self.store.release(idem_key)
-                    except Exception:
-                        IDEMP_ERRORS.labels(phase="release").inc()
+                    await self.store.release(idem_key)
 
                 await self._send_raw(
                     send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
@@ -185,28 +165,20 @@ class IdempotencyMiddleware:
 
         # Follower path: another request currently executing for this key.
         mismatch = False
-        meta_error = False
         try:
             meta = await self.store.meta(idem_key)
         except Exception:
             IDEMP_ERRORS.labels(phase="meta").inc()
             meta = {}
-            meta_error = True
         else:
             fp = meta.get("payload_fingerprint") if isinstance(meta, dict) else None
             if fp and fp != body_fp:
                 IDEMP_CONFLICTS.labels(method=method, tenant=tenant).inc()
                 mismatch = True
 
-        if meta_error:
-            status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
-            await self._send_raw(
-                send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
-            )
-            return
-
         start = time.time()
-        await self._wait_for_value(idem_key, timeout=self.ttl_s)
+        # Wait until either a value appears OR the lock/state indicates leader finished.
+        await self._wait_for_release_or_value(idem_key, timeout=self.ttl_s)
         IDEMP_LOCK_WAIT.observe(max(time.time() - start, 0.0))
 
         if mismatch:
@@ -220,33 +192,12 @@ class IdempotencyMiddleware:
             if leader2:
                 IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
                 try:
-                    try:
-                        status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                            scope, body
-                        )
-                    except Exception:
-                        try:
-                            await self.store.release(idem_key)
-                        except Exception:
-                            IDEMP_ERRORS.labels(phase="release").inc()
-                        raise
-                    if is_streaming and not self.cache_streaming:
-                        IDEMP_STREAMING_SKIPPED.labels(method=method, tenant=tenant).inc()
-                        try:
-                            await self.store.release(idem_key)
-                        except Exception:
-                            IDEMP_ERRORS.labels(phase="release").inc()
-                        await self._send_raw(
-                            send,
-                            status,
-                            resp_headers,
-                            resp_body,
-                            replay=False,
-                            idem_key=idem_key,
-                        )
-                        return
-
-                    if 200 <= status < 500 and cacheable:
+                    status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                        scope, body
+                    )
+                    if not (is_streaming and not self.cache_streaming) and (
+                        200 <= status < 500 and cacheable
+                    ):
                         stored2 = StoredResponse(
                             status=status,
                             headers=resp_headers,
@@ -260,15 +211,7 @@ class IdempotencyMiddleware:
                         except Exception:
                             IDEMP_ERRORS.labels(phase="put").inc()
                     elif status >= 500:
-                        try:
-                            await self.store.release(idem_key)
-                        except Exception:
-                            IDEMP_ERRORS.labels(phase="release").inc()
-                    else:
-                        try:
-                            await self.store.release(idem_key)
-                        except Exception:
-                            IDEMP_ERRORS.labels(phase="release").inc()
+                        await self.store.release(idem_key)
 
                     await self._send_raw(
                         send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
@@ -303,21 +246,35 @@ class IdempotencyMiddleware:
             send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
         )
 
-    async def _wait_for_value(self, key: str, timeout: int) -> None:
+    async def _wait_for_release_or_value(self, key: str, timeout: int) -> None:
+        """
+        Wait until either:
+          - a cached value appears for `key`, OR
+          - the lock is gone / state != "in_progress" (leader finished).
+        This prevents followers from stalling full TTL when leader doesn't cache.
+        """
         deadline = time.time() + timeout
         delay = 0.01
         while time.time() < deadline:
             try:
+                # If a value exists, we're done.
                 if await self.store.get(key):
                     return
+                # Otherwise, peek at meta: if no lock or not "in_progress", leader is done.
+                meta = await self.store.meta(key)
+                if isinstance(meta, dict):
+                    lock_present = bool(meta.get("lock"))
+                    state_text = meta.get("state")
+                    if (not lock_present) or (state_text != "in_progress"):
+                        return
             except Exception:
-                IDEMP_ERRORS.labels(phase="get").inc()
+                IDEMP_ERRORS.labels(phase="wait").inc()
             await asyncio.sleep(delay)
             delay = min(delay * 2, 0.2)
 
     async def _read_request_body(self, receive) -> bytes:
         """Drain the ASGI receive channel into a single bytes object."""
-        chunks: List[bytes] = []
+        chunks: list[bytes] = []
         more = True
         while more:
             msg: MutableMapping[str, object] = await receive()
@@ -335,7 +292,7 @@ class IdempotencyMiddleware:
     ) -> Tuple[int, Dict[str, str], bytes, bool]:
         """Replay buffered body to the app and capture the full response."""
         resp_headers: Dict[str, str] = {}
-        body_chunks: List[bytes] = []
+        body_chunks: list[bytes] = []
         is_streaming = False
         status_holder = {"code": 200}
 
