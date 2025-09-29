@@ -64,10 +64,7 @@ class RedisIdemStore(IdemStore):
         raw = await self.r.get(self._k(key, "value"))
         if not raw:
             return None
-        if isinstance(raw, bytes):
-            data = json.loads(raw)
-        else:
-            data = json.loads(raw)
+        data = json.loads(raw)
         body = base64.b64decode(data["body_b64"])
         return StoredResponse(
             status=data["status"],
@@ -80,9 +77,14 @@ class RedisIdemStore(IdemStore):
         )
 
     async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:
+        filtered_headers = {
+            k.lower(): v
+            for k, v in resp.headers.items()
+            if k.lower() in _ALLOW_HEADERS
+        }
         value = {
             "status": resp.status,
-            "headers": {k.lower(): v for k, v in resp.headers.items() if k.lower() in _ALLOW_HEADERS},
+            "headers": filtered_headers,
             "body_b64": base64.b64encode(resp.body).decode("ascii"),
             "content_type": resp.content_type,
             "stored_at": resp.stored_at or time.time(),
@@ -102,10 +104,12 @@ class RedisIdemStore(IdemStore):
         state = await self.r.get(self._k(key, "state"))
         lock_key = self._k(key, "lock")
         lock_value = await self.r.get(lock_key)
+        state_text = state.decode() if isinstance(state, bytes) else state
+        payload_fp = lock_value.decode() if isinstance(lock_value, bytes) else lock_value
         return {
-            "state": state.decode() if isinstance(state, bytes) else state,
+            "state": state_text,
             "lock": bool(lock_value),
-            "payload_fingerprint": lock_value.decode() if isinstance(lock_value, bytes) else lock_value,
+            "payload_fingerprint": payload_fp,
         }
 
     async def purge(self, key: str) -> bool:
@@ -121,9 +125,6 @@ class RedisIdemStore(IdemStore):
         items = await self.r.zrevrange(zkey, 0, max(limit - 1, 0), withscores=True)
         results: List[Tuple[str, float]] = []
         for raw_key, score in items:
-            if isinstance(raw_key, bytes):
-                key = raw_key.decode()
-            else:
-                key = raw_key
+            key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
             results.append((key, float(score)))
         return results
