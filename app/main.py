@@ -20,6 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
+from app import settings
 from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
@@ -51,6 +52,7 @@ from app.middleware.tenant_bot import TenantBotMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.routes.admin_scope_api import router as admin_scope_router
 from app.routes.egress import router as egress_router
+from app.runtime import idem_store
 from app.services.bindings.utils import (
     compute_version_for_path as _compute_version_for_path,
     propagate_bindings as _propagate_bindings,
@@ -895,7 +897,16 @@ def create_app() -> FastAPI:
     app.add_middleware(_LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
     app.add_middleware(HttpStatusMetricsMiddleware)
-    app.add_middleware(IdempotencyMiddleware)
+    if settings.IDEMP_ENABLED:
+        app.add_middleware(
+            IdempotencyMiddleware,
+            store=idem_store(),
+            ttl_s=settings.IDEMP_TTL_SECONDS,
+            methods=settings.IDEMP_METHODS,
+            max_body=settings.IDEMP_MAX_BODY_BYTES,
+            cache_streaming=settings.IDEMP_CACHE_STREAMING,
+            tenant_provider=lambda scope: "default",
+        )
 
     # --- Admin bindings: prefer real router, else fallback ---
     admin_router = None

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -12,12 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+os.environ.setdefault("IDEMP_REDIS_URL", "memory://")
+
 from app.main import create_app  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _disable_rate_limit(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
+    monkeypatch.setenv("IDEMP_REDIS_URL", "memory://")
     try:
         import app.services.ratelimit as rl
 
