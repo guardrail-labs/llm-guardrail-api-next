@@ -2,22 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
-import asyncio
-from typing import Dict, Iterable, Mapping, MutableMapping, Optional, Tuple
+from typing import (
+    Dict,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 
 from app.idempotency.store import IdemStore, StoredResponse
 from app.observability.metrics_idempotency import (
+    IDEMP_BODY_TOO_LARGE,
+    IDEMP_CONFLICTS,
+    IDEMP_ERRORS,
     IDEMP_HITS,
+    IDEMP_IN_PROGRESS,
+    IDEMP_LOCK_WAIT,
     IDEMP_MISSES,
     IDEMP_REPLAYS,
-    IDEMP_CONFLICTS,
-    IDEMP_IN_PROGRESS,
     IDEMP_STREAMING_SKIPPED,
-    IDEMP_BODY_TOO_LARGE,
-    IDEMP_ERRORS,
-    IDEMP_LOCK_WAIT,
 )
 
 _VALID_CHARS = set(
@@ -103,27 +112,21 @@ class IdempotencyMiddleware:
         # Try to become leader for single-flight.
         leader = False
         try:
-            leader = await self.store.acquire_leader(
-                idem_key, self.ttl_s, body_fp
-            )
+            leader = await self.store.acquire_leader(idem_key, self.ttl_s, body_fp)
         except Exception:
             IDEMP_ERRORS.labels(phase="acquire").inc()
 
         if leader:
             IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
             try:
-                status, resp_headers, resp_body, is_streaming = (
-                    await self._run_downstream(scope, body)
+                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                    scope, body
                 )
 
                 # Streaming policy: dedupe only, do not cache.
                 if is_streaming and not self.cache_streaming:
-                    IDEMP_STREAMING_SKIPPED.labels(
-                        method=method, tenant=tenant
-                    ).inc()
-                    await self._send_raw(
-                        send, status, resp_headers, resp_body, replay=False
-                    )
+                    IDEMP_STREAMING_SKIPPED.labels(method=method, tenant=tenant).inc()
+                    await self._send_raw(send, status, resp_headers, resp_body, replay=False)
                     return
 
                 if cacheable and 200 <= status < 500:
@@ -143,9 +146,7 @@ class IdempotencyMiddleware:
                     # Ensure retry can proceed.
                     await self.store.release(idem_key)
 
-                await self._send_raw(
-                    send, status, resp_headers, resp_body, replay=False
-                )
+                await self._send_raw(send, status, resp_headers, resp_body, replay=False)
             finally:
                 IDEMP_IN_PROGRESS.labels(tenant=tenant).dec()
             return
@@ -172,9 +173,7 @@ class IdempotencyMiddleware:
             # Do NOT replay. Try to become leader now that lock is gone,
             # so we can run the new payload and overwrite cache.
             try:
-                leader2 = await self.store.acquire_leader(
-                    idem_key, self.ttl_s, body_fp
-                )
+                leader2 = await self.store.acquire_leader(idem_key, self.ttl_s, body_fp)
             except Exception:
                 IDEMP_ERRORS.labels(phase="acquire").inc()
                 leader2 = False
@@ -182,8 +181,8 @@ class IdempotencyMiddleware:
             if leader2:
                 IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
                 try:
-                    status, resp_headers, resp_body, is_streaming = (
-                        await self._run_downstream(scope, body)
+                    status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                        scope, body
                     )
                     if not (is_streaming and not self.cache_streaming) and (
                         200 <= status < 500 and cacheable
@@ -197,29 +196,21 @@ class IdempotencyMiddleware:
                             body_sha256=body_fp,
                         )
                         try:
-                            await self.store.put(
-                                idem_key, stored2, self.ttl_s
-                            )
+                            await self.store.put(idem_key, stored2, self.ttl_s)
                         except Exception:
                             IDEMP_ERRORS.labels(phase="put").inc()
                     elif status >= 500:
                         await self.store.release(idem_key)
 
-                    await self._send_raw(
-                        send, status, resp_headers, resp_body, replay=False
-                    )
+                    await self._send_raw(send, status, resp_headers, resp_body, replay=False)
                 finally:
                     IDEMP_IN_PROGRESS.labels(tenant=tenant).dec()
                 return
 
             # Last resort if someone else re-acquired lock between waits:
             # execute without caching to avoid replaying unrelated payload.
-            status, resp_headers, resp_body, _ = await self._run_downstream(
-                scope, body
-            )
-            await self._send_raw(
-                send, status, resp_headers, resp_body, replay=False
-            )
+            status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
+            await self._send_raw(send, status, resp_headers, resp_body, replay=False)
             return
 
         # No mismatch: safe to replay if value is present; otherwise run once.
@@ -235,9 +226,7 @@ class IdempotencyMiddleware:
             IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
             return
 
-        status, resp_headers, resp_body, _ = await self._run_downstream(
-            scope, body
-        )
+        status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
         await self._send_raw(send, status, resp_headers, resp_body, replay=False)
 
     async def _wait_for_value(self, key: str, timeout: int) -> None:
@@ -249,7 +238,6 @@ class IdempotencyMiddleware:
                     return
             except Exception:
                 IDEMP_ERRORS.labels(phase="get").inc()
-                # continue waiting/backing off even on transient errors
             await asyncio.sleep(delay)
             delay = min(delay * 2, 0.2)
 
@@ -269,9 +257,7 @@ class IdempotencyMiddleware:
         return b"".join(chunks)
 
     async def _run_downstream(
-        self,
-        scope,
-        body: bytes,
+        self, scope, body: bytes
     ) -> Tuple[int, Dict[str, str], bytes, bool]:
         """Replay buffered body to the app and capture the full response."""
         resp_headers: Dict[str, str] = {}
@@ -285,8 +271,15 @@ class IdempotencyMiddleware:
                 status = msg.get("status")
                 if isinstance(status, int):
                     status_holder["code"] = status
-                for k, v in msg.get("headers", []) or []:
-                    resp_headers[k.decode("latin1").lower()] = v.decode("latin1")
+                # mypy-safe: headers may be absent or untyped 'object'
+                raw_headers_obj = msg.get("headers")
+                raw_headers = cast(
+                    Optional[Sequence[Tuple[bytes, bytes]]],
+                    raw_headers_obj,
+                )
+                if raw_headers:
+                    for k, v in raw_headers:
+                        resp_headers[k.decode("latin1").lower()] = v.decode("latin1")
             elif msg.get("type") == "http.response.body":
                 if msg.get("more_body"):
                     is_streaming = True
@@ -323,17 +316,13 @@ class IdempotencyMiddleware:
         )
 
     async def _send_stored(
-        self,
-        send,
-        key: str,
-        stored: StoredResponse,
+        self, send, key: str, stored: StoredResponse
     ) -> None:
         headers = [
             (k.encode("latin1"), v.encode("latin1"))
             for k, v in stored.headers.items()
         ]
         headers.append((b"idempotency-replayed", b"true"))
-        # Optional: echo the key back (harmless for debug/trace).
         headers.append((b"x-idempotency-key", key.encode("latin1")))
         await send(
             {
