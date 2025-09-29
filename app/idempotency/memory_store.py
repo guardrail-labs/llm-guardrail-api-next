@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.idempotency.store import IdemStore, StoredResponse
 
-__all__ = ["MemoryIdemStore"]
+__all__ = ["MemoryIdemStore", "InMemoryIdemStore"]
 
 
 def _now() -> float:
@@ -25,7 +23,7 @@ class MemoryIdemStore(IdemStore):
       - _locks: key -> (payload_fingerprint, expires_at)
       - _states: key -> (state_text, expires_at)  # "in_progress" | "stored"
       - _values: key -> (StoredResponse, expires_at)
-      - _recent: list[(key, timestamp)]           # unbounded; trimmed by recent_limit if set
+      - _recent: list[(key, timestamp)]           # unbounded; trimmed by recent_limit
     """
 
     def __init__(self, *, recent_limit: Optional[int] = 5000) -> None:
@@ -126,9 +124,8 @@ class MemoryIdemStore(IdemStore):
         async with self._mu:
             self._prune()
             state_pair = self._states.get(key)
-            state_text: Optional[str]
             if state_pair is None:
-                state_text = None
+                state_text: Optional[str] = None
             else:
                 state_text, _ = state_pair
 
@@ -166,3 +163,7 @@ class MemoryIdemStore(IdemStore):
                 return []
             # Return newest-first
             return list(self._recent[-limit:])[::-1]
+
+
+# Back-compat alias used by some modules/tests.
+InMemoryIdemStore = MemoryIdemStore
