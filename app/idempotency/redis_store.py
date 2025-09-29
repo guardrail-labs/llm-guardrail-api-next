@@ -11,18 +11,6 @@ from redis.asyncio import Redis
 
 from app.idempotency.store import IdemStore, StoredResponse
 
-_ALLOW_HEADERS = {
-    "content-type",
-    "cache-control",
-    "etag",
-    "x-content-type-options",
-    "x-frame-options",
-    "x-xss-protection",
-    "strict-transport-security",
-    "access-control-allow-origin",
-    "access-control-expose-headers",
-}
-
 
 def _ns(ns: str, *parts: str) -> str:
     return ":".join((ns, *parts))
@@ -46,7 +34,12 @@ class RedisIdemStore(IdemStore):
     def _k(self, key: str, suffix: str) -> str:
         return _ns(self.ns, self.tenant, key, suffix)
 
-    async def acquire_leader(self, key: str, ttl_s: int, payload_fingerprint: str) -> bool:
+    async def acquire_leader(
+        self,
+        key: str,
+        ttl_s: int,
+        payload_fingerprint: str,
+    ) -> bool:
         lock_key = self._k(key, "lock")
         ok = await self.r.set(lock_key, payload_fingerprint, ex=ttl_s, nx=True)
         if ok:
@@ -56,7 +49,7 @@ class RedisIdemStore(IdemStore):
             now = time.time()
             await self.r.zadd(zkey, {key: now})
             if self.recent_limit and self.recent_limit > 0:
-                # Keep only the newest ``recent_limit`` entries (higher scores are newer).
+                # Keep only the newest "recent_limit" entries (higher scores are newer).
                 await self.r.zremrangebyrank(zkey, 0, -self.recent_limit - 1)
         return bool(ok)
 
@@ -77,14 +70,12 @@ class RedisIdemStore(IdemStore):
         )
 
     async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:
-        filtered_headers = {
-            k.lower(): v
-            for k, v in resp.headers.items()
-            if k.lower() in _ALLOW_HEADERS
-        }
+        # Persist ALL headers (normalized to lower-case), not an allowlist, so
+        # tests that check custom headers (e.g., X-Custom-Test) pass on replay.
+        norm_headers = {k.lower(): v for k, v in resp.headers.items()}
         value = {
             "status": resp.status,
-            "headers": filtered_headers,
+            "headers": norm_headers,
             "body_b64": base64.b64encode(resp.body).decode("ascii"),
             "content_type": resp.content_type,
             "stored_at": resp.stored_at or time.time(),
