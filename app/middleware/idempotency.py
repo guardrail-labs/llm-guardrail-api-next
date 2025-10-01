@@ -283,4 +283,123 @@ class IdempotencyMiddleware:
 
     async def _wait_for_release_or_value(self, key: str, timeout: float) -> str:
         """
-        Poll with backoff
+        Poll with backoff + jitter until either a cached value appears OR
+        the lock disappears / state changes. Returns "value", "released", or "timeout".
+        """
+        deadline = time.time() + timeout
+        delay = 0.01
+        steps = 0
+        while time.time() < deadline:
+            try:
+                if await self.store.get(key):
+                    IDEMP_BACKOFF_STEPS.inc()
+                    return "value"
+            except Exception:
+                IDEMP_ERRORS.labels(phase="get").inc()
+            try:
+                meta = await self.store.meta(key)
+                if not meta.get("lock") or meta.get("state") != "in_progress":
+                    IDEMP_BACKOFF_STEPS.inc()
+                    return "released"
+            except Exception:
+                IDEMP_ERRORS.labels(phase="meta").inc()
+            jitter = random.random() * min(delay, 0.05)
+            await asyncio.sleep(delay + jitter)
+            delay = min(delay * 2.0, 0.2)
+            steps += 1
+        if steps:
+            IDEMP_BACKOFF_STEPS.inc()
+        return "timeout"
+
+    async def _send_error(self, send: Send, status: int, detail: str) -> None:
+        payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+        ]
+        await send({"type": "http.response.start", "status": status, "headers": headers})
+        await send({"type": "http.response.body", "body": payload})
+
+    async def _send_direct(
+        self,
+        send: Send,
+        status: int,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> None:
+        """Send response exactly as produced by downstream (no idempotency headers)."""
+        hdrs = [(k.encode(), v.encode()) for k, v in headers.items()]
+        # Ensure content-length is present.
+        if not any(k.lower() == b"content-length" for k, _ in hdrs):
+            hdrs.append((b"content-length", str(len(body)).encode()))
+        await send({"type": "http.response.start", "status": status, "headers": hdrs})
+        await send({"type": "http.response.body", "body": body})
+
+    async def _send_fresh(
+        self,
+        send: Send,
+        status: int,
+        headers: Mapping[str, str],
+        body: bytes,
+    ) -> None:
+        # Ensure replay header is explicitly false
+        hdrs = [(k.encode(), v.encode()) for k, v in headers.items()]
+        hdrs.append((b"idempotency-replayed", b"false"))
+        hdrs.append((b"content-length", str(len(body)).encode()))
+        await send({"type": "http.response.start", "status": status, "headers": hdrs})
+        await send({"type": "http.response.body", "body": body})
+
+    async def _send_stored(self, send: Send, key: str, resp: StoredResponse) -> None:  # noqa: ARG002
+        hdrs = [(k.encode(), v.encode()) for k, v in resp.headers.items()]
+        hdrs.append((b"idempotency-replayed", b"true"))
+        hdrs.append((b"x-idempotency-key", b"%s" % key.encode()))
+        body = resp.body
+        hdrs.append((b"content-length", str(len(body)).encode()))
+        await send({"type": "http.response.start", "status": resp.status, "headers": hdrs})
+        await send({"type": "http.response.body", "body": body})
+
+    async def _run_downstream(
+        self,
+        scope: Scope,
+        body: bytes,
+    ) -> Tuple[int, Mapping[str, str], bytes, bool]:
+        """
+        Execute downstream app and capture the response.
+        Returns (status, headers, body, is_streaming).
+        """
+        status_code: Optional[int] = None
+        headers: MutableMapping[str, str] = {}
+        chunks: list[bytes] = []
+        is_streaming = False
+
+        async def receive_wrapper() -> MutableMapping[str, Any]:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send_wrapper(message: MutableMapping[str, Any]) -> None:
+            nonlocal status_code, headers, chunks, is_streaming
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+                raw_headers = message.get("headers") or []
+                # Normalize to str headers
+                for k, v in raw_headers:
+                    headers[k.decode().lower()] = v.decode()
+            elif message["type"] == "http.response.body":
+                chunk = message.get("body") or b""
+                more = bool(message.get("more_body"))
+                if more:
+                    is_streaming = True
+                if chunk:
+                    chunks.append(chunk)
+
+        await self.app(scope, receive_wrapper, send_wrapper)
+        return int(status_code or 200), headers, b"".join(chunks), is_streaming
+
+
+def _valid_key(key: str) -> bool:
+    # 1–200 [A-Za-z0-9_-]
+    if not (1 <= len(key) <= 200):
+        return False
+    for ch in key:
+        if not (ch.isalnum() or ch in "-_"):
+            return False
+    return True
