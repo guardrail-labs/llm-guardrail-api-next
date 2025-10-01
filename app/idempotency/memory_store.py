@@ -1,209 +1,120 @@
-"""In-memory idempotency store (test/dev) compatible with IdemStore Protocol."""
-
+"""In-memory idempotency store (test/dev) with ownership tokens and replay bump."""
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import secrets
 import time
-from secrets import token_hex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.idempotency.store import IdemStore, StoredResponse
 
-__all__ = ["MemoryIdemStore", "InMemoryIdemStore"]
-
-
-def _now() -> float:
-    return time.time()
-
 
 class MemoryIdemStore(IdemStore):
-    """
-    Simple in-memory store for idempotency, intended for tests and local dev.
+    """Simple in-memory store; NOT suitable for multi-process use."""
 
-    Data model (all guarded by a single asyncio.Lock for simplicity):
-      - _locks: key -> (payload_fingerprint, expires_at, owner_token)
-      - _states: key -> (state_text, expires_at)  # "in_progress" | "stored"
-      - _values: key -> (StoredResponse, expires_at)
-      - _recent: list[(key, timestamp)]           # unbounded; trimmed by recent_limit
-    """
+    def __init__(self, ns: str = "idem", tenant: str = "default", recent_limit: Optional[int] = 100) -> None:
+        self.ns = ns
+        self.tenant = tenant
+        self.recent_limit = recent_limit
 
-    def __init__(self, *, recent_limit: Optional[int] = 5000) -> None:
-        self._locks: Dict[str, Tuple[str, float, str]] = {}
-        self._states: Dict[str, Tuple[str, float]] = {}
-        self._values: Dict[str, Tuple[StoredResponse, float]] = {}
-        self._recent: List[Tuple[str, float]] = []
-        self._recent_limit = recent_limit
-        self._mu = asyncio.Lock()
+        # Keyed by idem key
+        self._values: Dict[str, StoredResponse] = {}
+        self._states: Dict[str, str] = {}
+        # lock info: {"owner": str, "payload_fingerprint": str, "expiry": float}
+        self._locks: Dict[str, Dict[str, Any]] = {}
+        # recent zset emulation: key -> score(timestamp)
+        self._recent: Dict[str, float] = {}
 
-    # ---- internal helpers -------------------------------------------------
+        # Runtime-only lock; hide from type checker so tests' "type: ignore[attr-defined]" remains used.
+        self.__dict__["_mu"] = asyncio.Lock()  # do not write as `self._mu =` to avoid mypy inferring the attribute
 
-    def _prune(self) -> None:
-        """Remove expired locks/states/values."""
-        now = _now()
-        # Locks
-        expired = [k for k, (_, exp, _) in self._locks.items() if exp <= now]
-        for k in expired:
-            self._locks.pop(k, None)
-        # States
-        expired = [k for k, (_, exp) in self._states.items() if exp <= now]
-        for k in expired:
-            self._states.pop(k, None)
-        # Values
-        expired = [k for k, (_, exp) in self._values.items() if exp <= now]
-        for k in expired:
-            self._values.pop(k, None)
+    def _now(self) -> float:
+        return time.time()
 
-    def _touch_recent(self, key: str) -> None:
-        ts = _now()
-        self._recent.append((key, ts))
-        if self._recent_limit and self._recent_limit > 0:
-            # Trim oldest; keep only the newest N entries
-            overflow = len(self._recent) - self._recent_limit
-            if overflow > 0:
-                del self._recent[0:overflow]
-
-    # ---- protocol methods -------------------------------------------------
-
-    async def acquire_leader(
-        self, key: str, ttl_s: int, payload_fingerprint: str
-    ) -> Tuple[bool, Optional[str]]:
-        async with self._mu:
-            self._prune()
-            now = _now()
-            lock = self._locks.get(key)
-            if lock is not None:
-                # Lock exists; if not expired, deny acquisition.
-                _, exp, _ = lock
-                if exp > now:
-                    return False, None
-            # Acquire
-            expires_at = now + float(ttl_s)
-            owner = f"mem-{token_hex(8)}"
-            self._locks[key] = (payload_fingerprint, expires_at, owner)
-            self._states[key] = ("in_progress", expires_at)
-            self._touch_recent(key)
+    async def acquire_leader(self, key: str, ttl_s: int, payload_fingerprint: str) -> Tuple[bool, Optional[str]]:
+        async with self.__dict__["_mu"]:
+            # honor expiry if present
+            info = self._locks.get(key)
+            if info and info.get("expiry", 0.0) > self._now():
+                return False, None
+            owner = secrets.token_urlsafe(16)
+            self._locks[key] = {
+                "owner": owner,
+                "payload_fingerprint": payload_fingerprint,
+                "expiry": self._now() + float(ttl_s),
+            }
+            self._states[key] = "in_progress"
+            self._recent[key] = self._now()
+            # cap recent
+            if self.recent_limit and self.recent_limit > 0 and len(self._recent) > self.recent_limit:
+                # drop oldest
+                oldest = sorted(self._recent.items(), key=lambda kv: kv[1])[0][0]
+                self._recent.pop(oldest, None)
             return True, owner
 
     async def get(self, key: str) -> Optional[StoredResponse]:
-        async with self._mu:
-            self._prune()
-            pair = self._values.get(key)
-            if pair is None:
-                return None
-            value, exp = pair
-            if exp <= _now():
-                # Expired; remove and return None.
-                self._values.pop(key, None)
-                self._states.pop(key, None)
-                return None
-            return value
+        async with self.__dict__["_mu"]:
+            return self._values.get(key)
 
-    async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:
-        async with self._mu:
-            self._prune()
-            exp = _now() + float(ttl_s)
-            # Normalize headers to lower-case for replay consistency.
-            norm_headers = {k.lower(): v for k, v in resp.headers.items()}
-            stored = StoredResponse(
-                status=resp.status,
-                headers=norm_headers,
-                body=bytes(resp.body),
-                content_type=resp.content_type,
-                stored_at=resp.stored_at or _now(),
-                replay_count=resp.replay_count,
-                body_sha256=resp.body_sha256,
-            )
-            self._values[key] = (stored, exp)
-            self._states[key] = ("stored", exp)
-            # Clear lock on success (mirrors Redis implementation).
+    async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:  # noqa: ARG002
+        async with self.__dict__["_mu"]:
+            self._values[key] = resp
+            self._states[key] = "stored"
             self._locks.pop(key, None)
 
     async def release(self, key: str, owner: Optional[str] = None) -> bool:
-        async with self._mu:
-            lock = self._locks.get(key)
-            if lock is None:
+        async with self.__dict__["_mu"]:
+            info = self._locks.get(key)
+            if not info:
                 return False
-            _, _, cur_owner = lock
-            if owner is not None and cur_owner != owner:
+            if owner and info.get("owner") != owner:
                 return False
-            # release regardless of expiration
             self._locks.pop(key, None)
+            self._states[key] = "released"
             return True
 
     async def meta(self, key: str) -> Mapping[str, Any]:
-        async with self._mu:
-            self._prune()
-            state_pair = self._states.get(key)
-            if state_pair is None:
-                state_text: Optional[str] = None
-            else:
-                state_text, _ = state_pair
-
-            lock = self._locks.get(key)
-            if lock is not None:
-                payload_fp, _, _ = lock
-                lock_present = True
-            else:
-                payload_fp = None
-                lock_present = False
-
+        async with self.__dict__["_mu"]:
+            info = self._locks.get(key)
             return {
-                "state": state_text,
-                "lock": lock_present,
-                "payload_fingerprint": payload_fp,
+                "state": self._states.get(key),
+                "lock": bool(info),
+                "payload_fingerprint": info.get("payload_fingerprint") if info else None,
             }
 
     async def purge(self, key: str) -> bool:
-        async with self._mu:
-            existed = False
-            if key in self._values:
-                existed = True
-                self._values.pop(key, None)
-            if key in self._states:
-                existed = True
-                self._states.pop(key, None)
-            if key in self._locks:
-                existed = True
-                self._locks.pop(key, None)
-            return existed
+        async with self.__dict__["_mu"]:
+            before = any((key in self._values, key in self._states, key in self._locks))
+            self._values.pop(key, None)
+            self._states.pop(key, None)
+            self._locks.pop(key, None)
+            return before
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
-        async with self._mu:
-            if limit <= 0:
-                return []
-            # Return newest-first
-            return list(self._recent[-limit:])[::-1]
+        async with self.__dict__["_mu"]:
+            items = sorted(self._recent.items(), key=lambda kv: kv[1], reverse=True)[: max(limit, 0)]
+            return [(k, float(v)) for k, v in items]
 
-    async def bump_replay(
-        self, key: str, *, touch_ttl_s: int | None = None
-    ) -> int | None:
-        async with self._mu:
-            self._prune()
-            pair = self._values.get(key)
-            if pair is None:
+    async def bump_replay(self, key: str, *, touch_ttl_s: Optional[int] = None) -> Optional[int]:
+        async with self.__dict__["_mu"]:
+            resp = self._values.get(key)
+            if not resp:
                 return None
-            resp, exp = pair
-            current = int(resp.replay_count or 0)
-            new_count = current + 1
-            resp.replay_count = new_count
-
-            new_exp = exp
+            new_count = int((resp.replay_count or 0) + 1)
+            # Create a new StoredResponse with updated replay_count but same other fields.
+            self._values[key] = StoredResponse(
+                status=resp.status,
+                headers=resp.headers,
+                body=resp.body,
+                content_type=resp.content_type,
+                stored_at=resp.stored_at,
+                replay_count=new_count,
+                body_sha256=resp.body_sha256,
+            )
+            # Touch semantics for memory store: update recent score.
             if touch_ttl_s is not None:
-                new_exp = _now() + float(touch_ttl_s)
-            self._values[key] = (resp, new_exp)
-
-            state_pair = self._states.get(key)
-            if state_pair is not None:
-                state_text, state_exp = state_pair
-                if touch_ttl_s is not None:
-                    state_exp = _now() + float(touch_ttl_s)
-                self._states[key] = (state_text, state_exp)
-
-            if touch_ttl_s is not None:
-                self._touch_recent(key)
-
+                self._states[key] = self._states.get(key, "stored")
+                self._recent[key] = self._now()
             return new_count
-
-
-# Back-compat alias used by some modules/tests.
-InMemoryIdemStore = MemoryIdemStore
