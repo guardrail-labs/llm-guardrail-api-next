@@ -1,21 +1,23 @@
 import asyncio
+from typing import Any
 
 import pytest
 
+# Make typing tolerant whether fakeredis is installed or not.
 try:
-    from fakeredis.aioredis import FakeRedis as _FakeRedis
-except Exception:  # pragma: no cover - allow skip if fakeredis not present
-    _FakeRedis = None  # type: ignore[assignment]
+    from fakeredis.aioredis import FakeRedis as _FakeRedis  # type: ignore[assignment]
+except Exception:  # pragma: no cover
+    _FakeRedis = None  # runtime sentinel when fakeredis is absent
 
 from app.idempotency.redis_store import RedisIdemStore
-
 
 pytestmark = pytest.mark.skipif(_FakeRedis is None, reason="fakeredis not installed")
 
 
 @pytest.mark.asyncio
 async def test_lua_single_flight_atomic_acquire() -> None:
-    r = _FakeRedis(decode_responses=False)  # type: ignore[operator]
+    # _FakeRedis is present due to skipif guard.
+    r: Any = _FakeRedis(decode_responses=False)  # create aioredis-compatible client
     store = RedisIdemStore(r, ns="t", tenant="acme", recent_limit=100)
 
     async def attempt() -> bool:
