@@ -5,7 +5,7 @@ import pytest
 
 # Make typing tolerant whether fakeredis is installed or not.
 try:
-    from fakeredis.aioredis import FakeRedis as _FakeRedis  # type: ignore[assignment]
+    from fakeredis.aioredis import FakeRedis as _FakeRedis
 except Exception:  # pragma: no cover
     _FakeRedis = None  # runtime sentinel when fakeredis is absent
 
