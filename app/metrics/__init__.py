@@ -70,6 +70,18 @@ IDEMP_ERRORS = metric_counter(
     ["phase"],
 )
 
+IDEMP_TOUCHES = metric_counter(
+    "guardrail_idemp_touches_total",
+    "Idempotency TTL refreshes (touch) on replay",
+    ["tenant"],
+)
+
+IDEMP_REPLAY_COUNT_HIST = metric_histogram(
+    "guardrail_idemp_replay_count",
+    "Observed replay_count values on replay",
+    ["tenant", "method"],
+)
+
 # Additional observability used by tests and dashboards
 IDEMP_STREAMING_SKIPPED = metric_counter(
     "guardrail_idemp_streaming_skipped_total",

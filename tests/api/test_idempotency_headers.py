@@ -25,11 +25,13 @@ def test_replay_includes_security_headers(client) -> None:
     assert first.status_code == 200
     assert first.headers.get("X-Content-Type-Options") == "nosniff"
     assert first.headers.get("Idempotency-Replayed") == "false"
+    assert first.headers.get("Idempotency-Replay-Count") is None
 
     second = client.post("/v1/guardrail", json=payload, headers=headers)
     assert second.status_code == first.status_code
     assert second.headers.get("Idempotency-Replayed") == "true"
     assert second.headers.get("X-Content-Type-Options") == "nosniff"
+    assert second.headers.get("Idempotency-Replay-Count") == "1"
 
 
 def test_replay_includes_cors_headers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,11 +47,13 @@ def test_replay_includes_cors_headers(monkeypatch: pytest.MonkeyPatch) -> None:
         first = local_client.post("/v1/guardrail", json={"prompt": "cors"}, headers=headers)
         assert first.status_code == 200
         assert first.headers.get("Access-Control-Allow-Origin") == origin
+        assert first.headers.get("Idempotency-Replay-Count") is None
 
         second = local_client.post("/v1/guardrail", json={"prompt": "cors"}, headers=headers)
         assert second.status_code == first.status_code
         assert second.headers.get("Idempotency-Replayed") == "true"
         assert second.headers.get("Access-Control-Allow-Origin") == origin
+        assert second.headers.get("Idempotency-Replay-Count") == "1"
 
 
 def test_replay_preserves_custom_headers(client, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,8 +72,10 @@ def test_replay_preserves_custom_headers(client, monkeypatch: pytest.MonkeyPatch
     first = client.post("/v1/guardrail", json=payload, headers=headers)
     assert first.status_code == 200
     assert first.headers.get("X-Custom-Test") == "1"
+    assert first.headers.get("Idempotency-Replay-Count") is None
 
     second = client.post("/v1/guardrail", json=payload, headers=headers)
     assert second.status_code == first.status_code
     assert second.headers.get("Idempotency-Replayed") == "true"
     assert second.headers.get("X-Custom-Test") == "1"
+    assert second.headers.get("Idempotency-Replay-Count") == "1"

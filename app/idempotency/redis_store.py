@@ -12,6 +12,29 @@ from redis.asyncio import Redis
 from app.idempotency.store import IdemStore, StoredResponse
 
 
+_BUMP_REPLAY_LUA = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then return nil end
+local doc = cjson.decode(raw)
+local current = tonumber(doc.replay_count) or 0
+current = current + 1
+doc.replay_count = current
+local encoded = cjson.encode(doc)
+local ttl = redis.call('PTTL', KEYS[1])
+local ex = tonumber(ARGV[1] or '-1') or -1
+if ex >= 0 then
+  redis.call('SET', KEYS[1], encoded, 'EX', ex)
+else
+  if ttl > 0 then
+    redis.call('SET', KEYS[1], encoded, 'PX', ttl)
+  else
+    redis.call('SET', KEYS[1], encoded)
+  end
+end
+return current
+"""
+
+
 def _ns(ns: str, *parts: str) -> str:
     return ":".join((ns, *parts))
 
@@ -145,4 +168,24 @@ class RedisIdemStore(IdemStore):
             key = raw_key.decode() if isinstance(raw_key, (bytes, bytearray)) else raw_key
             results.append((key, float(score)))
         return results
+
+    async def bump_replay(
+        self, key: str, *, touch_ttl_s: int | None = None
+    ) -> int | None:
+        value_key = self._k(key, "value")
+        state_key = self._k(key, "state")
+        ex = touch_ttl_s if touch_ttl_s is not None else -1
+        res = await cast(
+            Awaitable[Any], self.r.eval(_BUMP_REPLAY_LUA, 1, value_key, ex)
+        )
+        if res is None:
+            return None
+        new_count = int(res)
+
+        if touch_ttl_s is not None:
+            await self.r.expire(state_key, touch_ttl_s)
+            if self.recent_limit and self.recent_limit > 0:
+                zkey = _ns(self.ns, self.tenant, "recent")
+                await self.r.zadd(zkey, {key: time.time()})
+        return new_count
 

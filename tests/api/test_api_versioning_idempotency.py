@@ -40,10 +40,12 @@ def test_idempotent_replay_same_body(client) -> None:
     first = client.post("/v1/guardrail", json=payload, headers=headers)
     assert first.status_code == 200
     assert first.headers.get("Idempotency-Replayed") == "false"
+    assert first.headers.get("Idempotency-Replay-Count") is None
 
     second = client.post("/v1/guardrail", json=payload, headers=headers)
     assert second.status_code == first.status_code
     assert second.headers.get("Idempotency-Replayed") == "true"
+    assert second.headers.get("Idempotency-Replay-Count") == "1"
     assert second.json() == first.json()
 
 
@@ -107,8 +109,10 @@ def test_batch_idempotency_replay(client) -> None:
     first = client.post("/v1/batch/batch_evaluate", json=payload, headers=headers)
     assert first.status_code == 200
     assert first.headers.get("Idempotency-Replayed") == "false"
+    assert first.headers.get("Idempotency-Replay-Count") is None
 
     second = client.post("/v1/batch/batch_evaluate", json=payload, headers=headers)
     assert second.status_code == 200
     assert second.headers.get("Idempotency-Replayed") == "true"
+    assert second.headers.get("Idempotency-Replay-Count") == "1"
     assert second.json() == first.json()

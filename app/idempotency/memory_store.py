@@ -174,6 +174,36 @@ class MemoryIdemStore(IdemStore):
             # Return newest-first
             return list(self._recent[-limit:])[::-1]
 
+    async def bump_replay(
+        self, key: str, *, touch_ttl_s: int | None = None
+    ) -> int | None:
+        async with self._mu:
+            self._prune()
+            pair = self._values.get(key)
+            if pair is None:
+                return None
+            resp, exp = pair
+            current = int(resp.replay_count or 0)
+            new_count = current + 1
+            resp.replay_count = new_count
+
+            new_exp = exp
+            if touch_ttl_s is not None:
+                new_exp = _now() + float(touch_ttl_s)
+            self._values[key] = (resp, new_exp)
+
+            state_pair = self._states.get(key)
+            if state_pair is not None:
+                state_text, state_exp = state_pair
+                if touch_ttl_s is not None:
+                    state_exp = _now() + float(touch_ttl_s)
+                self._states[key] = (state_text, state_exp)
+
+            if touch_ttl_s is not None:
+                self._touch_recent(key)
+
+            return new_count
+
 
 # Back-compat alias used by some modules/tests.
 InMemoryIdemStore = MemoryIdemStore

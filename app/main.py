@@ -906,6 +906,7 @@ def create_app() -> FastAPI:
             max_body=settings.IDEMP_MAX_BODY_BYTES,
             cache_streaming=settings.IDEMP_CACHE_STREAMING,
             tenant_provider=lambda scope: "default",
+            touch_on_replay=settings.IDEMP_TOUCH_ON_REPLAY,
         )
 
     # --- Admin bindings: prefer real router, else fallback ---
