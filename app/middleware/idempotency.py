@@ -20,7 +20,7 @@ from app.metrics import (
     IDEMP_LOCK_WAIT,
     IDEMP_MISSES,
     IDEMP_REPLAYS,
-    IDEMP_REPLAY_COUNT,
+    IDEMP_REPLAY_COUNT_HIST,
     IDEMP_TOUCHES,
     metric_counter,
 )
@@ -114,15 +114,12 @@ class IdempotencyMiddleware:
 
         if cached:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
-            # bump replay count; optionally refresh TTLs inside the store
             try:
-                new_count, touched = await self.store.bump_replay(
-                    key, touch=self.touch_on_replay
-                )
-                IDEMP_REPLAY_COUNT.labels(method=method, tenant=tenant).observe(
-                    float(new_count)
-                )
-                if touched:
+                new_count = await self.store.bump_replay(key)
+                IDEMP_REPLAY_COUNT_HIST.labels(
+                    method=method, tenant=tenant
+                ).observe(float(new_count))
+                if self.touch_on_replay:
                     IDEMP_TOUCHES.labels(tenant=tenant).inc()
             except Exception:
                 IDEMP_ERRORS.labels(phase="bump").inc()
@@ -216,13 +213,11 @@ class IdempotencyMiddleware:
         if not conflict and cached_after:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
             try:
-                new_count, touched = await self.store.bump_replay(
-                    key, touch=self.touch_on_replay
-                )
-                IDEMP_REPLAY_COUNT.labels(method=method, tenant=tenant).observe(
-                    float(new_count)
-                )
-                if touched:
+                new_count = await self.store.bump_replay(key)
+                IDEMP_REPLAY_COUNT_HIST.labels(
+                    method=method, tenant=tenant
+                ).observe(float(new_count))
+                if self.touch_on_replay:
                     IDEMP_TOUCHES.labels(tenant=tenant).inc()
             except Exception:
                 IDEMP_ERRORS.labels(phase="bump").inc()
