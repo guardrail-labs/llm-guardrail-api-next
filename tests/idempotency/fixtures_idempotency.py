@@ -2,6 +2,7 @@ import asyncio
 from typing import AsyncIterator
 
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -30,7 +31,7 @@ def app_admin(
     return app
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def admin_client(app_admin: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app_admin)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -45,13 +46,9 @@ def _build_core_app() -> FastAPI:
         # Add a custom header via middleware capture; body is echoed
         return {"ok": True, "payload": payload}
 
+    # Placeholder; the streaming path is defined in tests where needed.
     @app.post("/stream")
     async def stream_endpoint() -> asyncio.StreamReader:
-        """
-        Produce a streaming-style response at ASGI level:
-        our middleware will see more_body=True at least once.
-        Implemented in the raw ASGI app used by tests.
-        """
         return asyncio.StreamReader()
 
     return app
@@ -62,7 +59,7 @@ def app_with_idem(memory_store: MemoryIdemStore) -> FastAPI:
     """
     App with the idempotency middleware installed and two endpoints:
     - /echo: normal JSON (cacheable)
-    - /stream: the test crafts streaming at ASGI level
+    - /stream: the test crafts streaming at ASGI level (overridden in test)
     """
     app = _build_core_app()
     app.add_middleware(
@@ -77,7 +74,7 @@ def app_with_idem(memory_store: MemoryIdemStore) -> FastAPI:
     return app
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def idem_client(app_with_idem: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app_with_idem)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
