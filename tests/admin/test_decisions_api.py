@@ -13,39 +13,45 @@ def _make_app() -> FastAPI:
     return app
 
 
-_items: List[Dict[str, Any]] = [
-    {
-        "id": "a1",
-        "ts": datetime.now(timezone.utc) - timedelta(minutes=5),
-        "tenant": "t1",
-        "bot": "b1",
-        "outcome": "allow",
-        "policy_version": "v1",
-    },
-    {
-        "id": "a2",
-        "ts": datetime.now(timezone.utc) - timedelta(minutes=3),
-        "tenant": "t1",
-        "bot": "b2",
-        "outcome": "block_input_only",
-        "policy_version": "v1",
-        "rule_id": "r-secret",
-    },
-    {
-        "id": "a3",
-        "ts": datetime.now(timezone.utc) - timedelta(minutes=1),
-        "tenant": "t2",
-        "bot": "b1",
-        "outcome": "allow",
-        "policy_version": "v2",
-    },
-]
+def _sample_items(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Return sample decisions anchored to the provided time."""
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    return [
+        {
+            "id": "a1",
+            "ts": now - timedelta(minutes=5),
+            "tenant": "t1",
+            "bot": "b1",
+            "outcome": "allow",
+            "policy_version": "v1",
+        },
+        {
+            "id": "a2",
+            "ts": now - timedelta(minutes=3),
+            "tenant": "t1",
+            "bot": "b2",
+            "outcome": "block_input_only",
+            "policy_version": "v1",
+            "rule_id": "r-secret",
+        },
+        {
+            "id": "a3",
+            "ts": now - timedelta(minutes=1),
+            "tenant": "t2",
+            "bot": "b1",
+            "outcome": "allow",
+            "policy_version": "v2",
+        },
+    ]
 
 
 def _provider(
     since, tenant, bot, outcome, limit, offset
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-    rows = _items
+    rows = _sample_items()
     if since:
         rows = [x for x in rows if x["ts"] >= since]
     if tenant:
