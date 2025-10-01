@@ -1,169 +1,120 @@
-"""In-memory idempotency store (test/dev) compatible with IdemStore Protocol."""
+"""In-memory idempotency store (test/dev), now with owner tokens."""
 
 from __future__ import annotations
 
-import asyncio
 import time
+import uuid
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.idempotency.store import IdemStore, StoredResponse
 
-__all__ = ["MemoryIdemStore", "InMemoryIdemStore"]
-
-
-def _now() -> float:
-    return time.time()
-
 
 class MemoryIdemStore(IdemStore):
     """
-    Simple in-memory store for idempotency, intended for tests and local dev.
+    Non-persistent store for tests & local dev.
 
-    Data model (all guarded by a single asyncio.Lock for simplicity):
-      - _locks: key -> (payload_fingerprint, expires_at)
-      - _states: key -> (state_text, expires_at)  # "in_progress" | "stored"
-      - _values: key -> (StoredResponse, expires_at)
-      - _recent: list[(key, timestamp)]           # unbounded; trimmed by recent_limit
+    Data structures:
+      - _values: key -> StoredResponse
+      - _state: key -> "in_progress" | "stored"
+      - _locks: key -> (owner_token, expires_at, payload_fingerprint)
+      - _recent: list[(key, timestamp)] (append-only; truncated)
     """
 
-    def __init__(self, *, recent_limit: Optional[int] = 5000) -> None:
-        self._locks: Dict[str, Tuple[str, float]] = {}
-        self._states: Dict[str, Tuple[str, float]] = {}
-        self._values: Dict[str, Tuple[StoredResponse, float]] = {}
+    def __init__(self, recent_limit: Optional[int] = 100) -> None:
+        self._values: Dict[str, StoredResponse] = {}
+        self._state: Dict[str, str] = {}
+        self._locks: Dict[str, Tuple[str, float, str]] = {}
         self._recent: List[Tuple[str, float]] = []
-        self._recent_limit = recent_limit
-        self._mu = asyncio.Lock()
+        self._recent_limit = recent_limit or 0
 
-    # ---- internal helpers -------------------------------------------------
-
-    def _prune(self) -> None:
-        """Remove expired locks/states/values."""
-        now = _now()
-        # Locks
-        expired = [k for k, (_, exp) in self._locks.items() if exp <= now]
-        for k in expired:
-            self._locks.pop(k, None)
-        # States
-        expired = [k for k, (_, exp) in self._states.items() if exp <= now]
-        for k in expired:
-            self._states.pop(k, None)
-        # Values
-        expired = [k for k, (_, exp) in self._values.items() if exp <= now]
-        for k in expired:
-            self._values.pop(k, None)
-
-    def _touch_recent(self, key: str) -> None:
-        ts = _now()
-        self._recent.append((key, ts))
-        if self._recent_limit and self._recent_limit > 0:
-            # Trim oldest; keep only the newest N entries
-            overflow = len(self._recent) - self._recent_limit
-            if overflow > 0:
-                del self._recent[0:overflow]
-
-    # ---- protocol methods -------------------------------------------------
+    def _prune_lock_if_expired(self, key: str) -> None:
+        lock = self._locks.get(key)
+        if not lock:
+            return
+        owner, exp, _fp = lock
+        if exp <= time.time():
+            # Expired lock; clear it and state if still in_progress.
+            self._locks.pop(key, None)
+            if self._state.get(key) == "in_progress":
+                self._state.pop(key, None)
 
     async def acquire_leader(
         self, key: str, ttl_s: int, payload_fingerprint: str
-    ) -> bool:
-        async with self._mu:
-            self._prune()
-            now = _now()
-            lock = self._locks.get(key)
-            if lock is not None:
-                # Lock exists; if not expired, deny acquisition.
-                _, exp = lock
-                if exp > now:
-                    return False
-            # Acquire
-            expires_at = now + float(ttl_s)
-            self._locks[key] = (payload_fingerprint, expires_at)
-            self._states[key] = ("in_progress", expires_at)
-            self._touch_recent(key)
-            return True
+    ) -> Tuple[bool, Optional[str]]:
+        self._prune_lock_if_expired(key)
+        if key in self._locks:
+            return False, None
+        owner = str(uuid.uuid4())
+        self._locks[key] = (owner, time.time() + float(ttl_s), payload_fingerprint)
+        self._state[key] = "in_progress"
+        now = time.time()
+        self._recent.append((key, now))
+        if self._recent_limit > 0 and len(self._recent) > self._recent_limit:
+            # keep newest N
+            self._recent = self._recent[-self._recent_limit :]
+        return True, owner
 
     async def get(self, key: str) -> Optional[StoredResponse]:
-        async with self._mu:
-            self._prune()
-            pair = self._values.get(key)
-            if pair is None:
-                return None
-            value, exp = pair
-            if exp <= _now():
-                # Expired; remove and return None.
-                self._values.pop(key, None)
-                self._states.pop(key, None)
-                return None
-            return value
+        return self._values.get(key)
 
-    async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:
-        async with self._mu:
-            self._prune()
-            exp = _now() + float(ttl_s)
-            # Normalize headers to lower-case for replay consistency.
-            norm_headers = {k.lower(): v for k, v in resp.headers.items()}
-            stored = StoredResponse(
-                status=resp.status,
-                headers=norm_headers,
-                body=bytes(resp.body),
-                content_type=resp.content_type,
-                stored_at=resp.stored_at or _now(),
-                replay_count=resp.replay_count,
-                body_sha256=resp.body_sha256,
-            )
-            self._values[key] = (stored, exp)
-            self._states[key] = ("stored", exp)
-            # Clear lock on success (mirrors Redis implementation).
-            self._locks.pop(key, None)
+    async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:  # noqa: ARG002
+        # TTL is ignored in memory store (kept simple for tests)
+        self._values[key] = resp
+        self._state[key] = "stored"
+        # Do not implicitly clear lock; the leader should call release(owner=...)
+        # but for safety, if an old lock exists we clear it.
+        self._locks.pop(key, None)
 
-    async def release(self, key: str) -> None:
-        async with self._mu:
-            self._locks.pop(key, None)
+    async def release(self, key: str, owner: Optional[str] = None) -> bool:
+        self._prune_lock_if_expired(key)
+        lock = self._locks.get(key)
+        if not lock:
+            return False
+        lock_owner, _exp, _fp = lock
+        if owner is not None and owner != lock_owner:
+            # Wrong owner -> do not release
+            return False
+        self._locks.pop(key, None)
+        # If we were still in progress, allow followers to proceed.
+        if self._state.get(key) == "in_progress":
+            self._state.pop(key, None)
+        return True
 
     async def meta(self, key: str) -> Mapping[str, Any]:
-        async with self._mu:
-            self._prune()
-            state_pair = self._states.get(key)
-            if state_pair is None:
-                state_text: Optional[str] = None
-            else:
-                state_text, _ = state_pair
+        self._prune_lock_if_expired(key)
+        lock = self._locks.get(key)
+        state = self._state.get(key)
+        val = self._values.get(key)
+        ttl_remaining: Optional[float] = None
+        payload_fp: Optional[str] = None
+        owner: Optional[str] = None
+        if lock:
+            owner, exp, payload_fp = lock
+            ttl_remaining = max(exp - time.time(), 0.0)
 
-            lock = self._locks.get(key)
-            if lock is not None:
-                payload_fp, _ = lock
-                lock_present = True
-            else:
-                payload_fp = None
-                lock_present = False
-
-            return {
-                "state": state_text,
-                "lock": lock_present,
-                "payload_fingerprint": payload_fp,
-            }
+        return {
+            "state": state,
+            "lock": bool(lock),
+            "owner": owner,
+            "payload_fingerprint": payload_fp,
+            "stored_at": val.stored_at if val else None,
+            "replay_count": val.replay_count if val else None,
+            "ttl_remaining": ttl_remaining,
+        }
 
     async def purge(self, key: str) -> bool:
-        async with self._mu:
-            existed = False
-            if key in self._values:
-                existed = True
-                self._values.pop(key, None)
-            if key in self._states:
-                existed = True
-                self._states.pop(key, None)
-            if key in self._locks:
-                existed = True
-                self._locks.pop(key, None)
-            return existed
+        removed = False
+        removed |= self._values.pop(key, None) is not None
+        removed |= self._state.pop(key, None) is not None
+        removed |= self._locks.pop(key, None) is not None
+        return bool(removed)
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
-        async with self._mu:
-            if limit <= 0:
-                return []
-            # Return newest-first
-            return list(self._recent[-limit:])[::-1]
+        if limit <= 0:
+            return []
+        # newest first
+        return list(reversed(self._recent[-limit:]))
 
 
-# Back-compat alias used by some modules/tests.
+# Back-compat alias used by runtime/tests
 InMemoryIdemStore = MemoryIdemStore
