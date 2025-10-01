@@ -32,14 +32,23 @@ class MemoryIdemStore(IdemStore):
         self._states: Dict[str, Tuple[str, float]] = {}
         # lock info: {"owner": str, "payload_fingerprint": str, "expiry": float}
         self._locks: Dict[str, Dict[str, Any]] = {}
-        # recent zset emulation: key -> score(timestamp)
-        self._recent: Dict[str, float] = {}
+        # recent entries as an ordered list of (key, timestamp)
+        self._recent: List[Tuple[str, float]] = []
 
         # Hide lock from type checker; tests use "type: ignore[attr-defined]".
         self.__dict__["_mu"] = asyncio.Lock()
 
     def _now(self) -> float:
         return time.time()
+
+    def _recent_append(self, key: str) -> None:
+        """Append (key, now) and cap by recent_limit if set."""
+        self._recent.append((key, self._now()))
+        if self.recent_limit and self.recent_limit > 0:
+            # keep only the last N entries
+            over = len(self._recent) - self.recent_limit
+            if over > 0:
+                del self._recent[0:over]
 
     async def acquire_leader(
         self,
@@ -59,14 +68,7 @@ class MemoryIdemStore(IdemStore):
                 "expiry": exp,
             }
             self._states[key] = ("in_progress", exp)
-            self._recent[key] = self._now()
-            if (
-                self.recent_limit
-                and self.recent_limit > 0
-                and len(self._recent) > self.recent_limit
-            ):
-                oldest = sorted(self._recent.items(), key=lambda kv: kv[1])[0][0]
-                self._recent.pop(oldest, None)
+            self._recent_append(key)
             return True, owner
 
     async def get(self, key: str) -> Optional[StoredResponse]:
@@ -80,6 +82,7 @@ class MemoryIdemStore(IdemStore):
             self._values[key] = (resp, exp)
             self._states[key] = ("stored", exp)
             self._locks.pop(key, None)
+            # do not update recent here; acquire already added it
 
     async def release(self, key: str, owner: Optional[str] = None) -> bool:
         async with self.__dict__["_mu"]:
@@ -108,16 +111,15 @@ class MemoryIdemStore(IdemStore):
             self._values.pop(key, None)
             self._states.pop(key, None)
             self._locks.pop(key, None)
+            # keep _recent as historical trail; not purged
             return before
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
         async with self.__dict__["_mu"]:
-            items = sorted(
-                self._recent.items(),
-                key=lambda kv: kv[1],
-                reverse=True,
-            )[: max(limit, 0)]
-            return [(k, float(v)) for k, v in items]
+            # Return last N entries (most recent at end)
+            if limit <= 0:
+                return []
+            return self._recent[-limit:].copy()
 
     async def bump_replay(
         self,
@@ -141,16 +143,13 @@ class MemoryIdemStore(IdemStore):
                 body_sha256=resp.body_sha256,
             )
 
-            # If touching, refresh both value & state expiries.
+            # If touching, refresh both value & state expiries and recent trail.
             if touch_ttl_s is not None:
                 new_expiry = self._now() + float(touch_ttl_s)
                 self._values[key] = (new_resp, new_expiry)
-
                 state, _ = self._states.get(key, ("stored", new_expiry))
                 self._states[key] = (state, new_expiry)
-
-                # Touch "recent" for visibility
-                self._recent[key] = self._now()
+                self._recent_append(key)
             else:
                 self._values[key] = (new_resp, value_expiry)
 
