@@ -6,10 +6,9 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-# Import fixtures explicitly so pytest can see them; ruff won’t flag as unused.
-from .fixtures_idempotency import (  # noqa: F401
-    idem_client,
-)
+# Import the fixture module to register fixtures without shadowing names.
+from . import fixtures_idempotency as _fixtures  # noqa: F401
+
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.idempotency.memory_store import MemoryIdemStore
 
