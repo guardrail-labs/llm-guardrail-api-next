@@ -3,7 +3,7 @@ from typing import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from app.idempotency.memory_store import MemoryIdemStore
 from app.middleware.idempotency import IdempotencyMiddleware
@@ -32,7 +32,8 @@ def app_admin(
 
 @pytest.fixture
 async def admin_client(app_admin: FastAPI) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(app=app_admin, base_url="http://test") as ac:
+    transport = ASGITransport(app=app_admin)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
 
@@ -78,5 +79,6 @@ def app_with_idem(memory_store: MemoryIdemStore) -> FastAPI:
 
 @pytest.fixture
 async def idem_client(app_with_idem: FastAPI) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(app=app_with_idem, base_url="http://test") as ac:
+    transport = ASGITransport(app=app_with_idem)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
