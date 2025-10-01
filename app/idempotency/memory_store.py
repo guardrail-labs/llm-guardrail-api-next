@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from secrets import token_hex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.idempotency.store import IdemStore, StoredResponse
@@ -20,14 +21,14 @@ class MemoryIdemStore(IdemStore):
     Simple in-memory store for idempotency, intended for tests and local dev.
 
     Data model (all guarded by a single asyncio.Lock for simplicity):
-      - _locks: key -> (payload_fingerprint, expires_at)
+      - _locks: key -> (payload_fingerprint, expires_at, owner_token)
       - _states: key -> (state_text, expires_at)  # "in_progress" | "stored"
       - _values: key -> (StoredResponse, expires_at)
       - _recent: list[(key, timestamp)]           # unbounded; trimmed by recent_limit
     """
 
     def __init__(self, *, recent_limit: Optional[int] = 5000) -> None:
-        self._locks: Dict[str, Tuple[str, float]] = {}
+        self._locks: Dict[str, Tuple[str, float, str]] = {}
         self._states: Dict[str, Tuple[str, float]] = {}
         self._values: Dict[str, Tuple[StoredResponse, float]] = {}
         self._recent: List[Tuple[str, float]] = []
@@ -40,7 +41,7 @@ class MemoryIdemStore(IdemStore):
         """Remove expired locks/states/values."""
         now = _now()
         # Locks
-        expired = [k for k, (_, exp) in self._locks.items() if exp <= now]
+        expired = [k for k, (_, exp, _) in self._locks.items() if exp <= now]
         for k in expired:
             self._locks.pop(k, None)
         # States
@@ -65,22 +66,23 @@ class MemoryIdemStore(IdemStore):
 
     async def acquire_leader(
         self, key: str, ttl_s: int, payload_fingerprint: str
-    ) -> bool:
+    ) -> Tuple[bool, Optional[str]]:
         async with self._mu:
             self._prune()
             now = _now()
             lock = self._locks.get(key)
             if lock is not None:
                 # Lock exists; if not expired, deny acquisition.
-                _, exp = lock
+                _, exp, _ = lock
                 if exp > now:
-                    return False
+                    return False, None
             # Acquire
             expires_at = now + float(ttl_s)
-            self._locks[key] = (payload_fingerprint, expires_at)
+            owner = f"mem-{token_hex(8)}"
+            self._locks[key] = (payload_fingerprint, expires_at, owner)
             self._states[key] = ("in_progress", expires_at)
             self._touch_recent(key)
-            return True
+            return True, owner
 
     async def get(self, key: str) -> Optional[StoredResponse]:
         async with self._mu:
@@ -116,9 +118,17 @@ class MemoryIdemStore(IdemStore):
             # Clear lock on success (mirrors Redis implementation).
             self._locks.pop(key, None)
 
-    async def release(self, key: str) -> None:
+    async def release(self, key: str, owner: Optional[str] = None) -> bool:
         async with self._mu:
+            lock = self._locks.get(key)
+            if lock is None:
+                return False
+            _, _, cur_owner = lock
+            if owner is not None and cur_owner != owner:
+                return False
+            # release regardless of expiration
             self._locks.pop(key, None)
+            return True
 
     async def meta(self, key: str) -> Mapping[str, Any]:
         async with self._mu:
@@ -131,7 +141,7 @@ class MemoryIdemStore(IdemStore):
 
             lock = self._locks.get(key)
             if lock is not None:
-                payload_fp, _ = lock
+                payload_fp, _, _ = lock
                 lock_present = True
             else:
                 payload_fp = None
