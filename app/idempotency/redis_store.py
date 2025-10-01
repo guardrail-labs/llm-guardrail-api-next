@@ -5,7 +5,7 @@ import base64
 import json
 import secrets
 import time
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple, cast
 
 from redis.asyncio import Redis
 
@@ -16,7 +16,7 @@ def _ns(ns: str, *parts: str) -> str:
     return ":".join((ns, *parts))
 
 
-# Lua script: conditional lock release by owner, and mark state as "released".
+# Lua: conditional lock release by owner; set state to "released" with TTL.
 _RELEASE_LUA = """
 local lock_key = KEYS[1]
 local state_key = KEYS[2]
@@ -24,7 +24,6 @@ local owner = ARGV[1]
 local ttl = tonumber(ARGV[2])
 local v = redis.call('GET', lock_key)
 if not v then
-  -- nothing to release
   return 0
 end
 local decoded = cjson.decode(v)
@@ -41,7 +40,7 @@ return 0
 """
 
 
-# Lua script: atomically increment replay_count and preserve or refresh TTL.
+# Lua: increment replay_count; refresh TTL to EX if provided else preserve PTTL.
 # ARGV[1] = touch ttl seconds or "-1" to preserve PTTL
 _BUMP_REPLAY_LUA = """
 local value_key = KEYS[1]
@@ -73,7 +72,7 @@ return obj.replay_count
 
 
 class RedisIdemStore(IdemStore):
-    """Redis-based idempotency store leveraging ownership tokens for single-flight."""
+    """Redis-based idempotency store leveraging ownership for single-flight."""
 
     def __init__(
         self,
@@ -92,6 +91,10 @@ class RedisIdemStore(IdemStore):
     def _k(self, key: str, suffix: str) -> str:
         return _ns(self.ns, self.tenant, key, suffix)
 
+    async def _eval(self, script: str, numkeys: int, *args: str) -> Any:
+        """Typed wrapper to satisfy mypy on redis-py's .eval return type."""
+        return await cast(Any, self.r).eval(script, numkeys, *args)
+
     async def acquire_leader(
         self,
         key: str,
@@ -100,7 +103,7 @@ class RedisIdemStore(IdemStore):
     ) -> Tuple[bool, Optional[str]]:
         """
         Try to acquire leader lock for this key.
-        Value is a JSON: {"owner": "<token>", "payload_fingerprint": "<sha256>"}.
+        Value is JSON: {"owner": "<token>", "payload_fingerprint": "<sha256>"}.
         """
         lock_key = self._k(key, "lock")
         owner = secrets.token_urlsafe(16)
@@ -159,7 +162,7 @@ class RedisIdemStore(IdemStore):
 
     async def release(self, key: str, owner: Optional[str] = None) -> bool:
         """
-        Release lock if the owner matches. Also mark state as 'released' with a short TTL.
+        Release lock if the owner matches; mark state 'released' briefly.
         Returns True if released, False otherwise.
         """
         lock_key = self._k(key, "lock")
@@ -169,10 +172,9 @@ class RedisIdemStore(IdemStore):
             if res:
                 await self.r.set(state_key, "released", ex=self.release_state_ttl)
             return bool(res)
-        # Use Lua to ensure ownership match and state update happen atomically.
         try:
             ttl = str(self.release_state_ttl)
-            res = await self.r.eval(_RELEASE_LUA, 2, lock_key, state_key, owner, ttl)
+            res = await self._eval(_RELEASE_LUA, 2, lock_key, state_key, owner, ttl)
         except Exception:
             return False
         return bool(res)
@@ -208,7 +210,10 @@ class RedisIdemStore(IdemStore):
         items = await self.r.zrevrange(zkey, 0, max(limit - 1, 0), withscores=True)
         results: List[Tuple[str, float]] = []
         for raw_key, score in items:
-            key = raw_key.decode() if isinstance(raw_key, (bytes, bytearray)) else raw_key
+            if isinstance(raw_key, (bytes, bytearray)):
+                key = raw_key.decode()
+            else:
+                key = raw_key
             results.append((key, float(score)))
         return results
 
@@ -219,15 +224,14 @@ class RedisIdemStore(IdemStore):
         touch_ttl_s: Optional[int] = None,
     ) -> Optional[int]:
         """
-        Atomically increment replay_count; optionally refresh TTLs and recent score.
+        Atomically increment replay_count; optionally refresh TTLs and recent.
         Returns the new replay_count, or None if the value does not exist.
         """
         value_key = self._k(key, "value")
         state_key = self._k(key, "state")
         ex = touch_ttl_s if touch_ttl_s is not None else -1
         try:
-            # redis eval expects strings; cast ex to str explicitly.
-            new_count = await self.r.eval(_BUMP_REPLAY_LUA, 1, value_key, str(ex))
+            new_count = await self._eval(_BUMP_REPLAY_LUA, 1, value_key, str(ex))
         except Exception:
             return None
         if new_count is None:
@@ -240,7 +244,6 @@ class RedisIdemStore(IdemStore):
                     zkey = _ns(self.ns, self.tenant, "recent")
                     await self.r.zadd(zkey, {key: time.time()})
             except Exception:
-                # Best-effort, ignore refresh failures.
                 pass
         try:
             return int(new_count)
