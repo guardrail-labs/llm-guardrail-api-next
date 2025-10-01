@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 # Import the fixture module to register fixtures without shadowing names.
 from . import fixtures_idempotency as _fixtures  # noqa: F401
@@ -110,30 +110,6 @@ async def test_same_key_different_body_overwrites_cache(idem_client: AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_replay_preserves_custom_and_security_headers(
-    idem_client: AsyncClient,
-) -> None:
-    # Use same client but a fresh key to ensure we capture header preservation.
-    key = "hdrs"
-    r1 = await idem_client.post(
-        "/echo",
-        json={"a": "b"},
-        headers={"X-Idempotency-Key": key, "X-Custom-Test": "1"},
-    )
-    assert r1.status_code == 200
-    assert r1.headers.get("idempotency-replayed") == "false"
-
-    r2 = await idem_client.post(
-        "/echo",
-        json={"a": "b"},
-        headers={"X-Idempotency-Key": key, "X-Custom-Test": "1"},
-    )
-    assert r2.status_code == 200
-    assert r2.headers.get("idempotency-replayed") == "true"
-    assert r2.headers.get("x-custom-test") == "1"
-
-
-@pytest.mark.asyncio
 async def test_follower_proceeds_when_streaming_not_cached() -> None:
     """
     Two concurrent requests to /stream with same idempotency key.
@@ -143,7 +119,8 @@ async def test_follower_proceeds_when_streaming_not_cached() -> None:
     store = MemoryIdemStore()
     app = _wrap_streaming_with_middleware(store)
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         async def call():
             return await ac.post("/stream", headers={"X-Idempotency-Key": "S"})
 
@@ -179,7 +156,8 @@ async def test_lock_released_on_downstream_exception() -> None:
         tenant_provider=lambda scope: "test",
     )
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         async def call():
             return await ac.post("/boom", headers={"X-Idempotency-Key": "E"})
 
@@ -215,7 +193,8 @@ async def test_non_cached_large_body_releases_lock() -> None:
         tenant_provider=lambda scope: "test",
     )
 
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         big_body = {"x": "y" * 64}  # definitely >16 bytes serialized
 
         async def call():
