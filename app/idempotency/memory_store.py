@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import secrets
 import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -14,7 +12,12 @@ from app.idempotency.store import IdemStore, StoredResponse
 class MemoryIdemStore(IdemStore):
     """Simple in-memory store; NOT suitable for multi-process use."""
 
-    def __init__(self, ns: str = "idem", tenant: str = "default", recent_limit: Optional[int] = 100) -> None:
+    def __init__(
+        self,
+        ns: str = "idem",
+        tenant: str = "default",
+        recent_limit: Optional[int] = 100,
+    ) -> None:
         self.ns = ns
         self.tenant = tenant
         self.recent_limit = recent_limit
@@ -27,13 +30,20 @@ class MemoryIdemStore(IdemStore):
         # recent zset emulation: key -> score(timestamp)
         self._recent: Dict[str, float] = {}
 
-        # Runtime-only lock; hide from type checker so tests' "type: ignore[attr-defined]" remains used.
-        self.__dict__["_mu"] = asyncio.Lock()  # do not write as `self._mu =` to avoid mypy inferring the attribute
+        # Runtime-only lock; hide from the type checker so tests can use
+        # `# type: ignore[attr-defined]` without being flagged as unused.
+        # Assigning through __dict__ avoids mypy “seeing” the attribute.
+        self.__dict__["_mu"] = asyncio.Lock()
 
     def _now(self) -> float:
         return time.time()
 
-    async def acquire_leader(self, key: str, ttl_s: int, payload_fingerprint: str) -> Tuple[bool, Optional[str]]:
+    async def acquire_leader(
+        self,
+        key: str,
+        ttl_s: int,
+        payload_fingerprint: str,
+    ) -> Tuple[bool, Optional[str]]:
         async with self.__dict__["_mu"]:
             # honor expiry if present
             info = self._locks.get(key)
@@ -48,7 +58,11 @@ class MemoryIdemStore(IdemStore):
             self._states[key] = "in_progress"
             self._recent[key] = self._now()
             # cap recent
-            if self.recent_limit and self.recent_limit > 0 and len(self._recent) > self.recent_limit:
+            if (
+                self.recent_limit
+                and self.recent_limit > 0
+                and len(self._recent) > self.recent_limit
+            ):
                 # drop oldest
                 oldest = sorted(self._recent.items(), key=lambda kv: kv[1])[0][0]
                 self._recent.pop(oldest, None)
@@ -94,7 +108,11 @@ class MemoryIdemStore(IdemStore):
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
         async with self.__dict__["_mu"]:
-            items = sorted(self._recent.items(), key=lambda kv: kv[1], reverse=True)[: max(limit, 0)]
+            items = sorted(
+                self._recent.items(),
+                key=lambda kv: kv[1],
+                reverse=True,
+            )[: max(limit, 0)]
             return [(k, float(v)) for k, v in items]
 
     async def bump_replay(self, key: str, *, touch_ttl_s: Optional[int] = None) -> Optional[int]:
