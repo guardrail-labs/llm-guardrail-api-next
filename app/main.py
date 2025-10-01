@@ -944,6 +944,7 @@ def create_app() -> FastAPI:
         from app.routes import (
             admin_adjudications,
             admin_adjudications_api,
+            admin_idempotency,
             admin_config,
             admin_config_history,
             admin_decisions,
@@ -966,6 +967,7 @@ def create_app() -> FastAPI:
         app.include_router(admin_ui.router)
         app.include_router(admin_config.router)
         app.include_router(admin_config_history.router)
+        app.include_router(admin_idempotency.router)
         app.include_router(admin_webhook.router)
         app.include_router(admin_webhook_replay.router)
         app.include_router(admin_webhooks.router)

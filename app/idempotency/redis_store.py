@@ -8,6 +8,7 @@ import time
 from typing import Any, List, Mapping, Optional, Tuple, cast
 
 from redis.asyncio import Redis
+from redis.asyncio.client import Pipeline
 
 from app.idempotency.store import IdemStore, StoredResponse
 
@@ -91,6 +92,18 @@ class RedisIdemStore(IdemStore):
     def _k(self, key: str, suffix: str) -> str:
         return _ns(self.ns, self.tenant, key, suffix)
 
+    async def _record_recent(self, key: str, *, now: Optional[float] = None) -> None:
+        ts = float(now or time.time())
+        z_last = _ns(self.ns, self.tenant, "recent")
+        z_first = _ns(self.ns, self.tenant, "recent:first")
+        pipe = self.r.pipeline()
+        pipe.zadd(z_last, {key: ts})
+        pipe.zadd(z_first, {key: ts}, nx=True)
+        if self.recent_limit and self.recent_limit > 0:
+            pipe.zremrangebyrank(z_last, 0, -self.recent_limit - 1)
+            pipe.zremrangebyrank(z_first, 0, -self.recent_limit - 1)
+        await pipe.execute()
+
     async def _eval(self, script: str, numkeys: int, *args: str) -> Any:
         """Typed wrapper to satisfy mypy on redis-py's .eval return type."""
         return await cast(Any, self.r).eval(script, numkeys, *args)
@@ -114,12 +127,7 @@ class RedisIdemStore(IdemStore):
         if ok:
             state_key = self._k(key, "state")
             await self.r.set(state_key, "in_progress", ex=ttl_s)
-            zkey = _ns(self.ns, self.tenant, "recent")
-            now = time.time()
-            await self.r.zadd(zkey, {key: now})
-            if self.recent_limit and self.recent_limit > 0:
-                # Keep only the newest ``recent_limit`` entries.
-                await self.r.zremrangebyrank(zkey, 0, -self.recent_limit - 1)
+            await self._record_recent(key)
             return True, owner
         return False, None
 
@@ -159,6 +167,7 @@ class RedisIdemStore(IdemStore):
         pipe.set(self._k(key, "state"), "stored", ex=ttl_s)
         pipe.delete(self._k(key, "lock"))
         await pipe.execute()
+        await self._record_recent(key)
 
     async def release(self, key: str, owner: Optional[str] = None) -> bool:
         """
@@ -240,12 +249,116 @@ class RedisIdemStore(IdemStore):
         if touch_ttl_s is not None:
             try:
                 await self.r.expire(state_key, touch_ttl_s)
-                if self.recent_limit and self.recent_limit > 0:
-                    zkey = _ns(self.ns, self.tenant, "recent")
-                    await self.r.zadd(zkey, {key: time.time()})
+            except Exception:
+                pass
+            try:
+                await self._record_recent(key)
             except Exception:
                 pass
         try:
             return int(new_count)
         except Exception:
             return None
+
+    async def inspect(self, key: str) -> Mapping[str, Any]:
+        state_key = self._k(key, "state")
+        value_key = self._k(key, "value")
+        lock_key = self._k(key, "lock")
+        z_last = _ns(self.ns, self.tenant, "recent")
+        z_first = _ns(self.ns, self.tenant, "recent:first")
+
+        pipe: Pipeline = self.r.pipeline()
+        pipe.get(state_key)
+        pipe.pttl(state_key)
+        pipe.get(lock_key)
+        pipe.pttl(lock_key)
+        pipe.get(value_key)
+        pipe.pttl(value_key)
+        pipe.zscore(z_last, key)
+        pipe.zscore(z_first, key)
+        (
+            state_raw,
+            state_ttl,
+            lock_raw,
+            lock_ttl,
+            value_raw,
+            value_ttl,
+            last_score,
+            first_score,
+        ) = await pipe.execute()
+
+        state: Optional[str]
+        if isinstance(state_raw, (bytes, bytearray)):
+            state = state_raw.decode()
+        else:
+            state = state_raw
+
+        lock_info: Mapping[str, Any] | None = None
+        if lock_raw:
+            try:
+                decoded = json.loads(lock_raw)
+                if isinstance(decoded, Mapping):
+                    lock_info = decoded
+            except Exception:
+                lock_info = None
+
+        value_info: Mapping[str, Any] | None = None
+        if value_raw:
+            try:
+                decoded_val = json.loads(value_raw)
+                if isinstance(decoded_val, Mapping):
+                    value_info = decoded_val
+            except Exception:
+                value_info = None
+
+        expires_at = 0.0
+        now = time.time()
+        for ttl_ms in (state_ttl, lock_ttl, value_ttl):
+            if isinstance(ttl_ms, (int, float)) and ttl_ms > 0:
+                expires_at = max(expires_at, now + float(ttl_ms) / 1000.0)
+
+        payload_prefix: Optional[str] = None
+        size_bytes = 0
+        stored_at = 0.0
+        replay_count: Optional[int] = None
+        content_type: Optional[str] = None
+        if value_info:
+            body_b64 = value_info.get("body_b64")
+            if isinstance(body_b64, str):
+                try:
+                    size_bytes = len(base64.b64decode(body_b64))
+                except Exception:
+                    size_bytes = 0
+            payload = value_info.get("body_sha256")
+            if isinstance(payload, str) and payload:
+                payload_prefix = payload[:8]
+            stored_at = float(value_info.get("stored_at") or 0.0)
+            replay = value_info.get("replay_count")
+            if isinstance(replay, (int, float)):
+                replay_count = int(replay)
+            content = value_info.get("content_type")
+            if isinstance(content, str):
+                content_type = content
+
+        if not payload_prefix and lock_info:
+            payload = lock_info.get("payload_fingerprint")
+            if isinstance(payload, str) and payload:
+                payload_prefix = payload[:8]
+
+        if lock_info and not state:
+            state = "in_progress"
+
+        first_seen = float(first_score) if first_score is not None else None
+        last_seen = float(last_score) if last_score is not None else None
+
+        return {
+            "state": state or "missing",
+            "expires_at": float(expires_at or 0.0),
+            "replay_count": replay_count,
+            "stored_at": stored_at,
+            "size_bytes": size_bytes,
+            "content_type": content_type,
+            "payload_fingerprint_prefix": payload_prefix,
+            "first_seen_at": first_seen,
+            "last_seen_at": last_seen,
+        }

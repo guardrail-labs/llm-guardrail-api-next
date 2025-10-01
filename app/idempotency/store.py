@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Protocol, Tuple
-from typing import runtime_checkable
+from typing import Any, List, Mapping, Optional, Protocol, Tuple, runtime_checkable
 
 
 @dataclass
@@ -41,10 +40,13 @@ class IdemStore(Protocol):
         ...
 
     async def purge(self, key: str) -> bool:
-        ...
+        raise NotImplementedError
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
-        ...
+        return []
+
+    async def inspect(self, key: str) -> Mapping[str, Any]:
+        raise NotImplementedError
 
     async def bump_replay(
         self, key: str, *, touch_ttl_s: int | None = None

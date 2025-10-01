@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import random
 import time
@@ -12,6 +13,7 @@ from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, T
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.idempotency.store import IdemStore, StoredResponse
+from app.idempotency.utils import mask_idempotency_key
 from app.metrics import (
     IDEMP_BODY_TOO_LARGE,
     IDEMP_CONFLICTS,
@@ -131,12 +133,12 @@ class IdempotencyMiddleware:
             cached = None
 
         if cached and cached.body_sha256 == body_fp:
-            IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+            IDEMP_HITS.labels(method=method, tenant=tenant, role="follower").inc()
             await self._send_stored(send, key, cached, method, tenant)
-            IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+            IDEMP_REPLAYS.labels(method=method, tenant=tenant, role="follower").inc()
             return
 
-        IDEMP_MISSES.labels(method=method, tenant=tenant).inc()
+        miss_role: Optional[str] = None
 
         # Try to become leader.
         try:
@@ -145,8 +147,20 @@ class IdempotencyMiddleware:
             IDEMP_ERRORS.labels(phase="acquire").inc()
             ok, owner = False, None
 
+        miss_role = "leader" if ok else "follower"
+        IDEMP_MISSES.labels(method=method, tenant=tenant, role=miss_role).inc()
+
         if ok:
-            IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
+            _log_event(
+                "idemp_leader_acquired",
+                key=key,
+                tenant=tenant,
+                role="leader",
+                state="in_progress",
+                replay_count=None,
+                fp_prefix=_fp_prefix(body_fp),
+            )
+            IDEMP_IN_PROGRESS.labels(tenant=tenant, role="leader").inc()
             await self._leader_execute_and_persist(key, owner, scope, body, send)
             return
 
@@ -161,7 +175,16 @@ class IdempotencyMiddleware:
             fp = meta.get("payload_fingerprint") if isinstance(meta, dict) else None
             if fp and fp != body_fp:
                 conflict = True
-                IDEMP_CONFLICTS.labels(method=method, tenant=tenant).inc()
+                IDEMP_CONFLICTS.labels(method=method, tenant=tenant, role="follower").inc()
+                _log_event(
+                    "idemp_conflict",
+                    key=key,
+                    tenant=tenant,
+                    role="follower",
+                    state="conflict",
+                    replay_count=None,
+                    fp_prefix=_fp_prefix(body_fp),
+                )
 
         # If we saw a conflict, do NOT ever replay the old cached value.
         # Try to acquire immediately; if not, wait for release (ignore values),
@@ -184,7 +207,16 @@ class IdempotencyMiddleware:
                     ok2, owner2 = False, None
 
             if ok2:
-                IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
+                IDEMP_IN_PROGRESS.labels(tenant=tenant, role="leader").inc()
+                _log_event(
+                    "idemp_leader_acquired",
+                    key=key,
+                    tenant=tenant,
+                    role="leader",
+                    state="in_progress",
+                    replay_count=None,
+                    fp_prefix=_fp_prefix(body_fp),
+                )
                 await self._leader_execute_and_persist(key, owner2, scope, body, send)
                 return
 
@@ -195,8 +227,19 @@ class IdempotencyMiddleware:
 
         # No conflict: normal follower wait, then replay if value appears.
         start = time.time()
-        await self._wait_for_release_or_value(key, timeout=self.ttl_s)
-        IDEMP_LOCK_WAIT.observe(max(time.time() - start, 0.0))
+        wait_result = await self._wait_for_release_or_value(key, timeout=self.ttl_s)
+        waited = max(time.time() - start, 0.0)
+        IDEMP_LOCK_WAIT.observe(waited)
+        _log_event(
+            "idemp_follower_wait_complete",
+            key=key,
+            tenant=tenant,
+            role="follower",
+            state=wait_result,
+            replay_count=None,
+            fp_prefix=_fp_prefix(body_fp),
+            wait_ms=waited * 1000.0,
+        )
 
         try:
             cached_after = await self.store.get(key)
@@ -205,9 +248,9 @@ class IdempotencyMiddleware:
             cached_after = None
 
         if cached_after and cached_after.body_sha256 == body_fp:
-            IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+            IDEMP_HITS.labels(method=method, tenant=tenant, role="follower").inc()
             await self._send_stored(send, key, cached_after, method, tenant)
-            IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+            IDEMP_REPLAYS.labels(method=method, tenant=tenant, role="follower").inc()
             return
 
         # Try to become leader now; else run fresh (no cache).
@@ -217,8 +260,21 @@ class IdempotencyMiddleware:
             IDEMP_ERRORS.labels(phase="acquire").inc()
             ok2, owner2 = False, None
 
+        if miss_role is None:
+            miss_role = "leader" if ok2 else "follower"
+            IDEMP_MISSES.labels(method=method, tenant=tenant, role=miss_role).inc()
+
         if ok2:
-            IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
+            IDEMP_IN_PROGRESS.labels(tenant=tenant, role="leader").inc()
+            _log_event(
+                "idemp_leader_acquired",
+                key=key,
+                tenant=tenant,
+                role="leader",
+                state="in_progress",
+                replay_count=None,
+                fp_prefix=_fp_prefix(body_fp),
+            )
             await self._leader_execute_and_persist(key, owner2, scope, body, send)
             return
 
@@ -370,7 +426,7 @@ class IdempotencyMiddleware:
                     float(replay_count)
                 )
                 if self.touch_on_replay and touch_ttl is not None:
-                    IDEMP_TOUCHES.labels(tenant=tenant).inc()
+                    IDEMP_TOUCHES.labels(tenant=tenant, role="follower").inc()
 
         count_header: str | None = None
         if replay_count is not None:
@@ -381,6 +437,16 @@ class IdempotencyMiddleware:
             hdrs.append((b"idempotency-replay-count", count_header.encode()))
         body = resp.body
         hdrs.append((b"content-length", str(len(body)).encode()))
+        final_replay = replay_count if replay_count is not None else resp.replay_count
+        _log_event(
+            "idemp_replay",
+            key=key,
+            tenant=tenant,
+            role="follower",
+            state="stored",
+            replay_count=int(final_replay) if final_replay is not None else None,
+            fp_prefix=_fp_prefix(resp.body_sha256),
+        )
         await send({"type": "http.response.start", "status": resp.status, "headers": hdrs})
         await send({"type": "http.response.body", "body": body})
 
@@ -428,3 +494,39 @@ def _valid_key(key: str) -> bool:
         if not (ch.isalnum() or ch in "-_"):
             return False
     return True
+_log = logging.getLogger("guardrail.idempotency")
+
+
+def _fp_prefix(fp: Optional[str]) -> Optional[str]:
+    if not fp:
+        return None
+    return str(fp)[:8]
+
+
+def _log_event(
+    event: str,
+    *,
+    key: str,
+    tenant: str,
+    role: str,
+    state: str,
+    replay_count: Optional[int],
+    fp_prefix: Optional[str],
+    wait_ms: float = 0.0,
+) -> None:
+    try:
+        _log.info(
+            event,
+            extra={
+                "idempotency_key": mask_idempotency_key(key),
+                "tenant": tenant,
+                "role": role,
+                "state": state,
+                "replay_count": replay_count,
+                "fp_prefix": fp_prefix,
+                "wait_ms": round(wait_ms, 3),
+            },
+        )
+    except Exception:
+        # Logging should never block request handling.
+        pass
