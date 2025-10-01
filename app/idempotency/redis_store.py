@@ -5,10 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import time
-from typing import Any, List, Mapping, Optional, Tuple
+from secrets import token_hex
+from typing import Any, Awaitable, List, Mapping, Optional, Tuple, cast
 
 from redis.asyncio import Redis
-from secrets import token_hex
 
 from app.idempotency.store import IdemStore, StoredResponse
 
@@ -42,12 +42,8 @@ class RedisIdemStore(IdemStore):
         self.tenant = tenant
         self.recent_limit = recent_limit
 
-    # ---------- helpers ----------
-
     def _k(self, key: str, suffix: str) -> str:
         return _ns(self.ns, self.tenant, key, suffix)
-
-    # ---------- IdemStore API ----------
 
     async def acquire_leader(
         self,
@@ -55,23 +51,17 @@ class RedisIdemStore(IdemStore):
         ttl_s: int,
         payload_fingerprint: str,
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Try to acquire the single-flight lock via SET NX.
-        Returns (ok, owner_token_if_ok).
-        """
+        """Try to acquire the single-flight lock via SET NX."""
         lock_key = self._k(key, "lock")
         owner = token_hex(16)
         ok = await self.r.set(lock_key, owner, ex=ttl_s, nx=True)
         if ok:
-            # Mark in-progress state and store fingerprint (both with TTL).
             await self.r.set(self._k(key, "state"), "in_progress", ex=ttl_s)
             await self.r.set(self._k(key, "fp"), payload_fingerprint, ex=ttl_s)
-            # Add to recent zset and trim by limit if configured.
             zkey = _ns(self.ns, self.tenant, "recent")
             now = time.time()
             await self.r.zadd(zkey, {key: now})
             if self.recent_limit and self.recent_limit > 0:
-                # Keep newest N: remove ranks below -(N).
                 await self.r.zremrangebyrank(zkey, 0, -self.recent_limit - 1)
             return True, owner
         return False, None
@@ -118,10 +108,8 @@ class RedisIdemStore(IdemStore):
         """
         lock_key = self._k(key, "lock")
         if owner is None:
-            # Best-effort delete. Return True if key existed.
             return bool(await self.r.delete(lock_key))
 
-        # Enforce ownership using a small Lua script.
         script = """
         local k = KEYS[1]
         local expected = ARGV[1]
@@ -131,7 +119,8 @@ class RedisIdemStore(IdemStore):
         end
         return 0
         """
-        res = await self.r.eval(script, 1, lock_key, owner)
+        # redis-py typing sometimes returns Union[Awaitable, str]; cast for mypy.
+        res = await cast(Awaitable[Any], self.r.eval(script, 1, lock_key, owner))
         return bool(res)
 
     async def meta(self, key: str) -> Mapping[str, Any]:
