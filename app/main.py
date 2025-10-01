@@ -1162,6 +1162,9 @@ security_mod.install_security(app)
 admin_router = __import__("app.admin.router", fromlist=["router"]).router
 app.include_router(admin_router)
 
+admin_idem_router = __import__("app.admin.idem", fromlist=["router"]).router
+app.include_router(admin_idem_router)
+
 nosniff_mod = __import__("app.middleware.nosniff", fromlist=["install_nosniff"])
 nosniff_mod.install_nosniff(app)
 

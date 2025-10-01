@@ -119,6 +119,7 @@ class MemoryIdemStore(IdemStore):
     async def release(self, key: str) -> None:
         async with self._mu:
             self._locks.pop(key, None)
+            self._states.pop(key, None)
 
     async def meta(self, key: str) -> Mapping[str, Any]:
         async with self._mu:
