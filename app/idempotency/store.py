@@ -25,7 +25,7 @@ class IdemStore(Protocol):
         key: str,
         ttl_s: int,
         payload_fingerprint: str,
-    ) -> bool:
+    ) -> Tuple[bool, Optional[str]]:
         ...
 
     async def get(self, key: str) -> Optional[StoredResponse]:
@@ -34,7 +34,7 @@ class IdemStore(Protocol):
     async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:
         ...
 
-    async def release(self, key: str) -> None:
+    async def release(self, key: str, owner: Optional[str] = None) -> bool:
         ...
 
     async def meta(self, key: str) -> Mapping[str, Any]:
