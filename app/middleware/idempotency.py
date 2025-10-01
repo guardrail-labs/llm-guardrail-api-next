@@ -12,10 +12,7 @@ from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, T
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.idempotency.store import IdemStore, StoredResponse
-
-# Prometheus metrics are presumed available via a helper (existing in repo).
-# We keep names consistent and add a new counter for backoff steps.
-from app.metrics import (
+from app.metrics import (  # Prometheus helpers and counters
     IDEMP_CONFLICTS,
     IDEMP_ERRORS,
     IDEMP_HITS,
@@ -26,7 +23,10 @@ from app.metrics import (
     metric_counter,
 )
 
-IDEMP_BACKOFF_STEPS = metric_counter("guardrail_idemp_backoff_steps_total", "Backoff steps taken by followers")
+IDEMP_BACKOFF_STEPS = metric_counter(
+    "guardrail_idemp_backoff_steps_total",
+    "Backoff steps taken by followers",
+)
 
 
 def _env_methods() -> Tuple[str, ...]:
@@ -90,21 +90,31 @@ class IdempotencyMiddleware:
             more_body = bool(msg.get("more_body"))
         body = b"".join(body_chunks)
 
-        # Validate header
+        # Header is optional: if absent, bypass idempotency and forward as-is.
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         key = headers.get("x-idempotency-key")
-        if not key or not _valid_key(key):
+        if key is None:
+            status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
+            await self._send_direct(send, status, resp_headers, resp_body)
+            return
+
+        # If a key is supplied, validate it.
+        if not _valid_key(key):
             await self._send_error(send, 400, "invalid idempotency key")
             return
 
-        # Fingerprint the payload for conflict detection
+        # Fingerprint the payload for conflict detection & cache coherence.
         body_fp = hashlib.sha256(body).hexdigest()
 
-        # Try to read a stored response first (fast path).
+        # Fast path: try to read a stored response first.
         try:
             cached = await self.store.get(key)
         except Exception:
             IDEMP_ERRORS.labels(phase="get").inc()
+            cached = None
+
+        # Respect "same key + different body => treat as fresh (overwrite)".
+        if cached and cached.body_sha256 and cached.body_sha256 != body_fp:
             cached = None
 
         if cached:
@@ -115,7 +125,7 @@ class IdempotencyMiddleware:
 
         IDEMP_MISSES.labels(method=method, tenant=tenant).inc()
 
-        # Attempt to become leader
+        # Attempt to become leader.
         try:
             ok, owner = await self.store.acquire_leader(key, self.ttl_s, body_fp)
         except Exception:
@@ -126,7 +136,10 @@ class IdempotencyMiddleware:
             IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
             # Leader path: run downstream
             try:
-                status, resp_headers, resp_body, is_streaming = await self._run_downstream(scope, body)
+                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                    scope,
+                    body,
+                )
             except Exception:
                 # Downstream raised -> ensure followers can proceed
                 try:
@@ -196,6 +209,10 @@ class IdempotencyMiddleware:
             IDEMP_ERRORS.labels(phase="get").inc()
             cached_after = None
 
+        # Again, respect body mismatch rule after wait.
+        if cached_after and cached_after.body_sha256 and cached_after.body_sha256 != body_fp:
+            cached_after = None
+
         if cached_after:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
             await self._send_stored(send, key, cached_after)
@@ -212,7 +229,10 @@ class IdempotencyMiddleware:
         if ok2:
             IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
             try:
-                status, resp_headers, resp_body, is_streaming = await self._run_downstream(scope, body)
+                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
+                    scope,
+                    body,
+                )
             except Exception:
                 try:
                     await self.store.release(key, owner=owner2)
@@ -263,106 +283,4 @@ class IdempotencyMiddleware:
 
     async def _wait_for_release_or_value(self, key: str, timeout: float) -> str:
         """
-        Poll with backoff + jitter until either a cached value appears OR
-        the lock disappears / state changes. Returns "value", "released", or "timeout".
-        """
-        deadline = time.time() + timeout
-        delay = 0.01
-        steps = 0
-        while time.time() < deadline:
-            try:
-                if await self.store.get(key):
-                    IDEMP_BACKOFF_STEPS.inc()
-                    return "value"
-            except Exception:
-                IDEMP_ERRORS.labels(phase="get").inc()
-            try:
-                meta = await self.store.meta(key)
-                if not meta.get("lock") or meta.get("state") != "in_progress":
-                    IDEMP_BACKOFF_STEPS.inc()
-                    return "released"
-            except Exception:
-                IDEMP_ERRORS.labels(phase="meta").inc()
-            jitter = random.random() * min(delay, 0.05)
-            await asyncio.sleep(delay + jitter)
-            delay = min(delay * 2.0, 0.2)
-            steps += 1
-        if steps:
-            IDEMP_BACKOFF_STEPS.inc()
-        return "timeout"
-
-    async def _send_error(self, send: Send, status: int, detail: str) -> None:
-        payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
-        headers = [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(payload)).encode()),
-        ]
-        await send({"type": "http.response.start", "status": status, "headers": headers})
-        await send({"type": "http.response.body", "body": payload})
-
-    async def _send_fresh(
-        self,
-        send: Send,
-        status: int,
-        headers: Mapping[str, str],
-        body: bytes,
-    ) -> None:
-        # Ensure replay header is explicitly false
-        hdrs = [(k.encode(), v.encode()) for k, v in headers.items()]
-        hdrs.append((b"idempotency-replayed", b"false"))
-        hdrs.append((b"content-length", str(len(body)).encode()))
-        await send({"type": "http.response.start", "status": status, "headers": hdrs})
-        await send({"type": "http.response.body", "body": body})
-
-    async def _send_stored(self, send: Send, key: str, resp: StoredResponse) -> None:  # noqa: ARG002
-        hdrs = [(k.encode(), v.encode()) for k, v in resp.headers.items()]
-        hdrs.append((b"idempotency-replayed", b"true"))
-        hdrs.append((b"x-idempotency-key", b"%s" % key.encode()))
-        body = resp.body
-        hdrs.append((b"content-length", str(len(body)).encode()))
-        await send({"type": "http.response.start", "status": resp.status, "headers": hdrs})
-        await send({"type": "http.response.body", "body": body})
-
-    async def _run_downstream(
-        self, scope: Scope, body: bytes
-    ) -> Tuple[int, Mapping[str, str], bytes, bool]:
-        """
-        Execute downstream app and capture the response.
-        Returns (status, headers, body, is_streaming).
-        """
-        status_code: Optional[int] = None
-        headers: MutableMapping[str, str] = {}
-        chunks: list[bytes] = []
-        is_streaming = False
-
-        async def receive_wrapper() -> MutableMapping[str, Any]:
-            return {"type": "http.request", "body": body, "more_body": False}
-
-        async def send_wrapper(message: MutableMapping[str, Any]) -> None:
-            nonlocal status_code, headers, chunks, is_streaming
-            if message["type"] == "http.response.start":
-                status_code = int(message["status"])
-                raw_headers = message.get("headers") or []
-                # Normalize to str headers
-                for k, v in raw_headers:
-                    headers[k.decode().lower()] = v.decode()
-            elif message["type"] == "http.response.body":
-                chunk = message.get("body") or b""
-                more = bool(message.get("more_body"))
-                if more:
-                    is_streaming = True
-                if chunk:
-                    chunks.append(chunk)
-
-        await self.app(scope, receive_wrapper, send_wrapper)
-        return int(status_code or 200), headers, b"".join(chunks), is_streaming
-
-
-def _valid_key(key: str) -> bool:
-    # 1–200 [A-Za-z0-9_-]
-    if not (1 <= len(key) <= 200):
-        return False
-    for ch in key:
-        if not (ch.isalnum() or ch in "-_"):
-            return False
-    return True
+        Poll with backoff
