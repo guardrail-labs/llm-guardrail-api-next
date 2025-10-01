@@ -45,3 +45,9 @@ class IdemStore(Protocol):
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
         ...
+
+    async def bump_replay(
+        self, key: str, *, touch_ttl_s: int | None = None
+    ) -> int | None:
+        """Increment replay count for ``key`` and optionally refresh TTLs."""
+        ...

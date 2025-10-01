@@ -20,8 +20,10 @@ from app.metrics import (
     IDEMP_IN_PROGRESS,
     IDEMP_LOCK_WAIT,
     IDEMP_MISSES,
+    IDEMP_REPLAY_COUNT_HIST,
     IDEMP_REPLAYS,
     IDEMP_STREAMING_SKIPPED,
+    IDEMP_TOUCHES,
     metric_counter,
 )
 
@@ -52,6 +54,15 @@ def _env_max_body() -> int:
         return 256 * 1024
 
 
+def _env_touch_on_replay() -> bool:
+    return os.environ.get("IDEMP_TOUCH_ON_REPLAY", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 class IdempotencyMiddleware:
     def __init__(
         self,
@@ -62,6 +73,7 @@ class IdempotencyMiddleware:
         max_body: Optional[int] = None,
         cache_streaming: bool = False,
         tenant_provider: Optional[Callable[[Scope], str]] = None,
+        touch_on_replay: Optional[bool] = None,
     ) -> None:
         self.app = app
         self.store = store
@@ -70,6 +82,11 @@ class IdempotencyMiddleware:
         self.max_body = int(max_body) if max_body is not None else _env_max_body()
         self.cache_streaming = cache_streaming
         self.tenant_provider = tenant_provider or (lambda scope: "default")
+        self.touch_on_replay = (
+            bool(touch_on_replay)
+            if touch_on_replay is not None
+            else _env_touch_on_replay()
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         # Not a managed method? Just pass through (streaming preserved).
@@ -115,7 +132,7 @@ class IdempotencyMiddleware:
 
         if cached and cached.body_sha256 == body_fp:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
-            await self._send_stored(send, key, cached)
+            await self._send_stored(send, key, cached, method, tenant)
             IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
             return
 
@@ -189,7 +206,7 @@ class IdempotencyMiddleware:
 
         if cached_after and cached_after.body_sha256 == body_fp:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
-            await self._send_stored(send, key, cached_after)
+            await self._send_stored(send, key, cached_after, method, tenant)
             IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
             return
 
@@ -333,10 +350,35 @@ class IdempotencyMiddleware:
         await send({"type": "http.response.start", "status": status, "headers": hdrs})
         await send({"type": "http.response.body", "body": body})
 
-    async def _send_stored(self, send: Send, key: str, resp: StoredResponse) -> None:
+    async def _send_stored(
+        self, send: Send, key: str, resp: StoredResponse, method: str, tenant: str
+    ) -> None:
         hdrs = [(k.encode(), v.encode()) for k, v in resp.headers.items()]
         hdrs.append((b"idempotency-replayed", b"true"))
         hdrs.append((b"x-idempotency-key", key.encode()))
+        touch_ttl = self.ttl_s if self.touch_on_replay else None
+        replay_count: int | None
+        try:
+            replay_count = await self.store.bump_replay(key, touch_ttl_s=touch_ttl)
+        except Exception:
+            IDEMP_ERRORS.labels(phase="bump_replay").inc()
+            replay_count = None
+        else:
+            if replay_count is not None:
+                resp.replay_count = replay_count
+                IDEMP_REPLAY_COUNT_HIST.labels(tenant=tenant, method=method).observe(
+                    float(replay_count)
+                )
+                if self.touch_on_replay and touch_ttl is not None:
+                    IDEMP_TOUCHES.labels(tenant=tenant).inc()
+
+        count_header: str | None = None
+        if replay_count is not None:
+            count_header = str(replay_count)
+        elif resp.replay_count:
+            count_header = str(resp.replay_count)
+        if count_header is not None:
+            hdrs.append((b"idempotency-replay-count", count_header.encode()))
         body = resp.body
         hdrs.append((b"content-length", str(len(body)).encode()))
         await send({"type": "http.response.start", "status": resp.status, "headers": hdrs})

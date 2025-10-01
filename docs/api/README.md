@@ -23,6 +23,22 @@ The Admin API exposes operational surfaces for tenants, bots, and policy adjudic
 
 When executing idempotent mutating requests, you can optionally include `Idempotency-Key: <uuid>` to guarantee at-most-once semantics. The server already honors this header for override workflows.
 
+On a replayed response the middleware echoes the idempotency metadata so clients can audit retry behavior:
+
+- `Idempotency-Replayed: true`
+- `Idempotency-Replay-Count: <n>` (`n ≥ 1` for the first replay)
+- `X-Idempotency-Key: <uuid>`
+
+```
+HTTP/1.1 200 OK
+Content-Type: application/json
+Idempotency-Replayed: true
+Idempotency-Replay-Count: 2
+X-Idempotency-Key: abc123
+
+{ ... cached response body ... }
+```
+
 ### Effective scope headers
 
 Every Admin API response echoes the resolved scopes to make multi-tenant behavior explicit:
