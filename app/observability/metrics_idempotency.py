@@ -42,3 +42,8 @@ IDEMP_ERRORS = Counter(
 IDEMP_LOCK_WAIT = Histogram(
     "guardrail_idemp_lock_wait_seconds", "Follower lock wait time"
 )
+IDEMP_LOCK_WAIT_REASON = Histogram(  # new, labeled variant
+    "guardrail_idemp_lock_wait_seconds_by_reason",
+    "Follower lock wait by exit reason",
+    ["reason"],
+)
