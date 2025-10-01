@@ -115,13 +115,15 @@ class IdempotencyMiddleware:
         if cached:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
             try:
-                new_count = await self.store.bump_replay(key)
+                new_count_opt = await self.store.bump_replay(key)
+                new_count = int(new_count_opt or 0)
                 IDEMP_REPLAY_COUNT_HIST.labels(
                     method=method, tenant=tenant
                 ).observe(float(new_count))
                 if self.touch_on_replay:
                     IDEMP_TOUCHES.labels(tenant=tenant).inc()
             except Exception:
+                new_count = 0
                 IDEMP_ERRORS.labels(phase="bump").inc()
 
             await self._send_stored(send, key, cached, replay_count=new_count)
@@ -213,13 +215,15 @@ class IdempotencyMiddleware:
         if not conflict and cached_after:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
             try:
-                new_count = await self.store.bump_replay(key)
+                new_count_opt = await self.store.bump_replay(key)
+                new_count = int(new_count_opt or 0)
                 IDEMP_REPLAY_COUNT_HIST.labels(
                     method=method, tenant=tenant
                 ).observe(float(new_count))
                 if self.touch_on_replay:
                     IDEMP_TOUCHES.labels(tenant=tenant).inc()
             except Exception:
+                new_count = 0
                 IDEMP_ERRORS.labels(phase="bump").inc()
 
             await self._send_stored(send, key, cached_after, replay_count=new_count)
