@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 from app.idempotency.store import IdemStore, StoredResponse
 
 
+_RELEASE_STATE_TTL = 60  # seconds, for post-release 'released' marker
+
+
 class MemoryIdemStore(IdemStore):
     """Simple in-memory store; NOT suitable for multi-process or multi-worker."""
 
@@ -25,7 +28,8 @@ class MemoryIdemStore(IdemStore):
         # Keyed by idem key
         # Values are (StoredResponse, expiry_epoch_seconds)
         self._values: Dict[str, Tuple[StoredResponse, float]] = {}
-        self._states: Dict[str, str] = {}
+        # States are (state_string, expiry_epoch_seconds)
+        self._states: Dict[str, Tuple[str, float]] = {}
         # lock info: {"owner": str, "payload_fingerprint": str, "expiry": float}
         self._locks: Dict[str, Dict[str, Any]] = {}
         # recent zset emulation: key -> score(timestamp)
@@ -48,12 +52,13 @@ class MemoryIdemStore(IdemStore):
             if info and info.get("expiry", 0.0) > self._now():
                 return False, None
             owner = secrets.token_urlsafe(16)
+            exp = self._now() + float(ttl_s)
             self._locks[key] = {
                 "owner": owner,
                 "payload_fingerprint": payload_fingerprint,
-                "expiry": self._now() + float(ttl_s),
+                "expiry": exp,
             }
-            self._states[key] = "in_progress"
+            self._states[key] = ("in_progress", exp)
             self._recent[key] = self._now()
             if (
                 self.recent_limit
@@ -71,9 +76,9 @@ class MemoryIdemStore(IdemStore):
 
     async def put(self, key: str, resp: StoredResponse, ttl_s: int) -> None:  # noqa: ARG002
         async with self.__dict__["_mu"]:
-            expiry = self._now() + float(ttl_s)
-            self._values[key] = (resp, expiry)
-            self._states[key] = "stored"
+            exp = self._now() + float(ttl_s)
+            self._values[key] = (resp, exp)
+            self._states[key] = ("stored", exp)
             self._locks.pop(key, None)
 
     async def release(self, key: str, owner: Optional[str] = None) -> bool:
@@ -84,14 +89,15 @@ class MemoryIdemStore(IdemStore):
             if owner and info.get("owner") != owner:
                 return False
             self._locks.pop(key, None)
-            self._states[key] = "released"
+            self._states[key] = ("released", self._now() + _RELEASE_STATE_TTL)
             return True
 
     async def meta(self, key: str) -> Mapping[str, Any]:
         async with self.__dict__["_mu"]:
             info = self._locks.get(key)
+            state_tuple = self._states.get(key)
             return {
-                "state": self._states.get(key),
+                "state": state_tuple[0] if state_tuple else None,
                 "lock": bool(info),
                 "payload_fingerprint": info.get("payload_fingerprint") if info else None,
             }
@@ -123,7 +129,7 @@ class MemoryIdemStore(IdemStore):
             tup = self._values.get(key)
             if not tup:
                 return None
-            resp, expiry = tup
+            resp, value_expiry = tup
             new_count = int((resp.replay_count or 0) + 1)
             new_resp = StoredResponse(
                 status=resp.status,
@@ -134,14 +140,20 @@ class MemoryIdemStore(IdemStore):
                 replay_count=new_count,
                 body_sha256=resp.body_sha256,
             )
-            new_expiry = (
-                self._now() + float(touch_ttl_s) if touch_ttl_s is not None else expiry
-            )
-            self._values[key] = (new_resp, new_expiry)
-            # Touch semantics for memory store: update "recent" and keep state.
+
+            # If touching, refresh both value & state expiries.
             if touch_ttl_s is not None:
-                self._states[key] = self._states.get(key, "stored")
+                new_expiry = self._now() + float(touch_ttl_s)
+                self._values[key] = (new_resp, new_expiry)
+
+                state, _ = self._states.get(key, ("stored", new_expiry))
+                self._states[key] = (state, new_expiry)
+
+                # Touch "recent" for visibility
                 self._recent[key] = self._now()
+            else:
+                self._values[key] = (new_resp, value_expiry)
+
             return new_count
 
 
