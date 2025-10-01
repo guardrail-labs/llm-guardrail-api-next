@@ -17,7 +17,7 @@ async def test_owner_token_enforced() -> None:
     if _FakeRedis is None:
         pytest.skip("fakeredis not installed")
 
-    r = _FakeRedis(decode_responses=False)  # type: ignore[operator]
+    r = _FakeRedis(decode_responses=False)
     store = RedisIdemStore(r, tenant="t")
 
     ok, owner = await store.acquire_leader("k", 5, "fp1")
