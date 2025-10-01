@@ -8,6 +8,7 @@ import time
 from typing import (
     Dict,
     Iterable,
+    Literal,
     Mapping,
     MutableMapping,
     Optional,
@@ -24,6 +25,7 @@ from app.observability.metrics_idempotency import (
     IDEMP_HITS,
     IDEMP_IN_PROGRESS,
     IDEMP_LOCK_WAIT,
+    IDEMP_LOCK_WAIT_REASON,
     IDEMP_MISSES,
     IDEMP_REPLAYS,
     IDEMP_STREAMING_SKIPPED,
@@ -194,8 +196,10 @@ class IdempotencyMiddleware:
 
         start = time.time()
         # Wait until either a value appears OR the lock/state indicates leader finished.
-        await self._wait_for_release_or_value(idem_key, timeout=self.ttl_s)
-        IDEMP_LOCK_WAIT.observe(max(time.time() - start, 0.0))
+        reason = await self._wait_for_release_or_value(idem_key, timeout=self.ttl_s)
+        elapsed = max(time.time() - start, 0.0)
+        IDEMP_LOCK_WAIT.observe(elapsed)
+        IDEMP_LOCK_WAIT_REASON.labels(reason=reason).observe(elapsed)
 
         if mismatch:
             # Do NOT replay. Try to become leader now that lock is gone.
@@ -265,12 +269,15 @@ class IdempotencyMiddleware:
             send, status, resp_headers, resp_body, replay=False, idem_key=idem_key
         )
 
-    async def _wait_for_release_or_value(self, key: str, timeout: int) -> None:
+    async def _wait_for_release_or_value(
+        self, key: str, timeout: int
+    ) -> "Literal['value', 'lock_cleared', 'timeout']":
         """
         Wait until either:
           - a cached value appears for `key`, OR
           - the lock is gone / state != "in_progress" (leader finished).
         This prevents followers from stalling full TTL when leader doesn't cache.
+        Returns a reason indicating which condition ended the wait.
         """
         deadline = time.time() + timeout
         delay = 0.01
@@ -278,18 +285,19 @@ class IdempotencyMiddleware:
             try:
                 # If a value exists, we're done.
                 if await self.store.get(key):
-                    return
+                    return "value"
                 # Otherwise, peek at meta: if no lock or not "in_progress", leader is done.
                 meta = await self.store.meta(key)
                 if isinstance(meta, dict):
                     lock_present = bool(meta.get("lock"))
                     state_text = meta.get("state")
                     if (not lock_present) or (state_text != "in_progress"):
-                        return
+                        return "lock_cleared"
             except Exception:
                 IDEMP_ERRORS.labels(phase="wait").inc()
             await asyncio.sleep(delay)
             delay = min(delay * 2, 0.2)
+        return "timeout"
 
     async def _read_request_body(self, receive) -> bytes:
         """Drain the ASGI receive channel into a single bytes object."""
