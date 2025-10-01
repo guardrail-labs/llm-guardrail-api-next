@@ -5,12 +5,9 @@ from typing import Dict
 import pytest
 from httpx import AsyncClient
 
-# Import fixtures explicitly so pytest can see them; ruff won’t flag as unused.
-from .fixtures_idempotency import (  # noqa: F401
-    admin_client,
-    app_admin,
-    memory_store,
-)
+# Import the fixture module to register fixtures without shadowing names.
+from . import fixtures_idempotency as _fixtures  # noqa: F401
+
 from app.idempotency.store import StoredResponse
 from app.idempotency.memory_store import MemoryIdemStore
 
