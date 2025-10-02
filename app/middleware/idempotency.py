@@ -21,6 +21,7 @@ from app.metrics import (
     IDEMP_MISSES,
     IDEMP_REPLAYS,
     IDEMP_REPLAY_COUNT_HIST,
+    IDEMP_TOUCHES,  # incremented on replay touches
     metric_counter,
 )
 
@@ -328,56 +329,58 @@ class IdempotencyMiddleware:
 
     async def _on_replay(self, key: str, method: str, tenant: str) -> int:
         """
-        Handle replay bookkeeping:
-        - Prefer store.bump_replay(key, touch=True, ttl=...) so the store can:
-            * increment replay count
-            * refresh TTL/recency
-            * increment guardrail_idemp_touches_total
-        - Fall back to compatible signatures.
-        - If none support 'touch', call store.touch(...) if present.
+        Handle replay bookkeeping.
+
+        Always:
+        - bump the replay count if supported
+        - record the replay-count histogram
+        - refresh TTL/recency (touch)
+        - increment guardrail_idemp_touches_total
+
         Returns the new replay count (0 if unavailable).
         """
+        new_count = 0
         try:
-            # Prefer a 'touch=True' path first (and pass ttl if supported).
             bump = getattr(self.store, "bump_replay")
-            new_count_opt: Optional[int] = None
-            tried_touch = False
-
             try:
-                # Most capable signature.
-                new_count_opt = await bump(key, touch=self.touch_on_replay, ttl=self.ttl_s)  
-                tried_touch = True
+                # Try the most capable signature first.
+                res = await bump(key, touch=self.touch_on_replay, ttl=self.ttl_s)
             except TypeError:
                 try:
-                    # Many stores support just 'touch=True'.
-                    new_count_opt = await bump(key, touch=self.touch_on_replay)  
-                    tried_touch = True
+                    res = await bump(key, touch=self.touch_on_replay)
                 except TypeError:
-                    # Minimal signature: bump only.
-                    new_count_opt = await bump(key)  
-
-            new_count = int(new_count_opt or 0)
-
-            # Histogram for the new replay count.
-            _safe_observe(
-                IDEMP_REPLAY_COUNT_HIST,
-                float(new_count),
-                {"method": method, "tenant": tenant},
-            )
-
-            # If we couldn't send 'touch=True' to bump_replay, fall back to touch(...).
-            if self.touch_on_replay and not tried_touch:
-                touch_fn = getattr(self.store, "touch", None)
-                if callable(touch_fn):
-                    try:
-                        await touch_fn(key, self.ttl_s)  
-                    except TypeError:
-                        await touch_fn(key)  
-
-            return new_count
+                    res = await bump(key)
+            except Exception:
+                res = None
+            try:
+                if res is not None:
+                    new_count = int(res)
+            except Exception:
+                new_count = 0
         except Exception:
-            _safe_inc(IDEMP_ERRORS)
-            return 0
+            _safe_inc(IDEMP_ERRORS, {"phase": "bump"})
+
+        # Record the histogram for observed replay count.
+        _safe_observe(
+            IDEMP_REPLAY_COUNT_HIST,
+            float(new_count),
+            {"method": method, "tenant": tenant},
+        )
+
+        # Explicitly refresh TTL and emit touches metric on every replay when enabled.
+        if self.touch_on_replay:
+            touch_fn = getattr(self.store, "touch", None)
+            if callable(touch_fn):
+                try:
+                    try:
+                        await touch_fn(key, self.ttl_s)
+                    except TypeError:
+                        await touch_fn(key)
+                except Exception:
+                    _safe_inc(IDEMP_ERRORS, {"phase": "touch"})
+            _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
+
+        return new_count
 
     async def _send_error(self, send: Send, status: int, detail: str) -> None:
         payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
