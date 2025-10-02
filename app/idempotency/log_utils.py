@@ -11,6 +11,7 @@ Fields we keep (non-PII):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -25,11 +26,26 @@ _LOG = logging.getLogger("app.idempotency")
 
 
 def _mask_key(val: Optional[str], prefix_len: int) -> Optional[str]:
+    """
+    Return a masked representation that NEVER equals the full key.
+    - Shows up to `prefix_len`, but always withholds at least one char.
+    - Appends an ellipsis and a short hash suffix for correlation.
+    """
     if not val:
         return val
-    prefix = val[: max(0, int(prefix_len))]
-    ellipsis = "…" if len(val) > len(prefix) else ""
-    return f"{prefix}{ellipsis}"
+    # Withhold at least one character to avoid logging the full value.
+    pl = max(0, min(int(prefix_len), max(0, len(val) - 1)))
+    prefix = val[:pl]
+    base = val.encode("utf-8")
+    candidate = ""
+    for salt in range(10):
+        payload = base if salt == 0 else base + str(salt).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest().upper()[:6]
+        candidate = f"{prefix}…{digest}"
+        if val not in candidate:
+            return candidate
+    # Fallback: replace any lingering occurrence of the full value.
+    return candidate.replace(val, "•" * len(val))
 
 
 # Fields whose values are typically sensitive when PII logging is off.
