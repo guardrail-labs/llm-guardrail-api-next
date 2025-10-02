@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from .store import IdemStore, StoredResponse
+from .memory_store import InMemoryIdemStore, MemoryIdemStore
 from .redis_store import RedisIdemStore
-from .memory_store import MemoryIdemStore, InMemoryIdemStore
+from .store import IdemStore, StoredResponse
 
 __all__ = [
     "IdemStore",

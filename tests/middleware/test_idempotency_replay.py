@@ -47,7 +47,7 @@ async def _post(client: httpx.AsyncClient, key: str, body: dict[str, object]) ->
 
 
 async def test_replay_count_and_touch_refreshes_ttl() -> None:
-    store = MemoryIdemStore(recent_limit=8)
+    store = MemoryIdemStore(recent_limit=8, tenant="tenant-test")
     app = _build_app(store, touch_on_replay=True)
 
     async with httpx.AsyncClient(
@@ -92,7 +92,7 @@ async def test_replay_count_and_touch_refreshes_ttl() -> None:
 
 
 async def test_conflict_does_not_increment_replay_count() -> None:
-    store = MemoryIdemStore()
+    store = MemoryIdemStore(tenant="tenant-test")
     app = _build_app(store, touch_on_replay=False)
 
     async with httpx.AsyncClient(
@@ -116,7 +116,7 @@ def _sample_value(name: str, labels: dict[str, str]) -> float:
 
 
 async def test_metrics_capture_replay_counts_and_touches() -> None:
-    store = MemoryIdemStore()
+    store = MemoryIdemStore(tenant="tenant-test")
     app = _build_app(store, touch_on_replay=True)
 
     tenant_labels = {"tenant": "tenant-test"}
