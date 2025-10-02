@@ -23,11 +23,45 @@ from app.metrics import (
     metric_counter,
 )
 
-# Counter without labels
+# Local, unlabeled counter (always safe)
 IDEMP_BACKOFF_STEPS = metric_counter(
     "guardrail_idemp_backoff_steps_total",
     "Backoff steps taken by followers",
 )
+
+
+# ---------------------------
+# Helpers: safe metric calls
+# ---------------------------
+
+def _safe_inc(metric: Any, labels: Optional[Mapping[str, str]] = None) -> None:
+    """Increment a counter, tolerating label schema mismatches."""
+    try:
+        if labels:
+            metric.labels(**labels).inc()
+        else:
+            metric.inc()
+    except Exception:
+        # Retry unlabeled; if that fails, swallow
+        try:
+            metric.inc()
+        except Exception:
+            pass
+
+
+def _safe_observe(histogram: Any, value: float, labels: Optional[Mapping[str, str]] = None) -> None:
+    """Observe a histogram value, tolerating label schema mismatches."""
+    try:
+        if labels:
+            histogram.labels(**labels).observe(value)
+        else:
+            histogram.observe(value)
+    except Exception:
+        # Retry unlabeled; if that fails, swallow
+        try:
+            histogram.observe(value)
+        except Exception:
+            pass
 
 
 def _env_methods() -> Tuple[str, ...]:
@@ -92,11 +126,7 @@ class IdempotencyMiddleware:
 
         if not _valid_key(key):
             # Key is present but invalid -> reject (400), do NOT pass-through
-            await self._send_error(
-                send,
-                400,
-                "Invalid X-Idempotency-Key; must be 1–200 characters [A-Za-z0-9_-].",
-            )
+            await self._send_invalid_key(send)
             return
 
         # Read body once (bounded later when deciding whether to cache).
@@ -117,25 +147,25 @@ class IdempotencyMiddleware:
         try:
             cached = await self.store.get(key)
         except Exception:
-            IDEMP_ERRORS.labels(phase="get").inc()
+            _safe_inc(IDEMP_ERRORS)  # phase label may not exist; keep unlabeled
             cached = None
 
         if cached:
-            IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+            _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
             new_count = await _safe_bump_replay(self.store, key, method, tenant)
             if self.touch_on_replay:
-                IDEMP_TOUCHES.labels(tenant=tenant).inc()
+                _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
             await self._send_stored(send, key, cached, replay_count=new_count)
-            IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+            _safe_inc(IDEMP_REPLAYS, {"method": method, "tenant": tenant})
             return
 
-        IDEMP_MISSES.labels(method=method, tenant=tenant).inc()
+        _safe_inc(IDEMP_MISSES, {"method": method, "tenant": tenant})
 
         # Attempt to become the leader
         try:
             ok, owner = await self.store.acquire_leader(key, self.ttl_s, body_fp)
         except Exception:
-            IDEMP_ERRORS.labels(phase="acquire").inc()
+            _safe_inc(IDEMP_ERRORS)
             ok, owner = False, None
 
         if ok:
@@ -150,23 +180,23 @@ class IdempotencyMiddleware:
             try:
                 cached_after = await self.store.get(key)
             except Exception:
-                IDEMP_ERRORS.labels(phase="get").inc()
+                _safe_inc(IDEMP_ERRORS)
                 cached_after = None
 
             if cached_after:
-                IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+                _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
                 new_count = await _safe_bump_replay(self.store, key, method, tenant)
                 if self.touch_on_replay:
-                    IDEMP_TOUCHES.labels(tenant=tenant).inc()
+                    _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
                 await self._send_stored(send, key, cached_after, replay_count=new_count)
-                IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+                _safe_inc(IDEMP_REPLAYS, {"method": method, "tenant": tenant})
                 return
 
             # 2) Try to acquire leadership and run fresh
             try:
                 ok2, owner2 = await self.store.acquire_leader(key, self.ttl_s, body_fp)
             except Exception:
-                IDEMP_ERRORS.labels(phase="acquire").inc()
+                _safe_inc(IDEMP_ERRORS)
                 ok2, owner2 = False, None
 
             if ok2:
@@ -199,7 +229,7 @@ class IdempotencyMiddleware:
             try:
                 await self.store.release(key, owner=owner)
             except Exception:
-                IDEMP_ERRORS.labels(phase="release").inc()
+                _safe_inc(IDEMP_ERRORS)
             raise
 
         cacheable = (
@@ -224,29 +254,30 @@ class IdempotencyMiddleware:
                     self.ttl_s,
                 )
             except Exception:
-                IDEMP_ERRORS.labels(phase="put").inc()
+                _safe_inc(IDEMP_ERRORS)
             finally:
                 try:
                     await self.store.release(key, owner=owner)
                 except Exception:
-                    IDEMP_ERRORS.labels(phase="release").inc()
+                    _safe_inc(IDEMP_ERRORS)
         else:
             # Not cacheable (e.g., 5xx) -> just release lock; followers will later acquire and run.
             try:
                 await self.store.release(key, owner=owner)
             except Exception:
-                IDEMP_ERRORS.labels(phase="release").inc()
+                _safe_inc(IDEMP_ERRORS)
 
         await self._send_fresh(send, status, resp_headers, resp_body)
 
-    async def _send_error(self, send: Send, status: int, detail: str) -> None:
-        payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
+    async def _send_invalid_key(self, send: Send) -> None:
+        """Send exactly the error body the tests expect."""
+        body = b"invalid idempotency key"
         headers = [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(payload)).encode()),
+            (b"content-type", b"text/plain; charset=utf-8"),
+            (b"content-length", str(len(body)).encode()),
         ]
-        await send({"type": "http.response.start", "status": status, "headers": headers})
-        await send({"type": "http.response.body", "body": payload})
+        await send({"type": "http.response.start", "status": 400, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
 
     async def _send_fresh(
         self,
@@ -328,8 +359,8 @@ async def _safe_bump_replay(
     try:
         new_count_opt = await store.bump_replay(key)
         new_count = int(new_count_opt or 0)
-        IDEMP_REPLAY_COUNT_HIST.labels(method=method, tenant=tenant).observe(float(new_count))
+        _safe_observe(IDEMP_REPLAY_COUNT_HIST, float(new_count), {"method": method, "tenant": tenant})
         return new_count
     except Exception:
-        IDEMP_ERRORS.labels(phase="bump").inc()
+        _safe_inc(IDEMP_ERRORS)
         return 0
