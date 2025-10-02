@@ -4,6 +4,7 @@ This lightweight module provides default values referenced by the verifier
 service. Real deployments may populate these from environment or a config
 system.
 """
+from __future__ import annotations
 
 import os
 from typing import List, Literal, Set
@@ -16,8 +17,10 @@ IdemMode = Literal["off", "observe", "enforce"]
 
 class IdempotencySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
     mode: IdemMode = Field(
-        "observe", validation_alias=AliasChoices("IDEMPOTENCY_MODE")
+        "observe",
+        validation_alias=AliasChoices("IDEMPOTENCY_MODE"),
     )
     enforce_methods: Set[str] = Field(
         default_factory=lambda: {"POST", "PUT", "PATCH"},
@@ -31,19 +34,13 @@ class IdempotencySettings(BaseSettings):
         60, ge=1, le=600, validation_alias=AliasChoices("IDEMPOTENCY_LOCK_TTL_S")
     )
     wait_budget_ms: int = Field(
-        2000,
-        ge=0,
-        le=30000,
-        validation_alias=AliasChoices("IDEMPOTENCY_WAIT_BUDGET_MS"),
+        2000, ge=0, le=30000, validation_alias=AliasChoices("IDEMPOTENCY_WAIT_BUDGET_MS")
     )
     jitter_ms: int = Field(
         50, ge=0, le=1000, validation_alias=AliasChoices("IDEMPOTENCY_JITTER_MS")
     )
     replay_window_s: int = Field(
-        300,
-        ge=1,
-        le=86400,
-        validation_alias=AliasChoices("IDEMPOTENCY_REPLAY_WINDOW_S"),
+        300, ge=1, le=86400, validation_alias=AliasChoices("IDEMPOTENCY_REPLAY_WINDOW_S")
     )
     strict_fail_closed: bool = Field(
         False, validation_alias=AliasChoices("IDEMPOTENCY_STRICT_FAIL_CLOSED")
@@ -64,24 +61,29 @@ class IdempotencySettings(BaseSettings):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
     env: Literal["dev", "stage", "prod", "test"] = Field(
         "dev", validation_alias=AliasChoices("APP_ENV")
     )
-    idempotency: IdempotencySettings = Field(default_factory=IdempotencySettings)
+    # Use a concrete default instance (avoids mypy issues with default_factory)
+    idempotency: IdempotencySettings = IdempotencySettings()
 
     def effective(self) -> "Settings":
         """Apply safe-by-default overrides per environment."""
-
         eff = self.model_copy(deep=True)
         if self.env == "dev":
             eff.idempotency.mode = (
-                "observe" if self.idempotency.mode == "observe" else self.idempotency.mode
+                "observe"
+                if self.idempotency.mode == "observe"
+                else self.idempotency.mode
             )
             eff.idempotency.lock_ttl_s = min(self.idempotency.lock_ttl_s, 30)
             eff.idempotency.strict_fail_closed = False
         elif self.env == "stage":
             eff.idempotency.mode = (
-                "observe" if self.idempotency.mode == "observe" else self.idempotency.mode
+                "observe"
+                if self.idempotency.mode == "observe"
+                else self.idempotency.mode
             )
             eff.idempotency.lock_ttl_s = max(self.idempotency.lock_ttl_s, 60)
             eff.idempotency.strict_fail_closed = False
@@ -95,7 +97,15 @@ class Settings(BaseSettings):
         return eff
 
 
-settings = Settings().effective()
+def get_settings(env: str | None = None) -> Settings:
+    """Helper for tests and callers that want explicit env (mypy-friendly)."""
+    if env is not None:
+        return Settings(env=env).effective()
+    return Settings().effective()
+
+
+# Module-level settings (use APP_ENV or default dev)
+settings = get_settings(env=None)
 
 VERIFIER_MAX_TOKENS_PER_REQUEST = 4000
 VERIFIER_DAILY_TOKEN_BUDGET = 100000
@@ -166,14 +176,10 @@ VERIFIER_ADAPTIVE_PENALTY_RATE_LIMIT_MS = int(
 )
 
 # Sticky ordering window before we allow re-rank (seconds)
-VERIFIER_ADAPTIVE_STICKY_S = int(
-    os.getenv("VERIFIER_ADAPTIVE_STICKY_S", "30") or "30"
-)
+VERIFIER_ADAPTIVE_STICKY_S = int(os.getenv("VERIFIER_ADAPTIVE_STICKY_S", "30") or "30")
 
 # Cap how often we'll keep per-tenant/bot stats in memory (seconds)
-VERIFIER_ADAPTIVE_TTL_S = int(
-    os.getenv("VERIFIER_ADAPTIVE_TTL_S", "900") or "900"
-)
+VERIFIER_ADAPTIVE_TTL_S = int(os.getenv("VERIFIER_ADAPTIVE_TTL_S", "900") or "900")
 
 # Result cache for verify_intent (opt-in; defaults to on)
 VERIFIER_RESULT_CACHE_ENABLED = (
@@ -199,88 +205,63 @@ VERIFIER_EGRESS_REUSE_TTL_SECONDS = int(
 )
 
 # Shadow-call alternate providers without changing decisions
-VERIFIER_SANDBOX_ENABLED = (os.getenv("VERIFIER_SANDBOX_ENABLED", "1").strip() == "1")
-# Fraction of requests that trigger sandbox (0..1)
-VERIFIER_SANDBOX_SAMPLE_RATE = float(os.getenv("VERIFIER_SANDBOX_SAMPLE_RATE", "0.05") or "0.05")
-# Timebox for each shadow call in ms (kept tight)
+VERIFIER_SANDBOX_ENABLED = os.getenv("VERIFIER_SANDBOX_ENABLED", "1").strip() == "1"
+VERIFIER_SANDBOX_SAMPLE_RATE = float(
+    os.getenv("VERIFIER_SANDBOX_SAMPLE_RATE", "0.05") or "0.05"
+)
 VERIFIER_SANDBOX_TIMEOUT_MS = int(os.getenv("VERIFIER_SANDBOX_TIMEOUT_MS", "500") or "500")
-# Max simultaneous shadow calls
 VERIFIER_SANDBOX_MAX_CONCURRENCY = int(
     os.getenv("VERIFIER_SANDBOX_MAX_CONCURRENCY", "2") or "2"
 )
-# In tests, run synchronously (await) so assertions can see results
 VERIFIER_SANDBOX_SYNC_FOR_TESTS = (
     os.getenv("VERIFIER_SANDBOX_SYNC_FOR_TESTS", "0").strip() == "1"
 )
-# Cap number of sandbox results attached to audit/headers
 VERIFIER_SANDBOX_MAX_RESULTS = int(
     os.getenv("VERIFIER_SANDBOX_MAX_RESULTS", "3") or "3"
 )
 
-# Emit metrics when sandbox results disagree with the primary decision.
 VERIFIER_SANDBOX_DIFF_ENABLED = (
     os.getenv("VERIFIER_SANDBOX_DIFF_ENABLED", "1").strip() == "1"
 )
-
-# Attach a compact summary to headers/audit when diffs occur (off by default).
 VERIFIER_SANDBOX_DIFF_ATTACH_HEADER = (
     os.getenv("VERIFIER_SANDBOX_DIFF_ATTACH_HEADER", "0").strip() == "1"
 )
-
-# If attaching, cap how many items we surface.
 VERIFIER_SANDBOX_DIFF_MAX_ATTACH = int(
     os.getenv("VERIFIER_SANDBOX_DIFF_MAX_ATTACH", "2") or "2"
 )
-
-# Only consider diffs when the primary is decisive (safe/unsafe).
 VERIFIER_SANDBOX_DIFF_ONLY_ON_DECISIVE = (
     os.getenv("VERIFIER_SANDBOX_DIFF_ONLY_ON_DECISIVE", "1").strip() == "1"
 )
-
-# Randomly emit an audit event when a diff happens (0..1). 0 disables.
 VERIFIER_SANDBOX_DIFF_AUDIT_RATE = float(
     os.getenv("VERIFIER_SANDBOX_DIFF_AUDIT_RATE", "0.0") or "0.0"
 )
 
 # Anthropic provider (optional)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
-VERIFIER_ANTHROPIC_MODEL = os.getenv(
-    "VERIFIER_ANTHROPIC_MODEL", "claude-3-haiku"
-).strip()
+VERIFIER_ANTHROPIC_MODEL = os.getenv("VERIFIER_ANTHROPIC_MODEL", "claude-3-haiku").strip()
 
 # --- Verifier harm-cache persistence (optional Redis) ---
 VERIFIER_HARM_CACHE_URL = os.getenv("VERIFIER_HARM_CACHE_URL", "").strip()
-# Days to keep a harmful fingerprint in the cache (default 90 days)
 VERIFIER_HARM_TTL_DAYS = int(os.getenv("VERIFIER_HARM_TTL_DAYS", "90") or "90")
 
 # Hidden-text scanning (opt-in)
-HIDDEN_TEXT_SCAN = (os.getenv("HIDDEN_TEXT_SCAN", "0").strip() == "1")
-# Soft size cap for scans (bytes); 0 disables cap
+HIDDEN_TEXT_SCAN = os.getenv("HIDDEN_TEXT_SCAN", "0").strip() == "1"
 HIDDEN_TEXT_SCAN_MAX_BYTES = int(
     os.getenv("HIDDEN_TEXT_SCAN_MAX_BYTES", "1048576") or "0"
 )
-
-# Enable policy hook: when 1 and a rule matches, set decision to clarify/deny.
-HIDDEN_TEXT_POLICY = (os.getenv("HIDDEN_TEXT_POLICY", "0").strip() == "1")
-
-# Comma-separated reason lists -> action. Reasons are normalized lowercase tokens
-# you already emit (e.g., style_hidden, attr_hidden, zero_width_chars, docx_vanish).
-HIDDEN_TEXT_DENY_REASONS = os.getenv("HIDDEN_TEXT_DENY_REASONS", "docx_vanish").strip()
+HIDDEN_TEXT_POLICY = os.getenv("HIDDEN_TEXT_POLICY", "0").strip() == "1"
+HIDDEN_TEXT_DENY_REASONS = os.getenv(
+    "HIDDEN_TEXT_DENY_REASONS", "docx_vanish"
+).strip()
 HIDDEN_TEXT_CLARIFY_REASONS = os.getenv(
     "HIDDEN_TEXT_CLARIFY_REASONS",
     "style_hidden,attr_hidden,zero_width_chars,docx_track_ins,docx_track_del,docx_comments",
 ).strip()
-
-# Optional format allowlist (comma-separated): html, docx, pdf, etc. Empty => all
 HIDDEN_TEXT_FORMATS = os.getenv("HIDDEN_TEXT_FORMATS", "").strip()
-
-# Optional minimum reasons required to trigger (default 1)
 HIDDEN_TEXT_MIN_MATCH = int(os.getenv("HIDDEN_TEXT_MIN_MATCH", "1") or "1")
 
 # Cap bytes for egress inspection peek (0 disables)
-EGRESS_INSPECT_MAX_BYTES = int(
-    os.getenv("EGRESS_INSPECT_MAX_BYTES", "4096") or "4096"
-)
+EGRESS_INSPECT_MAX_BYTES = int(os.getenv("EGRESS_INSPECT_MAX_BYTES", "4096") or "4096")
 
 IDEMP_ENABLED = os.getenv("IDEMP_ENABLED", "true").lower() == "true"
 IDEMP_METHODS = tuple(sorted(settings.idempotency.enforce_methods))
@@ -295,5 +276,4 @@ IDEMP_TOUCH_ON_REPLAY = os.getenv("IDEMP_TOUCH_ON_REPLAY", "false").lower() in {
 }
 IDEMP_REDIS_URL = os.getenv("IDEMP_REDIS_URL", "redis://localhost:6379/0")
 IDEMP_REDIS_NAMESPACE = os.getenv("IDEMP_REDIS_NAMESPACE", "idem")
-IDEMP_RECENT_ZSET_MAX = int(os.getenv("IDEMP_RECENT_ZSET_MAX", "5000"))
-
+IDEMP_RECENT_ZSET_MAX = int(os.getenv("IDEMP_RECENT_ZSET_MAX", "5000") or "5000")
