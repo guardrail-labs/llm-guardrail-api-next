@@ -8,12 +8,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install promtool
-        run: |
-          curl -sLo promtool.tgz \
-            https://github.com/prometheus/prometheus/releases/download/v2.53.0/\
-            prometheus-2.53.0.linux-amd64.tar.gz
-          tar -xzf promtool.tgz
-          echo "$(pwd)/prometheus-2.53.0.linux-amd64" >> $GITHUB_PATH
-      - name: Check rules
-        run: promtool check rules monitoring/prometheus/*.yml
+
+      # Use official Prometheus image to run promtool reliably.
+      - name: promtool check rules
+        uses: addnab/docker-run-action@v3
+        with:
+          image: prom/prometheus:v2.53.0
+          options: -v ${{ github.workspace }}:/work -w /work
+          run: promtool check rules monitoring/prometheus/*.yml
