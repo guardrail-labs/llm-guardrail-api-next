@@ -345,16 +345,16 @@ class IdempotencyMiddleware:
 
             try:
                 # Most capable signature.
-                new_count_opt = await bump(key, touch=self.touch_on_replay, ttl=self.ttl_s)  # type: ignore[misc]
+                new_count_opt = await bump(key, touch=self.touch_on_replay, ttl=self.ttl_s)  
                 tried_touch = True
             except TypeError:
                 try:
                     # Many stores support just 'touch=True'.
-                    new_count_opt = await bump(key, touch=self.touch_on_replay)  # type: ignore[misc]
+                    new_count_opt = await bump(key, touch=self.touch_on_replay)  
                     tried_touch = True
                 except TypeError:
                     # Minimal signature: bump only.
-                    new_count_opt = await bump(key)  # type: ignore[misc]
+                    new_count_opt = await bump(key)  
 
             new_count = int(new_count_opt or 0)
 
@@ -370,9 +370,9 @@ class IdempotencyMiddleware:
                 touch_fn = getattr(self.store, "touch", None)
                 if callable(touch_fn):
                     try:
-                        await touch_fn(key, self.ttl_s)  # type: ignore[misc]
+                        await touch_fn(key, self.ttl_s)  
                     except TypeError:
-                        await touch_fn(key)  # type: ignore[misc]
+                        await touch_fn(key)  
 
             return new_count
         except Exception:
