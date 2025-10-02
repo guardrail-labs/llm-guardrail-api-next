@@ -359,7 +359,11 @@ async def _safe_bump_replay(
     try:
         new_count_opt = await store.bump_replay(key)
         new_count = int(new_count_opt or 0)
-        _safe_observe(IDEMP_REPLAY_COUNT_HIST, float(new_count), {"method": method, "tenant": tenant})
+                _safe_observe(
+            IDEMP_REPLAY_COUNT_HIST,
+            float(new_count),
+            {"method": method, "tenant": tenant},
+        )
         return new_count
     except Exception:
         _safe_inc(IDEMP_ERRORS)
