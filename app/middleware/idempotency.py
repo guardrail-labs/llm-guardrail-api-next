@@ -347,9 +347,9 @@ class IdempotencyMiddleware:
                 if callable(touch_fn):
                     # Support both touch(key, ttl) and touch(key) signatures.
                     try:
-                        await touch_fn(key, self.ttl_s)  # type: ignore[misc]
+                        await touch_fn(key, self.ttl_s) 
                     except TypeError:
-                        await touch_fn(key)  # type: ignore[misc]
+                        await touch_fn(key)  
                 # We rely on the store's touch implementation to:
                 #   - move the key in recency
                 #   - refresh TTL for value/state
