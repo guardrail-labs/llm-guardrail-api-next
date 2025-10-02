@@ -1,4 +1,4 @@
-"""Idempotency middleware with env defaults, touches metric, and safe conflict handling."""
+"""Idempotency middleware with safe metrics usage and robust follower retry."""
 from __future__ import annotations
 
 import asyncio
@@ -16,8 +16,6 @@ from app.metrics import (
     IDEMP_CONFLICTS,
     IDEMP_ERRORS,
     IDEMP_HITS,
-    IDEMP_IN_PROGRESS,
-    IDEMP_LOCK_WAIT,
     IDEMP_MISSES,
     IDEMP_REPLAYS,
     IDEMP_REPLAY_COUNT_HIST,
@@ -25,6 +23,7 @@ from app.metrics import (
     metric_counter,
 )
 
+# Counter without labels
 IDEMP_BACKOFF_STEPS = metric_counter(
     "guardrail_idemp_backoff_steps_total",
     "Backoff steps taken by followers",
@@ -82,15 +81,25 @@ class IdempotencyMiddleware:
         method = scope["method"].upper()
         tenant = self.tenant_provider(scope)
 
-        # Decide on idempotency BEFORE consuming the body to preserve streaming for pass-through.
+        # Decide interception BEFORE consuming the body to preserve streaming for pass-through.
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         key = headers.get("x-idempotency-key")
-        if not key or not _valid_key(key):
-            # No/invalid key -> no interception; do not buffer body; preserve streaming.
+
+        if not key:
+            # No key -> no interception; preserve streaming
             await self.app(scope, receive, send)
             return
 
-        # Read body once (bounded later when deciding whether to cache the response).
+        if not _valid_key(key):
+            # Key is present but invalid -> reject (400), do NOT pass-through
+            await self._send_error(
+                send,
+                400,
+                "Invalid X-Idempotency-Key; must be 1–200 characters [A-Za-z0-9_-].",
+            )
+            return
+
+        # Read body once (bounded later when deciding whether to cache).
         body_chunks: list[bytes] = []
         more_body = True
         while more_body:
@@ -102,7 +111,6 @@ class IdempotencyMiddleware:
                 body_chunks.append(chunk)
             more_body = bool(msg.get("more_body"))
         body = b"".join(body_chunks)
-
         body_fp = hashlib.sha256(body).hexdigest()
 
         # Fast path: cached value?
@@ -114,18 +122,9 @@ class IdempotencyMiddleware:
 
         if cached:
             IDEMP_HITS.labels(method=method, tenant=tenant).inc()
-            try:
-                new_count_opt = await self.store.bump_replay(key)
-                new_count = int(new_count_opt or 0)
-                IDEMP_REPLAY_COUNT_HIST.labels(
-                    method=method, tenant=tenant
-                ).observe(float(new_count))
-                if self.touch_on_replay:
-                    IDEMP_TOUCHES.labels(tenant=tenant).inc()
-            except Exception:
-                new_count = 0
-                IDEMP_ERRORS.labels(phase="bump").inc()
-
+            new_count = await _safe_bump_replay(self.store, key, method, tenant)
+            if self.touch_on_replay:
+                IDEMP_TOUCHES.labels(tenant=tenant).inc()
             await self._send_stored(send, key, cached, replay_count=new_count)
             IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
             return
@@ -140,186 +139,105 @@ class IdempotencyMiddleware:
             ok, owner = False, None
 
         if ok:
-            IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
-            try:
-                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                    scope, body
-                )
-            except Exception:
-                try:
-                    await self.store.release(key, owner=owner)
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="release").inc()
-                raise
-
-            cacheable = (
-                status < 500
-                and (not is_streaming or self.cache_streaming)
-                and len(resp_body) <= self.max_body
-            )
-
-            if cacheable:
-                try:
-                    await self.store.put(
-                        key,
-                        StoredResponse(
-                            status=status,
-                            headers=resp_headers,
-                            body=resp_body,
-                            content_type=resp_headers.get("content-type"),
-                            stored_at=time.time(),
-                            replay_count=0,
-                            body_sha256=body_fp,
-                        ),
-                        self.ttl_s,
-                    )
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="put").inc()
-                finally:
-                    try:
-                        await self.store.release(key, owner=owner)
-                    except Exception:
-                        IDEMP_ERRORS.labels(phase="release").inc()
-            else:
-                try:
-                    await self.store.release(key, owner=owner)
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="release").inc()
-
-            await self._send_fresh(send, status, resp_headers, resp_body)
+            await self._handle_leader(scope, body, key, body_fp, tenant, method, owner, send)
             return
 
-        # Follower path: check for payload conflict, then wait with backoff.
-        conflict = False
-        try:
-            meta = await self.store.meta(key)
-            if isinstance(meta, dict):
-                fp = meta.get("payload_fingerprint")
-                if fp and fp != body_fp:
-                    conflict = True
-                    IDEMP_CONFLICTS.labels(method=method, tenant=tenant).inc()
-        except Exception:
-            IDEMP_ERRORS.labels(phase="meta").inc()
-
-        start = time.time()
-        await self._wait_for_release_or_value(key, timeout=self.ttl_s)
-        IDEMP_LOCK_WAIT.observe(max(time.time() - start, 0.0))
-
-        try:
-            cached_after = await self.store.get(key)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="get").inc()
-            cached_after = None
-
-        # Only replay if no conflict was detected.
-        if not conflict and cached_after:
-            IDEMP_HITS.labels(method=method, tenant=tenant).inc()
-            try:
-                new_count_opt = await self.store.bump_replay(key)
-                new_count = int(new_count_opt or 0)
-                IDEMP_REPLAY_COUNT_HIST.labels(
-                    method=method, tenant=tenant
-                ).observe(float(new_count))
-                if self.touch_on_replay:
-                    IDEMP_TOUCHES.labels(tenant=tenant).inc()
-            except Exception:
-                new_count = 0
-                IDEMP_ERRORS.labels(phase="bump").inc()
-
-            await self._send_stored(send, key, cached_after, replay_count=new_count)
-            IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
-            return
-
-        # Try to acquire leadership again, otherwise run once.
-        try:
-            ok2, owner2 = await self.store.acquire_leader(key, self.ttl_s, body_fp)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="acquire").inc()
-            ok2, owner2 = False, None
-
-        if ok2:
-            IDEMP_IN_PROGRESS.labels(tenant=tenant).inc()
-            try:
-                status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                    scope, body
-                )
-            except Exception:
-                try:
-                    await self.store.release(key, owner=owner2)
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="release").inc()
-                raise
-
-            cacheable = (
-                status < 500
-                and (not is_streaming or self.cache_streaming)
-                and len(resp_body) <= self.max_body
-            )
-
-            if cacheable:
-                try:
-                    await self.store.put(
-                        key,
-                        StoredResponse(
-                            status=status,
-                            headers=resp_headers,
-                            body=resp_body,
-                            content_type=resp_headers.get("content-type"),
-                            stored_at=time.time(),
-                            replay_count=0,
-                            body_sha256=body_fp,
-                        ),
-                        self.ttl_s,
-                    )
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="put").inc()
-                finally:
-                    try:
-                        await self.store.release(key, owner=owner2)
-                    except Exception:
-                        IDEMP_ERRORS.labels(phase="release").inc()
-            else:
-                try:
-                    await self.store.release(key, owner=owner2)
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="release").inc()
-
-            await self._send_fresh(send, status, resp_headers, resp_body)
-            return
-
-        # Final fallback: run once without caching.
-        status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
-        await self._send_fresh(send, status, resp_headers, resp_body)
-
-    async def _wait_for_release_or_value(self, key: str, timeout: float) -> str:
-        """
-        Poll with backoff + jitter until either a cached value appears OR the lock clears.
-        Returns "value", "released", or "timeout".
-        """
-        deadline = time.time() + timeout
+        # Follower path: loop until value appears OR we acquire leadership, bounded by TTL.
+        deadline = time.time() + float(self.ttl_s)
         delay = 0.01
-        steps = 0
         while time.time() < deadline:
+            # 1) Value available? (leader finished with a cacheable response)
             try:
-                if await self.store.get(key):
-                    IDEMP_BACKOFF_STEPS.inc()
-                    return "value"
+                cached_after = await self.store.get(key)
             except Exception:
                 IDEMP_ERRORS.labels(phase="get").inc()
+                cached_after = None
+
+            if cached_after:
+                IDEMP_HITS.labels(method=method, tenant=tenant).inc()
+                new_count = await _safe_bump_replay(self.store, key, method, tenant)
+                if self.touch_on_replay:
+                    IDEMP_TOUCHES.labels(tenant=tenant).inc()
+                await self._send_stored(send, key, cached_after, replay_count=new_count)
+                IDEMP_REPLAYS.labels(method=method, tenant=tenant).inc()
+                return
+
+            # 2) Try to acquire leadership and run fresh
             try:
-                meta = await self.store.meta(key)
-                if not meta.get("lock") or meta.get("state") != "in_progress":
-                    IDEMP_BACKOFF_STEPS.inc()
-                    return "released"
+                ok2, owner2 = await self.store.acquire_leader(key, self.ttl_s, body_fp)
             except Exception:
-                IDEMP_ERRORS.labels(phase="meta").inc()
+                IDEMP_ERRORS.labels(phase="acquire").inc()
+                ok2, owner2 = False, None
+
+            if ok2:
+                await self._handle_leader(scope, body, key, body_fp, tenant, method, owner2, send)
+                return
+
+            IDEMP_BACKOFF_STEPS.inc()
             jitter = random.random() * min(delay, 0.05)
             await asyncio.sleep(delay + jitter)
             delay = min(delay * 2.0, 0.2)
-            steps += 1
-        if steps:
-            IDEMP_BACKOFF_STEPS.inc()
-        return "timeout"
+
+        # TTL expired: run once without caching (best effort).
+        status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
+        await self._send_fresh(send, status, resp_headers, resp_body)
+
+    async def _handle_leader(
+        self,
+        scope: Scope,
+        body: bytes,
+        key: str,
+        body_fp: str,
+        tenant: str,
+        method: str,
+        owner: Optional[str],
+        send: Send,
+    ) -> None:
+        try:
+            status, resp_headers, resp_body, is_streaming = await self._run_downstream(scope, body)
+        except Exception:
+            try:
+                await self.store.release(key, owner=owner)
+            except Exception:
+                IDEMP_ERRORS.labels(phase="release").inc()
+            raise
+
+        cacheable = (
+            status < 500
+            and (not is_streaming or self.cache_streaming)
+            and len(resp_body) <= self.max_body
+        )
+
+        if cacheable:
+            try:
+                await self.store.put(
+                    key,
+                    StoredResponse(
+                        status=status,
+                        headers=resp_headers,
+                        body=resp_body,
+                        content_type=resp_headers.get("content-type"),
+                        stored_at=time.time(),
+                        replay_count=0,
+                        body_sha256=body_fp,
+                    ),
+                    self.ttl_s,
+                )
+            except Exception:
+                IDEMP_ERRORS.labels(phase="put").inc()
+            finally:
+                try:
+                    await self.store.release(key, owner=owner)
+                except Exception:
+                    IDEMP_ERRORS.labels(phase="release").inc()
+        else:
+            # Not cacheable (e.g., 5xx) -> just release lock; followers will later acquire and run.
+            try:
+                await self.store.release(key, owner=owner)
+            except Exception:
+                IDEMP_ERRORS.labels(phase="release").inc()
+
+        await self._send_fresh(send, status, resp_headers, resp_body)
 
     async def _send_error(self, send: Send, status: int, detail: str) -> None:
         payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
@@ -401,3 +319,17 @@ def _valid_key(key: str) -> bool:
         if not (ch.isalnum() or ch in "-_"):
             return False
     return True
+
+
+async def _safe_bump_replay(
+    store: IdemStore, key: str, method: str, tenant: str
+) -> int:
+    """Bump replay count safely and record histogram; never raise."""
+    try:
+        new_count_opt = await store.bump_replay(key)
+        new_count = int(new_count_opt or 0)
+        IDEMP_REPLAY_COUNT_HIST.labels(method=method, tenant=tenant).observe(float(new_count))
+        return new_count
+    except Exception:
+        IDEMP_ERRORS.labels(phase="bump").inc()
+        return 0
