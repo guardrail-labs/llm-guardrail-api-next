@@ -7,13 +7,13 @@ import json
 import random
 import time
 from fnmatch import fnmatch
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Tuple, Protocol
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app import settings as settings_module
 from app.idempotency.log_utils import log_idempotency_event
-from app.idempotency.store import IdemStore, StoredResponse
+from app.idempotency.store import StoredResponse
 from app.metrics import (
     IDEMP_BODY_TOO_LARGE,
     IDEMP_CONFLICTS,
@@ -27,6 +27,16 @@ from app.metrics import (
     IDEMP_STREAMING_SKIPPED,
     metric_counter,
 )
+
+# Store protocol to allow test doubles without strict concrete type coupling
+class IdemStoreProto(Protocol):
+    async def acquire_leader(self, key: str, ttl_s: int, body_fp: str) -> tuple[bool, Optional[str]]: ...
+    async def release(self, key: str, owner: Optional[str] = None) -> None: ...
+    async def get(self, key: str) -> Optional[StoredResponse]: ...
+    async def put(self, key: str, value: StoredResponse, ttl_s: int) -> None: ...
+    async def meta(self, key: str) -> Mapping[str, Any]: ...
+    async def bump_replay(self, key: str) -> Optional[int]: ...
+    async def touch(self, key: str, ttl_s: int) -> None: ...
 
 IDEMP_BACKOFF_STEPS = metric_counter(
     "guardrail_idemp_backoff_steps_total",
@@ -49,8 +59,8 @@ def _is_excluded(path: str) -> bool:
 class IdempotencyMiddleware:
     def __init__(
         self,
-        app: ASGIApp,
-        store: IdemStore,
+        app: ASGIApp | Callable[..., Any],  # be tolerant for tests
+        store: IdemStoreProto,
         ttl_s: Optional[int] = None,
         methods: Optional[Iterable[str]] = None,
         max_body: Optional[int] = None,
@@ -116,19 +126,19 @@ class IdempotencyMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send)  # type: ignore[misc]
             return
 
         method = scope["method"].upper()
         if method not in self.methods:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send)  # type: ignore[misc]
             return
 
         tenant = self.tenant_provider(scope)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         key = headers.get("x-idempotency-key")
         if not key:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, send)  # type: ignore[misc]
             return
         if not _valid_key(key):
             await self._send_error(send, 400, "invalid idempotency key")
@@ -179,345 +189,4 @@ class IdempotencyMiddleware:
 
         try:
             ok, owner = await self.store.acquire_leader(key, self.ttl_s, body_fp)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="acquire", mode=mode).inc()
-            ok, owner = False, None
-
-        if ok:
-            IDEMP_IN_PROGRESS.labels(tenant=tenant, role="leader", mode=mode).inc()
-            log_idempotency_event(
-                "leader_acquired",
-                key=key,
-                tenant=tenant,
-                role="leader",
-                state="in_progress",
-                fp_prefix=self._fp_prefix(body_fp),
-            )
-            await self._leader_execute_and_persist(key, owner, scope, body, send, mode)
-            return
-
-        conflict = False
-        try:
-            meta = await self.store.meta(key)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="meta", mode=mode).inc()
-            meta = {}
-        else:
-            fp = meta.get("payload_fingerprint") if isinstance(meta, dict) else None
-            if fp and fp != body_fp:
-                conflict = True
-                IDEMP_CONFLICTS.labels(
-                    method=method, tenant=tenant, role="follower", mode=mode
-                ).inc()
-                log_idempotency_event(
-                    "conflict",
-                    key=key,
-                    tenant=tenant,
-                    role="follower",
-                    state="conflict",
-                    fp_prefix=self._fp_prefix(body_fp),
-                )
-
-        if conflict:
-            try:
-                ok2, owner2 = await self.store.acquire_leader(key, self.ttl_s, body_fp)
-            except Exception:
-                IDEMP_ERRORS.labels(phase="acquire", mode=mode).inc()
-                ok2, owner2 = False, None
-
-            if not ok2:
-                wait_start = time.time()
-                wait_state = await self._wait_for_release_or_value(
-                    key, self._wait_timeout(), mode
-                )
-                wait_ms = max(time.time() - wait_start, 0.0) * 1000.0
-                log_idempotency_event(
-                    "follower_wait_complete",
-                    key=key,
-                    tenant=tenant,
-                    role="follower",
-                    state=wait_state,
-                    fp_prefix=self._fp_prefix(body_fp),
-                    wait_ms=wait_ms,
-                )
-                try:
-                    ok2, owner2 = await self.store.acquire_leader(
-                        key, self.ttl_s, body_fp
-                    )
-                except Exception:
-                    IDEMP_ERRORS.labels(phase="acquire", mode=mode).inc()
-                    ok2, owner2 = False, None
-
-            if ok2:
-                IDEMP_IN_PROGRESS.labels(
-                    tenant=tenant, role="leader", mode=mode
-                ).inc()
-                await self._leader_execute_and_persist(
-                    key, owner2, scope, body, send, mode
-                )
-                return
-
-            status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
-            await self._send_fresh(send, status, resp_headers, resp_body)
-            return
-
-        start = time.time()
-        wait_state = await self._wait_for_release_or_value(
-            key, self._wait_timeout(), mode
-        )
-        duration = max(time.time() - start, 0.0)
-        IDEMP_LOCK_WAIT.labels(mode=mode).observe(duration)
-        log_idempotency_event(
-            "follower_wait_complete",
-            key=key,
-            tenant=tenant,
-            role="follower",
-            state=wait_state,
-            fp_prefix=self._fp_prefix(body_fp),
-            wait_ms=duration * 1000.0,
-        )
-
-        try:
-            cached_after = await self.store.get(key)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="get", mode=mode).inc()
-            cached_after = None
-
-        if cached_after and cached_after.body_sha256 == body_fp:
-            IDEMP_HITS.labels(
-                method=method, tenant=tenant, role="follower", mode=mode
-            ).inc()
-            await self._send_stored(send, key, cached_after, method, tenant, mode)
-            IDEMP_REPLAYS.labels(
-                method=method, tenant=tenant, role="follower", mode=mode
-            ).inc()
-            return
-
-        try:
-            ok2, owner2 = await self.store.acquire_leader(key, self.ttl_s, body_fp)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="acquire", mode=mode).inc()
-            ok2, owner2 = False, None
-
-        if ok2:
-            IDEMP_IN_PROGRESS.labels(tenant=tenant, role="leader", mode=mode).inc()
-            await self._leader_execute_and_persist(
-                key, owner2, scope, body, send, mode
-            )
-            return
-
-        status, resp_headers, resp_body, _ = await self._run_downstream(scope, body)
-        await self._send_fresh(send, status, resp_headers, resp_body)
-
-    async def _leader_execute_and_persist(
-        self,
-        key: str,
-        owner: Optional[str],
-        scope: Scope,
-        body: bytes,
-        send: Send,
-        mode: str,
-    ) -> None:
-        try:
-            status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                scope, body
-            )
-        except Exception:
-            try:
-                await self.store.release(key, owner=owner)
-            except Exception:
-                IDEMP_ERRORS.labels(phase="release", mode=mode).inc()
-            await self._send_500(send)
-            return
-
-        cacheable = status < 500 and (not is_streaming or self.cache_streaming)
-        too_large = len(resp_body) > self.max_body
-
-        if not cacheable or too_large:
-            if is_streaming and not self.cache_streaming:
-                IDEMP_STREAMING_SKIPPED.labels(mode=mode).inc()
-            if too_large:
-                IDEMP_BODY_TOO_LARGE.labels(mode=mode).inc()
-            try:
-                await self.store.release(key, owner=owner)
-            except Exception:
-                IDEMP_ERRORS.labels(phase="release", mode=mode).inc()
-            await self._send_fresh(send, status, resp_headers, resp_body)
-            return
-
-        try:
-            await self.store.put(
-                key,
-                StoredResponse(
-                    status=status,
-                    headers=resp_headers,
-                    body=resp_body,
-                    content_type=resp_headers.get("content-type"),
-                    stored_at=time.time(),
-                    replay_count=0,
-                    body_sha256=hashlib.sha256(body).hexdigest(),
-                ),
-                self.ttl_s,
-            )
-        except Exception:
-            IDEMP_ERRORS.labels(phase="put", mode=mode).inc()
-        finally:
-            try:
-                await self.store.release(key, owner=owner)
-            except Exception:
-                IDEMP_ERRORS.labels(phase="release", mode=mode).inc()
-
-        await self._send_fresh(send, status, resp_headers, resp_body)
-
-    async def _wait_for_release_or_value(self, key: str, timeout: float, mode: str) -> str:
-        deadline = time.time() + timeout
-        delay = 0.01
-        steps = 0
-        while time.time() < deadline:
-            try:
-                if await self.store.get(key):
-                    IDEMP_BACKOFF_STEPS.labels(mode=mode).inc()
-                    return "value"
-            except Exception:
-                IDEMP_ERRORS.labels(phase="get", mode=mode).inc()
-            try:
-                meta = await self.store.meta(key)
-                if not meta.get("lock") or meta.get("state") != "in_progress":
-                    IDEMP_BACKOFF_STEPS.labels(mode=mode).inc()
-                    return "released"
-            except Exception:
-                IDEMP_ERRORS.labels(phase="meta", mode=mode).inc()
-
-            jitter_cap = self.max_jitter_s if self.max_jitter_s > 0 else 0.05
-            jitter = random.random() * min(delay, jitter_cap)
-            await asyncio.sleep(delay + jitter)
-            delay = min(delay * 2.0, 0.2)
-            steps += 1
-
-        if steps:
-            IDEMP_BACKOFF_STEPS.labels(mode=mode).inc()
-        return "timeout"
-
-    async def _send_error(self, send: Send, status: int, detail: str) -> None:
-        payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
-        headers = [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(payload)).encode()),
-        ]
-        await send({"type": "http.response.start", "status": status, "headers": headers})
-        await send({"type": "http.response.body", "body": payload})
-
-    async def _send_500(self, send: Send) -> None:
-        payload = json.dumps({"detail": "Internal Server Error"}).encode("utf-8")
-        headers = [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(payload)).encode()),
-        ]
-        await send({"type": "http.response.start", "status": 500, "headers": headers})
-        await send({"type": "http.response.body", "body": payload})
-
-    async def _send_fresh(
-        self,
-        send: Send,
-        status: int,
-        headers: Mapping[str, str],
-        body: bytes,
-    ) -> None:
-        hdrs = [(k.encode(), v.encode()) for k, v in headers.items()]
-        hdrs.append((b"idempotency-replayed", b"false"))
-        hdrs.append((b"content-length", str(len(body)).encode()))
-        await send({"type": "http.response.start", "status": status, "headers": hdrs})
-        await send({"type": "http.response.body", "body": body})
-
-    async def _send_stored(
-        self,
-        send: Send,
-        key: str,
-        resp: StoredResponse,
-        method: str,
-        tenant: str,
-        mode: str,
-    ) -> None:
-        hdrs = [(k.encode(), v.encode()) for k, v in resp.headers.items()]
-        hdrs.append((b"idempotency-replayed", b"true"))
-        hdrs.append((b"x-idempotency-key", key.encode()))
-        replay_count: int | None
-        try:
-            replay_count = await self.store.bump_replay(key)
-        except Exception:
-            IDEMP_ERRORS.labels(phase="bump_replay", mode=mode).inc()
-            replay_count = None
-        else:
-            if replay_count is not None:
-                resp.replay_count = replay_count
-                IDEMP_REPLAY_COUNT_HIST.labels(
-                    tenant=tenant, method=method, mode=mode
-                ).observe(float(replay_count))
-        if self.touch_on_replay:
-            try:
-                await self.store.touch(key, self.ttl_s)
-            except Exception:
-                IDEMP_ERRORS.labels(phase="touch", mode=mode).inc()
-
-        count_header: str | None = None
-        if replay_count is not None:
-            count_header = str(replay_count)
-        elif resp.replay_count:
-            count_header = str(resp.replay_count)
-        if count_header is not None:
-            hdrs.append((b"idempotency-replay-count", count_header.encode()))
-        body = resp.body
-        hdrs.append((b"content-length", str(len(body)).encode()))
-        await send({"type": "http.response.start", "status": resp.status, "headers": hdrs})
-        await send({"type": "http.response.body", "body": body})
-
-        effective_count = replay_count if replay_count is not None else resp.replay_count or 0
-        log_idempotency_event(
-            "replay",
-            key=key,
-            tenant=tenant,
-            role="follower",
-            state="stored",
-            replay_count=effective_count,
-            fp_prefix=(resp.body_sha256 or "")[: self.mask_prefix_len],
-        )
-
-    async def _run_downstream(
-        self,
-        scope: Scope,
-        body: bytes,
-    ) -> Tuple[int, Mapping[str, str], bytes, bool]:
-        status_code: Optional[int] = None
-        headers: MutableMapping[str, str] = {}
-        chunks: list[bytes] = []
-        is_streaming = False
-
-        async def receive_wrapper() -> MutableMapping[str, Any]:
-            return {"type": "http.request", "body": body, "more_body": False}
-
-        async def send_wrapper(message: MutableMapping[str, Any]) -> None:
-            nonlocal status_code, headers, chunks, is_streaming
-            if message["type"] == "http.response.start":
-                status_code = int(message["status"])
-                raw_headers = message.get("headers") or []
-                for k, v in raw_headers:
-                    headers[k.decode().lower()] = v.decode()
-            elif message["type"] == "http.response.body":
-                chunk = message.get("body") or b""
-                more = bool(message.get("more_body"))
-                if more:
-                    is_streaming = True
-                if chunk:
-                    chunks.append(chunk)
-
-        await self.app(scope, receive_wrapper, send_wrapper)
-        return int(status_code or 200), headers, b"".join(chunks), is_streaming
-
-
-def _valid_key(key: str) -> bool:
-    if not (1 <= len(key) <= 200):
-        return False
-    for ch in key:
-        if not (ch.isalnum() or ch in "-_"):
-            return False
-    return True
+        except Exception
