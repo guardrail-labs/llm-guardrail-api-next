@@ -3,11 +3,12 @@ groups:
     interval: 30s
     rules:
       # ---- Latency quantiles for lock waits (followers) ----
+      # Source histogram labels: {le, mode}
       - record: idemp:lock_wait_p95_seconds
         expr: |
           histogram_quantile(
             0.95,
-            sum by (le, tenant, method) (
+            sum by (le, mode) (
               rate(IDEMP_LOCK_WAIT_bucket[5m])
             )
           )
@@ -16,52 +17,55 @@ groups:
         expr: |
           histogram_quantile(
             0.99,
-            sum by (le, tenant, method) (
+            sum by (le, mode) (
               rate(IDEMP_LOCK_WAIT_bucket[5m])
             )
           )
 
       # ---- Conflict and error rates ----
+      # Conflicts include {tenant, method, role, mode}; we drop role here.
       - record: idemp:conflict_rate_per_s
         expr: |
-          sum by (tenant, method) (
+          sum by (tenant, method, mode) (
             rate(IDEMP_CONFLICTS_total[5m])
           )
 
+      # Errors include {phase, mode} (no tenant label on source).
       - record: idemp:error_rate_per_s
         expr: |
-          sum by (tenant, phase) (
+          sum by (phase, mode) (
             rate(IDEMP_ERRORS_total[5m])
           )
 
       # ---- Hit / miss components ----
+      # HITS/MISSES include {tenant, method, role, mode}
       - record: idemp:hits_per_s
         expr: |
-          sum by (tenant, method, role) (
+          sum by (tenant, method, role, mode) (
             rate(IDEMP_HITS_total[5m])
           )
 
       - record: idemp:misses_per_s
         expr: |
-          sum by (tenant, method, role) (
+          sum by (tenant, method, role, mode) (
             rate(IDEMP_MISSES_total[5m])
           )
 
       # Followers hitting cache vs leaders doing fresh work.
-      # Effective hit ratio (aggregated across all modes).
+      # Effective hit ratio; aggregate each side by the same labels to avoid role mismatch.
       - record: idemp:hit_ratio
         expr: |
           clamp_min(
-            sum by (tenant, method) (
+            sum by (tenant, method, mode) (
               idemp:hits_per_s{role="follower"}
             )
             /
             (
-              sum by (tenant, method) (
+              sum by (tenant, method, mode) (
                 idemp:hits_per_s{role="follower"}
               )
               +
-              sum by (tenant, method) (
+              sum by (tenant, method, mode) (
                 idemp:misses_per_s{role="leader"}
               )
             ),
@@ -69,11 +73,12 @@ groups:
           )
 
       # ---- Replay count quantiles ----
+      # Replay histogram labels: {le, tenant, method, mode}
       - record: idemp:replay_count_p95
         expr: |
           histogram_quantile(
             0.95,
-            sum by (le, tenant, method) (
+            sum by (le, tenant, method, mode) (
               rate(IDEMP_REPLAY_COUNT_HIST_bucket[15m])
             )
           )
@@ -83,7 +88,7 @@ groups:
         expr: |
           histogram_quantile(
             0.95,
-            sum by (le) (
+            sum by (le, mode) (
               rate(IDEMP_LOCK_WAIT_bucket[5m])
             )
           )
@@ -91,18 +96,30 @@ groups:
       - record: idemp:hit_ratio:all
         expr: |
           clamp_min(
-            sum(idemp:hits_per_s{role="follower"})
+            sum by (mode) (
+              idemp:hits_per_s{role="follower"}
+            )
             /
             (
-              sum(idemp:hits_per_s{role="follower"})
+              sum by (mode) (
+                idemp:hits_per_s{role="follower"}
+              )
               +
-              sum(idemp:misses_per_s{role="leader"})
+              sum by (mode) (
+                idemp:misses_per_s{role="leader"}
+              )
             ),
             0
           )
 
       - record: idemp:conflict_rate_per_s:all
-        expr: sum(idemp:conflict_rate_per_s)
+        expr: |
+          sum by (mode) (
+            idemp:conflict_rate_per_s
+          )
 
       - record: idemp:error_rate_per_s:all
-        expr: sum(idemp:error_rate_per_s)
+        expr: |
+          sum by (mode) (
+            idemp:error_rate_per_s
+          )
