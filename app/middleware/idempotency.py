@@ -1,4 +1,4 @@
-"""Idempotency middleware with env defaults, safe metrics, conflict handling, and TTL touch."""
+"""Idempotency middleware with conflict handling, TTL touch, and safe metrics."""
 from __future__ import annotations
 
 import asyncio
@@ -21,11 +21,10 @@ from app.metrics import (
     IDEMP_MISSES,
     IDEMP_REPLAYS,
     IDEMP_REPLAY_COUNT_HIST,
-    IDEMP_TOUCHES,
     metric_counter,
 )
 
-# No-label counter; track follower backoff steps.
+# No-label counter; track follower backoff steps for observability.
 IDEMP_BACKOFF_STEPS = metric_counter(
     "guardrail_idemp_backoff_steps_total",
     "Backoff steps taken by followers",
@@ -159,7 +158,7 @@ class IdempotencyMiddleware:
             cached = None
 
         if cached is not None:
-            # If the cached payload fingerprint doesn't match, treat as conflict.
+            # If cached payload fingerprint doesn't match, treat as conflict (fresh response).
             cached_fp = getattr(cached, "body_sha256", None)
             if cached_fp and cached_fp != body_fp:
                 _safe_inc(IDEMP_CONFLICTS, {"method": method, "tenant": tenant})
@@ -170,10 +169,7 @@ class IdempotencyMiddleware:
                 return
 
             _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
-            # Replay: bump counter, optionally touch TTL, and emit metrics.
-            count = await self._safe_bump_replay_and_touch(
-                key, method, tenant, do_touch=self.touch_on_replay
-            )
+            count = await self._on_replay(key, method, tenant)
             await self._send_stored(send, key, cached, replay_count=count)
             _safe_inc(IDEMP_REPLAYS, {"method": method, "tenant": tenant})
             return
@@ -189,7 +185,7 @@ class IdempotencyMiddleware:
 
         if ok:
             _safe_inc(IDEMP_IN_PROGRESS, {"tenant": tenant})
-            # Leader path: run and maybe cache.
+            # Leader: run and maybe cache.
             try:
                 status, resp_headers, resp_body, is_streaming = await self._run_downstream(
                     scope, body
@@ -265,7 +261,7 @@ class IdempotencyMiddleware:
             cached_after = None
 
         if cached_after is not None:
-            # Safety: double-check fingerprint match even here.
+            # Safety: fingerprint check again.
             cached_fp = getattr(cached_after, "body_sha256", None)
             if cached_fp and cached_fp != body_fp:
                 _safe_inc(IDEMP_CONFLICTS, {"method": method, "tenant": tenant})
@@ -276,9 +272,7 @@ class IdempotencyMiddleware:
                 return
 
             _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
-            count = await self._safe_bump_replay_and_touch(
-                key, method, tenant, do_touch=self.touch_on_replay
-            )
+            count = await self._on_replay(key, method, tenant)
             await self._send_stored(send, key, cached_after, replay_count=count)
             _safe_inc(IDEMP_REPLAYS, {"method": method, "tenant": tenant})
             return
@@ -332,13 +326,12 @@ class IdempotencyMiddleware:
             _safe_inc(IDEMP_BACKOFF_STEPS)
         return "timeout"
 
-    async def _safe_bump_replay_and_touch(
-        self, key: str, method: str, tenant: str, do_touch: bool
-    ) -> int:
+    async def _on_replay(self, key: str, method: str, tenant: str) -> int:
         """
-        Bump replay counter and record histogram. If `do_touch` is True, try to
-        refresh TTL via store.touch(key, ttl) when available, then emit touches.
-        Returns the new count (0 if unavailable).
+        Handle replay bookkeeping:
+        - bump replay counter and record histogram value
+        - refresh TTL/recency via store.touch(...)
+        Returns the new replay count (0 if unavailable).
         """
         try:
             new_count_opt = await self.store.bump_replay(key)
@@ -349,16 +342,18 @@ class IdempotencyMiddleware:
                 {"method": method, "tenant": tenant},
             )
 
-            if do_touch:
+            if self.touch_on_replay:
                 touch_fn = getattr(self.store, "touch", None)
                 if callable(touch_fn):
+                    # Support both touch(key, ttl) and touch(key) signatures.
                     try:
-                        # MemoryIdemStore.touch updates value/state TTL and recency.
-                        await touch_fn(key, self.ttl_s)
-                    except Exception:
-                        _safe_inc(IDEMP_ERRORS, {"phase": "touch"})
-                # Always count a touch attempt for metrics semantics in tests.
-                _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
+                        await touch_fn(key, self.ttl_s)  # type: ignore[misc]
+                    except TypeError:
+                        await touch_fn(key)  # type: ignore[misc]
+                # We rely on the store's touch implementation to:
+                #   - move the key in recency
+                #   - refresh TTL for value/state
+                #   - increment guardrail_idemp_touches_total
 
             return new_count
         except Exception:
