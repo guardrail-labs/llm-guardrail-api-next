@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import time
-from typing import Mapping
 
 import pytest
 from prometheus_client import REGISTRY
@@ -11,7 +10,7 @@ from app.idempotency.redis_store import RedisIdemStore
 from app.idempotency.store import StoredResponse
 
 
-def _sample(name: str, labels: Mapping[str, str]) -> float:
+def _sample(name: str, labels: dict[str, str]) -> float:
     value = REGISTRY.get_sample_value(name, labels)
     return float(value) if value is not None else 0.0
 
