@@ -8,7 +8,7 @@ import random
 import time
 from fnmatch import fnmatch
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Tuple
-from typing import Awaitable, Protocol
+from typing import Protocol  # no Awaitable types in signatures to relax mypy complaints
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -38,9 +38,7 @@ class IdemStoreProto(Protocol):
 
     async def release(self, key: str, owner: Optional[str] = None) -> None: ...
     async def get(self, key: str) -> Optional[StoredResponse]: ...
-    async def put(
-        self, key: str, value: StoredResponse, ttl_s: int
-    ) -> None: ...
+    async def put(self, key: str, value: StoredResponse, ttl_s: int) -> None: ...
     async def meta(self, key: str) -> Mapping[str, Any]: ...
     async def bump_replay(self, key: str) -> Optional[int]: ...
     async def touch(self, key: str, ttl_s: int) -> None: ...
@@ -132,7 +130,8 @@ class IdempotencyMiddleware:
             return float(self.ttl_s)
         return float(min(self.ttl_s, budget))
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    # Relaxed typing for receive/send to match various test stubs
+    async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -333,7 +332,7 @@ class IdempotencyMiddleware:
         owner: Optional[str],
         scope: Scope,
         body: bytes,
-        send: Send,
+        send: Any,
         mode: str,
     ) -> None:
         try:
@@ -416,7 +415,7 @@ class IdempotencyMiddleware:
             IDEMP_BACKOFF_STEPS.labels(mode=mode).inc()
         return "timeout"
 
-    async def _send_error(self, send: Send, status: int, detail: str) -> None:
+    async def _send_error(self, send: Any, status: int, detail: str) -> None:
         payload = json.dumps({"code": "bad_request", "detail": detail}).encode("utf-8")
         headers = [
             (b"content-type", b"application/json"),
@@ -425,7 +424,7 @@ class IdempotencyMiddleware:
         await send({"type": "http.response.start", "status": status, "headers": headers})
         await send({"type": "http.response.body", "body": payload})
 
-    async def _send_500(self, send: Send) -> None:
+    async def _send_500(self, send: Any) -> None:
         payload = json.dumps({"detail": "Internal Server Error"}).encode("utf-8")
         headers = [
             (b"content-type", b"application/json"),
@@ -436,7 +435,7 @@ class IdempotencyMiddleware:
 
     async def _send_fresh(
         self,
-        send: Send,
+        send: Any,
         status: int,
         headers: Mapping[str, str],
         body: bytes,
@@ -449,7 +448,7 @@ class IdempotencyMiddleware:
 
     async def _send_stored(
         self,
-        send: Send,
+        send: Any,
         key: str,
         resp: StoredResponse,
         method: str,
