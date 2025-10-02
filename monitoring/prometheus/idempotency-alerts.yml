@@ -1,0 +1,102 @@
+groups:
+  - name: idempotency_alerts
+    interval: 30s
+    rules:
+      # ---- High lock wait (probable stuck locks / contention) ----
+      - alert: IdempotencyHighLockWaitP95
+        expr: |
+          idemp:lock_wait_p95_seconds{mode="enforce"} > 10
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "Idempotency lock-wait p95 high ({{ $labels.tenant }} {{ $labels.method }})"
+          description: |
+            lock_wait_p95={{ $value }}s (>10s) for 10m in enforce mode.
+            Investigate leaders and store health. See Stuck Lock runbook.
+
+      - alert: IdempotencyHighLockWaitP99Global
+        expr: |
+          idemp:lock_wait_p99_seconds{mode="enforce"} > 20
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Global lock-wait p99 very high"
+          description: |
+            lock_wait_p99={{ $value }}s (>20s) for 5m across tenants.
+
+      # ---- Low hit ratio (ineffective idempotency) ----
+      - alert: IdempotencyLowHitRatio
+        expr: |
+          idemp:hit_ratio{mode="enforce"} < 0.6
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Idempotency hit ratio low ({{ $labels.tenant }} {{ $labels.method }})"
+          description: |
+            hit_ratio < 0.6 for 30m. Check client key stability and conflict rates.
+
+      # ---- Conflict spikes ----
+      - alert: IdempotencyConflictSpike
+        expr: |
+          idemp:conflict_rate_per_s{mode="enforce"} > 0.5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Idempotency conflict spike ({{ $labels.tenant }} {{ $labels.method }})"
+          description: |
+            conflict_rate > 0.5/s for 10m. Likely unstable keys or body mismatch.
+
+      # ---- Backend error spikes (store/meta/release/get/put/touch) ----
+      - alert: IdempotencyBackendErrorSpike
+        expr: |
+          sum by (tenant, mode) (idemp:error_rate_per_s{mode="enforce"}) > 0.2
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Idempotency backend error spike ({{ $labels.tenant }})"
+          description: |
+            error_rate > 0.2/s for 5m. Inspect phases and store availability.
+
+      # ---- Replay storms (clients looping on the same key) ----
+      - alert: IdempotencyReplayStorm
+        expr: |
+          idemp:replay_count_p95{mode="enforce"} >= 5
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Replay storm ({{ $labels.tenant }} {{ $labels.method }})"
+          description: |
+            p95 replay count >= 5 over 15m. Check client retry logic and 5xx rates.
+
+  - name: idempotency_slo_burn
+    interval: 1m
+    rules:
+      # Example SLO: lock_wait_p95 <= 3s in prod (availability proxy).
+      # Burn-rate alerts (MWMB) using thresholds for 5m/30m/6h/24h windows.
+      - alert: SLOLockWaitP95FastBurn
+        expr: |
+          idemp:lock_wait_p95_seconds:all{mode="enforce"} > 3
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "SLO burn (fast) lock-wait p95 > 3s"
+          description: |
+            p95 lock-wait >3s for 5m globally. Investigate stuck locks and store load.
+
+      - alert: SLOLockWaitP95SlowBurn
+        expr: |
+          idemp:lock_wait_p95_seconds:all{mode="enforce"} > 3
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "SLO burn (slow) lock-wait p95 > 3s"
+          description: |
+            p95 lock-wait >3s for 30m. Persistent degradation.
