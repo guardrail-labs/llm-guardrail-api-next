@@ -1,27 +1,29 @@
-"""Settings constants for verifier limits.
+"""Settings constants for verifier limits and idempotency rollout.
 
-This lightweight module provides default values referenced by the verifier
-service. Real deployments may populate these from environment or a config
-system.
+This lightweight module provides default values referenced by the verifier service.
+Real deployments may populate these from environment or a config system.
 """
-from __future__ import annotations
 
 import os
 from typing import List, Literal, Set
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 IdemMode = Literal["off", "observe", "enforce"]
 
 
+def _csv_to_list(value: str) -> List[str]:
+    """Parse comma-separated strings into a list of trimmed, non-empty items."""
+    items = [p.strip() for p in value.split(",")]
+    return [p for p in items if p]
+
+
 class IdempotencySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
-    mode: IdemMode = Field(
-        "observe",
-        validation_alias=AliasChoices("IDEMPOTENCY_MODE"),
-    )
+    mode: IdemMode = Field("observe", validation_alias=AliasChoices("IDEMPOTENCY_MODE"))
+
     enforce_methods: Set[str] = Field(
         default_factory=lambda: {"POST", "PUT", "PATCH"},
         validation_alias=AliasChoices("IDEMPOTENCY_ENFORCE_METHODS"),
@@ -30,6 +32,7 @@ class IdempotencySettings(BaseSettings):
         default_factory=lambda: ["/health", "/metrics", "/admin/*"],
         validation_alias=AliasChoices("IDEMPOTENCY_EXCLUDE_PATHS"),
     )
+
     lock_ttl_s: int = Field(
         60, ge=1, le=600, validation_alias=AliasChoices("IDEMPOTENCY_LOCK_TTL_S")
     )
@@ -58,6 +61,28 @@ class IdempotencySettings(BaseSettings):
         "memory", validation_alias=AliasChoices("IDEMPOTENCY_STORE_BACKEND")
     )
 
+    # ---- Compatibility: allow CSV env values for lists/sets ----
+
+    @field_validator("enforce_methods", mode="before")
+    @classmethod
+    def _parse_methods_csv(cls, v):  # type: ignore[override]
+        # Accept JSON (list) or CSV strings. Normalize to UPPER.
+        if isinstance(v, str):
+            return {m.upper() for m in _csv_to_list(v)}
+        if isinstance(v, (list, set, tuple)):
+            return {str(m).upper() for m in v}
+        return v
+
+    @field_validator("exclude_paths", mode="before")
+    @classmethod
+    def _parse_paths_csv(cls, v):  # type: ignore[override]
+        # Accept JSON (list) or CSV strings.
+        if isinstance(v, str):
+            return _csv_to_list(v)
+        if isinstance(v, (list, set, tuple)):
+            return [str(p) for p in v]
+        return v
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
@@ -65,28 +90,26 @@ class Settings(BaseSettings):
     env: Literal["dev", "stage", "prod", "test"] = Field(
         "dev", validation_alias=AliasChoices("APP_ENV")
     )
-    # Use a concrete default instance (avoids mypy issues with default_factory)
+
+    # Use a direct default instance to keep mypy happy.
     idempotency: IdempotencySettings = IdempotencySettings()
 
     def effective(self) -> "Settings":
         """Apply safe-by-default overrides per environment."""
         eff = self.model_copy(deep=True)
+
         if self.env == "dev":
-            eff.idempotency.mode = (
-                "observe"
-                if self.idempotency.mode == "observe"
-                else self.idempotency.mode
-            )
+            if self.idempotency.mode == "observe":
+                eff.idempotency.mode = "observe"
             eff.idempotency.lock_ttl_s = min(self.idempotency.lock_ttl_s, 30)
             eff.idempotency.strict_fail_closed = False
+
         elif self.env == "stage":
-            eff.idempotency.mode = (
-                "observe"
-                if self.idempotency.mode == "observe"
-                else self.idempotency.mode
-            )
+            if self.idempotency.mode == "observe":
+                eff.idempotency.mode = "observe"
             eff.idempotency.lock_ttl_s = max(self.idempotency.lock_ttl_s, 60)
             eff.idempotency.strict_fail_closed = False
+
         elif self.env == "prod":
             eff.idempotency.mode = (
                 "enforce"
@@ -94,18 +117,14 @@ class Settings(BaseSettings):
                 else self.idempotency.mode
             )
             eff.idempotency.lock_ttl_s = max(self.idempotency.lock_ttl_s, 120)
+
         return eff
 
 
-def get_settings(env: str | None = None) -> Settings:
-    """Helper for tests and callers that want explicit env (mypy-friendly)."""
-    if env is not None:
-        return Settings(env=env).effective()
-    return Settings().effective()
+# Module-level effective settings.
+settings = Settings().effective()
 
-
-# Module-level settings (use APP_ENV or default dev)
-settings = get_settings(env=None)
+# ---------------- Verifier & provider configuration (unchanged) ----------------
 
 VERIFIER_MAX_TOKENS_PER_REQUEST = 4000
 VERIFIER_DAILY_TOKEN_BUDGET = 100000
@@ -246,13 +265,9 @@ VERIFIER_HARM_TTL_DAYS = int(os.getenv("VERIFIER_HARM_TTL_DAYS", "90") or "90")
 
 # Hidden-text scanning (opt-in)
 HIDDEN_TEXT_SCAN = os.getenv("HIDDEN_TEXT_SCAN", "0").strip() == "1"
-HIDDEN_TEXT_SCAN_MAX_BYTES = int(
-    os.getenv("HIDDEN_TEXT_SCAN_MAX_BYTES", "1048576") or "0"
-)
+HIDDEN_TEXT_SCAN_MAX_BYTES = int(os.getenv("HIDDEN_TEXT_SCAN_MAX_BYTES", "1048576") or "0")
 HIDDEN_TEXT_POLICY = os.getenv("HIDDEN_TEXT_POLICY", "0").strip() == "1"
-HIDDEN_TEXT_DENY_REASONS = os.getenv(
-    "HIDDEN_TEXT_DENY_REASONS", "docx_vanish"
-).strip()
+HIDDEN_TEXT_DENY_REASONS = os.getenv("HIDDEN_TEXT_DENY_REASONS", "docx_vanish").strip()
 HIDDEN_TEXT_CLARIFY_REASONS = os.getenv(
     "HIDDEN_TEXT_CLARIFY_REASONS",
     "style_hidden,attr_hidden,zero_width_chars,docx_track_ins,docx_track_del,docx_comments",
@@ -266,7 +281,7 @@ EGRESS_INSPECT_MAX_BYTES = int(os.getenv("EGRESS_INSPECT_MAX_BYTES", "4096") or 
 IDEMP_ENABLED = os.getenv("IDEMP_ENABLED", "true").lower() == "true"
 IDEMP_METHODS = tuple(sorted(settings.idempotency.enforce_methods))
 IDEMP_TTL_SECONDS = settings.idempotency.lock_ttl_s
-IDEMP_MAX_BODY_BYTES = int(os.getenv("IDEMP_MAX_BODY_BYTES", "1048576"))  # 1 MiB
+IDEMP_MAX_BODY_BYTES = int(os.getenv("IDEMP_MAX_BODY_BYTES", "1048576"))
 IDEMP_CACHE_STREAMING = os.getenv("IDEMP_CACHE_STREAMING", "false").lower() == "true"
 IDEMP_TOUCH_ON_REPLAY = os.getenv("IDEMP_TOUCH_ON_REPLAY", "false").lower() in {
     "1",
@@ -276,4 +291,4 @@ IDEMP_TOUCH_ON_REPLAY = os.getenv("IDEMP_TOUCH_ON_REPLAY", "false").lower() in {
 }
 IDEMP_REDIS_URL = os.getenv("IDEMP_REDIS_URL", "redis://localhost:6379/0")
 IDEMP_REDIS_NAMESPACE = os.getenv("IDEMP_REDIS_NAMESPACE", "idem")
-IDEMP_RECENT_ZSET_MAX = int(os.getenv("IDEMP_RECENT_ZSET_MAX", "5000") or "5000")
+IDEMP_RECENT_ZSET_MAX = int(os.getenv("IDEMP_RECENT_ZSET_MAX", "5000"))
