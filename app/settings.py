@@ -5,7 +5,240 @@ service. Real deployments may populate these from environment or a config
 system.
 """
 
+import json
 import os
+from typing import TYPE_CHECKING, Any, List, Literal, Set, cast, overload
+
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources.base import PydanticBaseSettingsSource
+from pydantic_settings.sources.providers.env import EnvSettingsSource
+
+IdemMode = Literal["off", "observe", "enforce"]
+
+_DEFAULT_IDEMPOTENCY_MODE: IdemMode = "observe"
+_DEFAULT_IDEMPOTENCY_METHODS = ("POST", "PUT", "PATCH")
+_DEFAULT_IDEMPOTENCY_EXCLUDE_PATHS = ("/health", "/metrics", "/admin/*")
+_DEFAULT_IDEMPOTENCY_LOCK_TTL = 60
+_DEFAULT_IDEMPOTENCY_WAIT_BUDGET_MS = 2000
+_DEFAULT_IDEMPOTENCY_JITTER_MS = 50
+_DEFAULT_IDEMPOTENCY_REPLAY_WINDOW_S = 300
+_DEFAULT_IDEMPOTENCY_MASK_PREFIX_LEN = 8
+_DEFAULT_IDEMPOTENCY_SHADOW_SAMPLE_RATE = 1.0
+_DEFAULT_IDEMPOTENCY_STORE_BACKEND: Literal["memory", "redis"] = "memory"
+
+
+def _csv_to_list(value: str) -> List[str]:
+    items = [part.strip() for part in value.split(",")]
+    return [item for item in items if item]
+
+
+def _json_or_csv_to_list(value: str) -> List[str]:
+    text = value.strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            decoded = json.loads(text)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return _csv_to_list(text)
+        if isinstance(decoded, str):
+            return _csv_to_list(decoded)
+        if isinstance(decoded, (list, tuple, set)):
+            result: List[str] = []
+            for item in decoded:
+                piece = str(item).strip()
+                if piece:
+                    result.append(piece)
+            return result
+        return []
+    return _csv_to_list(text)
+
+
+class _CsvFriendlyEnvSettingsSource(EnvSettingsSource):
+    def decode_complex_value(self, field_name: str, field: Any, value: Any) -> Any:
+        try:
+            return super().decode_complex_value(field_name, field, value)
+        except ValueError:
+            return value
+
+
+class IdempotencySettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        if isinstance(env_settings, EnvSettingsSource):
+            env_settings = _CsvFriendlyEnvSettingsSource(
+                settings_cls,
+                case_sensitive=env_settings.case_sensitive,
+                env_prefix=env_settings.env_prefix,
+                env_nested_delimiter=env_settings.env_nested_delimiter,
+                env_nested_max_split=env_settings.env_nested_max_split,
+                env_ignore_empty=env_settings.env_ignore_empty,
+                env_parse_none_str=env_settings.env_parse_none_str,
+                env_parse_enums=env_settings.env_parse_enums,
+            )
+        return init_settings, env_settings, dotenv_settings, file_secret_settings
+
+    mode: IdemMode = Field(
+        _DEFAULT_IDEMPOTENCY_MODE,
+        validation_alias=AliasChoices("IDEMPOTENCY_MODE"),
+    )
+    enforce_methods: Set[str] = Field(
+        default_factory=lambda: set(_DEFAULT_IDEMPOTENCY_METHODS),
+        validation_alias=AliasChoices("IDEMPOTENCY_ENFORCE_METHODS"),
+    )
+    exclude_paths: List[str] = Field(
+        default_factory=lambda: list(_DEFAULT_IDEMPOTENCY_EXCLUDE_PATHS),
+        validation_alias=AliasChoices("IDEMPOTENCY_EXCLUDE_PATHS"),
+    )
+    lock_ttl_s: int = Field(
+        _DEFAULT_IDEMPOTENCY_LOCK_TTL,
+        ge=1,
+        le=600,
+        validation_alias=AliasChoices("IDEMPOTENCY_LOCK_TTL_S"),
+    )
+    wait_budget_ms: int = Field(
+        _DEFAULT_IDEMPOTENCY_WAIT_BUDGET_MS,
+        ge=0,
+        le=30000,
+        validation_alias=AliasChoices("IDEMPOTENCY_WAIT_BUDGET_MS"),
+    )
+    jitter_ms: int = Field(
+        _DEFAULT_IDEMPOTENCY_JITTER_MS,
+        ge=0,
+        le=1000,
+        validation_alias=AliasChoices("IDEMPOTENCY_JITTER_MS"),
+    )
+    replay_window_s: int = Field(
+        _DEFAULT_IDEMPOTENCY_REPLAY_WINDOW_S,
+        ge=1,
+        le=86400,
+        validation_alias=AliasChoices("IDEMPOTENCY_REPLAY_WINDOW_S"),
+    )
+    strict_fail_closed: bool = Field(
+        False,
+        validation_alias=AliasChoices("IDEMPOTENCY_STRICT_FAIL_CLOSED"),
+    )
+    mask_prefix_len: int = Field(
+        _DEFAULT_IDEMPOTENCY_MASK_PREFIX_LEN,
+        ge=4,
+        le=16,
+        validation_alias=AliasChoices("IDEMPOTENCY_MASK_PREFIX_LEN"),
+    )
+    shadow_sample_rate: float = Field(
+        _DEFAULT_IDEMPOTENCY_SHADOW_SAMPLE_RATE,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("IDEMPOTENCY_SHADOW_SAMPLE_RATE"),
+    )
+    store_backend: Literal["memory", "redis"] = Field(
+        _DEFAULT_IDEMPOTENCY_STORE_BACKEND,
+        validation_alias=AliasChoices("IDEMPOTENCY_STORE_BACKEND"),
+    )
+
+    @field_validator("enforce_methods", mode="before")
+    @classmethod
+    def _parse_methods_csv(cls, value: object) -> object:
+        if isinstance(value, str):
+            return {item.upper() for item in _json_or_csv_to_list(value)}
+        if isinstance(value, (list, set, tuple)):
+            return {str(item).strip().upper() for item in value if str(item).strip()}
+        return value
+
+    @field_validator("exclude_paths", mode="before")
+    @classmethod
+    def _parse_paths_csv(cls, value: object) -> object:
+        if isinstance(value, str):
+            return _json_or_csv_to_list(value)
+        if isinstance(value, (list, set, tuple)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return value
+
+
+if TYPE_CHECKING:
+    def _load_idempotency_from_env() -> IdempotencySettings:
+        ...
+else:
+    def _load_idempotency_from_env() -> IdempotencySettings:
+        return IdempotencySettings()
+
+
+def _default_idempotency_settings() -> IdempotencySettings:
+    loaded = _load_idempotency_from_env()
+    data = loaded.model_dump()
+    return IdempotencySettings.model_construct(**data)
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    env: Literal["dev", "stage", "prod", "test"] = Field(
+        "dev",
+        validation_alias=AliasChoices("APP_ENV"),
+    )
+    idempotency: IdempotencySettings = Field(
+        default_factory=_default_idempotency_settings,
+    )
+
+    def effective(self) -> "Settings":
+        eff = self.model_copy(deep=True)
+        if eff.env == "dev":
+            if eff.idempotency.mode == "observe":
+                eff.idempotency.mode = "observe"
+            eff.idempotency.lock_ttl_s = min(eff.idempotency.lock_ttl_s, 30)
+            eff.idempotency.strict_fail_closed = False
+        elif eff.env == "stage":
+            if eff.idempotency.mode == "observe":
+                eff.idempotency.mode = "observe"
+            eff.idempotency.lock_ttl_s = max(eff.idempotency.lock_ttl_s, 60)
+            eff.idempotency.strict_fail_closed = False
+        elif eff.env == "prod":
+            eff.idempotency.mode = (
+                "enforce"
+                if eff.idempotency.mode in {"observe", "enforce"}
+                else eff.idempotency.mode
+            )
+            eff.idempotency.lock_ttl_s = max(eff.idempotency.lock_ttl_s, 120)
+        return eff
+
+
+if TYPE_CHECKING:
+    def _load_settings(**data: Any) -> Settings:
+        ...
+else:
+    def _load_settings(**data: Any) -> Settings:
+        return Settings(**data)
+
+
+@overload
+def get_settings(env: Literal["dev", "stage", "prod", "test"]) -> Settings:
+    ...
+
+
+@overload
+def get_settings(env: None = ...) -> Settings:
+    ...
+
+
+def get_settings(env: str | None = None) -> Settings:
+    if env is not None:
+        lit = cast(Literal["dev", "stage", "prod", "test"], env)
+        return _load_settings(env=lit).effective()
+    return _load_settings().effective()
+
+
+settings = get_settings(None)
+
+
 
 VERIFIER_MAX_TOKENS_PER_REQUEST = 4000
 VERIFIER_DAILY_TOKEN_BUDGET = 100000

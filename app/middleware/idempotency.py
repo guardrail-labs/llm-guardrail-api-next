@@ -7,9 +7,9 @@ import json
 import os
 import random
 import time
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, Protocol, Tuple
 
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import Scope, Send
 
 from app.idempotency.log_utils import log_idempotency_event
 from app.idempotency.store import IdemStore, StoredResponse
@@ -63,17 +63,45 @@ def _env_touch_on_replay() -> bool:
     }
 
 
+class IdemStoreProto(Protocol):
+    async def acquire_leader(
+        self, key: str, ttl_s: int, body_fp: str
+    ) -> tuple[bool, Optional[str]]:
+        ...
+
+    async def release(self, key: str, owner: Optional[str] = None) -> None:
+        ...
+
+    async def get(self, key: str) -> Optional[StoredResponse]:
+        ...
+
+    async def put(self, key: str, value: StoredResponse, ttl_s: int) -> None:
+        ...
+
+    async def meta(self, key: str) -> Mapping[str, Any]:
+        ...
+
+    async def bump_replay(self, key: str) -> Optional[int]:
+        ...
+
+    async def touch(self, key: str, ttl_s: int) -> None:
+        ...
+
+
 class IdempotencyMiddleware:
     def __init__(
         self,
-        app: ASGIApp,
-        store: IdemStore,
+        app: Any,
+        store: IdemStore | IdemStoreProto,
         ttl_s: Optional[int] = None,
         methods: Optional[Iterable[str]] = None,
         max_body: Optional[int] = None,
         cache_streaming: bool = False,
         tenant_provider: Optional[Callable[[Scope], str]] = None,
         touch_on_replay: Optional[bool] = None,
+        wait_budget_ms: Optional[int] = None,
+        jitter_ms: Optional[int] = None,
+        strict_fail_closed: Optional[bool] = None,
     ) -> None:
         self.app = app
         self.store = store
@@ -87,8 +115,15 @@ class IdempotencyMiddleware:
             if touch_on_replay is not None
             else _env_touch_on_replay()
         )
+        self.wait_budget_ms = (
+            int(wait_budget_ms) if wait_budget_ms is not None else None
+        )
+        self.jitter_ms = int(jitter_ms) if jitter_ms is not None else None
+        self.strict_fail_closed = (
+            bool(strict_fail_closed) if strict_fail_closed is not None else None
+        )
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
         # Not a managed method? Just pass through (streaming preserved).
         if scope["type"] != "http" or scope["method"].upper() not in self.methods:
             await self.app(scope, receive, send)
