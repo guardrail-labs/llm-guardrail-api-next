@@ -38,17 +38,17 @@ def metric_histogram(
 IDEMP_HITS = metric_counter(
     "guardrail_idemp_hits_total",
     "Idempotency cache hits",
-    ["method", "tenant"],
+    ["method", "tenant", "role"],
 )
 IDEMP_MISSES = metric_counter(
     "guardrail_idemp_misses_total",
     "Idempotency cache misses",
-    ["method", "tenant"],
+    ["method", "tenant", "role"],
 )
 IDEMP_REPLAYS = metric_counter(
     "guardrail_idemp_replays_total",
     "Responses served from idempotency cache",
-    ["method", "tenant"],
+    ["method", "tenant", "role"],
 )
 IDEMP_LOCK_WAIT = metric_histogram(
     "guardrail_idemp_lock_wait_seconds",
@@ -57,12 +57,12 @@ IDEMP_LOCK_WAIT = metric_histogram(
 IDEMP_IN_PROGRESS = metric_counter(
     "guardrail_idemp_in_progress_total",
     "Leader executions in progress",
-    ["tenant"],
+    ["tenant", "role"],
 )
 IDEMP_CONFLICTS = metric_counter(
     "guardrail_idemp_conflicts_total",
     "Conflicting payload fingerprint seen for same key",
-    ["method", "tenant"],
+    ["method", "tenant", "role"],
 )
 IDEMP_ERRORS = metric_counter(
     "guardrail_idemp_errors_total",
@@ -73,6 +73,24 @@ IDEMP_ERRORS = metric_counter(
 IDEMP_TOUCHES = metric_counter(
     "guardrail_idemp_touches_total",
     "Idempotency TTL refreshes (touch) on replay",
+    ["tenant"],
+)
+
+IDEMP_RECENT_SIZE = metric_gauge(
+    "guardrail_idemp_recent_size",
+    "Current size of idempotency recent ring",
+    ["tenant"],
+)
+
+IDEMP_PURGES = metric_counter(
+    "guardrail_idemp_purges_total",
+    "Admin-triggered idempotency purges",
+    ["tenant"],
+)
+
+IDEMP_STUCK_LOCKS = metric_counter(
+    "guardrail_idemp_stuck_locks_total",
+    "Locks purged after exceeding TTL",
     ["tenant"],
 )
 

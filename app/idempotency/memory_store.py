@@ -7,7 +7,7 @@ import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.idempotency.store import IdemStore, StoredResponse
-
+from app.metrics import IDEMP_TOUCHES
 
 _RELEASE_STATE_TTL = 60  # seconds, for post-release 'released' marker
 
@@ -34,6 +34,7 @@ class MemoryIdemStore(IdemStore):
         self._locks: Dict[str, Dict[str, Any]] = {}
         # recent entries as an ordered list of (key, timestamp)
         self._recent: List[Tuple[str, float]] = []
+        self._first_seen: Dict[str, float] = {}
 
         # Hide lock from type checker; tests use "type: ignore[attr-defined]".
         self.__dict__["_mu"] = asyncio.Lock()
@@ -43,7 +44,9 @@ class MemoryIdemStore(IdemStore):
 
     def _recent_append(self, key: str) -> None:
         """Append (key, now) and cap by recent_limit if set."""
-        self._recent.append((key, self._now()))
+        now = self._now()
+        self._recent.append((key, now))
+        self._first_seen.setdefault(key, now)
         if self.recent_limit and self.recent_limit > 0:
             # keep only the last N entries
             over = len(self._recent) - self.recent_limit
@@ -116,16 +119,87 @@ class MemoryIdemStore(IdemStore):
 
     async def list_recent(self, limit: int = 50) -> List[Tuple[str, float]]:
         async with self.__dict__["_mu"]:
-            # Return last N entries (most recent at end)
             if limit <= 0:
                 return []
-            return self._recent[-limit:].copy()
+            # newest entries should be returned first for admin display
+            return list(reversed(self._recent[-limit:]))
+
+    async def inspect(self, key: str) -> Mapping[str, Any]:
+        async with self.__dict__["_mu"]:
+            now = self._now()
+            state_tuple = self._states.get(key)
+            lock_info = self._locks.get(key)
+            value_tuple = self._values.get(key)
+
+            state = state_tuple[0] if state_tuple else None
+            expires_candidates: List[float] = []
+            if state_tuple:
+                expires_candidates.append(state_tuple[1])
+            if lock_info:
+                expires_candidates.append(float(lock_info.get("expiry", 0.0)))
+            if value_tuple:
+                expires_candidates.append(value_tuple[1])
+            expires_at = max(expires_candidates) if expires_candidates else 0.0
+
+            replay_count = 0
+            stored_at = 0.0
+            size_bytes = 0
+            content_type: Optional[str] = None
+            fp_prefix: Optional[str] = None
+
+            if value_tuple and (not expires_at or expires_at > now):
+                resp, _ = value_tuple
+                replay_count = int(resp.replay_count or 0)
+                stored_at = float(resp.stored_at or 0.0)
+                size_bytes = len(resp.body)
+                content_type = resp.content_type
+                if resp.body_sha256:
+                    fp_prefix = resp.body_sha256[:8]
+            elif lock_info and lock_info.get("payload_fingerprint"):
+                fp_prefix = str(lock_info["payload_fingerprint"])[:8]
+
+            if not state:
+                state = "missing"
+
+            first_seen = self._first_seen.get(key, 0.0)
+            if not state or state == "missing":
+                first_seen = 0.0
+
+            return {
+                "state": state,
+                "expires_at": expires_at if expires_at > 0 else 0.0,
+                "replay_count": replay_count,
+                "stored_at": stored_at,
+                "size_bytes": size_bytes,
+                "content_type": content_type,
+                "payload_fingerprint_prefix": fp_prefix,
+                "first_seen_at": first_seen,
+            }
+
+    async def touch(self, key: str, ttl_s: int) -> bool:
+        async with self.__dict__["_mu"]:
+            touched = False
+            new_exp = self._now() + float(ttl_s)
+            value_tuple = self._values.get(key)
+            if value_tuple:
+                resp, _ = value_tuple
+                self._values[key] = (resp, new_exp)
+                touched = True
+            state_tuple = self._states.get(key)
+            if state_tuple:
+                self._states[key] = (state_tuple[0], new_exp)
+                touched = True
+            lock_info = self._locks.get(key)
+            if lock_info and "expiry" in lock_info:
+                lock_info["expiry"] = new_exp
+            if touched:
+                self._recent_append(key)
+                IDEMP_TOUCHES.labels(tenant=self.tenant).inc()
+            return touched
 
     async def bump_replay(
         self,
         key: str,
-        *,
-        touch_ttl_s: Optional[int] = None,
     ) -> Optional[int]:
         async with self.__dict__["_mu"]:
             tup = self._values.get(key)
@@ -142,17 +216,7 @@ class MemoryIdemStore(IdemStore):
                 replay_count=new_count,
                 body_sha256=resp.body_sha256,
             )
-
-            # If touching, refresh both value & state expiries and recent trail.
-            if touch_ttl_s is not None:
-                new_expiry = self._now() + float(touch_ttl_s)
-                self._values[key] = (new_resp, new_expiry)
-                state, _ = self._states.get(key, ("stored", new_expiry))
-                self._states[key] = (state, new_expiry)
-                self._recent_append(key)
-            else:
-                self._values[key] = (new_resp, value_expiry)
-
+            self._values[key] = (new_resp, value_expiry)
             return new_count
 
 

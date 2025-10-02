@@ -728,6 +728,7 @@ def create_app() -> FastAPI:
         log.warning("Health routes unavailable: %s", exc)
     app.include_router(admin_scope_router)
     try:
+        from app.routes.admin_idempotency import router as admin_idempotency_router
         from app.routes.admin_policy_packs import router as admin_policy_packs_router
     except Exception as exc:
         _log.debug("import admin_policy_packs_router failed: %s", exc)
@@ -735,6 +736,10 @@ def create_app() -> FastAPI:
         _best_effort(
             "include admin_policy_packs_router",
             lambda: app.include_router(admin_policy_packs_router),
+        )
+        _best_effort(
+            "include admin_idempotency_router",
+            lambda: app.include_router(admin_idempotency_router),
         )
     try:
         from app.routes.admin_decisions_api import router as admin_decisions_router
