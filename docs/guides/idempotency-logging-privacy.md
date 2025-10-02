@@ -1,6 +1,7 @@
 # Idempotency logging privacy
 
-- The system **never logs full X-Idempotency-Key**; only a masked prefix is emitted.
+- The system **never logs full X-Idempotency-Key**; only a masked prefix with an ellipsis
+  and short hash suffix is emitted.
 - To include potentially sensitive fields (e.g., request headers) in idempotency logs
   for short-term debugging, set:
 

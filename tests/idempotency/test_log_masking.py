@@ -17,9 +17,10 @@ def test_masking_without_pii(caplog, monkeypatch):
     monkeypatch.setenv("IDEMP_LOG_INCLUDE_PII", "0")
     caplog.set_level("INFO", logger="app.idempotency")
 
+    key = "AbCdEfGh123456"
     log_idempotency_event(
         "replay",
-        key="AbCdEfGh123456",
+        key=key,
         tenant="t-1",
         headers={"authorization": "secret"},
         fp_prefix="deadbeef",
@@ -29,10 +30,11 @@ def test_masking_without_pii(caplog, monkeypatch):
 
     data = _last_json_record(caplog)
 
-    # full key never appears; masked prefix does
-    assert "AbCdEfGh123456" not in json.dumps(data)
-    assert data.get("key_prefix", "").startswith("AbCdEfGh")
-    assert data.get("key_prefix", "").endswith("…")
+    # full key never appears
+    assert key not in json.dumps(data)
+    # masked prefix includes beginning plus ellipsis and hash suffix
+    assert data["key_prefix"].startswith("AbCdEfGh…")
+    assert len(data["key_prefix"]) > len("AbCdEfGh…")  # has hash suffix
 
     # non-PII operational fields are preserved
     assert data["tenant"] == "t-1"
@@ -48,9 +50,10 @@ def test_masking_with_pii(caplog, monkeypatch):
     monkeypatch.setenv("IDEMP_LOG_INCLUDE_PII", "1")
     caplog.set_level("INFO", logger="app.idempotency")
 
+    key = "XYZ987654321"
     log_idempotency_event(
         "leader_acquired",
-        idempotency_key="XYZ987654321",
+        idempotency_key=key,
         tenant="t-2",
         headers={"authorization": "secret"},
     )
@@ -58,9 +61,24 @@ def test_masking_with_pii(caplog, monkeypatch):
     data = _last_json_record(caplog)
 
     # still never log full key even if PII enabled
-    assert "XYZ987654321" not in json.dumps(data)
-    assert data["key_prefix"].startswith("XYZ98765")
+    assert key not in json.dumps(data)
+    assert data["key_prefix"].startswith("XYZ98765…")
     assert data["privacy_mode"] == "pii_enabled"
 
     # headers present when PII enabled
     assert "headers" in data
+
+
+def test_masking_short_keys_never_full(caplog, monkeypatch):
+    monkeypatch.setenv("IDEMP_LOG_INCLUDE_PII", "0")
+    caplog.set_level("INFO", logger="app.idempotency")
+
+    # very short keys must not appear verbatim
+    for key in ("a", "ab", "abc"):
+        log_idempotency_event("replay", key=key)
+        data = _last_json_record(caplog)
+        masked = data["key_prefix"]
+        assert key not in masked
+        # always contains ellipsis and some suffix
+        assert "…" in masked
+        assert len(masked.split("…")[-1]) >= 1
