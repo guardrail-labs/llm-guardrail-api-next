@@ -56,9 +56,14 @@ groups:
               idemp:hits_per_s{role="follower"}
             )
             /
-            sum by (tenant, method, mode) (
-              idemp:hits_per_s{role="follower"}
-              + idemp:misses_per_s{role="leader"}
+            (
+              sum by (tenant, method, mode) (
+                idemp:hits_per_s{role="follower"}
+              )
+              +
+              sum by (tenant, method, mode) (
+                idemp:misses_per_s{role="leader"}
+              )
             ),
             0
           )
@@ -80,15 +85,22 @@ groups:
             0.95,
             sum by (le, mode) (rate(IDEMP_LOCK_WAIT_bucket[5m]))
           )
+
       - record: idemp:hit_ratio:all
         expr: |
           clamp_min(
             sum(idemp:hits_per_s{role="follower"})
             /
-            sum(idemp:hits_per_s{role="follower"} + idemp:misses_per_s{role="leader"}),
+            (
+              sum(idemp:hits_per_s{role="follower"})
+              +
+              sum(idemp:misses_per_s{role="leader"})
+            ),
             0
           )
+
       - record: idemp:conflict_rate_per_s:all
         expr: sum(idemp:conflict_rate_per_s)
+
       - record: idemp:error_rate_per_s:all
         expr: sum(idemp:error_rate_per_s)
