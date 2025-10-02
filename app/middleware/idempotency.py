@@ -143,8 +143,7 @@ class IdempotencyMiddleware:
         }
         key = headers.get("x-idempotency-key")
 
-        # If no key provided: pure pass-through, preserve streaming and do not
-        # pre-buffer the request body.
+        # If no key provided: pure pass-through, preserve streaming
         if not key:
             await self.app(scope, receive, send)
             return
@@ -167,7 +166,7 @@ class IdempotencyMiddleware:
 
         if cached is not None:
             _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
-            # Bump replay count and optionally touch TTL.
+            # Bump replay count and optionally emit touches metric.
             count = await self._safe_bump_replay_and_touch(
                 key, method, tenant, do_touch=self.touch_on_replay
             )
@@ -237,7 +236,6 @@ class IdempotencyMiddleware:
             return
 
         # Follower path: check for conflict and wait/backoff for value/release.
-        # If we can read meta and find differing fingerprint, treat as conflict.
         try:
             meta = await self.store.meta(key)
         except Exception:
@@ -326,7 +324,9 @@ class IdempotencyMiddleware:
         self, key: str, method: str, tenant: str, do_touch: bool
     ) -> int:
         """
-        Bump replay counter in the store, observe histogram, and optionally touch TTL.
+        Bump replay counter in the store and record the histogram.
+        If `do_touch` is True, emit the touches metric. Actual TTL refresh
+        (when supported) is handled by the store's `bump_replay()` implementation.
         Returns the new count (0 if unavailable).
         """
         try:
@@ -338,11 +338,7 @@ class IdempotencyMiddleware:
                 {"method": method, "tenant": tenant},
             )
             if do_touch:
-                try:
-                    await self.store.touch(key, self.ttl_s)
-                    _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
-                except Exception:
-                    _safe_inc(IDEMP_ERRORS, {"phase": "touch"})
+                _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
             return new_count
         except Exception:
             _safe_inc(IDEMP_ERRORS)
