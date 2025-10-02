@@ -10,6 +10,7 @@ from typing import Any, List, Mapping, Optional, Tuple, cast
 from redis.asyncio import Redis
 
 from app.idempotency.store import IdemStore, StoredResponse
+from app import settings as settings_module
 from app.metrics import IDEMP_TOUCHES
 
 
@@ -255,7 +256,9 @@ class RedisIdemStore(IdemStore):
         results = await pipe.execute()
         touched = bool((results[0] or 0) or (results[1] or 0))
         if touched:
-            IDEMP_TOUCHES.labels(tenant=self.tenant).inc()
+            IDEMP_TOUCHES.labels(
+                tenant=self.tenant, mode=settings_module.settings.idempotency.mode
+            ).inc()
         return touched
 
     async def inspect(self, key: str) -> Mapping[str, Any]:

@@ -83,7 +83,8 @@ async def list_recent(
             }
         )
 
-    IDEMP_RECENT_SIZE.labels(tenant=tenant_id).set(len(results))
+    mode = settings.settings.idempotency.mode
+    IDEMP_RECENT_SIZE.labels(tenant=tenant_id, mode=mode).set(len(results))
     return results
 
 
@@ -123,7 +124,8 @@ async def purge_key(
     except NotImplementedError:
         snapshot = {}
     existed = await store.purge(key)
-    IDEMP_PURGES.labels(tenant=tenant_id).inc()
+    mode = settings.settings.idempotency.mode
+    IDEMP_PURGES.labels(tenant=tenant_id, mode=mode).inc()
 
     state = str(snapshot.get("state") or "missing") if isinstance(snapshot, Mapping) else "missing"
     expires_at = float(snapshot.get("expires_at") or 0.0) if isinstance(snapshot, Mapping) else 0.0
@@ -134,7 +136,7 @@ async def purge_key(
 
     stuck = bool(state == "in_progress" and expires_at and expires_at < time.time())
     if stuck:
-        IDEMP_STUCK_LOCKS.labels(tenant=tenant_id).inc()
+        IDEMP_STUCK_LOCKS.labels(tenant=tenant_id, mode=mode).inc()
 
     log_idempotency_event(
         "purge",

@@ -14,6 +14,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("IDEMP_REDIS_URL", "memory://")
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("IDEMPOTENCY_MODE", "enforce")
 
 from app.main import create_app  # noqa: E402
 

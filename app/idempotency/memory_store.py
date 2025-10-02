@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from app.idempotency.store import IdemStore, StoredResponse
+from app import settings as settings_module
 from app.metrics import IDEMP_TOUCHES
 
 _RELEASE_STATE_TTL = 60  # seconds, for post-release 'released' marker
@@ -194,7 +195,9 @@ class MemoryIdemStore(IdemStore):
                 lock_info["expiry"] = new_exp
             if touched:
                 self._recent_append(key)
-                IDEMP_TOUCHES.labels(tenant=self.tenant).inc()
+                IDEMP_TOUCHES.labels(
+                    tenant=self.tenant, mode=settings_module.settings.idempotency.mode
+                ).inc()
             return touched
 
     async def bump_replay(

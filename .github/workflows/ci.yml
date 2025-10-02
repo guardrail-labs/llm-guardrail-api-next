@@ -14,6 +14,7 @@ jobs:
       GUARDRAIL_DISABLE_AUTH: "1"   # bypass admin auth in tests
       CORS_ALLOW_ORIGINS: ""
       PYTHONPATH: .
+      APP_ENV: "test"
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +55,10 @@ jobs:
       - name: Lint (ruff)
         run: |
           ruff check --fix .
+
+      - name: Ruff (strict basic)
+        run: |
+          ruff check --select F401,F841,E501 .
 
       - name: Typecheck (mypy)
         run: mypy .

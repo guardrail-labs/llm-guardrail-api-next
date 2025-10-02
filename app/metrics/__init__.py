@@ -38,79 +38,83 @@ def metric_histogram(
 IDEMP_HITS = metric_counter(
     "guardrail_idemp_hits_total",
     "Idempotency cache hits",
-    ["method", "tenant", "role"],
+    ["method", "tenant", "role", "mode"],
 )
 IDEMP_MISSES = metric_counter(
     "guardrail_idemp_misses_total",
     "Idempotency cache misses",
-    ["method", "tenant", "role"],
+    ["method", "tenant", "role", "mode"],
 )
 IDEMP_REPLAYS = metric_counter(
     "guardrail_idemp_replays_total",
     "Responses served from idempotency cache",
-    ["method", "tenant", "role"],
+    ["method", "tenant", "role", "mode"],
 )
 IDEMP_LOCK_WAIT = metric_histogram(
     "guardrail_idemp_lock_wait_seconds",
     "Follower wait time while leader in-progress",
+    ["mode"],
 )
 IDEMP_IN_PROGRESS = metric_counter(
     "guardrail_idemp_in_progress_total",
     "Leader executions in progress",
-    ["tenant", "role"],
+    ["tenant", "role", "mode"],
 )
 IDEMP_CONFLICTS = metric_counter(
     "guardrail_idemp_conflicts_total",
     "Conflicting payload fingerprint seen for same key",
-    ["method", "tenant", "role"],
+    ["method", "tenant", "role", "mode"],
 )
 IDEMP_ERRORS = metric_counter(
     "guardrail_idemp_errors_total",
     "Errors during idempotency phases",
-    ["phase"],
+    ["phase", "mode"],
 )
 
 IDEMP_TOUCHES = metric_counter(
     "guardrail_idemp_touches_total",
     "Idempotency TTL refreshes (touch) on replay",
-    ["tenant"],
+    ["tenant", "mode"],
 )
 
 IDEMP_RECENT_SIZE = metric_gauge(
     "guardrail_idemp_recent_size",
     "Current size of idempotency recent ring",
-    ["tenant"],
+    ["tenant", "mode"],
 )
 
 IDEMP_PURGES = metric_counter(
     "guardrail_idemp_purges_total",
     "Admin-triggered idempotency purges",
-    ["tenant"],
+    ["tenant", "mode"],
 )
 
 IDEMP_STUCK_LOCKS = metric_counter(
     "guardrail_idemp_stuck_locks_total",
     "Locks purged after exceeding TTL",
-    ["tenant"],
+    ["tenant", "mode"],
 )
 
 IDEMP_REPLAY_COUNT_HIST = metric_histogram(
     "guardrail_idemp_replay_count",
     "Observed replay_count values on replay",
-    ["tenant", "method"],
+    ["tenant", "method", "mode"],
 )
 
 # Additional observability used by tests and dashboards
 IDEMP_STREAMING_SKIPPED = metric_counter(
     "guardrail_idemp_streaming_skipped_total",
     "Streaming responses were not cached",
+    ["mode"],
 )
 IDEMP_BODY_TOO_LARGE = metric_counter(
     "guardrail_idemp_body_too_large_total",
     "Responses too large to cache",
+    ["mode"],
 )
 IDEMP_EVICTIONS = metric_counter(
     "guardrail_idemp_evictions_total",
     "Explicit evictions from idempotency store",
+    ["mode"],
 )
 

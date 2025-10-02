@@ -6,6 +6,96 @@ system.
 """
 
 import os
+from typing import List, Literal, Set
+
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+IdemMode = Literal["off", "observe", "enforce"]
+
+
+class IdempotencySettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+    mode: IdemMode = Field(
+        "observe", validation_alias=AliasChoices("IDEMPOTENCY_MODE")
+    )
+    enforce_methods: Set[str] = Field(
+        default_factory=lambda: {"POST", "PUT", "PATCH"},
+        validation_alias=AliasChoices("IDEMPOTENCY_ENFORCE_METHODS"),
+    )
+    exclude_paths: List[str] = Field(
+        default_factory=lambda: ["/health", "/metrics", "/admin/*"],
+        validation_alias=AliasChoices("IDEMPOTENCY_EXCLUDE_PATHS"),
+    )
+    lock_ttl_s: int = Field(
+        60, ge=1, le=600, validation_alias=AliasChoices("IDEMPOTENCY_LOCK_TTL_S")
+    )
+    wait_budget_ms: int = Field(
+        2000,
+        ge=0,
+        le=30000,
+        validation_alias=AliasChoices("IDEMPOTENCY_WAIT_BUDGET_MS"),
+    )
+    jitter_ms: int = Field(
+        50, ge=0, le=1000, validation_alias=AliasChoices("IDEMPOTENCY_JITTER_MS")
+    )
+    replay_window_s: int = Field(
+        300,
+        ge=1,
+        le=86400,
+        validation_alias=AliasChoices("IDEMPOTENCY_REPLAY_WINDOW_S"),
+    )
+    strict_fail_closed: bool = Field(
+        False, validation_alias=AliasChoices("IDEMPOTENCY_STRICT_FAIL_CLOSED")
+    )
+    mask_prefix_len: int = Field(
+        8, ge=4, le=16, validation_alias=AliasChoices("IDEMPOTENCY_MASK_PREFIX_LEN")
+    )
+    shadow_sample_rate: float = Field(
+        1.0,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("IDEMPOTENCY_SHADOW_SAMPLE_RATE"),
+    )
+    store_backend: Literal["memory", "redis"] = Field(
+        "memory", validation_alias=AliasChoices("IDEMPOTENCY_STORE_BACKEND")
+    )
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+    env: Literal["dev", "stage", "prod", "test"] = Field(
+        "dev", validation_alias=AliasChoices("APP_ENV")
+    )
+    idempotency: IdempotencySettings = Field(default_factory=IdempotencySettings)
+
+    def effective(self) -> "Settings":
+        """Apply safe-by-default overrides per environment."""
+
+        eff = self.model_copy(deep=True)
+        if self.env == "dev":
+            eff.idempotency.mode = (
+                "observe" if self.idempotency.mode == "observe" else self.idempotency.mode
+            )
+            eff.idempotency.lock_ttl_s = min(self.idempotency.lock_ttl_s, 30)
+            eff.idempotency.strict_fail_closed = False
+        elif self.env == "stage":
+            eff.idempotency.mode = (
+                "observe" if self.idempotency.mode == "observe" else self.idempotency.mode
+            )
+            eff.idempotency.lock_ttl_s = max(self.idempotency.lock_ttl_s, 60)
+            eff.idempotency.strict_fail_closed = False
+        elif self.env == "prod":
+            eff.idempotency.mode = (
+                "enforce"
+                if self.idempotency.mode in {"observe", "enforce"}
+                else self.idempotency.mode
+            )
+            eff.idempotency.lock_ttl_s = max(self.idempotency.lock_ttl_s, 120)
+        return eff
+
+
+settings = Settings().effective()
 
 VERIFIER_MAX_TOKENS_PER_REQUEST = 4000
 VERIFIER_DAILY_TOKEN_BUDGET = 100000
@@ -193,10 +283,8 @@ EGRESS_INSPECT_MAX_BYTES = int(
 )
 
 IDEMP_ENABLED = os.getenv("IDEMP_ENABLED", "true").lower() == "true"
-IDEMP_METHODS = tuple(
-    os.getenv("IDEMP_METHODS", "POST,PUT").replace(" ", "").split(",")
-)
-IDEMP_TTL_SECONDS = int(os.getenv("IDEMP_TTL_SECONDS", "120"))
+IDEMP_METHODS = tuple(sorted(settings.idempotency.enforce_methods))
+IDEMP_TTL_SECONDS = settings.idempotency.lock_ttl_s
 IDEMP_MAX_BODY_BYTES = int(os.getenv("IDEMP_MAX_BODY_BYTES", "1048576"))  # 1 MiB
 IDEMP_CACHE_STREAMING = os.getenv("IDEMP_CACHE_STREAMING", "false").lower() == "true"
 IDEMP_TOUCH_ON_REPLAY = os.getenv("IDEMP_TOUCH_ON_REPLAY", "false").lower() in {
