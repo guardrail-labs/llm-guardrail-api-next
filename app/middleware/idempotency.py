@@ -1,4 +1,4 @@
-"""Idempotency middleware with conflict handling, TTL touch, and safe metrics."""
+"""Idempotency middleware with conflict handling, TTL refresh, and safe metrics."""
 from __future__ import annotations
 
 import asyncio
@@ -329,31 +329,50 @@ class IdempotencyMiddleware:
     async def _on_replay(self, key: str, method: str, tenant: str) -> int:
         """
         Handle replay bookkeeping:
-        - bump replay counter and record histogram value
-        - refresh TTL/recency via store.touch(...)
+        - Prefer store.bump_replay(key, touch=True, ttl=...) so the store can:
+            * increment replay count
+            * refresh TTL/recency
+            * increment guardrail_idemp_touches_total
+        - Fall back to compatible signatures.
+        - If none support 'touch', call store.touch(...) if present.
         Returns the new replay count (0 if unavailable).
         """
         try:
-            new_count_opt = await self.store.bump_replay(key)
+            # Prefer a 'touch=True' path first (and pass ttl if supported).
+            bump = getattr(self.store, "bump_replay")
+            new_count_opt: Optional[int] = None
+            tried_touch = False
+
+            try:
+                # Most capable signature.
+                new_count_opt = await bump(key, touch=self.touch_on_replay, ttl=self.ttl_s)  # type: ignore[misc]
+                tried_touch = True
+            except TypeError:
+                try:
+                    # Many stores support just 'touch=True'.
+                    new_count_opt = await bump(key, touch=self.touch_on_replay)  # type: ignore[misc]
+                    tried_touch = True
+                except TypeError:
+                    # Minimal signature: bump only.
+                    new_count_opt = await bump(key)  # type: ignore[misc]
+
             new_count = int(new_count_opt or 0)
+
+            # Histogram for the new replay count.
             _safe_observe(
                 IDEMP_REPLAY_COUNT_HIST,
                 float(new_count),
                 {"method": method, "tenant": tenant},
             )
 
-            if self.touch_on_replay:
+            # If we couldn't send 'touch=True' to bump_replay, fall back to touch(...).
+            if self.touch_on_replay and not tried_touch:
                 touch_fn = getattr(self.store, "touch", None)
                 if callable(touch_fn):
-                    # Support both touch(key, ttl) and touch(key) signatures.
                     try:
-                        await touch_fn(key, self.ttl_s) 
+                        await touch_fn(key, self.ttl_s)  # type: ignore[misc]
                     except TypeError:
-                        await touch_fn(key)  
-                # We rely on the store's touch implementation to:
-                #   - move the key in recency
-                #   - refresh TTL for value/state
-                #   - increment guardrail_idemp_touches_total
+                        await touch_fn(key)  # type: ignore[misc]
 
             return new_count
         except Exception:
