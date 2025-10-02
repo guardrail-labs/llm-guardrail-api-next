@@ -61,11 +61,11 @@ class IdempotencySettings(BaseSettings):
         "memory", validation_alias=AliasChoices("IDEMPOTENCY_STORE_BACKEND")
     )
 
-    # ---- Compatibility: allow CSV env values for lists/sets ----
+    # ---- Back-compat: allow CSV env values for lists/sets ----
 
     @field_validator("enforce_methods", mode="before")
     @classmethod
-    def _parse_methods_csv(cls, v):  # type: ignore[override]
+    def _parse_methods_csv(cls, v):
         # Accept JSON (list) or CSV strings. Normalize to UPPER.
         if isinstance(v, str):
             return {m.upper() for m in _csv_to_list(v)}
@@ -75,7 +75,7 @@ class IdempotencySettings(BaseSettings):
 
     @field_validator("exclude_paths", mode="before")
     @classmethod
-    def _parse_paths_csv(cls, v):  # type: ignore[override]
+    def _parse_paths_csv(cls, v):
         # Accept JSON (list) or CSV strings.
         if isinstance(v, str):
             return _csv_to_list(v)
@@ -91,8 +91,10 @@ class Settings(BaseSettings):
         "dev", validation_alias=AliasChoices("APP_ENV")
     )
 
-    # Use a direct default instance to keep mypy happy.
-    idempotency: IdempotencySettings = IdempotencySettings()
+    # Use a default_factory with a no-arg callable (ok for mypy).
+    idempotency: IdempotencySettings = Field(
+        default_factory=lambda: IdempotencySettings()
+    )
 
     def effective(self) -> "Settings":
         """Apply safe-by-default overrides per environment."""
@@ -121,8 +123,15 @@ class Settings(BaseSettings):
         return eff
 
 
+def get_settings(env: str | None = None) -> Settings:
+    """Helper to satisfy mypy: pass env explicitly in tests when needed."""
+    if env is not None:
+        return Settings(env=env).effective()
+    return Settings().effective()
+
+
 # Module-level effective settings.
-settings = Settings().effective()
+settings = get_settings(env=None)
 
 # ---------------- Verifier & provider configuration (unchanged) ----------------
 
