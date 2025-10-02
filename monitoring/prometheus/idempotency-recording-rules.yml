@@ -1,0 +1,109 @@
+groups:
+  - name: idempotency_recording
+    interval: 30s
+    rules:
+      # ---- Latency quantiles for lock waits (followers) ----
+      # Source histogram has no tenant/method labels.
+      - record: idemp:lock_wait_p95_seconds
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(IDEMP_LOCK_WAIT_bucket[5m])
+            )
+          )
+
+      - record: idemp:lock_wait_p99_seconds
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (
+              rate(IDEMP_LOCK_WAIT_bucket[5m])
+            )
+          )
+
+      # ---- Conflict and error rates ----
+      - record: idemp:conflict_rate_per_s
+        expr: |
+          sum by (tenant, method) (
+            rate(IDEMP_CONFLICTS_total[5m])
+          )
+
+      - record: idemp:error_rate_per_s
+        expr: |
+          sum by (phase) (
+            rate(IDEMP_ERRORS_total[5m])
+          )
+
+      # ---- Hit / miss components ----
+      - record: idemp:hits_per_s
+        expr: |
+          sum by (tenant, method, role) (
+            rate(IDEMP_HITS_total[5m])
+          )
+
+      - record: idemp:misses_per_s
+        expr: |
+          sum by (tenant, method, role) (
+            rate(IDEMP_MISSES_total[5m])
+          )
+
+      # Followers hitting cache vs leaders doing fresh work.
+      # Effective hit ratio (label-safe: aggregate each side first).
+      - record: idemp:hit_ratio
+        expr: |
+          clamp_min(
+            sum by (tenant, method) (
+              idemp:hits_per_s{role="follower"}
+            )
+            /
+            (
+              sum by (tenant, method) (
+                idemp:hits_per_s{role="follower"}
+              )
+              +
+              sum by (tenant, method) (
+                idemp:misses_per_s{role="leader"}
+              )
+            ),
+            0
+          )
+
+      # ---- Replay count quantiles ----
+      - record: idemp:replay_count_p95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, tenant, method) (
+              rate(IDEMP_REPLAY_COUNT_HIST_bucket[15m])
+            )
+          )
+
+      # ---- Rollups for global (all tenants) ----
+      - record: idemp:lock_wait_p95_seconds:all
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(IDEMP_LOCK_WAIT_bucket[5m])
+            )
+          )
+
+      - record: idemp:hit_ratio:all
+        expr: |
+          clamp_min(
+            sum(idemp:hits_per_s{role="follower"})
+            /
+            (
+              sum(idemp:hits_per_s{role="follower"})
+              +
+              sum(idemp:misses_per_s{role="leader"})
+            ),
+            0
+          )
+
+      - record: idemp:conflict_rate_per_s:all
+        expr: sum(idemp:conflict_rate_per_s)
+
+      - record: idemp:error_rate_per_s:all
+        expr: sum(idemp:error_rate_per_s)

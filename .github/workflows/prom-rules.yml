@@ -1,0 +1,18 @@
+name: prom-rules
+on:
+  pull_request:
+    paths:
+      - "monitoring/prometheus/*.yml"
+jobs:
+  promtool:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Use official Prometheus image to run promtool reliably.
+      - name: promtool check rules
+        uses: addnab/docker-run-action@v3
+        with:
+          image: prom/prometheus:v2.53.0
+          options: -v ${{ github.workspace }}:/work -w /work
+          run: promtool check rules monitoring/prometheus/*.yml
