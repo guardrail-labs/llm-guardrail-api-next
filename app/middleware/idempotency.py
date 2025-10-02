@@ -1,4 +1,4 @@
-"""Idempotency middleware with env defaults, safe metrics, and follower backoff."""
+"""Idempotency middleware with env defaults, safe metrics, conflict handling, and TTL touch."""
 from __future__ import annotations
 
 import asyncio
@@ -31,6 +31,7 @@ IDEMP_BACKOFF_STEPS = metric_counter(
     "Backoff steps taken by followers",
 )
 
+
 # ------------------------- env helpers -------------------------
 
 
@@ -59,7 +60,6 @@ def _env_max_body() -> int:
 
 
 def _labelnames(metric: Any) -> tuple[str, ...]:
-    # prometheus_client exposes `_labelnames` on metric objects.
     try:
         names = getattr(metric, "_labelnames", ())
         if names is None:
@@ -70,14 +70,11 @@ def _labelnames(metric: Any) -> tuple[str, ...]:
 
 
 def _safe_labels(metric: Any, labels: Optional[Mapping[str, str]]) -> Any:
-    """Return a metric child with matching labels or the metric itself."""
     names = _labelnames(metric)
     if not names:
         return metric
     lab = dict(labels or {})
-    # Keep only expected labels.
     lab = {k: v for k, v in lab.items() if k in names}
-    # Fill missing with "unknown".
     for n in names:
         if n not in lab:
             lab[n] = "unknown"
@@ -88,7 +85,6 @@ def _safe_inc(metric: Any, labels: Optional[Mapping[str, str]] = None) -> None:
     try:
         _safe_labels(metric, labels).inc()
     except Exception:
-        # Swallow metric errors; never break request flow.
         pass
 
 
@@ -132,7 +128,6 @@ class IdempotencyMiddleware:
 
         method = (scope.get("method") or "GET").upper()
         if method not in self.methods:
-            # Do not interfere with non-configured methods; preserve streaming.
             await self.app(scope, receive, send)
             return
 
@@ -143,21 +138,20 @@ class IdempotencyMiddleware:
         }
         key = headers.get("x-idempotency-key")
 
-        # If no key provided: pure pass-through, preserve streaming
+        # If no key provided: pass-through (preserve streaming semantics).
         if not key:
             await self.app(scope, receive, send)
             return
 
         if not _valid_key(key):
-            # Exact text expected by tests.
             await self._send_error(send, 400, "invalid idempotency key")
             return
 
-        # Read body once to compute fingerprint and to be able to re-feed it.
+        # Read/clone body once so we can hash + forward it.
         body = await self._read_body(receive)
         body_fp = hashlib.sha256(body).hexdigest()
 
-        # Fast path: check cache.
+        # Fast path: cached?
         try:
             cached = await self.store.get(key)
         except Exception:
@@ -165,8 +159,18 @@ class IdempotencyMiddleware:
             cached = None
 
         if cached is not None:
+            # If the cached payload fingerprint doesn't match, treat as conflict.
+            cached_fp = getattr(cached, "body_sha256", None)
+            if cached_fp and cached_fp != body_fp:
+                _safe_inc(IDEMP_CONFLICTS, {"method": method, "tenant": tenant})
+                status, resp_headers, resp_body, _ = await self._run_downstream(
+                    scope, body
+                )
+                await self._send_fresh(send, status, resp_headers, resp_body)
+                return
+
             _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
-            # Bump replay count and optionally emit touches metric.
+            # Replay: bump counter, optionally touch TTL, and emit metrics.
             count = await self._safe_bump_replay_and_touch(
                 key, method, tenant, do_touch=self.touch_on_replay
             )
@@ -197,7 +201,6 @@ class IdempotencyMiddleware:
                     _safe_inc(IDEMP_ERRORS, {"phase": "release"})
                 raise
 
-            # Cache policy.
             cacheable = (
                 status < 500
                 and (not is_streaming or self.cache_streaming)
@@ -235,7 +238,7 @@ class IdempotencyMiddleware:
             await self._send_fresh(send, status, resp_headers, resp_body)
             return
 
-        # Follower path: check for conflict and wait/backoff for value/release.
+        # Follower path: detect payload conflict before waiting.
         try:
             meta = await self.store.meta(key)
         except Exception:
@@ -245,7 +248,6 @@ class IdempotencyMiddleware:
             fp = meta.get("payload_fingerprint") if isinstance(meta, dict) else None
             if fp and fp != body_fp:
                 _safe_inc(IDEMP_CONFLICTS, {"method": method, "tenant": tenant})
-                # Conflict: do NOT serve cached value even if it appears later.
                 status, resp_headers, resp_body, _ = await self._run_downstream(
                     scope, body
                 )
@@ -263,6 +265,16 @@ class IdempotencyMiddleware:
             cached_after = None
 
         if cached_after is not None:
+            # Safety: double-check fingerprint match even here.
+            cached_fp = getattr(cached_after, "body_sha256", None)
+            if cached_fp and cached_fp != body_fp:
+                _safe_inc(IDEMP_CONFLICTS, {"method": method, "tenant": tenant})
+                status, resp_headers, resp_body, _ = await self._run_downstream(
+                    scope, body
+                )
+                await self._send_fresh(send, status, resp_headers, resp_body)
+                return
+
             _safe_inc(IDEMP_HITS, {"method": method, "tenant": tenant})
             count = await self._safe_bump_replay_and_touch(
                 key, method, tenant, do_touch=self.touch_on_replay
@@ -324,9 +336,8 @@ class IdempotencyMiddleware:
         self, key: str, method: str, tenant: str, do_touch: bool
     ) -> int:
         """
-        Bump replay counter in the store and record the histogram.
-        If `do_touch` is True, emit the touches metric. Actual TTL refresh
-        (when supported) is handled by the store's `bump_replay()` implementation.
+        Bump replay counter and record histogram. If `do_touch` is True, try to
+        refresh TTL via store.touch(key, ttl) when available, then emit touches.
         Returns the new count (0 if unavailable).
         """
         try:
@@ -337,8 +348,18 @@ class IdempotencyMiddleware:
                 float(new_count),
                 {"method": method, "tenant": tenant},
             )
+
             if do_touch:
+                touch_fn = getattr(self.store, "touch", None)
+                if callable(touch_fn):
+                    try:
+                        # MemoryIdemStore.touch updates value/state TTL and recency.
+                        await touch_fn(key, self.ttl_s)
+                    except Exception:
+                        _safe_inc(IDEMP_ERRORS, {"phase": "touch"})
+                # Always count a touch attempt for metrics semantics in tests.
                 _safe_inc(IDEMP_TOUCHES, {"tenant": tenant})
+
             return new_count
         except Exception:
             _safe_inc(IDEMP_ERRORS)
@@ -360,7 +381,6 @@ class IdempotencyMiddleware:
         headers: Mapping[str, str],
         body: bytes,
     ) -> None:
-        # Do not drop application headers. Add idempotency markers.
         hdrs = [(k.encode(), v.encode()) for k, v in headers.items()]
         hdrs.append((b"idempotency-replayed", b"false"))
         hdrs.append((b"content-length", str(len(body)).encode()))
