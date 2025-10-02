@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import time
-from typing import Mapping
 
 import httpx
 import pytest
@@ -22,7 +21,7 @@ async def _echo(request):
     return JSONResponse({"echo": payload, "ts": time.time()})
 
 
-def _sample(name: str, labels: Mapping[str, str]) -> float:
+def _sample(name: str, labels: dict[str, str]) -> float:
     value = REGISTRY.get_sample_value(name, labels)
     return float(value) if value is not None else 0.0
 
