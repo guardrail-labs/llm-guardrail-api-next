@@ -36,15 +36,16 @@ groups:
           )
 
       # ---- Hit / miss components ----
+      # Counters export only {tenant, method}; no role/mode labels.
       - record: idemp:hits_per_s
         expr: |
-          sum by (tenant, method, role) (
+          sum by (tenant, method) (
             rate(IDEMP_HITS_total[5m])
           )
 
       - record: idemp:misses_per_s
         expr: |
-          sum by (tenant, method, role) (
+          sum by (tenant, method) (
             rate(IDEMP_MISSES_total[5m])
           )
 
@@ -54,16 +55,16 @@ groups:
         expr: |
           clamp_min(
             sum by (tenant, method) (
-              idemp:hits_per_s{role="follower"}
+              idemp:hits_per_s
             )
             /
             (
               sum by (tenant, method) (
-                idemp:hits_per_s{role="follower"}
+                idemp:hits_per_s
               )
               +
               sum by (tenant, method) (
-                idemp:misses_per_s{role="leader"}
+                idemp:misses_per_s
               )
             ),
             0
@@ -92,12 +93,12 @@ groups:
       - record: idemp:hit_ratio:all
         expr: |
           clamp_min(
-            sum(idemp:hits_per_s{role="follower"})
+            sum(idemp:hits_per_s)
             /
             (
-              sum(idemp:hits_per_s{role="follower"})
+              sum(idemp:hits_per_s)
               +
-              sum(idemp:misses_per_s{role="leader"})
+              sum(idemp:misses_per_s)
             ),
             0
           )
