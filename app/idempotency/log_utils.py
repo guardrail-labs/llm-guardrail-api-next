@@ -27,25 +27,46 @@ _LOG = logging.getLogger("app.idempotency")
 
 def _mask_key(val: Optional[str], prefix_len: int) -> Optional[str]:
     """
-    Return a masked representation that NEVER equals the full key.
-    - Shows up to `prefix_len`, but always withholds at least one char.
-    - Appends an ellipsis and a short hash suffix for correlation.
+    Return a masked representation of an idempotency key.
+
+    Rules:
+    - If val is falsy, return it unchanged.
+    - Never reveal the full key, even for very short keys.
+    - Show at most `visible_len` chars, where visible_len <= len(val) - 1.
+    - Append an 8-char SHA-256 tail to provide stable, non-reversible context.
+    - Always include a single unicode ellipsis to signal truncation.
     """
     if not val:
         return val
-    # Withhold at least one character to avoid logging the full value.
-    pl = max(0, min(int(prefix_len), max(0, len(val) - 1)))
-    prefix = val[:pl]
+
+    try:
+        pl = int(prefix_len)
+    except Exception:
+        # Defensive: treat bad inputs as zero to avoid revealing extra chars.
+        pl = 0
+
+    # Ensure at least one character of the original is always withheld.
+    visible_len = min(max(pl, 0), max(len(val) - 1, 0))
+    prefix = val[:visible_len]
+
     base = val.encode("utf-8")
     candidate = ""
-    for salt in range(10):
-        payload = base if salt == 0 else base + str(salt).encode("utf-8")
-        digest = hashlib.sha256(payload).hexdigest().upper()[:6]
-        candidate = f"{prefix}…{digest}"
-        if val not in candidate:
-            return candidate
-    # Fallback: replace any lingering occurrence of the full value.
-    return candidate.replace(val, "•" * len(val))
+    for salt in range(256):
+        payload = base if salt == 0 else base + f":{salt}".encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        for start in range(0, len(digest) - 8 + 1):
+            tail = digest[start : start + 8]
+            candidate = f"{prefix}…{tail}" if prefix else f"…{tail}"
+            if val not in candidate:
+                return candidate
+
+    # Highly defensive fallback: redact any lingering occurrences explicitly.
+    sanitized = candidate
+    if val:
+        replacement = "•" * len(val)
+        while val in sanitized:
+            sanitized = sanitized.replace(val, replacement)
+    return sanitized
 
 
 # Fields whose values are typically sensitive when PII logging is off.
