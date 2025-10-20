@@ -71,9 +71,30 @@ class LoadedPacks:
         return {k: tuple(v) for k, v in buckets.items()}
 
 
+TenantOverrides = Mapping[str, Mapping[str, RuleOverride]]
+
+
+def apply_overrides(
+    packs: LoadedPacks, overrides: Optional[TenantOverrides]
+) -> LoadedPacks:
+    if not overrides:
+        return packs
+
+    normalised = _normalise_overrides(overrides)
+    updated: List[Rule] = []
+    for rule in packs.rules:
+        pack_overrides = normalised.get(rule.pack, {})
+        override = pack_overrides.get(rule.id)
+        if override:
+            updated.append(rule.with_override(override))
+        else:
+            updated.append(rule)
+    return LoadedPacks(rules=tuple(updated))
+
+
 def load_packs(
     dirpath: str = "policy/packs",
-    tenant_overrides: Optional[Mapping[str, Mapping[str, RuleOverride]]] = None,
+    tenant_overrides: Optional[TenantOverrides] = None,
 ) -> LoadedPacks:
     root = Path(dirpath)
     if not root.exists():
@@ -105,7 +126,7 @@ def _extract_pack_name(data: Mapping[str, Any], fallback: str) -> str:
 
 
 def _normalise_overrides(
-    tenant_overrides: Optional[Mapping[str, Mapping[str, RuleOverride]]],
+    tenant_overrides: Optional[TenantOverrides],
 ) -> Dict[str, Dict[str, RuleOverride]]:
     result: Dict[str, Dict[str, RuleOverride]] = {}
     if not tenant_overrides:
@@ -115,7 +136,7 @@ def _normalise_overrides(
         pack_entries: Dict[str, RuleOverride] = {}
         for rule_id, override in overrides.items():
             pack_entries[str(rule_id)] = cast(RuleOverride, dict(override))
-    result[normalised_pack] = pack_entries
+        result[normalised_pack] = pack_entries
     return result
 
 
