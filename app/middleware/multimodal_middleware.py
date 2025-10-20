@@ -42,10 +42,36 @@ def _make_receive(raw: bytes):
 
 
 async def _read_upload(upload: UploadFile, max_bytes: int) -> tuple[bytes, bool]:
-    raw = await upload.read()
-    if len(raw) > max_bytes:
-        return b"", True
-    return raw, False
+    """
+    Stream an upload in bounded chunks.
+
+    Returns:
+        (data, truncated)
+        - data: bytes read (empty if limit exceeded)
+        - truncated: True if the file size met/exceeded max_bytes
+    """
+    chunk_size = 64 * 1024
+    buf = bytearray()
+    total = 0
+
+    try:
+        while True:
+            budget = max_bytes - total
+            if budget <= 0:
+                return b"", True
+            to_read = min(chunk_size, budget)
+            chunk = await upload.read(to_read)
+            if not chunk:
+                return bytes(buf), False
+            buf.extend(chunk)
+            total += len(chunk)
+            if total >= max_bytes:
+                return b"", True
+    finally:
+        try:
+            await upload.close()
+        except Exception:
+            pass
 
 
 def _scan_text(tenant: str, text: str) -> int:
@@ -87,6 +113,7 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
         ctype = request.headers.get("content-type", "").lower()
         hits = 0
         inspected = False
+        size_skips = 0
 
         response: Response | None = None
         try:
@@ -104,11 +131,12 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
                                 tenant, "multimodal_pdf_unsupported"
                             ).inc()
                             continue
-                        raw, too_large = await _read_upload(val, flags.max_bytes)
-                        if too_large:
+                        raw, truncated = await _read_upload(val, flags.max_bytes)
+                        if truncated:
                             sanitizer_events.labels(
-                                tenant, "multimodal_too_large"
+                                tenant, "multimodal_oversize_skip"
                             ).inc()
+                            size_skips += 1
                             continue
                         if not raw:
                             continue
@@ -121,11 +149,12 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
                                 tenant, "multimodal_image_unsupported"
                             ).inc()
                             continue
-                        raw, too_large = await _read_upload(val, flags.max_bytes)
-                        if too_large:
+                        raw, truncated = await _read_upload(val, flags.max_bytes)
+                        if truncated:
                             sanitizer_events.labels(
-                                tenant, "multimodal_too_large"
+                                tenant, "multimodal_oversize_skip"
                             ).inc()
+                            size_skips += 1
                             continue
                         if not raw:
                             continue
@@ -151,8 +180,9 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
                         estimated = estimate_base64_size(value)
                         if estimated > flags.max_bytes:
                             sanitizer_events.labels(
-                                tenant, "multimodal_too_large"
+                                tenant, "multimodal_oversize_skip"
                             ).inc()
+                            size_skips += 1
                             continue
                         sanitizer_events.labels(tenant, "multimodal_scan").inc()
                         text = extract_from_base64_image(value)
@@ -172,8 +202,15 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
         if inspected:
             sanitizer_events.labels(tenant, "multimodal").inc()
 
+        header_parts = ["multimodal"]
         if hits:
-            response.headers["X-Guardrail-Sanitizer"] = f"multimodal;hits={hits}"
+            header_parts.append(f"hits={hits}")
+        if size_skips:
+            header_parts.append(f"oversize_skips={size_skips}")
+        if len(header_parts) > 1:
+            response.headers["X-Guardrail-Sanitizer"] = ";".join(header_parts)
+
+        if hits:
             action = flags.action
             if action == "clarify":
                 response.headers["X-Guardrail-Mode"] = "clarify"
