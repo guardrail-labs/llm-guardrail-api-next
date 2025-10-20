@@ -1,0 +1,57 @@
+{
+  "title": "Guardrail — Block rate spike",
+  "uid": "guardrail-block-rate-spike",
+  "orgId": 1,
+  "ruleGroup": "guardrail-core",
+  "noDataState": "NoData",
+  "execErrState": "Error",
+  "for": "5m",
+  "condition": "C",
+  "data": [
+    {
+      "refId": "A",
+      "relativeTimeRange": {"from": 300, "to": 0},
+      "datasourceUid": "Prometheus",
+      "model": {
+        "datasource": {"type": "prometheus", "uid": "Prometheus"},
+        "editorMode": "code",
+        "expr": "sum(rate(guardrail_sanitizer_actions_total{action=\"block\"}[5m]))",
+        "instant": false,
+        "refId": "A"
+      }
+    },
+    {
+      "refId": "B",
+      "relativeTimeRange": {"from": 3600, "to": 0},
+      "datasourceUid": "Prometheus",
+      "model": {
+        "datasource": {"type": "prometheus", "uid": "Prometheus"},
+        "editorMode": "code",
+        "expr": "avg_over_time(sum(rate(guardrail_sanitizer_actions_total{action=\"block\"}[5m]))[1h:5m])",
+        "instant": false,
+        "refId": "B"
+      }
+    },
+    {
+      "refId": "C",
+      "relativeTimeRange": {"from": 300, "to": 0},
+      "datasourceUid": "-100",
+      "model": {
+        "datasource": {"type": "__expr__", "uid": "-100"},
+        "expression": "A/B",
+        "type": "math",
+        "refId": "C"
+      }
+    }
+  ],
+  "conditions": [
+    {
+      "evaluator": {"params": [2], "type": "gt"},
+      "operator": {"type": "and"},
+      "query": {"params": ["C"]},
+      "reducer": {"type": "last"}
+    }
+  ],
+  "labels": {"severity": "high"},
+  "annotations": {"runbook": "ops/grafana/README.md"}
+}
