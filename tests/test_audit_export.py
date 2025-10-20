@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.audit.models import AuditRecord, AuditStore
 from app.routes.admin_audit import get_audit_store, router as audit_router
+from app.security.rbac import require_admin
 
 
 class _FakeStore(AuditStore):
@@ -31,6 +32,23 @@ def _app_with(rows: List[AuditRecord]) -> FastAPI:
     app = FastAPI()
     app.include_router(audit_router)
     app.dependency_overrides[get_audit_store] = lambda: _FakeStore(rows)
+    def _allow(_: Request) -> Dict[str, str]:
+        return {"email": "tester@example.com", "role": "admin"}
+
+    app.dependency_overrides[require_admin] = _allow
+    return app
+
+
+def _app_with_auth(rows: List[AuditRecord]) -> FastAPI:
+    app = FastAPI()
+    app.include_router(audit_router)
+    app.dependency_overrides[get_audit_store] = lambda: _FakeStore(rows)
+
+    async def _guard(x_admin: str | None = Header(default=None)) -> None:
+        if x_admin != "1":
+            raise HTTPException(status_code=403, detail="admin required")
+
+    app.dependency_overrides[require_admin] = _guard
     return app
 
 
@@ -84,3 +102,22 @@ def test_csv_bundle_download() -> None:
     assert response.status_code == 200
     assert "text/csv" in response.headers["content-type"].lower()
     assert "ts,tenant,request_id,incident_id" in response.text.splitlines()[0]
+
+
+def test_export_requires_admin_auth() -> None:
+    rows = [_rec("allow", "allow", None)]
+    app = _app_with_auth(rows)
+    client = TestClient(app)
+
+    unauth = client.get("/admin/audit/export", params={"tenant": "acme"})
+    assert unauth.status_code == 403
+
+    auth = client.get(
+        "/admin/audit/export",
+        params={"tenant": "acme"},
+        headers={"x-admin": "1"},
+    )
+    assert auth.status_code == 200
+    body = auth.json()
+    assert body["tenant"] == "acme"
+    assert body["count"] == 1

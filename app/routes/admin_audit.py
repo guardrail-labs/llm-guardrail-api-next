@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.audit.exporter import bundle_to_csv, make_bundle
 from app.audit.models import AuditStore
+from app.security.rbac import require_admin
 
 router = APIRouter(prefix="/admin/audit", tags=["admin:audit"])
 
@@ -14,7 +15,7 @@ def get_audit_store() -> AuditStore:
     raise HTTPException(status_code=501, detail="Audit store not configured")
 
 
-@router.get("/export")
+@router.get("/export", dependencies=[Depends(require_admin)])
 def export_audit(
     tenant: str = Query(..., min_length=1),
     incident_id: Optional[str] = None,
