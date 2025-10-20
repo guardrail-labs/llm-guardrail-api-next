@@ -1,0 +1,34 @@
+{
+  "title": "Guardrail — Verifier outage detected",
+  "uid": "guardrail-verifier-outage",
+  "orgId": 1,
+  "ruleGroup": "guardrail-core",
+  "noDataState": "NoData",
+  "execErrState": "Error",
+  "for": "1m",
+  "condition": "A",
+  "data": [
+    {
+      "refId": "A",
+      "relativeTimeRange": {"from": 60, "to": 0},
+      "datasourceUid": "Prometheus",
+      "model": {
+        "datasource": {"type": "prometheus", "uid": "Prometheus"},
+        "editorMode": "code",
+        "expr": "sum(increase(guardrail_verifier_events_total{event=\"outage\"}[1m]))",
+        "instant": false,
+        "refId": "A"
+      }
+    }
+  ],
+  "conditions": [
+    {
+      "evaluator": {"params": [0], "type": "gt"},
+      "operator": {"type": "and"},
+      "query": {"params": ["A"]},
+      "reducer": {"type": "sum"}
+    }
+  ],
+  "labels": {"severity": "critical"},
+  "annotations": {"runbook": "ops/grafana/README.md"}
+}

@@ -1,0 +1,59 @@
+{
+  "title": "Guardrail — Core Overview",
+  "uid": "guardrail-core-overview",
+  "tags": ["guardrail", "core"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["30s", "1m", "5m"], "time_options": ["6h", "12h", "24h"]},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Sanitizer events (5m)",
+      "targets": [
+        {
+          "expr": "sum(increase(guardrail_sanitizer_events_total[5m]))",
+          "legendFormat": "events"
+        }
+      ],
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "type": "piechart",
+      "title": "Sanitizer actions share (5m)",
+      "targets": [
+        {
+          "expr": "sum by (action) (increase(guardrail_sanitizer_actions_total[5m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "options": {"legend": {"displayMode": "list"}},
+      "gridPos": {"h": 8, "w": 8, "x": 6, "y": 0}
+    },
+    {
+      "type": "bargauge",
+      "title": "Verifier events (5m)",
+      "targets": [
+        {
+          "expr": "sum by (event) (increase(guardrail_verifier_events_total[5m]))",
+          "legendFormat": "{{event}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 10, "x": 14, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Block vs Clarify rate",
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(guardrail_sanitizer_actions_total[1m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+    }
+  ]
+}

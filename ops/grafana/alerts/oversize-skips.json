@@ -1,0 +1,34 @@
+{
+  "title": "Guardrail — Oversize skips high",
+  "uid": "guardrail-oversize-skips",
+  "orgId": 1,
+  "ruleGroup": "guardrail-core",
+  "noDataState": "NoData",
+  "execErrState": "Error",
+  "for": "10m",
+  "condition": "A",
+  "data": [
+    {
+      "refId": "A",
+      "relativeTimeRange": {"from": 600, "to": 0},
+      "datasourceUid": "Prometheus",
+      "model": {
+        "datasource": {"type": "prometheus", "uid": "Prometheus"},
+        "editorMode": "code",
+        "expr": "sum(rate(guardrail_sanitizer_events_total{type=\"multimodal_oversize_skip\"}[10m]))",
+        "instant": false,
+        "refId": "A"
+      }
+    }
+  ],
+  "conditions": [
+    {
+      "evaluator": {"params": [1], "type": "gt"},
+      "operator": {"type": "and"},
+      "query": {"params": ["A"]},
+      "reducer": {"type": "last"}
+    }
+  ],
+  "labels": {"severity": "medium"},
+  "annotations": {"runbook": "ops/grafana/README.md"}
+}

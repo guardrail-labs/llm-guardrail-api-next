@@ -1,0 +1,47 @@
+{
+  "title": "Guardrail — Ingress Sanitizer",
+  "uid": "guardrail-ingress-sanitizer",
+  "tags": ["guardrail", "sanitizer"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["30s", "1m", "5m"], "time_options": ["6h", "12h", "24h"]},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Unicode/confusables/multimodal events",
+      "targets": [
+        {
+          "expr": "sum by (type) (rate(guardrail_sanitizer_events_total[5m]))",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "type": "table",
+      "title": "Actions by tenant (5m)",
+      "targets": [
+        {
+          "expr": "sum by (tenant,action) (increase(guardrail_sanitizer_actions_total[5m]))",
+          "legendFormat": "{{tenant}} {{action}}"
+        }
+      ],
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Oversize skips (multimodal)",
+      "targets": [
+        {
+          "expr": "sum(rate(guardrail_sanitizer_events_total{type=\"multimodal_oversize_skip\"}[5m]))",
+          "legendFormat": "oversize_skips"
+        }
+      ],
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 16}
+    }
+  ]
+}
