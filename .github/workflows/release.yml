@@ -4,40 +4,105 @@ on:
     tags:
       - "v*.*.*"
 jobs:
-  build-and-push:
+  build-test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
-      - name: Gather metadata
-        id: meta
+          python-version: "3.11"
+      - name: Install deps
         run: |
-          echo "APP_VERSION=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-          echo "GIT_SHA=$(git rev-parse --short=7 HEAD)" >> $GITHUB_OUTPUT
-          echo "BUILD_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
-      - name: Log in to GHCR
+          python -m pip install -U pip
+          pip install -e .[dev]
+          pip install pip-licenses
+      - name: Lint & test
+        run: |
+          ruff check .
+          mypy .
+          pytest -q
+      - name: License report
+        run: |
+          pip-licenses --format=plain-vertical > licenses.txt
+          test -s licenses.txt
+      - name: Upload license snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: licenses
+          path: licenses.txt
+          if-no-files-found: error
+  docker:
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image tag
+        id: vars
+        run: |
+          echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+      - name: Build image
+        run: |
+          docker build -t ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.TAG }} .
+      - name: Login GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Push image
+        run: |
+          docker push ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.TAG }}
+  github-release:
+    needs: [build-test, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read changelog section
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "## [" ver "]" {flag=1; next}
+            /^## \[/ {flag=0}
+            flag
+          ' CHANGELOG.md > .changelog.txt
+          if [ ! -s .changelog.txt ]; then
+            echo "No changelog entry for $VERSION" >&2
+            exit 1
+          fi
+      - name: Gather optional artifacts
+        id: gather
+        run: |
+          mkdir -p dist
+          shopt -s nullglob
+          found=0
+          if compgen -G "bench/results/*" > /dev/null; then
+            tar -czf dist/bench-results.tar.gz bench/results
+            found=1
+          fi
+          if compgen -G "eval/out/*" > /dev/null; then
+            tar -czf dist/eval-out.tar.gz eval/out
+            found=1
+          fi
+          if [ "$found" -eq 1 ]; then
+            echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create release
+        uses: softprops/action-gh-release@v2
         with:
-          push: true
-          context: .
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.APP_VERSION }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.meta.outputs.GIT_SHA }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          build-args: |
-            APP_VERSION=${{ steps.meta.outputs.APP_VERSION }}
-            GIT_SHA=${{ steps.meta.outputs.GIT_SHA }}
-            BUILD_TS=${{ steps.meta.outputs.BUILD_TS }}
+          tag_name: ${{ github.ref_name }}
+          name: Core ${{ github.ref_name }}
+          body_path: .changelog.txt
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
+      - name: Upload optional release assets
+        if: steps.gather.outputs.has_artifacts == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
