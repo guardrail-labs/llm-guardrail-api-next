@@ -52,13 +52,22 @@ def _strip_zero_width(text: str) -> str:
     return _ZW_RE.sub("", text)
 
 
-def sanitize_unicode(text: str) -> str:
-    """Normalize to NFKC, strip zero-width chars, and escape bidi control chars."""
-    # Normalize first to collapse lookalikes where possible.
-    norm = unicodedata.normalize("NFKC", text)
-    no_zw = _strip_zero_width(norm)
-    safe = _escape_bidi_controls(no_zw)
-    return safe
+def sanitize_unicode(
+    text: str,
+    *,
+    normalize: bool = True,
+    strip_zero_width: bool = True,
+    escape_bidi: bool = True,
+) -> str:
+    """Apply Unicode hygiene with optional policy toggles."""
+    result = text
+    if normalize:
+        result = unicodedata.normalize("NFKC", result)
+    if strip_zero_width:
+        result = _strip_zero_width(result)
+    if escape_bidi:
+        result = _escape_bidi_controls(result)
+    return result
 
 
 def contains_zero_width(text: str) -> bool:

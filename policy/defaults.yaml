@@ -1,0 +1,6 @@
+sanitizer:
+  enable_normalize: true
+  strip_zero_width: true
+  escape_bidi: true
+  confusables_action: flag
+  max_confusables_ratio: 0.05
