@@ -818,6 +818,12 @@ def create_app() -> FastAPI:
     except Exception as exc:  # pragma: no cover - optional dependency
         log.warning("Admin audit API unavailable: %s", exc)
     try:
+        from app.routes import admin_audit
+
+        app.include_router(admin_audit.router)
+    except Exception as exc:
+        log.warning("Admin audit export bundle unavailable: %s", exc)
+    try:
         from app.routes import admin_audit_export
 
         app.include_router(admin_audit_export.router)
