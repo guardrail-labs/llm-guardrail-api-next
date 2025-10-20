@@ -1,0 +1,25 @@
+# v1 minimal HIPAA pack (illustrative, not legal advice)
+pack: HIPAA
+version: "1.0.0"
+rules:
+  - id: hipaa.phi.ssn
+    title: "US SSN (PHI risk indicator)"
+    severity: high
+    advisory: clarify   # pass|flag|clarify|block (advisory only)
+    pattern: "\\b(?!000|666)(?:[0-8]\\d{2})[- ]?(?!00)\\d{2}[- ]?(?!0000)\\d{4}\\b"
+    references:
+      - "45 CFR §160.103 (PHI definition)"
+  - id: hipaa.phi.phone
+    title: "Phone number (potential PHI identifier)"
+    severity: medium
+    advisory: flag
+    pattern: "\\b\\+?1?[-. (]?\\d{3}[-. )]?\\d{3}[-. ]?\\d{4}\\b"
+    references:
+      - "45 CFR §164.514 (de-identification)"
+  - id: hipaa.phi.email
+    title: "Email address (potential PHI identifier)"
+    severity: medium
+    advisory: flag
+    pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    references:
+      - "45 CFR §164.514"

@@ -1,0 +1,29 @@
+# v1 minimal GDPR pack (illustrative, not legal advice)
+pack: GDPR
+version: "1.0.0"
+rules:
+  - id: gdpr.pii.email
+    title: "Email address (personal data)"
+    severity: medium
+    advisory: flag
+    pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    references:
+      - "GDPR Art.4(1)"
+  - id: gdpr.pii.phone
+    title: "Phone number (personal data)"
+    severity: medium
+    advisory: flag
+    pattern: "\\b\\+?[0-9]{1,3}? ?(?:\\(?\\d{2,4}\\)? ?)?\\d[\\d -]{4,}\\b"
+    references:
+      - "GDPR Art.4(1)"
+  - id: gdpr.special.health_terms
+    title: "Health terms (potential special category)"
+    severity: high
+    advisory: clarify
+    any_terms:
+      - "diagnosis"
+      - "prescription"
+      - "medical record"
+      - "patient id"
+    references:
+      - "GDPR Art.9"
