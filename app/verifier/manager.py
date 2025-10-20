@@ -28,12 +28,19 @@ class VerifierManager:
 
     def __init__(self, providers: Sequence[Verifier], health_ttl_s: float = 10.0) -> None:
         self._providers: List[Verifier] = list(providers)
-        self._health: Dict[str, _Health] = {}
+        # Key health by object identity to avoid name collisions across instances.
+        self._health: Dict[int, _Health] = {}
         self._ttl = health_ttl_s
         self._rr = 0
 
+    @staticmethod
+    def _key(p: Verifier) -> int:
+        # Object identity is stable for the life of the instance.
+        return id(p)
+
     def _is_healthy(self, p: Verifier, now: float) -> bool:
-        h = self._health.get(p.name)
+        k = self._key(p)
+        h = self._health.get(k)
         if h and now - h.ts < self._ttl:
             return h.ok
         ok = False
@@ -41,11 +48,11 @@ class VerifierManager:
             ok = bool(p.health())
         except Exception:
             ok = False
-        self._health[p.name] = _Health(ok=ok, ts=now)
+        self._health[k] = _Health(ok=ok, ts=now)
         return ok
 
     def _mark_unhealthy(self, p: Verifier) -> None:
-        self._health[p.name] = _Health(ok=False, ts=time.time())
+        self._health[self._key(p)] = _Health(ok=False, ts=time.time())
 
     def verify_with_failover(
         self, req: VerifyInput, timeout_s: float = 5.0
@@ -90,9 +97,9 @@ class VerifierManager:
                 self._mark_unhealthy(p)
                 verifier_events.labels(p.name, "timeout").inc()
             except Exception:
-                last_err = "failure"
+                last_err = "error"
                 self._mark_unhealthy(p)
-                verifier_events.labels(p.name, "failure").inc()
+                verifier_events.labels(p.name, "error").inc()
 
         # All failed or unhealthy: default-block with incident id.
         inc = new_incident_id()

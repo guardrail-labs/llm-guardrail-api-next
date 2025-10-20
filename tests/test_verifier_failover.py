@@ -39,6 +39,19 @@ def test_timeouts_mark_unhealthy_and_failover() -> None:
     assert prov == "fast"
 
 
+def test_health_cache_does_not_conflate_same_name_instances() -> None:
+    # slow "p1" will timeout; fast "p1" should still be used on failover.
+    slow_p1 = DummyVerifier(name="p1", healthy=True, sleep_s=10.0)
+    fast_p1 = DummyVerifier(name="p1", healthy=True, sleep_s=0.0)
+    vm = VerifierManager([slow_p1, fast_p1])
+    res, hdr, prov = vm.verify_with_failover(
+        VerifyInput(text="hello"), timeout_s=0.01
+    )
+    assert res.allowed is True
+    # Provider name may still be "p1" (both share name), but request succeeded.
+    assert prov == "p1"
+
+
 def test_total_outage_default_blocks_with_incident() -> None:
     bad = DummyVerifier(name="bad", healthy=False, fail=True)
     vm = VerifierManager([bad])
