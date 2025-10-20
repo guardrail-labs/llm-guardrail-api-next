@@ -46,6 +46,7 @@ from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_unicode_sanitizer import (
     IngressUnicodeSanitizerMiddleware,
 )
+from app.middleware.multimodal_middleware import MultimodalGateMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.tenant_bot import TenantBotMiddleware
@@ -865,6 +866,7 @@ def create_app() -> FastAPI:
     app.add_middleware(IngressPathGuardMiddleware)
     app.add_middleware(UnicodeIngressSanitizer)
     app.add_middleware(UnicodeSanitizerMiddleware)
+    app.add_middleware(MultimodalGateMiddleware)
     app.add_middleware(DecodeIngressMiddleware)
     # Tokenizer-aware scanning for split sensitive terms
     app.add_middleware(IngressTokenScanMiddleware)
