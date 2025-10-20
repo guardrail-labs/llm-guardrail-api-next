@@ -1,0 +1,3 @@
+{"id":"U001","cat":"unicode","text":"A\u200bB\u202eC hello","label":1}
+{"id":"U002","cat":"unicode","text":"\ufeffTitle","label":1}
+{"id":"U003","cat":"unicode","text":"normal ascii text","label":0}
