@@ -1,0 +1,36 @@
+name: container-smoke
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'docker/**'
+      - '.github/workflows/container-smoke.yml'
+      - 'app/**'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t guardrail-core:ci .
+      - name: Run container (read-only, nonroot)
+        run: |
+          mkdir -p "$PWD/tmp"
+          docker run -d --rm \
+            --read-only -v "$PWD/tmp":/tmp \
+            -p 127.0.0.1:18080:8000 \
+            --name core guardrail-core:ci
+          # Wait for health endpoint
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null; then break; fi
+            sleep 1
+          done
+          # Check we are non-root
+          CID=$(docker ps -q -f name=core)
+          UID=$(docker exec "$CID" python3 -c 'import os; print(os.getuid())')
+          test "$UID" != "0"
+      - name: Curl healthz
+        run: curl -fsS http://127.0.0.1:18080/healthz
+      - name: Stop
+        if: always()
+        run: docker stop core || true
