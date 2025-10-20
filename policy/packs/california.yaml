@@ -1,0 +1,22 @@
+# v1 minimal California AI/compliance signals (illustrative)
+pack: CALIFORNIA
+version: "1.0.0"
+rules:
+  - id: ca.safety.high_risk_keywords
+    title: "High-risk instructions (disclosure/guardrail signal)"
+    severity: high
+    advisory: clarify
+    any_terms:
+      - "bypass safety"
+      - "jailbreak"
+      - "disable guardrail"
+      - "override policy"
+    references:
+      - "CA AI safety/disclosure guidance (general)"
+  - id: ca.privacy.email
+    title: "Email address (privacy signal)"
+    severity: medium
+    advisory: flag
+    pattern: "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    references:
+      - "State privacy guidance (general)"
