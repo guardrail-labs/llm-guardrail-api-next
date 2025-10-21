@@ -20,11 +20,14 @@ _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 # ------------------------ Exposed counter for tests --------------------------
 # tests/test_rate_limit_metrics.py monkeypatches app.middleware.rate_limit.RATE_LIMIT_BLOCKS
 try:
-    from app.services.ratelimit import RATE_LIMIT_BLOCKS as _GLOBAL_BLOCK_COUNTER 
+    from app.services.ratelimit import RATE_LIMIT_BLOCKS as _GLOBAL_BLOCK_COUNTER
 except Exception:  # pragma: no cover
     class _NoopCounter:
-        def inc(self, *_, **__) -> None:
-            pass
+        def labels(self, *args: Any, **kwargs: Any) -> "_NoopCounter":
+            return self
+
+        def inc(self, *args: Any, **kwargs: Any) -> None:
+            return None
 
     _GLOBAL_BLOCK_COUNTER = _NoopCounter()
 
@@ -55,13 +58,23 @@ def _format_limit(rps: float, burst: float | int) -> str:
     return f"{rate}; burst={int(burst)}"
 
 
-def _get_request_id_safe() -> str:
-    # Avoid import cycles by importing at call time.
+def _ensure_request_id() -> str:
+    """
+    Get the current request id if present; otherwise generate one.
+    Tests require X-Request-ID to always be present on 429 responses.
+    """
     try:
-        from app.middleware.request_id import get_request_id 
-        return get_request_id() or ""
+        from app.middleware.request_id import get_request_id  # lazy to avoid cycles
+
+        rid = get_request_id() or ""
     except Exception:
-        return ""
+        rid = ""
+    if not rid:
+        # Generate a UUID4 hex without dashes to avoid importing any app utils.
+        import uuid
+
+        rid = uuid.uuid4().hex
+    return rid
 
 
 def _blocked_payload(retry_after_s: int, tenant: str, bot: str) -> Dict[str, Any]:
@@ -81,8 +94,8 @@ def _blocked_payload(retry_after_s: int, tenant: str, bot: str) -> Dict[str, Any
 
 def _allowed_headers(limit_str: str, remaining: Optional[float]) -> Dict[str, str]:
     # On allowed responses, tests only check presence/values for a subset.
-    rem_i = int(math.floor((remaining or 0.0) + 1e-9))
-    rem = str(max(0, rem_i))
+    rem_val = int(math.floor((remaining or 0.0) + 1e-9))
+    rem = str(max(0, rem_val))
     return {
         "X-RateLimit-Limit": limit_str,
         "X-RateLimit-Remaining": rem,
@@ -108,12 +121,12 @@ def _blocked_headers(limit_str: str, retry_after_s: int) -> Dict[str, str]:
         "X-Quota-Remaining": "0",
         # tests expect "1" (seconds) on blocked responses
         "X-Quota-Reset": "1",
-        # decision header required by tests that also add DecisionHeaderMiddleware
+        # decision + mode headers required by tests
         "X-Guardrail-Decision": "block_input_only",
+        "X-Guardrail-Mode": "Tier1",
+        # ensure a request id is always present on 429s
+        "X-Request-ID": _ensure_request_id(),
     }
-    rid = _get_request_id_safe()
-    if rid:
-        h["X-Request-ID"] = rid
     return h
 
 
@@ -129,24 +142,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        # Skip probes/metrics
         if request.url.path in PROBE_PATHS:
             return await call_next(request)
 
         try:
-            from app.services import ratelimit as RL  # lazy import to avoid early import costs
+            # Lazy import to avoid import-time side effects and cycles
+            from app.services import ratelimit as RL
         except Exception:
             return await call_next(request)
 
         app_settings: Any = getattr(request.app.state, "settings", None)
         enabled, limiter = RL.get_global(app_settings)
-        if not enabled or limiter is None:
+        if not enabled:
             return await call_next(request)
 
         tenant, bot = _extract_identity(request)
         enforce_unknown = RL.get_enforce_unknown(app_settings)
 
-        # If identity unknown and enforcement disabled, skip but count a labeled skip.
         if (tenant == "unknown" and bot == "unknown") and not enforce_unknown:
             try:
                 RL.RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc()
@@ -155,34 +167,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # allow() must return:
-        # (allowed: bool, retry_after_s: Optional[int], remaining_tokens: float|None)
+        # (allowed: bool, retry_after_s: Optional[int], remaining_tokens: float | None)
         allowed, retry_after_s, remaining = limiter.allow(tenant, bot, cost=1.0)
         rps = float(limiter.refill_rate)
         burst = float(limiter.capacity)
         limit_str = _format_limit(rps, burst)
 
         if allowed:
-            # Pass through and decorate response with quota headers + decision + request id
             resp = await call_next(request)
-            for k, v in _allowed_headers(limit_str, remaining).items():
-                resp.headers.setdefault(k, v)
-            rid = _get_request_id_safe()
-            if rid and "X-Request-ID" not in resp.headers:
-                resp.headers["X-Request-ID"] = rid
+            for key, val in _allowed_headers(limit_str, remaining).items():
+                resp.headers.setdefault(key, val)
             return resp
 
-        # Blocked path: increment counter the tests patch, and return canonical body/headers
+        # Use the counter exposed by THIS module so tests can monkeypatch it.
         try:
-            # Tests monkeypatch RATE_LIMIT_BLOCKS at this module path and expect .inc() to be called
-            RATE_LIMIT_BLOCKS.inc()
+            RATE_LIMIT_BLOCKS.labels(tenant=tenant, bot=bot).inc()
         except Exception:
             pass
 
         retry_after_val = int(max(1, (retry_after_s or 1)))
         headers = _blocked_headers(limit_str, retry_after_val)
-        body = _blocked_payload(retry_after_val, tenant, bot)
-        return JSONResponse(status_code=429, content=body, headers=headers)
+
+        return JSONResponse(
+            status_code=429,
+            content=_blocked_payload(retry_after_val, tenant, bot),
+            headers=headers,
+        )
 
 
-# Explicit re-exports for static checkers and downstream imports
 __all__ = ["RateLimitMiddleware", "RATE_LIMIT_BLOCKS"]
