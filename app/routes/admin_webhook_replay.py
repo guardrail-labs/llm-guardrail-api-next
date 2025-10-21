@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.routes.admin_rbac import require_admin
 from app.routes.admin_ui import require_auth
+from app.routes.admin_webhooks import _require_csrf_dep
 from app.runtime import get_dlq_service
 from app.services.dlq import DLQMessage, DLQService
 
@@ -68,6 +69,7 @@ async def replay_message(
     msg_id: str,
     _: None = Depends(require_auth),
     __: None = Depends(require_admin),
+    ___: None = Depends(_require_csrf_dep),
     dlq: DLQService = Depends(get_dlq_service),
 ) -> dict[str, Any]:
     message = await dlq.replay_now(msg_id)
@@ -81,6 +83,7 @@ async def delete_message(
     msg_id: str,
     _: None = Depends(require_auth),
     __: None = Depends(require_admin),
+    ___: None = Depends(_require_csrf_dep),
     dlq: DLQService = Depends(get_dlq_service),
 ) -> dict[str, str]:
     deleted = await dlq.ack(msg_id)

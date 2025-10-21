@@ -73,6 +73,7 @@ def client(fake_dlq_service: FakeDLQService) -> TestClient:
     app.dependency_overrides[admin_ui.require_auth] = _allow
     app.dependency_overrides[replay_route.require_admin] = _allow
     app.dependency_overrides[replay_route.require_auth] = _allow
+    app.dependency_overrides[replay_route._require_csrf_dep] = lambda: None
     app.dependency_overrides[get_dlq_service] = lambda: fake_dlq_service
 
     return TestClient(app)
