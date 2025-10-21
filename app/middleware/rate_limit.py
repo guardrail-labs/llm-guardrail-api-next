@@ -3,11 +3,12 @@ from __future__ import annotations
 import math
 import re
 import time
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp
 
 # ---- Constants / defaults ----------------------------------------------------
 
@@ -22,10 +23,10 @@ _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 # ---- Metrics stubs (tests monkeypatch these) --------------------------------
 
 class _NoopCounter:
-    def labels(self, **_: str) -> "_NoopCounter":  # type: ignore[override]
+    def labels(self, **_: str) -> "_NoopCounter":
         return self
 
-    def inc(self, *_: float) -> None:  # prometheus_client compatibility
+    def inc(self, *_: float) -> None:
         return
 
 
@@ -58,14 +59,20 @@ def _extract_identity(request: Request) -> Tuple[str, str]:
     return _sanitize(tenant), _sanitize(bot)
 
 
-def get_enforce_unknown(app_settings: object | None) -> bool:
-    # Prefer app.state.settings.ingress.rate_limit.enforce_unknown if present
+def get_enforce_unknown(app_settings: Any) -> bool:
+    """
+    Prefer app.state.settings.ingress.rate_limit.enforce_unknown if present,
+    else env (default False).
+    """
     try:
-        return bool(app_settings.ingress.rate_limit.enforce_unknown)  # type: ignore[attr-defined]  # noqa: E501
+        ingress = getattr(app_settings, "ingress", None)
+        rl = getattr(ingress, "rate_limit", None)
+        val = getattr(rl, "enforce_unknown", None)
+        if val is not None:
+            return bool(val)
     except Exception:
         pass
-    # Fall back to env (default False → unknown bypasses by default)
-    from app import settings  # local import to avoid circulars at import time
+    from app import settings  # local import to avoid import-time cycles
     return _bool_env(getattr(settings, "RATE_LIMIT_ENFORCE_UNKNOWN", None), False)
 
 
@@ -118,7 +125,8 @@ class _MemoryLimiter:
         if b is None:
             b = _MemoryBucket(self._capacity, self._rate)
             self._buckets[key] = b
-        return b.allow(1.0),  # type: ignore[return-value]
+        allowed, retry_after, remaining = b.allow(1.0)
+        return allowed, retry_after, remaining
 
 
 # ---- Middleware --------------------------------------------------------------
@@ -131,20 +139,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     - Unknown identities bypass by default unless configured to enforce.
     """
 
-    def __init__(self, app: Callable[..., Response]) -> None:
+    def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
         from app import settings  # import late to avoid import order issues
 
         self.env_enabled = _bool_env(getattr(settings, "RATE_LIMIT_ENABLED", None), False)
-        per_min = float(getattr(settings, "RATE_LIMIT_PER_MINUTE", 0) or
-                        getattr(settings, "RATE_LIMIT_RPS", 0) * 60.0 or 60.0)
-        rps = float(getattr(settings, "RATE_LIMIT_RPS", per_min / 60.0) or per_min / 60.0)
-        burst = int(getattr(settings, "RATE_LIMIT_BURST", per_min) or per_min)
+
+        per_min_env = getattr(settings, "RATE_LIMIT_PER_MINUTE", None)
+        rps_env = getattr(settings, "RATE_LIMIT_RPS", None)
+
+        per_min = float(per_min_env) if per_min_env is not None else 60.0
+        rps = float(rps_env) if rps_env is not None else per_min / 60.0
+        burst_env = getattr(settings, "RATE_LIMIT_BURST", None)
+        burst = int(burst_env) if burst_env is not None else int(per_min)
 
         backend = (getattr(settings, "RATE_LIMIT_BACKEND", "memory") or "memory").lower()
         self.backend = backend if backend in {"memory", "redis"} else "memory"
 
-        # Build memory limiter; redis path is delegated on demand.
+        # Build memory limiter; redis path is delegated elsewhere when enabled.
         self._mem = _MemoryLimiter(per_sec=rps, burst=burst)
 
         # Keep originals for header formatting
@@ -155,18 +167,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         # Settings override from app.state.settings if present
-        app_settings = getattr(request.app.state, "settings", None)
+        app_settings: Any = getattr(request.app.state, "settings", None)
         enabled = self.env_enabled
-        if app_settings is not None:
-            try:
-                enabled = bool(app_settings.ingress.rate_limit.enabled)  # type: ignore[attr-defined] # noqa: E501
-                # Optional: rps/burst override in tests
-                rps = float(app_settings.ingress.rate_limit.rps)  # type: ignore[attr-defined]  # noqa: E501
-                burst = int(app_settings.ingress.rate_limit.burst)  # type: ignore[attr-defined]  # noqa: E501
-                self._mem = _MemoryLimiter(per_sec=rps, burst=burst)
-                self._rps, self._burst = rps, burst
-            except Exception:
-                pass
+
+        try:
+            if app_settings is not None:
+                ingress = getattr(app_settings, "ingress", None)
+                rl = getattr(ingress, "rate_limit", None)
+                en = getattr(rl, "enabled", None)
+                if en is not None:
+                    enabled = bool(en)
+                rps = getattr(rl, "rps", None)
+                burst = getattr(rl, "burst", None)
+                if rps is not None and burst is not None:
+                    self._mem = _MemoryLimiter(per_sec=float(rps), burst=int(burst))
+                    self._rps, self._burst = float(rps), int(burst)
+        except Exception:
+            # Ignore malformed settings; fall back to env-derived config
+            pass
 
         if not enabled:
             return await call_next(request)
@@ -180,7 +198,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         enforce_unknown = get_enforce_unknown(app_settings)
 
         if (tenant == "unknown" and bot == "unknown") and not enforce_unknown:
-            # Bypass and count a skip
             try:
                 RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc()
             except Exception:
@@ -191,11 +208,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         allowed, retry_after, remaining = self._mem.allow(tenant, bot, api_key)
 
         # Common headers (allow & deny)
-        rate_hdr = f"{int(self._rps) if self._rps.is_integer() else self._rps}; burst={self._burst}"  # noqa: E501
+        if float(self._rps).is_integer():
+            limit_str = f"{int(self._rps)}"
+        else:
+            limit_str = f"{self._rps}"
+        rate_hdr = f"{limit_str}; burst={self._burst}"
+
         quota_headers = {
             "X-RateLimit-Limit": rate_hdr,
             "X-RateLimit-Remaining": str(max(0, remaining)),
-            # Simple illustrative quota headers for observability parity
             "X-Quota-Min": str(int(self._rps * 60)),
             "X-Quota-Hour": str(int(self._rps * 3600)),
             "X-Quota-Day": str(int(self._rps * 86400)),
