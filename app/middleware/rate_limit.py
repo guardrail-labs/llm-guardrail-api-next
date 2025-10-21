@@ -20,7 +20,7 @@ _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 # ------------------------ Exposed counter for tests --------------------------
 # tests/test_rate_limit_metrics.py monkeypatches app.middleware.rate_limit.RATE_LIMIT_BLOCKS
 try:
-    from app.services.ratelimit import RATE_LIMIT_BLOCKS as _GLOBAL_BLOCK_COUNTER  # type: ignore
+    from app.services.ratelimit import RATE_LIMIT_BLOCKS as _GLOBAL_BLOCK_COUNTER  
 except Exception:  # pragma: no cover
     class _NoopCounter:
         def inc(self, *_, **__):
@@ -58,7 +58,7 @@ def _format_limit(rps: float, burst: float | int) -> str:
 def _get_request_id_safe() -> str:
     # Avoid import cycles by importing at call time.
     try:
-        from app.middleware.request_id import get_request_id  # type: ignore
+        from app.middleware.request_id import get_request_id  
         return get_request_id() or ""
     except Exception:
         return ""
