@@ -87,25 +87,59 @@ async def _schedule_retry(
 
 
 async def _drain_once(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
+    """
+    Drain ready jobs, waiting for the next due job if none are ready.
+    Exits only when the schedule is empty.
+    """
     while True:
-        _, jobs = await retry_queue.pop_ready(limit=settings.WH_RETRY_DRAIN_BATCH)
-        if not jobs:
-            return
-        for job in jobs:
-            ok, err = await _try_once(job)
-            if ok:
-                continue
-            if job.attempt >= settings.WH_MAX_ATTEMPTS:
-                await dlq.push(
-                    WebhookJob(
-                        url=job.url,
-                        method=job.method,
-                        headers=job.headers,
-                        body=job.body,
-                        attempt=job.attempt,
-                        created_at_s=job.created_at_s,
-                        last_error=err or "unknown",
+        _, jobs = await retry_queue.pop_ready(
+            limit=settings.WH_RETRY_DRAIN_BATCH
+        )
+        if jobs:
+            for job in jobs:
+                ok, err = await _try_once(job)
+                if ok:
+                    continue
+                if job.attempt >= settings.WH_MAX_ATTEMPTS:
+                    await dlq.push(
+                        WebhookJob(
+                            url=job.url,
+                            method=job.method,
+                            headers=job.headers,
+                            body=job.body,
+                            attempt=job.attempt,
+                            created_at_s=job.created_at_s,
+                            last_error=err or "unknown",
+                        )
                     )
-                )
-            else:
-                await _schedule_retry(retry_queue, job, err)
+                else:
+                    await _schedule_retry(retry_queue, job, err)
+            # Continue loop to check for more ready jobs immediately.
+            continue
+
+        # No ready jobs: check if the schedule has a future job.
+        # Peek earliest due score and sleep until due (bounded), or exit if empty.
+        next_due = await _next_due_ts(retry_queue)
+        if next_due is None:
+            return  # queue empty, safe to exit
+
+        sleep_s = max(0.0, next_due - time.time())
+        sleep_s = min(sleep_s, settings.WH_RETRY_IDLE_SLEEP_MAX_S)
+        if sleep_s > 0:
+            await asyncio.sleep(sleep_s)
+
+
+async def _next_due_ts(retry_queue: RetryQueue) -> Optional[float]:
+    """
+    Return the earliest due timestamp (score) in the ZSET schedule, or None if empty.
+    Uses Redis ZRANGE with scores. Accesses private key with a lint exemption.
+    """
+    # Access private members intentionally for performance and to avoid public API change.
+    key = retry_queue._schedule_key()  # noqa: SLF001
+    r = retry_queue._redis  # noqa: SLF001
+    # Get the first (lowest score) element with its score.
+    items = await r.zrange(key, 0, 0, withscores=True)
+    if not items:
+        return None
+    # items[0] is (member, score)
+    return float(items[0][1])
