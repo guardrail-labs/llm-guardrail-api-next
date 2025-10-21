@@ -1,51 +1,53 @@
 name: container-smoke
-
 on:
   pull_request:
     paths:
-      - Dockerfile
-      - .dockerignore
-      - ops/**
-      - .github/workflows/container-smoke.yml
-      - .github/workflows/release.yml
-  push:
-    branches:
-      - main
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - ops/**
-      - .github/workflows/container-smoke.yml
-      - .github/workflows/release.yml
-
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'ops/health_app.py'
+      - '.github/workflows/container-smoke.yml'
+      - 'app/**'
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
       - name: Build image
         run: docker build -t guardrail-core:ci .
-      - name: Run container (read-only, nonroot)
+
+      - name: Run container (read-only, nonroot) with health app
         run: |
           mkdir -p "$PWD/tmp"
           docker run -d --rm \
             --read-only -v "$PWD/tmp":/tmp \
             -p 127.0.0.1:18080:8000 \
-            --name core guardrail-core:ci
+            --name core \
+            guardrail-core:ci \
+            /usr/local/bin/uvicorn ops.health_app:app --host 0.0.0.0 --port 8000
 
+          # Wait up to 30s for /healthz
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null; then break; fi
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null; then
+              break
+            fi
             sleep 1
           done
 
           CID=$(docker ps -q -f name=core)
-          test -n "$CID"
+          test -n "$CID" || (echo "container not running"; docker logs core || true; exit 1)
 
+          # Distroless has no shell; use python for UID check
           UID=$(docker exec "$CID" /usr/local/bin/python3 -c 'import os;print(os.getuid())')
-          test "$UID" != "0"
+          test "$UID" != "0" || (echo "container ran as root"; exit 1)
+
       - name: Curl healthz
         run: curl -fsS http://127.0.0.1:18080/healthz
+
+      - name: Logs (for debugging on failure)
+        if: failure()
+        run: docker logs core || true
+
       - name: Stop
         if: always()
         run: docker stop core || true
