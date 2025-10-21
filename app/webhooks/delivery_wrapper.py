@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, Optional
+from typing import Awaitable, Dict, Optional
 
 import httpx
-from redis.asyncio import Redis
 
 from app import settings
 from app.runtime import get_redis
@@ -21,12 +20,12 @@ async def deliver_with_retry(
     body: bytes,
 ) -> None:
     """
-    Fire-and-manage: send once now; on failure, schedule retries with backoff.
-    After MAX attempts, push to DLQ. Non-blocking beyond the first attempt.
+    Send once; on failure, schedule retries with backoff and start a singleton
+    background worker if not already active. Caller is not blocked by retries.
     """
-    redis = get_redis()
-    retry_queue = RetryQueue(redis, prefix=settings.WH_REDIS_PREFIX)
-    dlq = DeadLetterQueue(redis, prefix=settings.WH_REDIS_PREFIX)
+    r = get_redis()
+    rq = RetryQueue(r, prefix=settings.WH_REDIS_PREFIX)
+    dlq = DeadLetterQueue(r, prefix=settings.WH_REDIS_PREFIX)
 
     first = WebhookJob(
         url=url,
@@ -42,31 +41,29 @@ async def deliver_with_retry(
     if ok:
         return
 
-    await _schedule_retry(retry_queue, first, err)
-    asyncio.create_task(_ensure_worker(retry_queue, dlq))
+    await _schedule_retry(rq, first, err or "unknown")
+    asyncio.create_task(_ensure_worker(rq, dlq))
 
 
 async def _try_once(job: WebhookJob) -> tuple[bool, Optional[str]]:
     timeout_s = settings.WH_HTTP_TIMEOUT_S
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            request = client.build_request(
+            req = client.build_request(
                 method=job.method,
                 url=job.url,
                 headers=job.headers,
                 content=job.body,
             )
-            response = await client.send(request)
-            if 200 <= response.status_code < 300:
+            resp = await client.send(req)
+            if 200 <= resp.status_code < 300:
                 return True, None
-            return False, f"status={response.status_code}"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"exc={type(exc).__name__}:{exc}"
+            return False, f"status={resp.status_code}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"exc={type(e).__name__}:{e}"
 
 
-async def _schedule_retry(
-    retry_queue: RetryQueue, job: WebhookJob, err: Optional[str]
-) -> None:
+async def _schedule_retry(rq: RetryQueue, job: WebhookJob, err: str) -> None:
     backoff = compute_backoff_s(
         base_s=settings.WH_RETRY_BASE_S,
         factor=settings.WH_RETRY_FACTOR,
@@ -74,73 +71,98 @@ async def _schedule_retry(
         jitter_s=settings.WH_RETRY_JITTER_S,
     )
     due = backoff + time.time()
-    err_msg = err or "unknown"
-    next_job = WebhookJob(
+    nxt = WebhookJob(
         url=job.url,
         method=job.method,
         headers=job.headers,
         body=job.body,
         attempt=job.attempt + 1,
         created_at_s=job.created_at_s,
-        last_error=err_msg,
+        last_error=err,
     )
-    await retry_queue.enqueue(next_job, due)
+    await rq.enqueue(nxt, due)
 
 
-async def _ensure_worker(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
-    """Ensure a single worker per prefix using a Redis lock."""
-
-    redis = retry_queue.redis
-    prefix = retry_queue.prefix
+async def _ensure_worker(rq: RetryQueue, dlq: DeadLetterQueue) -> None:
+    """
+    Ensure a single worker per prefix using a Redis lock (SET NX EX).
+    The lock is renewed during long batches and while waiting for next due job.
+    """
+    r = rq.redis
+    prefix = rq.prefix
     lock_key = f"{prefix}:worker:lock"
     lock_ttl_s = max(5.0, float(settings.WH_WORKER_LOCK_TTL_S))
     lock_value = str(time.time())
 
-    acquired = await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), nx=True)
-    if not acquired:
+    ok = await r.set(lock_key, lock_value, ex=int(lock_ttl_s), nx=True)
+    if not ok:
         return
 
     try:
-        await _drain_loop(retry_queue, dlq, redis, lock_key, lock_value, lock_ttl_s)
+        await _drain_loop(rq, dlq, r, lock_key, lock_value, lock_ttl_s)
     finally:
-        current = await redis.get(lock_key)
-        if current is not None and current.decode("utf-8") == lock_value:
-            await redis.delete(lock_key)
+        cur = await r.get(lock_key)
+        if cur is not None and cur.decode("utf-8") == lock_value:
+            await r.delete(lock_key)
 
 
 async def _drain_loop(
-    retry_queue: RetryQueue,
+    rq: RetryQueue,
     dlq: DeadLetterQueue,
-    redis: Redis,
+    redis,
     lock_key: str,
     lock_value: str,
     lock_ttl_s: float,
 ) -> None:
-    """Process ready jobs while renewing the singleton lock."""
-
+    """
+    Drain until schedule empty; sleep until next due; renew lock periodically.
+    Renewal happens at loop start, between jobs, during HTTP attempts, and idle.
+    """
     renew_interval = max(1.0, min(lock_ttl_s / 2.0, 5.0))
-    last_renew = time.time()
+    last_renew = 0.0
 
-    async def _renew_if_needed() -> bool:
+    async def _renew_if_needed() -> None:
         nonlocal last_renew
         now_s = time.time()
         if now_s - last_renew >= renew_interval:
-            ok = await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), xx=True)
-            if not ok:
-                return False
+            await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), xx=True)
             last_renew = now_s
-        return True
+
+    async def _with_attempt_renewal(
+        coro: Awaitable[tuple[bool, Optional[str]]]
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Run HTTP attempt while renewing lock on a short cadence to avoid expiry.
+        The renewal task stops immediately when the attempt finishes.
+        """
+        stop = asyncio.Event()
+
+        async def _ticker() -> None:
+            # Tick frequently but lightly; keep below renew_interval for safety.
+            tick = max(0.25, min(renew_interval / 2.0, 2.0))
+            while not stop.is_set():
+                await _renew_if_needed()
+                await asyncio.wait_for(asyncio.sleep(tick), timeout=tick + 0.1)
+
+        t = asyncio.create_task(_ticker())
+        try:
+            return await coro
+        finally:
+            stop.set()
+            # Ensure the renewer is fully stopped before proceeding.
+            try:
+                await t
+            except Exception:  # noqa: BLE001
+                pass
 
     while True:
-        if not await _renew_if_needed():
-            return
+        await _renew_if_needed()
 
-        _, jobs = await retry_queue.pop_ready(limit=settings.WH_RETRY_DRAIN_BATCH)
+        _, jobs = await rq.pop_ready(limit=settings.WH_RETRY_DRAIN_BATCH)
         if jobs:
             for job in jobs:
-                if not await _renew_if_needed():
-                    return
-                ok, err = await _try_once(job)
+                await _renew_if_needed()
+                ok, err = await _with_attempt_renewal(_try_once(job))
                 if ok:
                     continue
                 if job.attempt >= settings.WH_MAX_ATTEMPTS:
@@ -152,26 +174,21 @@ async def _drain_loop(
                             body=job.body,
                             attempt=job.attempt,
                             created_at_s=job.created_at_s,
-                            last_error=err or "unknown",
+                            last_error=err,
                         )
                     )
                 else:
-                    await _schedule_retry(retry_queue, job, err)
+                    await _schedule_retry(rq, job, err or "unknown")
             continue
 
-        next_due = await retry_queue.earliest_due_ts()
+        next_due = await rq.earliest_due_ts()
         if next_due is None:
             return
 
-        target_sleep = min(
-            max(0.0, next_due - time.time()), settings.WH_RETRY_IDLE_SLEEP_MAX_S
-        )
-        if target_sleep <= 0:
-            continue
-        end_s = time.time() + target_sleep
+        sleep_s = max(0.0, next_due - time.time())
+        end_s = time.time() + min(sleep_s, settings.WH_RETRY_IDLE_SLEEP_MAX_S)
         while True:
-            if not await _renew_if_needed():
-                return
+            await _renew_if_needed()
             now_s = time.time()
             if now_s >= end_s:
                 break
