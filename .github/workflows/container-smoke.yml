@@ -26,21 +26,25 @@ jobs:
             guardrail-core:ci \
             python -m uvicorn ops.health_app:app --host 0.0.0.0 --port 8000
 
-          # Wait up to 30s for /healthz
+          ok=0
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18080/healthz >/dev/null; then
               ok=1; break
             fi
             sleep 1
           done
-          test "${ok:-0}" -eq 1 || (echo "healthz not ready"; exit 1)
+          if [ "$ok" -ne 1 ]; then
+            echo "healthz not ready; recent logs:" >&2
+            docker logs core || true
+            exit 1
+          fi
 
           CID=$(docker ps -q -f name=core)
           test -n "$CID" || (echo "container not running"; exit 1)
 
-          # Verify non-root via python (no shell assumptions)
-          UID=$(docker exec "$CID" python -c 'import os;print(os.getuid())')
-          test "$UID" != "0" || (echo "ran as root"; exit 1)
+          # Distroless/slim safe: avoid readonly $UID
+          USER_ID=$(docker exec "$CID" python -c 'import os;print(os.getuid())')
+          test "$USER_ID" != "0" || (echo "ran as root"; exit 1)
 
       - name: Curl healthz
         run: curl -fsS http://127.0.0.1:18080/healthz
