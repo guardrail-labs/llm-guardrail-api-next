@@ -154,7 +154,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 pass
             return await call_next(request)
 
-        # allow() must return (allowed: bool, retry_after_s: Optional[int], remaining_tokens: float|None)
+        # allow() must return:
+        # (allowed: bool, retry_after_s: Optional[int], remaining_tokens: float|None)
         allowed, retry_after_s, remaining = limiter.allow(tenant, bot, cost=1.0)
         rps = float(limiter.refill_rate)
         burst = float(limiter.capacity)
