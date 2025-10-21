@@ -470,6 +470,9 @@ WH_RETRY_IDLE_SLEEP_MAX_S: float = float(
     os.getenv("WH_RETRY_IDLE_SLEEP_MAX_S", "2.0")
 )
 WH_HTTP_TIMEOUT_S: float = float(os.getenv("WH_HTTP_TIMEOUT_S", "3.0"))
+WH_WORKER_LOCK_TTL_S: float = float(
+    os.getenv("WH_WORKER_LOCK_TTL_S", "15.0")
+)
 
 IDEMPOTENCY_TTL_S: int = int(os.getenv("IDEMPOTENCY_TTL_S", "300"))
 

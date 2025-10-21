@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, Optional, Tuple
+import uuid
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
@@ -42,7 +43,7 @@ async def deliver_with_retry(
         return
 
     await _schedule_retry(retry_queue, first, err)
-    asyncio.create_task(_drain_once(retry_queue, dlq))
+    asyncio.create_task(_ensure_worker(retry_queue, dlq))
 
 
 async def _try_once(job: WebhookJob) -> Tuple[bool, Optional[str]]:
@@ -86,20 +87,73 @@ async def _schedule_retry(
     await retry_queue.enqueue(next_job, due)
 
 
-async def _drain_once(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
-    """
-    Drain ready jobs, waiting for the next due job if none are ready.
-    Exits only when the schedule is empty.
-    """
+async def _ensure_worker(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
+    """Ensure only one drain worker runs per prefix via a Redis lock."""
+    redis = retry_queue._redis  # noqa: SLF001
+    prefix = retry_queue._prefix  # noqa: SLF001
+    lock_key = f"{prefix}:worker:lock"
+    lock_ttl_s = max(5.0, settings.WH_WORKER_LOCK_TTL_S)
+    lock_value = f"{time.time():.6f}:{uuid.uuid4().hex}"
+
+    acquired = await redis.set(
+        lock_key,
+        lock_value,
+        ex=int(lock_ttl_s),
+        nx=True,
+    )
+    if not acquired:
+        return
+
+    try:
+        await _drain_loop(
+            retry_queue,
+            dlq,
+            redis,
+            lock_key,
+            lock_value,
+            lock_ttl_s,
+        )
+    finally:
+        current = await redis.get(lock_key)
+        if current is not None and current.decode("utf-8") == lock_value:
+            await redis.delete(lock_key)
+
+
+async def _drain_loop(
+    retry_queue: RetryQueue,
+    dlq: DeadLetterQueue,
+    redis: Any,
+    lock_key: str,
+    lock_value: str,
+    lock_ttl_s: float,
+) -> None:
+    """Drain ready jobs, renew the lock, and exit when the schedule is empty."""
+
+    renew_interval = max(1.0, min(lock_ttl_s / 2.0, 5.0))
+    last_renew = 0.0
+
     while True:
+        now_s = time.time()
+        if now_s - last_renew >= renew_interval:
+            refreshed = await redis.set(
+                lock_key,
+                lock_value,
+                ex=int(lock_ttl_s),
+                xx=True,
+            )
+            if not refreshed:
+                return
+            last_renew = now_s
+
         _, jobs = await retry_queue.pop_ready(
-            limit=settings.WH_RETRY_DRAIN_BATCH
+            limit=settings.WH_RETRY_DRAIN_BATCH,
         )
         if jobs:
             for job in jobs:
                 ok, err = await _try_once(job)
                 if ok:
                     continue
+                err_msg = err or "unknown"
                 if job.attempt >= settings.WH_MAX_ATTEMPTS:
                     await dlq.push(
                         WebhookJob(
@@ -109,19 +163,16 @@ async def _drain_once(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
                             body=job.body,
                             attempt=job.attempt,
                             created_at_s=job.created_at_s,
-                            last_error=err or "unknown",
+                            last_error=err_msg,
                         )
                     )
                 else:
-                    await _schedule_retry(retry_queue, job, err)
-            # Continue loop to check for more ready jobs immediately.
+                    await _schedule_retry(retry_queue, job, err_msg)
             continue
 
-        # No ready jobs: check if the schedule has a future job.
-        # Peek earliest due score and sleep until due (bounded), or exit if empty.
         next_due = await _next_due_ts(retry_queue)
         if next_due is None:
-            return  # queue empty, safe to exit
+            return
 
         sleep_s = max(0.0, next_due - time.time())
         sleep_s = min(sleep_s, settings.WH_RETRY_IDLE_SLEEP_MAX_S)
