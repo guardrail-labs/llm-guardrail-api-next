@@ -10,6 +10,7 @@ prometheus-client>=0.20.0
 httpx>=0.28.1
 pyjwt[crypto]>=2.8.0
 redis>=5.0.0
+types-redis>=4.6.0.20240906
 beautifulsoup4>=4.9.3,<5
 python-docx>=0.8.11
 lxml<5.0.0

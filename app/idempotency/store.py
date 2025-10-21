@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Protocol, Tuple, runtime_checkable
+from typing import (
+    Any,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 
 @dataclass
@@ -54,3 +62,26 @@ class IdemStore(Protocol):
     async def bump_replay(self, key: str) -> int | None:
         """Increment replay count for ``key`` without mutating expirations."""
         ...
+
+
+@dataclass(frozen=True)
+class IdempotencyResult:
+    """Finalized result retrieved by key. Payload is opaque bytes."""
+
+    payload: bytes
+
+
+@runtime_checkable
+class IdempotencyStore(Protocol):
+    async def begin(self, key: str, ttl_s: int, fingerprint: str) -> bool:
+        """
+        Reserve an idempotency key for processing.
+        True  -> reservation created, caller may proceed.
+        False -> key exists (either in flight or finalized).
+        """
+
+    async def get(self, key: str) -> Optional[IdempotencyResult]:
+        """Return finalized result for key, or None if not available."""
+
+    async def finalize(self, key: str, payload: bytes, ttl_s: int) -> None:
+        """Store final payload with TTL, replacing any in-flight marker."""
