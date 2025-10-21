@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Added Redis-backed DLQ for webhooks (schedule, replay, quarantine)
+- Added admin endpoints for pending/quarantine/replay/delete
+- Added route-level tests with service mocking (no Redis in CI)
+
 ## [v1.0.0-rc1] - 2025-09-23
 ### Added
 - Security model doc: clarified **enforcement posture** — disallowed outputs are intercepted

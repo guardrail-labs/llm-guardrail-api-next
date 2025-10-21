@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Optional
 
 from redis.asyncio import Redis, from_url as redis_from_url
@@ -9,12 +10,14 @@ from app import settings
 from app.idempotency.memory_store import InMemoryIdemStore, MemoryReservationStore
 from app.idempotency.redis_store import RedisIdemStore, RedisReservationStore
 from app.idempotency.store import IdempotencyStore, IdemStore
+from app.services.dlq import DLQService
 
 # Lazily initialized singletons for process lifetime.
 _redis: Optional[Redis] = None
 _store: Optional[IdemStore] = None
 _redis_client: Optional[Redis] = None
 _reservation_store: Optional[IdempotencyStore] = None
+_dlq_service: Optional[DLQService] = None
 
 
 def redis_client() -> Redis:
@@ -105,3 +108,44 @@ def get_idempotency_store() -> IdempotencyStore:
     else:
         _reservation_store = MemoryReservationStore()
     return _reservation_store
+
+
+def get_dlq_service() -> DLQService:
+    global _dlq_service
+    if _dlq_service is None:
+        _dlq_service = DLQService(get_redis())
+    return _dlq_service
+
+
+async def close_redis_connections() -> None:
+    global _redis_client, _redis, _dlq_service
+
+    client_main = _redis_client
+    legacy_client = _redis
+
+    _redis_client = None
+    _redis = None
+    _dlq_service = None
+
+    await _close_client(client_main)
+    await _close_client(legacy_client)
+
+
+async def _close_client(client: Optional[Redis]) -> None:
+    if client is None:
+        return
+    try:
+        await client.close()
+    except Exception:
+        pass
+    pool = getattr(client, "connection_pool", None)
+    if pool is None:
+        return
+    disconnect = getattr(pool, "disconnect", None)
+    if callable(disconnect):
+        try:
+            result = disconnect(inuse_connections=True)
+        except TypeError:
+            result = disconnect()
+        if inspect.isawaitable(result):
+            await result

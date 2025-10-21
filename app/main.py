@@ -689,6 +689,15 @@ async def lifespan(app: FastAPI):
                 shutdown()
         except Exception as exc:
             _log.debug("tracer shutdown failed: %s", exc)
+        try:
+            from app import runtime as _runtime
+        except Exception as exc:
+            _log.debug("import runtime for shutdown failed: %s", exc)
+        else:
+            try:
+                await _runtime.close_redis_connections()
+            except Exception as exc:
+                _log.debug("redis shutdown failed: %s", exc)
 
 
 OPENAPI_TAGS = [
