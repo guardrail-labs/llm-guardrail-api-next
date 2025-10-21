@@ -5,10 +5,10 @@ from typing import Optional
 from redis.asyncio import Redis, from_url as redis_from_url
 from redis.asyncio.connection import BlockingConnectionPool
 
+from app import settings
 from app.idempotency.memory_store import InMemoryIdemStore, MemoryReservationStore
 from app.idempotency.redis_store import RedisIdemStore, RedisReservationStore
-from app.idempotency.store import IdemStore, IdempotencyStore
-from app import settings
+from app.idempotency.store import IdempotencyStore, IdemStore
 
 # Lazily initialized singletons for process lifetime.
 _redis: Optional[Redis] = None
@@ -82,8 +82,9 @@ def get_redis() -> Redis:
 
 def get_idempotency_store() -> IdempotencyStore:
     """
-    Factory for the reservation-oriented idempotency interface used by middleware.
-    Mirrors backend selection used by idem_store() for consistency.
+    Reservation-oriented idempotency factory.
+    Fallback parity with idem_store(): if backend is "memory" but a real Redis
+    URL is configured (not memory://), prefer Redis.
     """
     global _reservation_store
     if _reservation_store is not None:
@@ -92,6 +93,12 @@ def get_idempotency_store() -> IdempotencyStore:
     backend = settings.IDEMPOTENCY_BACKEND or "memory"
     if backend not in {"memory", "redis"}:
         backend = "memory"
+
+    # Prefer Redis when a non-memory Redis URL is configured.
+    if backend == "memory" and not settings.IDEMP_REDIS_URL.startswith(
+        "memory://"
+    ):
+        backend = "redis"
 
     if backend == "redis":
         _reservation_store = RedisReservationStore(get_redis())
