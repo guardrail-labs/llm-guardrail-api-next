@@ -667,4 +667,5 @@ async def lifespan(app: FastAPI):
                 from app.services import webhooks as _wh_mod
             except Exception as exc:
                 _log.debug("import webhooks module for shutdown failed: %s", exc)
-            else
+            else:
+                _best_effort("webhooks module shutdown", lambda: _wh_mod.shutdown())
