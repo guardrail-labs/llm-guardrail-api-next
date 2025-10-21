@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import httpx
+from redis.asyncio import Redis
 
 from app import settings
 from app.runtime import get_redis
@@ -42,10 +43,10 @@ async def deliver_with_retry(
         return
 
     await _schedule_retry(retry_queue, first, err)
-    asyncio.create_task(_drain_once(retry_queue, dlq))
+    asyncio.create_task(_ensure_worker(retry_queue, dlq))
 
 
-async def _try_once(job: WebhookJob) -> Tuple[bool, Optional[str]]:
+async def _try_once(job: WebhookJob) -> tuple[bool, Optional[str]]:
     timeout_s = settings.WH_HTTP_TIMEOUT_S
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
@@ -86,17 +87,59 @@ async def _schedule_retry(
     await retry_queue.enqueue(next_job, due)
 
 
-async def _drain_once(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
-    """
-    Drain ready jobs, waiting for the next due job if none are ready.
-    Exits only when the schedule is empty.
-    """
+async def _ensure_worker(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
+    """Ensure a single worker per prefix using a Redis lock."""
+
+    redis = retry_queue.redis
+    prefix = retry_queue.prefix
+    lock_key = f"{prefix}:worker:lock"
+    lock_ttl_s = max(5.0, float(settings.WH_WORKER_LOCK_TTL_S))
+    lock_value = str(time.time())
+
+    acquired = await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), nx=True)
+    if not acquired:
+        return
+
+    try:
+        await _drain_loop(retry_queue, dlq, redis, lock_key, lock_value, lock_ttl_s)
+    finally:
+        current = await redis.get(lock_key)
+        if current is not None and current.decode("utf-8") == lock_value:
+            await redis.delete(lock_key)
+
+
+async def _drain_loop(
+    retry_queue: RetryQueue,
+    dlq: DeadLetterQueue,
+    redis: Redis,
+    lock_key: str,
+    lock_value: str,
+    lock_ttl_s: float,
+) -> None:
+    """Process ready jobs while renewing the singleton lock."""
+
+    renew_interval = max(1.0, min(lock_ttl_s / 2.0, 5.0))
+    last_renew = time.time()
+
+    async def _renew_if_needed() -> bool:
+        nonlocal last_renew
+        now_s = time.time()
+        if now_s - last_renew >= renew_interval:
+            ok = await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), xx=True)
+            if not ok:
+                return False
+            last_renew = now_s
+        return True
+
     while True:
-        _, jobs = await retry_queue.pop_ready(
-            limit=settings.WH_RETRY_DRAIN_BATCH
-        )
+        if not await _renew_if_needed():
+            return
+
+        _, jobs = await retry_queue.pop_ready(limit=settings.WH_RETRY_DRAIN_BATCH)
         if jobs:
             for job in jobs:
+                if not await _renew_if_needed():
+                    return
                 ok, err = await _try_once(job)
                 if ok:
                     continue
@@ -114,32 +157,22 @@ async def _drain_once(retry_queue: RetryQueue, dlq: DeadLetterQueue) -> None:
                     )
                 else:
                     await _schedule_retry(retry_queue, job, err)
-            # Continue loop to check for more ready jobs immediately.
             continue
 
-        # No ready jobs: check if the schedule has a future job.
-        # Peek earliest due score and sleep until due (bounded), or exit if empty.
-        next_due = await _next_due_ts(retry_queue)
+        next_due = await retry_queue.earliest_due_ts()
         if next_due is None:
-            return  # queue empty, safe to exit
+            return
 
-        sleep_s = max(0.0, next_due - time.time())
-        sleep_s = min(sleep_s, settings.WH_RETRY_IDLE_SLEEP_MAX_S)
-        if sleep_s > 0:
-            await asyncio.sleep(sleep_s)
-
-
-async def _next_due_ts(retry_queue: RetryQueue) -> Optional[float]:
-    """
-    Return the earliest due timestamp (score) in the ZSET schedule, or None if empty.
-    Uses Redis ZRANGE with scores. Accesses private key with a lint exemption.
-    """
-    # Access private members intentionally for performance and to avoid public API change.
-    key = retry_queue._schedule_key()  # noqa: SLF001
-    r = retry_queue._redis  # noqa: SLF001
-    # Get the first (lowest score) element with its score.
-    items = await r.zrange(key, 0, 0, withscores=True)
-    if not items:
-        return None
-    # items[0] is (member, score)
-    return float(items[0][1])
+        target_sleep = min(
+            max(0.0, next_due - time.time()), settings.WH_RETRY_IDLE_SLEEP_MAX_S
+        )
+        if target_sleep <= 0:
+            continue
+        end_s = time.time() + target_sleep
+        while True:
+            if not await _renew_if_needed():
+                return
+            now_s = time.time()
+            if now_s >= end_s:
+                break
+            await asyncio.sleep(min(0.5, end_s - now_s))

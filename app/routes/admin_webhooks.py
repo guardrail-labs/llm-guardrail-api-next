@@ -264,7 +264,7 @@ async def admin_webhooks_dlq_replay(
     redis = get_redis()
     dlq = DeadLetterQueue(redis, prefix=settings.WH_REDIS_PREFIX)
     retry_queue = RetryQueue(redis, prefix=settings.WH_REDIS_PREFIX)
-    moved = await dlq.replay(retry_queue, limit, now_s=time.time())
+    moved = await dlq.replay_to(retry_queue, limit=limit, now_s=time.time())
     return {"replayed": moved}
 
 

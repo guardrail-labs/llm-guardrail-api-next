@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Awaitable, List, Optional, cast
+from typing import TYPE_CHECKING, Awaitable, List, Optional, cast
 
 from redis.asyncio import Redis
 
 from app.webhooks.models import WebhookJob
-from app.webhooks.retry import RetryQueue
+
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from app.webhooks.retry import RetryQueue
 
 
 def _k(prefix: str, name: str) -> str:
@@ -13,10 +15,7 @@ def _k(prefix: str, name: str) -> str:
 
 
 class DeadLetterQueue:
-    """
-    DLQ using a Redis LIST in append-only fashion.
-    Left side is oldest. Items are JSON-encoded WebhookJob.
-    """
+    """Redis-backed DLQ stored as LIST. Oldest items are at the left."""
 
     def __init__(self, redis: Redis, prefix: str = "whq") -> None:
         self._redis = redis
@@ -32,18 +31,22 @@ class DeadLetterQueue:
         )
         return [WebhookJob.from_json(item.decode("utf-8")) for item in raw]
 
-    async def replay(self, retry_queue: RetryQueue, limit: int, now_s: float) -> int:
+    async def replay_to(
+        self, retry_queue: "RetryQueue", limit: int, now_s: float
+    ) -> int:
         moved = 0
-        schedule_key = retry_queue.schedule_key()
         for _ in range(max(0, limit)):
             item = await cast(
                 Awaitable[Optional[bytes]], self._redis.lpop(self._key)
             )
             if item is None:
                 break
-            await cast(Awaitable[int], self._redis.zadd(schedule_key, {item: now_s}))
+            await retry_queue.enqueue_raw(item.decode("utf-8"), now_s)
             moved += 1
         return moved
+
+    async def replay(self, retry_queue: "RetryQueue", limit: int, now_s: float) -> int:
+        return await self.replay_to(retry_queue, limit, now_s)
 
     async def purge_older_than(self, threshold_s: float) -> int:
         raw = await cast(Awaitable[list[bytes]], self._redis.lrange(self._key, 0, -1))
