@@ -24,7 +24,8 @@ jobs:
             -p 127.0.0.1:18080:8000 \
             --name core \
             guardrail-core:ci \
-            /usr/local/bin/uvicorn ops.health_app:app --host 0.0.0.0 --port 8000
+            /usr/local/bin/python3 -m uvicorn ops.health_app:app \
+              --host 0.0.0.0 --port 8000
 
           # Wait up to 30s for /healthz
           for i in $(seq 1 30); do
@@ -35,7 +36,7 @@ jobs:
           done
 
           CID=$(docker ps -q -f name=core)
-          test -n "$CID" || (echo "container not running"; docker logs core || true; exit 1)
+          test -n "$CID" || (echo "container not running"; exit 1)
 
           # Distroless has no shell; use python for UID check
           UID=$(docker exec "$CID" /usr/local/bin/python3 -c 'import os;print(os.getuid())')
@@ -43,10 +44,6 @@ jobs:
 
       - name: Curl healthz
         run: curl -fsS http://127.0.0.1:18080/healthz
-
-      - name: Logs (for debugging on failure)
-        if: failure()
-        run: docker logs core || true
 
       - name: Stop
         if: always()
