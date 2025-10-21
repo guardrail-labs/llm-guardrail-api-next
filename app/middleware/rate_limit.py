@@ -119,5 +119,5 @@ def _blocked_headers(
     return h
 
 
-# -----------------------------
+class RateLimitMiddleware(BaseHTTPMiddleware):
 __all__ = ["RateLimitMiddleware", "RATE_LIMIT_BLOCKS"]
