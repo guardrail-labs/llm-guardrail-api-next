@@ -442,3 +442,21 @@ IDEMP_REDIS_URL = os.getenv("IDEMP_REDIS_URL", "redis://localhost:6379/0")
 IDEMP_REDIS_NAMESPACE = os.getenv("IDEMP_REDIS_NAMESPACE", "idem")
 IDEMP_RECENT_ZSET_MAX = int(os.getenv("IDEMP_RECENT_ZSET_MAX", "5000"))
 
+_raw_idempotency_backend = os.getenv("IDEMPOTENCY_BACKEND", "memory").strip().lower()
+IDEMPOTENCY_BACKEND: Literal["memory", "redis"] = (
+    cast(Literal["memory", "redis"], _raw_idempotency_backend)
+    if _raw_idempotency_backend in {"memory", "redis"}
+    else "memory"
+)
+
+REDIS_URL: str = os.getenv("REDIS_URL", IDEMP_REDIS_URL)
+REDIS_SOCKET_TIMEOUT_S: float = float(os.getenv("REDIS_SOCKET_TIMEOUT_S", "2.5"))
+REDIS_SOCKET_CONNECT_TIMEOUT_S: float = float(
+    os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT_S", "2.0")
+)
+REDIS_HEALTHCHECK_INTERVAL_S: int = int(
+    os.getenv("REDIS_HEALTHCHECK_INTERVAL_S", "15")
+)
+
+IDEMPOTENCY_TTL_S: int = int(os.getenv("IDEMPOTENCY_TTL_S", "300"))
+

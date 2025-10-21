@@ -9,7 +9,12 @@ from typing import Any, List, Mapping, Optional, Tuple, cast
 
 from redis.asyncio import Redis
 
-from app.idempotency.store import IdemStore, StoredResponse
+from app.idempotency.store import (
+    IdempotencyResult,
+    IdempotencyStore,
+    IdemStore,
+    StoredResponse,
+)
 from app.metrics import IDEMP_TOUCHES
 
 
@@ -368,3 +373,31 @@ class RedisIdemStore(IdemStore):
             "payload_fingerprint_prefix": fp_prefix,
             "first_seen_at": first_seen,
         }
+
+
+class RedisReservationStore(IdempotencyStore):
+    """Redis-backed idempotency with atomic reservations and TTL."""
+
+    def __init__(self, redis: Redis, prefix: str = "idem") -> None:
+        self._redis = redis
+        self._prefix = prefix
+        self._inflight_prefix = b"__inflight__:"
+
+    def _key(self, key: str) -> str:
+        return f"{self._prefix}:{key}"
+
+    async def begin(self, key: str, ttl_s: int, fingerprint: str) -> bool:
+        marker = self._inflight_prefix + fingerprint.encode("utf-8")
+        ok = await self._redis.set(self._key(key), marker, nx=True, ex=ttl_s)
+        return bool(ok)
+
+    async def get(self, key: str) -> Optional[IdempotencyResult]:
+        value = await self._redis.get(self._key(key))
+        if value is None:
+            return None
+        if value.startswith(self._inflight_prefix):
+            return None
+        return IdempotencyResult(payload=value)
+
+    async def finalize(self, key: str, payload: bytes, ttl_s: int) -> None:
+        await self._redis.set(self._key(key), payload, ex=ttl_s)

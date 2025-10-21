@@ -6,7 +6,12 @@ import secrets
 import time
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from app.idempotency.store import IdemStore, StoredResponse
+from app.idempotency.store import (
+    IdempotencyResult,
+    IdempotencyStore,
+    IdemStore,
+    StoredResponse,
+)
 from app.metrics import IDEMP_TOUCHES
 
 _RELEASE_STATE_TTL = 60  # seconds, for post-release 'released' marker
@@ -218,6 +223,47 @@ class MemoryIdemStore(IdemStore):
             )
             self._values[key] = (new_resp, value_expiry)
             return new_count
+
+
+class MemoryReservationStore(IdempotencyStore):
+    """Simple reservation-based idempotency store for single-process use."""
+
+    def __init__(self) -> None:
+        self._data: Dict[str, Tuple[float, Optional[bytes]]] = {}
+        self._lock = asyncio.Lock()
+
+    async def begin(self, key: str, ttl_s: int, fingerprint: str) -> bool:
+        del fingerprint  # unused for memory implementation
+        expires_at = time.time() + float(ttl_s)
+        async with self._lock:
+            self._gc_locked()
+            if key in self._data:
+                return False
+            self._data[key] = (expires_at, None)
+            return True
+
+    async def get(self, key: str) -> Optional[IdempotencyResult]:
+        async with self._lock:
+            self._gc_locked()
+            entry = self._data.get(key)
+            if not entry:
+                return None
+            _, payload = entry
+            if payload is None:
+                return None
+            return IdempotencyResult(payload=payload)
+
+    async def finalize(self, key: str, payload: bytes, ttl_s: int) -> None:
+        expires_at = time.time() + float(ttl_s)
+        async with self._lock:
+            self._gc_locked()
+            self._data[key] = (expires_at, payload)
+
+    def _gc_locked(self) -> None:
+        now = time.time()
+        expired = [key for key, (exp, _) in self._data.items() if exp <= now]
+        for key in expired:
+            self._data.pop(key, None)
 
 
 # Backwards-compat name expected by some imports/tests
