@@ -1,23 +1,23 @@
-# VCS / CI
+# VCS
 .git
-.github
 .gitignore
 
-# Python junk
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.so
+# Python cache
+**/__pycache__/
+**/*.pyc
 
-# Virtual envs / local
+# Local outputs
+bench/out/
+eval/out/
+dist/
+build/
+
+# Virtualenvs
 .venv/
+venv/
+
+# Environment files (prevent leaking secrets into build context)
 .env
 .env.*
-
-# Dev-only
-tests/
-ruff.toml
-mypy.ini
-docker-compose.yml
-README*.md
+*.env
+*.env.*
