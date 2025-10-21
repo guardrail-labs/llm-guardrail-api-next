@@ -7,10 +7,15 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
+
+from app import settings
+from app.runtime import get_redis
+from app.webhooks.dlq import DeadLetterQueue
+from app.webhooks.retry import RetryQueue
 
 
 def _load_guard(path: str, default_name: str) -> Optional[Any]:
@@ -228,3 +233,49 @@ async def webhooks_replay(
         return JSONResponse({"status": "ok", "replayed": replayed, "cooldown_sec": cooldown})
     finally:
         _REPLAY_LOCK.release()
+
+
+@router.get("/admin/webhooks/dlq/peek")
+async def admin_webhooks_dlq_peek(
+    limit: int = Query(20, ge=1, le=200),
+) -> List[Dict[str, Any]]:
+    redis = get_redis()
+    dlq = DeadLetterQueue(redis, prefix=settings.WH_REDIS_PREFIX)
+    items = await dlq.peek(limit)
+    return [
+        {
+            "url": job.url,
+            "method": job.method,
+            "attempt": job.attempt,
+            "created_at_s": job.created_at_s,
+            "last_error": job.last_error,
+        }
+        for job in items
+    ]
+
+
+@router.post(
+    "/admin/webhooks/dlq/replay",
+    dependencies=[Depends(_require_csrf_dep)],
+)
+async def admin_webhooks_dlq_replay(
+    limit: int = Query(50, ge=1, le=1000),
+) -> Dict[str, int]:
+    redis = get_redis()
+    dlq = DeadLetterQueue(redis, prefix=settings.WH_REDIS_PREFIX)
+    retry_queue = RetryQueue(redis, prefix=settings.WH_REDIS_PREFIX)
+    moved = await dlq.replay(retry_queue, limit, now_s=time.time())
+    return {"replayed": moved}
+
+
+@router.delete(
+    "/admin/webhooks/dlq/purge",
+    dependencies=[Depends(_require_csrf_dep)],
+)
+async def admin_webhooks_dlq_purge(
+    older_than_s: float = Query(..., gt=0.0),
+) -> Dict[str, int]:
+    redis = get_redis()
+    dlq = DeadLetterQueue(redis, prefix=settings.WH_REDIS_PREFIX)
+    removed = await dlq.purge_older_than(older_than_s)
+    return {"removed": removed}

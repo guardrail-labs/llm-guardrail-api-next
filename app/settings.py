@@ -458,5 +458,14 @@ REDIS_HEALTHCHECK_INTERVAL_S: int = int(
     os.getenv("REDIS_HEALTHCHECK_INTERVAL_S", "15")
 )
 
+# Webhook retry/DLQ settings
+WH_REDIS_PREFIX: str = os.getenv("WH_REDIS_PREFIX", "whq")
+WH_MAX_ATTEMPTS: int = int(os.getenv("WH_MAX_ATTEMPTS", "5"))
+WH_RETRY_BASE_S: float = float(os.getenv("WH_RETRY_BASE_S", "1.0"))
+WH_RETRY_FACTOR: float = float(os.getenv("WH_RETRY_FACTOR", "2.0"))
+WH_RETRY_JITTER_S: float = float(os.getenv("WH_RETRY_JITTER_S", "0.250"))
+WH_RETRY_DRAIN_BATCH: int = int(os.getenv("WH_RETRY_DRAIN_BATCH", "8"))
+WH_HTTP_TIMEOUT_S: float = float(os.getenv("WH_HTTP_TIMEOUT_S", "3.0"))
+
 IDEMPOTENCY_TTL_S: int = int(os.getenv("IDEMPOTENCY_TTL_S", "300"))
 
