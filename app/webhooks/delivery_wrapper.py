@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Awaitable, Dict, Optional
+from typing import Dict, Optional
 
 import httpx
 
@@ -27,7 +27,7 @@ async def deliver_with_retry(
     rq = RetryQueue(r, prefix=settings.WH_REDIS_PREFIX)
     dlq = DeadLetterQueue(r, prefix=settings.WH_REDIS_PREFIX)
 
-    first = WebhookJob(
+    job = WebhookJob(
         url=url,
         method=method,
         headers=headers,
@@ -37,11 +37,12 @@ async def deliver_with_retry(
         last_error=None,
     )
 
-    ok, err = await _try_once(first)
+    ok, err = await _try_once(job)
     if ok:
         return
 
-    await _schedule_retry(rq, first, err or "unknown")
+    err_msg = err or "unknown"
+    await _schedule_retry(rq, job, err_msg)
     asyncio.create_task(_ensure_worker(rq, dlq))
 
 
@@ -85,8 +86,9 @@ async def _schedule_retry(rq: RetryQueue, job: WebhookJob, err: str) -> None:
 
 async def _ensure_worker(rq: RetryQueue, dlq: DeadLetterQueue) -> None:
     """
-    Ensure a single worker per prefix using a Redis lock (SET NX EX).
-    The lock is renewed during long batches and while waiting for next due job.
+    Acquire a Redis lock to ensure a single worker per prefix. If lock held by
+    another process, exit. If acquired, run the drain loop, renewing the lock,
+    and release it when the schedule empties or renewal fails.
     """
     r = rq.redis
     prefix = rq.prefix
@@ -116,54 +118,69 @@ async def _drain_loop(
 ) -> None:
     """
     Drain until schedule empty; sleep until next due; renew lock periodically.
-    Renewal happens at loop start, between jobs, during HTTP attempts, and idle.
+    Stops immediately if renewal fails to preserve singleton guarantee.
     """
     renew_interval = max(1.0, min(lock_ttl_s / 2.0, 5.0))
     last_renew = 0.0
 
-    async def _renew_if_needed() -> None:
+    async def _renew_if_needed() -> bool:
         nonlocal last_renew
         now_s = time.time()
         if now_s - last_renew >= renew_interval:
-            await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), xx=True)
+            ok = await redis.set(lock_key, lock_value, ex=int(lock_ttl_s), xx=True)
+            if not ok:
+                return False
             last_renew = now_s
+        return True
 
-    async def _with_attempt_renewal(
-        coro: Awaitable[tuple[bool, Optional[str]]]
-    ) -> tuple[bool, Optional[str]]:
+    async def _with_attempt_renewal(coro) -> tuple[bool, Optional[str]]:
         """
         Run HTTP attempt while renewing lock on a short cadence to avoid expiry.
-        The renewal task stops immediately when the attempt finishes.
+        If renewal fails mid-flight, cancel attempt and stop worker.
         """
         stop = asyncio.Event()
+        failed = asyncio.Event()
 
         async def _ticker() -> None:
-            # Tick frequently but lightly; keep below renew_interval for safety.
             tick = max(0.25, min(renew_interval / 2.0, 2.0))
-            while not stop.is_set():
-                await _renew_if_needed()
+            while not stop.is_set() and not failed.is_set():
+                ok = await _renew_if_needed()
+                if not ok:
+                    failed.set()
+                    break
                 await asyncio.wait_for(asyncio.sleep(tick), timeout=tick + 0.1)
 
         t = asyncio.create_task(_ticker())
         try:
-            return await coro
+            result = await coro if not failed.is_set() else (False, "lock-lost")
         finally:
             stop.set()
-            # Ensure the renewer is fully stopped before proceeding.
             try:
                 await t
             except Exception:  # noqa: BLE001
                 pass
 
+        if failed.is_set():
+            # Lock lost mid-request; signal worker to stop
+            raise RuntimeError("worker lock lost")
+        return result
+
     while True:
-        await _renew_if_needed()
+        ok = await _renew_if_needed()
+        if not ok:
+            return
 
         _, jobs = await rq.pop_ready(limit=settings.WH_RETRY_DRAIN_BATCH)
         if jobs:
             for job in jobs:
-                await _renew_if_needed()
-                ok, err = await _with_attempt_renewal(_try_once(job))
-                if ok:
+                ok = await _renew_if_needed()
+                if not ok:
+                    return
+                try:
+                    ok_req, err = await _with_attempt_renewal(_try_once(job))
+                except RuntimeError:
+                    return  # lock lost mid-attempt
+                if ok_req:
                     continue
                 if job.attempt >= settings.WH_MAX_ATTEMPTS:
                     await dlq.push(
@@ -178,7 +195,8 @@ async def _drain_loop(
                         )
                     )
                 else:
-                    await _schedule_retry(rq, job, err or "unknown")
+                    err_msg = err or "unknown"
+                    await _schedule_retry(rq, job, err_msg)
             continue
 
         next_due = await rq.earliest_due_ts()
@@ -188,7 +206,9 @@ async def _drain_loop(
         sleep_s = max(0.0, next_due - time.time())
         end_s = time.time() + min(sleep_s, settings.WH_RETRY_IDLE_SLEEP_MAX_S)
         while True:
-            await _renew_if_needed()
+            ok = await _renew_if_needed()
+            if not ok:
+                return
             now_s = time.time()
             if now_s >= end_s:
                 break
