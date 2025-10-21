@@ -14,15 +14,15 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 @pytest.mark.asyncio
-async def test_backoff_increases_with_attempt_and_jitter() -> None:
+async def test_backoff_increases_with_attempt_and_no_jitter() -> None:
     b1 = compute_backoff_s(1.0, 2.0, 1, 0.0)
     b2 = compute_backoff_s(1.0, 2.0, 2, 0.0)
     b3 = compute_backoff_s(1.0, 2.0, 3, 0.0)
-    assert b1 == 1.0 and b2 == 2.0 and b3 == 4.0
+    assert (b1, b2, b3) == (1.0, 2.0, 4.0)
 
 
 @pytest.mark.asyncio
-async def test_retry_then_dlq_roundtrip() -> None:
+async def test_retry_schedule_and_dlq_flow() -> None:
     try:
         redis = Redis.from_url(REDIS_URL)
         await redis.ping()
@@ -73,9 +73,10 @@ async def test_retry_then_dlq_roundtrip() -> None:
     peeked = await dlq.peek(1)
     assert peeked and peeked[0].attempt == 5
 
-    moved = await dlq.replay(retry_queue, limit=1, now_s=time.time())
+    moved = await dlq.replay_to(retry_queue, limit=1, now_s=time.time())
     assert moved == 1
     assert await dlq.size() == 0
+    assert await retry_queue.size() == 1
 
     await redis.delete("twh:schedule")
     await redis.delete("twh:dlq")

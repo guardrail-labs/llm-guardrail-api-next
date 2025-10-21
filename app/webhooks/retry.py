@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 import time
-from typing import Awaitable, List, Tuple, cast
+from typing import Awaitable, List, Optional, Tuple, cast
 
 from redis.asyncio import Redis
 
@@ -34,6 +34,14 @@ class RetryQueue:
         self._redis = redis
         self._prefix = prefix
 
+    @property
+    def redis(self) -> Redis:
+        return self._redis
+
+    @property
+    def prefix(self) -> str:
+        return self._prefix
+
     def _schedule_key(self) -> str:
         return _k(self._prefix, "schedule")
 
@@ -42,7 +50,14 @@ class RetryQueue:
 
     async def enqueue(self, job: WebhookJob, due_at_s: float) -> None:
         await cast(
-            Awaitable[int], self._redis.zadd(self._schedule_key(), {job.to_json(): due_at_s})
+            Awaitable[int],
+            self._redis.zadd(self._schedule_key(), {job.to_json(): float(due_at_s)}),
+        )
+
+    async def enqueue_raw(self, raw_json: str, due_at_s: float) -> None:
+        await cast(
+            Awaitable[int],
+            self._redis.zadd(self._schedule_key(), {raw_json: float(due_at_s)}),
         )
 
     async def pop_ready(self, limit: int = 10) -> Tuple[float, List[WebhookJob]]:
@@ -57,6 +72,15 @@ class RetryQueue:
         await cast(Awaitable[int], self._redis.zrem(key, *entries))
         jobs = [WebhookJob.from_json(entry.decode("utf-8")) for entry in entries]
         return now, jobs
+
+    async def earliest_due_ts(self) -> Optional[float]:
+        items = await cast(
+            Awaitable[List[Tuple[bytes, float]]],
+            self._redis.zrange(self._schedule_key(), 0, 0, withscores=True),
+        )
+        if not items:
+            return None
+        return float(items[0][1])
 
     async def size(self) -> int:
         size = await cast(Awaitable[int], self._redis.zcard(self._schedule_key()))
