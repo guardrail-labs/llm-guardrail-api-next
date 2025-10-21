@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 import time
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -64,13 +64,14 @@ def _ensure_request_id() -> str:
     Tests require X-Request-ID to always be present on 429 responses.
     """
     try:
-        from app.middleware.request_id import get_request_id  # lazy to avoid cycles
+        # Lazy import to avoid cycles.
+        from app.middleware.request_id import get_request_id
 
         rid = get_request_id() or ""
     except Exception:
         rid = ""
     if not rid:
-        # Generate a UUID4 hex without dashes to avoid importing any app utils.
+        # Generate a UUID4 hex without dashes to avoid importing app utils.
         import uuid
 
         rid = uuid.uuid4().hex
@@ -111,6 +112,7 @@ def _allowed_headers(limit_str: str, remaining: Optional[float]) -> Dict[str, st
 
 def _blocked_headers(limit_str: str, retry_after_s: int) -> Dict[str, str]:
     # Blocked path headers must match tests exactly
+    rid = _ensure_request_id()
     h = {
         "Retry-After": str(int(max(1, retry_after_s))),
         "X-RateLimit-Limit": limit_str,
@@ -124,8 +126,9 @@ def _blocked_headers(limit_str: str, retry_after_s: int) -> Dict[str, str]:
         # decision + mode headers required by tests
         "X-Guardrail-Decision": "block_input_only",
         "X-Guardrail-Mode": "Tier1",
-        # ensure a request id is always present on 429s
-        "X-Request-ID": _ensure_request_id(),
+        # ensure identifiers are always present on 429s
+        "X-Request-ID": rid,
+        "X-Guardrail-Incident-ID": rid,
     }
     return h
 
