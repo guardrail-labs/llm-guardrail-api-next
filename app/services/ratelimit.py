@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 
 from prometheus_client import REGISTRY, Counter, Gauge
 
-try:  # pragma: no cover - defensive import, exercised in tests
+try:  # pragma: no cover - defensive import; tests exercise real path
     from app.services.ratelimit_backends import (
         LocalTokenBucket,
         RateLimiterBackend,
@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover
     RateLimiterBackend = None  # type: ignore
     build_backend = None  # type: ignore
 
+# Tests monkeypatch this to freeze time in burst scenarios.
 _NOW = time.monotonic
 
 
@@ -26,6 +27,9 @@ def _now() -> float:
 
 
 def _get_or_create_metric(factory, name: str, documentation: str, **kwargs):
+    """
+    Prometheus helper that tolerates re-registration across tests.
+    """
     try:
         return factory(name, documentation, **kwargs)
     except ValueError:
@@ -71,10 +75,11 @@ class RateLimiter:
                 backend = LocalTokenBucket()
             else:  # pragma: no cover - fallback for import failures
                 raise RuntimeError("LocalTokenBucket backend unavailable")
+        # Allow tests to override the internal clock by setting _NOW.
         if hasattr(backend, "set_now"):
             try:
                 backend.set_now(_now)
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover
                 pass
         self._backend = backend
 
@@ -88,25 +93,28 @@ class RateLimiter:
         )
 
         retry_after: Optional[int]
-        if allowed or retry_after_seconds <= 0:
+        if allowed or (retry_after_seconds or 0) <= 0:
             retry_after = None
         else:
-            retry_after = max(1, int(math.ceil(retry_after_seconds)))
+            retry_after = max(1, int(math.ceil(float(retry_after_seconds))))
 
         if remaining is not None:
             try:
-                TOKENS_GAUGE.labels(tenant=tenant, bot=bot).set(max(0.0, remaining))
+                TOKENS_GAUGE.labels(tenant=tenant, bot=bot).set(max(0.0, float(remaining)))
             except Exception:
                 pass
 
         return allowed, retry_after, float(remaining or 0.0)
 
 
+# ------------------------------ Settings helpers -----------------------------
+
+
 def _bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    return value.strip().lower() in {"1", "true", "t", "yes", "on"}
 
 
 def _float_env(name: str, default: float) -> float:
@@ -137,7 +145,7 @@ def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
     burst = burst_default
 
     try:
-        rl = getattr(getattr(settings, "ingress"), "rate_limit", None)
+        rl = getattr(getattr(settings, "ingress", None), "rate_limit", None)
         if rl is not None:
             enabled = bool(getattr(rl, "enabled", enabled_default))
             rps = float(getattr(rl, "rps", rps_default))
@@ -165,56 +173,82 @@ def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
     )
 
 
+# ------------------- Unknown-identity enforcement policy ---------------------
+
 _global_enforce_unknown: Optional[bool] = None
 _global_enforce_unknown_source: Optional[str] = None
 
 
 def _enforce_unknown_from_settings(settings) -> bool:
-    """Read enforcement policy for 'unknown' identities."""
-
     try:
         ingress = getattr(settings, "ingress", None)
-        if ingress is not None:
-            rl = getattr(ingress, "rate_limit", None)
-            if rl is not None and hasattr(rl, "enforce_unknown"):
-                return bool(getattr(rl, "enforce_unknown"))
+        rl = getattr(ingress, "rate_limit", None) if ingress is not None else None
+        if rl is not None and hasattr(rl, "enforce_unknown"):
+            return bool(getattr(rl, "enforce_unknown"))
     except Exception:
         pass
     return _bool_env("RATE_LIMIT_ENFORCE_UNKNOWN", False)
 
 
 def get_enforce_unknown(settings=None) -> bool:
+    """
+    Cache with invalidation when env var changes. When settings are provided,
+    prefer them and refresh the cache each call (tests pass settings directly).
+    """
     global _global_enforce_unknown, _global_enforce_unknown_source
 
     settings = getattr(settings, "value", settings)
 
     if settings is not None:
-        value = _enforce_unknown_from_settings(settings)
-        _global_enforce_unknown = value
+        val = _enforce_unknown_from_settings(settings)
+        _global_enforce_unknown = val
         _global_enforce_unknown_source = "__settings__"
-        return value
+        return val
 
-    current_env = os.getenv("RATE_LIMIT_ENFORCE_UNKNOWN")
+    current_env = os.getenv("RATE_LIMIT_ENFORCE_UNKNOWN", "")
     if (
         _global_enforce_unknown is not None
         and _global_enforce_unknown_source == current_env
     ):
         return _global_enforce_unknown
 
-    value = _enforce_unknown_from_settings(settings)
-    _global_enforce_unknown = value
+    val = _enforce_unknown_from_settings(settings)
+    _global_enforce_unknown = val
     _global_enforce_unknown_source = current_env
-    return value
+    return val
 
 
+# ---------------------------- Global limiter cache ---------------------------
+
+_global_cfg: Optional[tuple] = None
 _global_enabled: Optional[bool] = None
 _global_limiter: Optional[RateLimiter] = None
 
 
+def _config_tuple(enabled: bool, limiter: RateLimiter) -> tuple:
+    return (bool(enabled), float(limiter.refill_rate), float(limiter.capacity))
+
+
 def get_global(settings=None) -> Tuple[bool, RateLimiter]:
-    global _global_enabled, _global_limiter
-    if _global_limiter is not None and _global_enabled is not None:
-        return _global_enabled, _global_limiter
+    """
+    Returns a (enabled, RateLimiter) pair. Rebuilds the limiter whenever
+    settings/env change so tests that flip env vars between runs see updates.
+    """
+    global _global_cfg, _global_enabled, _global_limiter
+
     enabled, limiter = build_from_settings(getattr(settings, "value", settings))
-    _global_enabled, _global_limiter = enabled, limiter
-    return enabled, limiter
+    new_cfg = _config_tuple(enabled, limiter)
+
+    if _global_cfg != new_cfg or _global_limiter is None:
+        # Always propagate the current _now to the backend (important when tests
+        # monkeypatch _NOW to freeze time).
+        if hasattr(limiter._backend, "set_now"):
+            try:
+                limiter._backend.set_now(_now)
+            except Exception:
+                pass
+        _global_cfg = new_cfg
+        _global_enabled = enabled
+        _global_limiter = limiter
+
+    return _global_enabled, _global_limiter  # type: ignore[return-value]
