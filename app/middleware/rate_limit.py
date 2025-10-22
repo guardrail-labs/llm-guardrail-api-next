@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import time
@@ -16,6 +17,7 @@ PROBE_PATHS = {"/readyz", "/livez", "/metrics", "/healthz"}
 _TENANT_HDRS = ("X-Guardrail-Tenant", "X-Tenant")
 _BOT_HDRS = ("X-Guardrail-Bot", "X-Bot")
 _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_-]+")
+_SAFE_LABEL_RE = re.compile(r"[^a-zA-Z0-9:_-]+")
 
 # ------------------------ Exposed counter for tests --------------------------
 # tests/test_rate_limit_metrics.py monkeypatches app.middleware.rate_limit.RATE_LIMIT_BLOCKS
@@ -40,6 +42,14 @@ RATE_LIMIT_BLOCKS = _GLOBAL_BLOCK_COUNTER
 
 def _sanitize(value: str) -> str:
     return _SANITIZE_RE.sub("_", value) if value else "unknown"
+
+
+def _anon_label(prefix: str, value: str) -> str:
+    """Create a hashed, Prometheus-safe label for anonymous callers."""
+
+    h_val = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    label = f"{prefix}:{h_val}"
+    return _SAFE_LABEL_RE.sub("-", label)
 
 
 def _now() -> float:
@@ -162,11 +172,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         tenant, bot = _extract_identity(request)
         enforce_unknown = RL.get_enforce_unknown(app_settings)
 
+        req_headers = request.headers
         client = request.client
         client_ip = client.host if client and client.host else ""
-        api_key = request.headers.get("x-api-key", "")
-        fallback_id = api_key or client_ip or "unknown"
-        fallback = _sanitize(str(fallback_id)) or "unknown"
 
         limiter_tenant = tenant
         limiter_bot = bot
@@ -179,7 +187,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if tenant == "unknown" and bot == "unknown":
-            limiter_bot = f"anon_{fallback}"
+            api_key = req_headers.get("x-api-key")
+            if api_key:
+                hashed = _anon_label("key", api_key)
+            else:
+                hashed = _anon_label("ip", client_ip)
+            limiter_bot = f"anon_{hashed}"
+            limiter_tenant = "public"
 
         allowed, retry_after_s, remaining = limiter.allow(
             limiter_tenant,
