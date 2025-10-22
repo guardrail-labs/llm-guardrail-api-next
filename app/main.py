@@ -49,6 +49,7 @@ from app.middleware.ingress_unicode_sanitizer import (
 from app.middleware.multimodal_middleware import MultimodalGateMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
+from app.middleware.stream_sse_guard import SSEGuardMiddleware
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.middleware.unicode_middleware import UnicodeSanitizerMiddleware
 from app.observability.http_status import HttpStatusMetricsMiddleware
@@ -897,6 +898,8 @@ def create_app() -> FastAPI:
     app.add_middleware(IngressRiskMiddleware)
     # Egress: inspect text/JSON outputs for hidden controls/markup (no mutation)
     app.add_middleware(EgressOutputInspectMiddleware)
+    # SSE header hygiene before any compression middlewares
+    app.add_middleware(SSEGuardMiddleware)
     # Final egress stage: normalize timing for sensitive responses
     app.add_middleware(EgressTimingMiddleware)
     try:
