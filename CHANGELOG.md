@@ -9,6 +9,11 @@
 - feat(stream): EventStream helper (frames, retry, heartbeat)
 - feat(stream): RedactorBoundaryWriter to prevent mid-chunk secret leaks
 - test(stream): headers, boundaries, generator behavior
+- feat(retention): per-tenant TTL policies (Redis store)
+- feat(retention): purge coordinator + signed receipts (HMAC by default; Ed25519 optional)
+- feat(admin): retention policy & purge admin API with CSRF enforcement
+- ops: optional periodic purge worker + Prom metrics
+- test: receipts/signatures, coordinator, admin API
 
 ### Fixed
 - fix(middleware): correct middleware registration order (Unicode ingress first; SSE vs

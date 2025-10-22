@@ -1,7 +1,177 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, ContextManager, Iterable, Optional, cast
+from enum import Enum
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
+
+from redis.asyncio import Redis
+
+
+class Resource(str, Enum):
+    AUDIT = "audit"
+    DLQ_MSG = "dlq_msg"
+    IDEMP_KEYS = "idemp_keys"
+    WEBHOOK_LOGS = "webhook_logs"
+
+
+@dataclass(slots=True)
+class RetentionPolicy:
+    tenant: str
+    resource: Resource
+    ttl_seconds: int
+    enabled: bool = True
+
+
+def expires_at(created_ts: float, ttl_seconds: int) -> float:
+    ttl = max(int(ttl_seconds), 0)
+    return created_ts + float(ttl)
+
+
+@runtime_checkable
+class RetentionStore(Protocol):
+    async def get_policy(
+        self, tenant: str, resource: str
+    ) -> Optional[RetentionPolicy]:
+        ...
+
+    async def set_policy(self, policy: RetentionPolicy) -> None:
+        ...
+
+    async def list_policies(
+        self, tenant: Optional[str] = None
+    ) -> List[RetentionPolicy]:
+        ...
+
+
+class InMemoryRetentionStore(RetentionStore):
+    def __init__(self) -> None:
+        self._policies: Dict[tuple[str, str], RetentionPolicy] = {}
+
+    async def get_policy(
+        self, tenant: str, resource: str
+    ) -> Optional[RetentionPolicy]:
+        key = (tenant, resource)
+        return self._policies.get(key)
+
+    async def set_policy(self, policy: RetentionPolicy) -> None:
+        key = (policy.tenant, policy.resource.value)
+        self._policies[key] = policy
+
+    async def list_policies(
+        self, tenant: Optional[str] = None
+    ) -> List[RetentionPolicy]:
+        items = list(self._policies.values())
+        if tenant is None:
+            return sorted(items, key=lambda pol: (pol.tenant, pol.resource.value))
+        return sorted(
+            (pol for pol in items if pol.tenant == tenant),
+            key=lambda pol: pol.resource.value,
+        )
+
+
+class RedisRetentionStore(RetentionStore):
+    def __init__(self, redis: Redis) -> None:
+        self._redis = redis
+
+    @staticmethod
+    def _policy_key(tenant: str, resource: str) -> str:
+        return f"retention:pol:{tenant}:{resource}"
+
+    @staticmethod
+    def _tenant_index_key(tenant: str) -> str:
+        return f"retention:pol:tenant:{tenant}"
+
+    @staticmethod
+    def _encode(policy: RetentionPolicy) -> bytes:
+        payload = {
+            "tenant": policy.tenant,
+            "resource": policy.resource.value,
+            "ttl_seconds": int(policy.ttl_seconds),
+            "enabled": bool(policy.enabled),
+        }
+        return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+    @staticmethod
+    def _decode(payload: bytes) -> RetentionPolicy:
+        data = json.loads(payload.decode("utf-8"))
+        resource_raw = str(data.get("resource", Resource.AUDIT.value))
+        try:
+            resource = Resource(resource_raw)
+        except ValueError:
+            resource = Resource.AUDIT
+        return RetentionPolicy(
+            tenant=str(data.get("tenant", "")),
+            resource=resource,
+            ttl_seconds=int(data.get("ttl_seconds", 0)),
+            enabled=bool(data.get("enabled", True)),
+        )
+
+    async def get_policy(
+        self, tenant: str, resource: str
+    ) -> Optional[RetentionPolicy]:
+        key = self._policy_key(tenant, resource)
+        raw = await self._redis.get(key)
+        if raw is None:
+            return None
+        return self._decode(cast(bytes, raw))
+
+    async def set_policy(self, policy: RetentionPolicy) -> None:
+        key = self._policy_key(policy.tenant, policy.resource.value)
+        await self._redis.set(key, self._encode(policy))
+        await self._redis.sadd("retention:pol:tenants", policy.tenant)
+        await self._redis.sadd(
+            self._tenant_index_key(policy.tenant), policy.resource.value
+        )
+
+    async def list_policies(
+        self, tenant: Optional[str] = None
+    ) -> List[RetentionPolicy]:
+        if tenant is not None:
+            return await self._list_for_tenant(tenant)
+        tenants = await self._redis.smembers("retention:pol:tenants")
+        items: List[RetentionPolicy] = []
+        for tenant_raw in sorted(self._decode_bytes_set(tenants)):
+            items.extend(await self._list_for_tenant(tenant_raw))
+        return items
+
+    async def _list_for_tenant(self, tenant: str) -> List[RetentionPolicy]:
+        members = await self._redis.smembers(self._tenant_index_key(tenant))
+        resources = sorted(self._decode_bytes_set(members))
+        if not resources:
+            return []
+        pipe = self._redis.pipeline()
+        for resource in resources:
+            pipe.get(self._policy_key(tenant, resource))
+        raw_items = await pipe.execute()
+        policies: List[RetentionPolicy] = []
+        for resource, raw in zip(resources, raw_items):
+            if raw is None:
+                continue
+            policies.append(self._decode(cast(bytes, raw)))
+        return policies
+
+    @staticmethod
+    def _decode_bytes_set(values: Iterable[bytes]) -> List[str]:
+        decoded: List[str] = []
+        for raw in values:
+            if isinstance(raw, bytes):
+                decoded.append(raw.decode("utf-8"))
+            elif isinstance(raw, str):
+                decoded.append(raw)
+        return decoded
 
 
 def _decisions_supports_sql() -> bool:
