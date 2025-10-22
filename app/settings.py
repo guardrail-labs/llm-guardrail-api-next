@@ -5,6 +5,7 @@ service. Real deployments may populate these from environment or a config
 system.
 """
 
+import base64
 import json
 import os
 from typing import TYPE_CHECKING, Any, List, Literal, Set, cast, overload
@@ -470,6 +471,25 @@ REDIS_SOCKET_CONNECT_TIMEOUT_S: float = float(
 )
 REDIS_HEALTHCHECK_INTERVAL_S: int = int(
     os.getenv("REDIS_HEALTHCHECK_INTERVAL_S", "15")
+)
+
+_DEFAULT_PURGE_SECRET = base64.b64encode(b"insecure-test-secret").decode("ascii")
+PURGE_SIGNING_SECRET: str = (
+    os.getenv("PURGE_SIGNING_SECRET", _DEFAULT_PURGE_SECRET).strip()
+    or _DEFAULT_PURGE_SECRET
+)
+PURGE_KEY_ID: str = os.getenv("PURGE_KEY_ID", "default-hmac").strip() or "default-hmac"
+PURGE_ED25519_PRIV: str = os.getenv("PURGE_ED25519_PRIV", "").strip()
+RETENTION_WORKER_ENABLED: bool = (
+    os.getenv("RETENTION_WORKER_ENABLED", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+RETENTION_MAX_IDS_PER_RUN: int = int(
+    os.getenv("RETENTION_MAX_IDS_PER_RUN", "100") or "100"
+)
+RETENTION_AUDIT_SQL_ENABLED: bool = (
+    os.getenv("RETENTION_AUDIT_SQL_ENABLED", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
 )
 
 # Webhook retry/DLQ settings

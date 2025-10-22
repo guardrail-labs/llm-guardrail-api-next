@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import base64
 import inspect
-from typing import Optional
+from typing import Dict, Optional
 
 from redis.asyncio import Redis, from_url as redis_from_url
 from redis.asyncio.connection import BlockingConnectionPool
@@ -11,6 +12,14 @@ from app.idempotency.memory_store import InMemoryIdemStore, MemoryReservationSto
 from app.idempotency.redis_store import RedisIdemStore, RedisReservationStore
 from app.idempotency.store import IdempotencyStore, IdemStore
 from app.services.dlq import DLQService
+from app.services.purge_coordinator import PurgeCoordinator
+from app.services.purge_receipts import Ed25519Signer, HmacSigner, Signer
+from app.services.purge_targets import PurgeTarget, build_registry
+from app.services.retention import (
+    InMemoryRetentionStore,
+    RedisRetentionStore,
+    RetentionStore,
+)
 
 # Lazily initialized singletons for process lifetime.
 _redis: Optional[Redis] = None
@@ -18,6 +27,10 @@ _store: Optional[IdemStore] = None
 _redis_client: Optional[Redis] = None
 _reservation_store: Optional[IdempotencyStore] = None
 _dlq_service: Optional[DLQService] = None
+_retention_store: Optional[RetentionStore] = None
+_purge_signer: Optional[Signer] = None
+_purge_targets: Optional[Dict[str, PurgeTarget]] = None
+_purge_coordinator: Optional[PurgeCoordinator] = None
 
 
 def redis_client() -> Redis:
@@ -117,8 +130,61 @@ def get_dlq_service() -> DLQService:
     return _dlq_service
 
 
+def get_retention_store() -> RetentionStore:
+    global _retention_store
+    if _retention_store is not None:
+        return _retention_store
+
+    if settings.REDIS_URL.startswith("memory://"):
+        _retention_store = InMemoryRetentionStore()
+    else:
+        try:
+            _retention_store = RedisRetentionStore(get_redis())
+        except Exception:
+            _retention_store = InMemoryRetentionStore()
+    return _retention_store
+
+
+def get_purge_signer() -> Signer:
+    global _purge_signer
+    if _purge_signer is not None:
+        return _purge_signer
+
+    key_id = settings.PURGE_KEY_ID
+    ed_priv = settings.PURGE_ED25519_PRIV
+    if ed_priv:
+        _purge_signer = Ed25519Signer(ed_priv, key_id)
+        return _purge_signer
+
+    secret = base64.b64decode(settings.PURGE_SIGNING_SECRET)
+    _purge_signer = HmacSigner(secret, key_id)
+    return _purge_signer
+
+
+def _get_purge_targets(redis: Redis) -> Dict[str, PurgeTarget]:
+    global _purge_targets
+    if _purge_targets is None:
+        include_sql = bool(getattr(settings, "RETENTION_AUDIT_SQL_ENABLED", False))
+        _purge_targets = build_registry(redis, include_sql=include_sql)
+    return _purge_targets
+
+
+def get_purge_coordinator() -> PurgeCoordinator:
+    global _purge_coordinator
+    if _purge_coordinator is not None:
+        return _purge_coordinator
+
+    redis = get_redis()
+    store = get_retention_store()
+    signer = get_purge_signer()
+    targets = _get_purge_targets(redis)
+    _purge_coordinator = PurgeCoordinator(redis, store, signer, targets)
+    return _purge_coordinator
+
+
 async def close_redis_connections() -> None:
     global _redis_client, _redis, _dlq_service
+    global _retention_store, _purge_signer, _purge_targets, _purge_coordinator
 
     client_main = _redis_client
     legacy_client = _redis
@@ -126,6 +192,10 @@ async def close_redis_connections() -> None:
     _redis_client = None
     _redis = None
     _dlq_service = None
+    _retention_store = None
+    _purge_signer = None
+    _purge_targets = None
+    _purge_coordinator = None
 
     await _close_client(client_main)
     await _close_client(legacy_client)
