@@ -139,24 +139,44 @@ def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
     enabled_default = False  # opt-in
     rps_default = 5.0
     burst_default = 10.0
+    per_minute_default = 60.0
 
     enabled = enabled_default
     rps = rps_default
     burst = burst_default
+    per_minute = per_minute_default
+    per_minute_explicit = False
 
     try:
         rl = getattr(getattr(settings, "ingress", None), "rate_limit", None)
         if rl is not None:
             enabled = bool(getattr(rl, "enabled", enabled_default))
-            rps = float(getattr(rl, "rps", rps_default))
+            if hasattr(rl, "per_minute"):
+                per_minute = float(getattr(rl, "per_minute", per_minute_default))
+                rps = max(per_minute, 0.0) / 60.0
+                per_minute_explicit = True
+            else:
+                rps = float(getattr(rl, "rps", rps_default))
             burst = float(getattr(rl, "burst", burst_default))
         else:
             enabled = _bool_env("RATE_LIMIT_ENABLED", enabled_default)
-            rps = _float_env("RATE_LIMIT_RPS", rps_default)
+            raw_per_min = os.getenv("RATE_LIMIT_PER_MINUTE")
+            if raw_per_min is not None and raw_per_min.strip():
+                per_minute = _float_env("RATE_LIMIT_PER_MINUTE", per_minute_default)
+                rps = max(per_minute, 0.0) / 60.0
+                per_minute_explicit = True
+            else:
+                rps = _float_env("RATE_LIMIT_RPS", rps_default)
             burst = _float_env("RATE_LIMIT_BURST", burst_default)
     except Exception:
         enabled = _bool_env("RATE_LIMIT_ENABLED", enabled_default)
-        rps = _float_env("RATE_LIMIT_RPS", rps_default)
+        raw_per_min = os.getenv("RATE_LIMIT_PER_MINUTE")
+        if raw_per_min is not None and raw_per_min.strip():
+            per_minute = _float_env("RATE_LIMIT_PER_MINUTE", per_minute_default)
+            rps = max(per_minute, 0.0) / 60.0
+            per_minute_explicit = True
+        else:
+            rps = _float_env("RATE_LIMIT_RPS", rps_default)
         burst = _float_env("RATE_LIMIT_BURST", burst_default)
 
     backend_instance: Optional[RateLimiterBackend] = None
@@ -166,11 +186,17 @@ def build_from_settings(settings) -> Tuple[bool, RateLimiter]:
         except Exception:
             backend_instance = None
 
-    return enabled, RateLimiter(
+    limiter = RateLimiter(
         capacity=burst,
         refill_rate=rps,
         backend=backend_instance,
     )
+    if per_minute_explicit:
+        try:
+            limiter.per_minute = max(per_minute, 0.0)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    return enabled, limiter
 
 
 # ------------------- Unknown-identity enforcement policy ---------------------

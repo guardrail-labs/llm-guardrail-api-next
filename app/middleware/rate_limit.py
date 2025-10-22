@@ -162,6 +162,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         tenant, bot = _extract_identity(request)
         enforce_unknown = RL.get_enforce_unknown(app_settings)
 
+        client = request.client
+        client_ip = client.host if client and client.host else ""
+        api_key = request.headers.get("x-api-key", "")
+        fallback_id = api_key or client_ip or "unknown"
+        fallback = _sanitize(str(fallback_id)) or "unknown"
+
+        limiter_tenant = tenant
+        limiter_bot = bot
+
         if (tenant == "unknown" and bot == "unknown") and not enforce_unknown:
             try:
                 RL.RATE_LIMIT_SKIPS.labels(reason="unknown_identity").inc()
@@ -169,9 +178,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 pass
             return await call_next(request)
 
-        # allow() must return:
-        # (allowed: bool, retry_after_s: Optional[int], remaining_tokens: float | None)
-        allowed, retry_after_s, remaining = limiter.allow(tenant, bot, cost=1.0)
+        if tenant == "unknown" and bot == "unknown":
+            limiter_bot = f"anon_{fallback}"
+
+        allowed, retry_after_s, remaining = limiter.allow(
+            limiter_tenant,
+            limiter_bot,
+            cost=1.0,
+        )
         rps = float(limiter.refill_rate)
         burst = float(limiter.capacity)
         limit_str = _format_limit(rps, burst)
@@ -188,7 +202,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except Exception:
             pass
 
-        retry_after_val = int(max(1, (retry_after_s or 1)))
+        tokens_remaining = float(remaining or 0.0)
+        need = max(0.0, 1.0 - max(tokens_remaining, 0.0))
+        refill = max(rps, 1e-6)
+        computed_retry = int(math.ceil(need / refill)) if need > 0.0 else 1
+        if retry_after_s:
+            computed_retry = max(computed_retry, int(math.ceil(float(retry_after_s))))
+        retry_after_val = max(1, computed_retry)
         headers = _blocked_headers(limit_str, retry_after_val)
 
         return JSONResponse(
