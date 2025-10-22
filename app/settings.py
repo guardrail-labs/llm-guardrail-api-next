@@ -482,3 +482,9 @@ WH_WORKER_LOCK_TTL_S: float = float(os.getenv("WH_WORKER_LOCK_TTL_S", "15.0"))
 
 IDEMPOTENCY_TTL_S: int = int(os.getenv("IDEMPOTENCY_TTL_S", "300"))
 
+CONFUSABLES_MODE: str = os.getenv("CONFUSABLES_MODE", "normalize")
+CONFUSABLES_FORM: str = os.getenv("CONFUSABLES_FORM", "NFC")
+CONFUSABLES_MAX_BODY_BYTES: int = int(
+    os.getenv("CONFUSABLES_MAX_BODY_BYTES", "1000000")
+)
+

@@ -52,6 +52,7 @@ from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.stream_sse_guard import SSEGuardMiddleware
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.middleware.unicode_middleware import UnicodeSanitizerMiddleware
+from app.middleware.unicode_normalize_guard import UnicodeNormalizeGuard
 from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.routes.admin_scope_api import router as admin_scope_router
 from app.routes.egress import router as egress_router
@@ -870,6 +871,18 @@ def create_app() -> FastAPI:
     #   -> UnicodeIngressSanitizerMiddleware -> TraceGuard -> Metadata
     #   -> (OTEL) -> RequestID
     # Register in inverse order to achieve this at runtime:
+    # Unicode normalization + confusables sanitizer (P1)
+    app.add_middleware(
+        UnicodeNormalizeGuard,
+        default_mode=os.getenv("CONFUSABLES_MODE", settings.CONFUSABLES_MODE),
+        norm_form=os.getenv("CONFUSABLES_FORM", settings.CONFUSABLES_FORM),
+        max_body_bytes=int(
+            os.getenv(
+                "CONFUSABLES_MAX_BODY_BYTES",
+                str(settings.CONFUSABLES_MAX_BODY_BYTES),
+            )
+        ),
+    )
     app.add_middleware(RequestIDMiddleware)
     if _truthy(os.getenv("OTEL_ENABLED", "false")):
         app.add_middleware(TracingMiddleware)

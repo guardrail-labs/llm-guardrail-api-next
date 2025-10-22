@@ -9,6 +9,9 @@
 - feat(stream): add EventStream helper (frames, retry, heartbeats)
 - feat(stream): add RedactorBoundaryWriter to avoid mid-chunk leaks
 - test(stream): headers, redaction boundaries, generator behavior
+- feat(security): Unicode normalization + confusables ingress sanitizer (P1)
+- test(security): service + middleware coverage
+- ops: tenant-configurable mode via headers/env (NFC default)
 
 ## [v1.0.0-rc1] - 2025-09-23
 ### Added
