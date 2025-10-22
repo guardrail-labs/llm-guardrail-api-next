@@ -24,7 +24,6 @@ from sqlalchemy.sql import and_, func
 from app.observability.metrics import mitigation_override_counter
 from app.services.mitigation_prefs import Mode, resolve_mode, validate_mode
 
-
 _log = logging.getLogger(__name__)
 
 

@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from starlette.testclient import TestClient
 
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware

@@ -1,8 +1,8 @@
 # app/sanitizers/unicode_sanitizer.py
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple, Union
 import unicodedata
+from typing import Any, Dict, Tuple, Union
 
 JsonLike = Union[dict, list, str, int, float, bool, None]
 

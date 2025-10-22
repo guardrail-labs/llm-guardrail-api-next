@@ -5,7 +5,7 @@ from typing import List
 # Optional dependency: if tiktoken is present we'll use it.
 # We do not add a hard dependency; fallback is a simple tokenizer.
 try:
-    import tiktoken   
+    import tiktoken
 except Exception:  # pragma: no cover
     tiktoken = None 
 

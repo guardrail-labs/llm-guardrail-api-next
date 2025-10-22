@@ -6,8 +6,8 @@ from typing import Awaitable, Callable, List
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.sanitizers.unicode_emoji import analyze_emoji_sequences
 from app.observability.metrics import emoji_zwj_ingress_report
+from app.sanitizers.unicode_emoji import analyze_emoji_sequences
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"

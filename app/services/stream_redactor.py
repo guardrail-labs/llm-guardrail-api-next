@@ -1,57 +1,48 @@
 from __future__ import annotations
 
 import re
+from typing import List
 
-_DEFAULT_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"sk-[A-Za-z0-9]{16,}"),
-    re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
-    re.compile(r"(?i)(password|api[_-]?key|secret)\s*[:=]\s*\S+"),
+__all__ = ["RedactorBoundaryWriter"]
+
+# Longest token we attempt to redact (covers API keys/JWTs) plus slack.
+_MAX_PATTERN_LOOKBACK = 128
+
+_SECRET_PATTERNS: List[re.Pattern[str]] = [
+    re.compile(r"sk-[A-Za-z0-9]{16,}", re.IGNORECASE),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    re.compile(r"(?:api|key|token)[=:]\s*[A-Za-z0-9_\-]{24,}"),
 ]
 
-
 class RedactorBoundaryWriter:
-    """
-    Buffers partial tokens to avoid mid-chunk secret leaks. Emits only at safe boundaries.
-    """
+    """Incrementally redact secrets without leaking across chunk boundaries."""
 
-    def __init__(
-        self, patterns: list[re.Pattern[str]] | None = None, max_hold_bytes: int = 4096
-    ) -> None:
-        self._buf = bytearray()
-        self._max = max(128, max_hold_bytes)
-        self._patterns = patterns or _DEFAULT_PATTERNS
+    def __init__(self, *, encoding: str = "utf-8") -> None:
+        self._encoding = encoding
+        self._buffer = ""
 
     def feed(self, chunk: bytes) -> list[bytes]:
-        self._buf.extend(chunk)
-        out: list[bytes] = []
-
-        # Emit on simple boundaries: newline or sentence-ish end
-        last_nl = self._buf.rfind(b"\n")
-        last_dot = self._buf.rfind(b". ")
-        cut = max(last_nl, last_dot)
-
-        if cut >= 0:
-            emit = self._buf[: cut + 1]
-            rem = self._buf[cut + 1 :]
-            out.append(self._redact(bytes(emit)))
-            self._buf = bytearray(rem)
-
-        # Back-pressure: never hold unbounded
-        if len(self._buf) > self._max:
-            out.append(self._redact(bytes(self._buf)))
-            self._buf.clear()
-
-        return out
+        if not chunk:
+            return []
+        text = chunk.decode(self._encoding, "ignore")
+        self._buffer += text
+        emit_upto = max(len(self._buffer) - _MAX_PATTERN_LOOKBACK, 0)
+        if emit_upto == 0:
+            return []
+        safe, self._buffer = self._buffer[:emit_upto], self._buffer[emit_upto:]
+        return self._process(safe)
 
     def flush(self) -> list[bytes]:
-        if not self._buf:
+        if not self._buffer:
             return []
-        out = [self._redact(bytes(self._buf))]
-        self._buf.clear()
-        return out
+        safe, self._buffer = self._buffer, ""
+        return self._process(safe)
 
-    def _redact(self, data: bytes) -> bytes:
-        s = data.decode("utf-8", errors="replace")
-        for pat in self._patterns:
-            s = pat.sub("[REDACTED]", s)
-        return s.encode("utf-8")
+    def _process(self, text: str) -> list[bytes]:
+        redacted = text
+        for pattern in _SECRET_PATTERNS:
+            redacted = pattern.sub("[REDACTED]", redacted)
+        if redacted == "":
+            return []
+        return [redacted.encode(self._encoding)]

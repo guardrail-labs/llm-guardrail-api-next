@@ -7,8 +7,8 @@ from typing import Awaitable, Callable, List, Tuple
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.sanitizers.metadata import sanitize_header_value, sanitize_filename
 from app.observability.metrics import metadata_ingress_report
+from app.sanitizers.metadata import sanitize_filename, sanitize_header_value
 
 # Header names
 _HDR_TENANT = "X-Guardrail-Tenant"
