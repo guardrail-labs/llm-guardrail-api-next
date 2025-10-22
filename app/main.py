@@ -898,7 +898,38 @@ def create_app() -> FastAPI:
     app.add_middleware(IngressRiskMiddleware)
     # Egress: inspect text/JSON outputs for hidden controls/markup (no mutation)
     app.add_middleware(EgressOutputInspectMiddleware)
-    # SSE header hygiene before any compression middlewares
+
+    # --- Compression (if enabled) ---
+    try:
+        comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
+    except Exception as exc:
+        _log.debug("import compression middleware failed: %s", exc)
+    else:
+        try:
+            comp_mod.install_compression(app)
+        except Exception as exc:
+            _log.debug("install compression middleware failed: %s", exc)
+
+    try:
+        from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
+    except Exception as exc:
+        _log.debug("configure gzip middleware failed: %s", exc)
+    else:
+        if _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
+            app.add_middleware(
+                _StarletteGZip,
+                minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
+            )
+
+    # Ensure compression middleware is added BEFORE the SSE guard so that
+    # the SSE guard is registered AFTER and thus executes first. This allows
+    # the guard to set text/event-stream headers so compression will skip SSE.
+    #
+    # If you wrap GZipMiddleware or have a custom compressor, ensure it checks
+    # response headers for either:
+    #   content-type: text/event-stream
+    # or our marker:
+    #   x-sse: 1
     app.add_middleware(SSEGuardMiddleware)
     # Final egress stage: normalize timing for sensitive responses
     app.add_middleware(EgressTimingMiddleware)
@@ -1202,21 +1233,7 @@ cors_fb_mod.install_cors_fallback(app)
 csp_mod = __import__("app.middleware.csp", fromlist=["install_csp"])
 csp_mod.install_csp(app)
 
-comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
-comp_mod.install_compression(app)
-
 if getattr(app.state, "exports_loaded_exports", False):
     _remove_legacy_decisions_ndjson(app)
-
-try:
-    from starlette.middleware.gzip import GZipMiddleware as _StarletteGZip
-
-    if _truthy(os.getenv("COMPRESSION_ENABLED", "0")):
-        app.add_middleware(
-            _StarletteGZip,
-            minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
-        )
-except Exception as exc:
-    _log.debug("configure gzip middleware failed: %s", exc)
 
 _ensure_idempotency_inner(app, finalize=True)
