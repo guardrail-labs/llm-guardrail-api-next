@@ -14,6 +14,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources.base import PydanticBaseSettingsSource
 from pydantic_settings.sources.providers.env import EnvSettingsSource
 
+# Streaming defaults
+STREAM_HEARTBEAT_SEC: float = 15.0
+STREAM_MAX_IDLE_SEC: float = 120.0
+STREAM_MAX_HOLD_BYTES: int = 4096
+# Paths that may be excluded from SSE header meddling (if you later add gzip by path)
+STREAM_SSE_EXCLUDE_PATHS: tuple[str, ...] = ("/admin",)
+
 IdemMode = Literal["off", "observe", "enforce"]
 
 _DEFAULT_IDEMPOTENCY_MODE: IdemMode = "observe"
