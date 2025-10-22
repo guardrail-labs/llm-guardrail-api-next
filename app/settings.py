@@ -21,6 +21,13 @@ STREAM_MAX_HOLD_BYTES: int = 4096
 # Paths that may be excluded from SSE header meddling (if you later add gzip by path)
 STREAM_SSE_EXCLUDE_PATHS: tuple[str, ...] = ("/admin",)
 
+# Unicode normalization defaults for ingress guard
+CONFUSABLES_MODE: str = os.getenv("CONFUSABLES_MODE", "pass").strip() or "pass"
+CONFUSABLES_FORM: str = os.getenv("CONFUSABLES_FORM", "NFKC").strip() or "NFKC"
+CONFUSABLES_MAX_BODY_BYTES: int = int(
+    os.getenv("CONFUSABLES_MAX_BODY_BYTES", "131072") or "131072"
+)
+
 IdemMode = Literal["off", "observe", "enforce"]
 
 _DEFAULT_IDEMPOTENCY_MODE: IdemMode = "observe"

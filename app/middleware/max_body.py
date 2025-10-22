@@ -8,7 +8,6 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
-
 _log = logging.getLogger(__name__)
 
 T = TypeVar("T")

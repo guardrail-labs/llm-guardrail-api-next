@@ -1,4 +1,4 @@
-from app.sanitizers.markup import strip_markup_to_text, looks_like_markup
+from app.sanitizers.markup import looks_like_markup, strip_markup_to_text
 
 
 def test_looks_like_markup_detects_html():

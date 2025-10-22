@@ -6,8 +6,8 @@ from typing import Awaitable, Callable
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.sanitizers.encoding_sanitizer import decode_string_once
 from app.observability.metrics import decode_ingress_report
+from app.sanitizers.encoding_sanitizer import decode_string_once
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"

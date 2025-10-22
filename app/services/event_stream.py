@@ -1,29 +1,46 @@
 from __future__ import annotations
 
+import json
+
+__all__ = ["EventStream"]
+
 
 class EventStream:
-    def __init__(self, heartbeat_sec: float = 15.0, retry_ms: int | None = 5000) -> None:
-        self.heartbeat_sec = heartbeat_sec
-        self.retry_ms = retry_ms
+    """Helpers for framing Server-Sent Event payloads."""
 
-    def frame(
-        self, data: str, *, event: str | None = None, id: str | None = None
-    ) -> bytes:
-        # Build SSE frame: optional event/id, then data lines, then blank line
-        parts: list[str] = []
-        if event:
-            parts.append(f"event:{event}")
-        if id:
-            parts.append(f"id:{id}")
-        for line in data.splitlines() or [""]:
-            parts.append(f"data:{line}")
-        return ("\n".join(parts) + "\n\n").encode("utf-8")
+    @staticmethod
+    def frame(data: object, event: str | None = None, id: str | None = None) -> bytes:
+        """Encode ``data`` into an SSE ``data:`` frame."""
+        text = EventStream._coerce(data)
+        lines: list[str] = []
+        if id is not None:
+            lines.append(f"id: {id}")
+        if event is not None:
+            lines.append(f"event: {event}")
+        if text == "":
+            lines.append("data:")
+        else:
+            for part in text.splitlines():
+                lines.append(f"data: {part}")
+            if text.endswith("\n"):
+                lines.append("data:")
+        return ("\n".join(lines) + "\n\n").encode("utf-8")
 
-    def retry(self) -> bytes:
-        if self.retry_ms is None:
-            return b""
-        return f"retry:{int(self.retry_ms)}\n\n".encode("utf-8")
+    @staticmethod
+    def retry(delay_ms: int = 3000) -> bytes:
+        """Suggest a reconnection delay to the SSE client."""
+        delay = max(int(delay_ms), 0)
+        return f"retry: {delay}\n\n".encode("utf-8")
 
-    def heartbeat(self) -> bytes:
-        # Comment line per SSE spec
+    @staticmethod
+    def heartbeat() -> bytes:
+        """Emit a comment heartbeat frame."""
         return b":\n\n"
+
+    @staticmethod
+    def _coerce(value: object) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "ignore")
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)

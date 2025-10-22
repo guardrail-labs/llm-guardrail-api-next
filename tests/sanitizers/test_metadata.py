@@ -1,4 +1,4 @@
-from app.sanitizers.metadata import sanitize_header_value, sanitize_filename
+from app.sanitizers.metadata import sanitize_filename, sanitize_header_value
 
 
 def test_sanitize_header_basic():

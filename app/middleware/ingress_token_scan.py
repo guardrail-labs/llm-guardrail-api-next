@@ -6,10 +6,9 @@ from typing import Awaitable, Callable, List
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.scanners.token_sequence_detector import find_terms_tokenized
 from app.observability.metrics import token_scan_report
+from app.scanners.token_sequence_detector import find_terms_tokenized
 from app.services.config_store import get_config
-
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"

@@ -6,8 +6,8 @@ from typing import Awaitable, Callable, List
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.sanitizers.markup import strip_markup_to_text, looks_like_markup
 from app.observability.metrics import markup_ingress_report
+from app.sanitizers.markup import looks_like_markup, strip_markup_to_text
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"

@@ -1,44 +1,34 @@
 from __future__ import annotations
 
-from typing import AsyncIterator
+import asyncio
+from typing import AsyncIterator, Iterable
 
-import anyio
 from fastapi import APIRouter
 from starlette.responses import StreamingResponse
 
 from app.services.event_stream import EventStream
 from app.services.stream_redactor import RedactorBoundaryWriter
 
-router = APIRouter(prefix="/stream", tags=["stream"])
+router = APIRouter()
 
 
-async def _gen() -> AsyncIterator[bytes]:
-    es = EventStream(heartbeat_sec=0.5, retry_ms=1000)
-    rbw = RedactorBoundaryWriter()
-
-    # Send retry hint once
-    yield es.retry()
-
-    # Simulated producer loop
-    send_tick = 0
-    while send_tick < 5:
-        for part in rbw.feed(b"Hello chunk %d.\n" % send_tick):
-            yield es.frame(part.decode("utf-8"))
-        send_tick += 1
-        try:
-            with anyio.move_on_after(0.5):
-                await anyio.sleep(0.5)
-            yield es.heartbeat()
-        except Exception:
-            break
-
-    for part in rbw.flush():
-        yield es.frame(part.decode("utf-8"))
+async def _demo_stream() -> AsyncIterator[bytes]:
+    writer = RedactorBoundaryWriter()
+    payloads: Iterable[bytes] = (
+        EventStream.frame({"message": "demo-start"}, event="message", id="1"),
+        EventStream.heartbeat(),
+        EventStream.frame("Streaming complete", event="message", id="2"),
+    )
+    for payload in payloads:
+        for chunk in writer.feed(payload):
+            yield chunk
+        await asyncio.sleep(0)
+    for chunk in writer.flush():
+        yield chunk
 
 
-@router.get("/demo")
+@router.get("/stream/demo")
 async def stream_demo() -> StreamingResponse:
-    resp = StreamingResponse(_gen(), media_type="text/event-stream")
-    # Mark as SSE for middleware even if proxies strip content-type early
-    resp.raw_headers.append((b"x-sse", b"1"))
-    return resp
+    response = StreamingResponse(_demo_stream(), media_type="text/event-stream")
+    response.headers["x-sse"] = "1"
+    return response

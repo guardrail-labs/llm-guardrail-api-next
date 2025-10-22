@@ -33,7 +33,6 @@ from app.services.abuse.engine import (
 from app.services.verifier.adapters.base import resolve_adapter_from_env
 from app.services.verifier.payload import build_normalized_payload
 
-
 #
 # NOTE ON "0.0.0.0" USAGE:
 # This constant is used ONLY as a placeholder when a client IP cannot be

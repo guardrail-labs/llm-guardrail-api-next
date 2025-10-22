@@ -30,7 +30,6 @@ from app.observability.metrics import (
 from app.services.config_store import get_config
 from app.services.webhooks_cb import get_cb_registry
 
-
 _log = logging.getLogger(__name__)
 
 

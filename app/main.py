@@ -52,6 +52,7 @@ from app.middleware.request_id import RequestIDMiddleware, get_request_id
 from app.middleware.stream_sse_guard import SSEGuardMiddleware
 from app.middleware.tenant_bot import TenantBotMiddleware
 from app.middleware.unicode_middleware import UnicodeSanitizerMiddleware
+from app.middleware.unicode_normalize_guard import UnicodeNormalizeGuard
 from app.observability.http_status import HttpStatusMetricsMiddleware
 from app.routes.admin_scope_api import router as admin_scope_router
 from app.routes.egress import router as egress_router
@@ -1154,6 +1155,17 @@ def create_app() -> FastAPI:
             lambda: app.add_middleware(DecisionHeaderMiddleware),
         )
     install_json_logging(app)
+    app.add_middleware(
+        UnicodeNormalizeGuard,
+        default_mode=os.getenv("CONFUSABLES_MODE", settings.CONFUSABLES_MODE),
+        norm_form=os.getenv("CONFUSABLES_FORM", settings.CONFUSABLES_FORM),
+        max_body_bytes=int(
+            os.getenv(
+                "CONFUSABLES_MAX_BODY_BYTES",
+                str(settings.CONFUSABLES_MAX_BODY_BYTES),
+            )
+        ),
+    )
     _ensure_idempotency_inner(app)
 
     # ---- Ensure only our /metrics is registered and uses v0.0.4 ----

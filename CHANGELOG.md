@@ -5,10 +5,14 @@
 - Added Redis-backed DLQ for webhooks (schedule, replay, quarantine)
 - Added admin endpoints for pending/quarantine/replay/delete
 - Added route-level tests with service mocking (no Redis in CI)
-- feat(stream): add SSE header hygiene middleware
-- feat(stream): add EventStream helper (frames, retry, heartbeats)
-- feat(stream): add RedactorBoundaryWriter to avoid mid-chunk leaks
-- test(stream): headers, redaction boundaries, generator behavior
+- feat(stream): SSE header hygiene middleware (proxy-safe, gzip avoided)
+- feat(stream): EventStream helper (frames, retry, heartbeat)
+- feat(stream): RedactorBoundaryWriter to prevent mid-chunk secret leaks
+- test(stream): headers, boundaries, generator behavior
+
+### Fixed
+- fix(middleware): correct middleware registration order (Unicode ingress first; SSE vs
+  compression)
 
 ## [v1.0.0-rc1] - 2025-09-23
 ### Added
