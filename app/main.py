@@ -899,6 +899,11 @@ def create_app() -> FastAPI:
     # Egress: inspect text/JSON outputs for hidden controls/markup (no mutation)
     app.add_middleware(EgressOutputInspectMiddleware)
 
+    # SSE header hygiene must execute *before* compression on responses.
+    # Therefore, register it *before* compression middleware so it runs later
+    # on the request path but earlier on the response path.
+    app.add_middleware(SSEGuardMiddleware)
+
     # --- Compression (if enabled) ---
     try:
         comp_mod = __import__("app.middleware.compression", fromlist=["install_compression"])
@@ -921,16 +926,6 @@ def create_app() -> FastAPI:
                 minimum_size=_parse_int_env("COMPRESSION_MIN_SIZE_BYTES", 0),
             )
 
-    # Ensure compression middleware is added BEFORE the SSE guard so that
-    # the SSE guard is registered AFTER and thus executes first. This allows
-    # the guard to set text/event-stream headers so compression will skip SSE.
-    #
-    # If you wrap GZipMiddleware or have a custom compressor, ensure it checks
-    # response headers for either:
-    #   content-type: text/event-stream
-    # or our marker:
-    #   x-sse: 1
-    app.add_middleware(SSEGuardMiddleware)
     # Final egress stage: normalize timing for sensitive responses
     app.add_middleware(EgressTimingMiddleware)
     try:
