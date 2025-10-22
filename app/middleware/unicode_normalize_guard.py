@@ -6,6 +6,7 @@ from typing import Literal, Optional, cast
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _NormalForm = Literal["NFC", "NFD", "NFKC", "NFKD"]
+_CollectError = Literal["too_large", "other"]
 
 
 class UnicodeNormalizeGuard:
@@ -32,7 +33,10 @@ class UnicodeNormalizeGuard:
             await self.app(scope, receive, send)
             return
 
-        body, disconnect = await self._collect_body(receive)
+        body, err, disconnect = await self._collect_body(receive)
+        if err == "too_large":
+            await _send_413(send)
+            return
         normalized_body, changed = self._normalize(body)
         if changed:
             scope.setdefault("state", {})["unicode_normalized"] = True
@@ -64,25 +68,30 @@ class UnicodeNormalizeGuard:
 
         await self.app(scope, receive_wrapper, send_wrapper)
 
-    async def _collect_body(self, receive: Receive) -> tuple[bytes, Optional[Message]]:
-        body_parts: list[bytes] = []
+    async def _collect_body(
+        self, receive: Receive
+    ) -> tuple[bytes, Optional[_CollectError], Optional[Message]]:
+        """Drain request body while enforcing max size incrementally."""
+        parts: list[bytes] = []
+        total = 0
         disconnect: Optional[Message] = None
-        more = True
-        while more:
+        while True:
             message = await receive()
             if message["type"] != "http.request":
                 disconnect = message
-                break
+                return b"".join(parts), "other", disconnect
             chunk = message.get("body", b"")
             if chunk:
-                body_parts.append(chunk)
-            more = bool(message.get("more_body", False))
-        return b"".join(body_parts), disconnect
+                total += len(chunk)
+                if self._max_bytes and total > self._max_bytes:
+                    return b"", "too_large", None
+                parts.append(chunk)
+            if not message.get("more_body", False):
+                break
+        return b"".join(parts), None, None
 
     def _normalize(self, body: bytes) -> tuple[bytes, bool]:
         if not body:
-            return body, False
-        if self._max_bytes and len(body) > self._max_bytes:
             return body, False
         try:
             text = body.decode("utf-8")
@@ -92,3 +101,14 @@ class UnicodeNormalizeGuard:
         if normalized == text:
             return body, False
         return normalized.encode("utf-8"), True
+
+
+async def _send_413(send: Send) -> None:
+    body = b'{"code":"payload_too_large"}'
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+        (b"connection", b"close"),
+    ]
+    await send({"type": "http.response.start", "status": 413, "headers": headers})
+    await send({"type": "http.response.body", "body": body, "more_body": False})
