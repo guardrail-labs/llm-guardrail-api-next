@@ -929,12 +929,6 @@ def create_app() -> FastAPI:
 
     # Final egress stage: normalize timing for sensitive responses
     app.add_middleware(EgressTimingMiddleware)
-    try:
-        from app.middleware.rate_limit import RateLimitMiddleware
-    except Exception as exc:
-        _log.debug("import RateLimitMiddleware failed: %s", exc)
-    else:
-        _best_effort("add RateLimitMiddleware", lambda: app.add_middleware(RateLimitMiddleware))
     app.add_middleware(QuotaMiddleware)
     app.add_middleware(EgressRedactMiddleware)
     app.add_middleware(TenantBotMiddleware)
@@ -1166,6 +1160,16 @@ def create_app() -> FastAPI:
             )
         ),
     )
+    try:
+        from app.middleware.rate_limit import RateLimitMiddleware
+    except Exception as exc:
+        _log.debug("import RateLimitMiddleware failed: %s", exc)
+    else:
+        _best_effort(
+            "add RateLimitMiddleware",
+            # Register late so it executes early (before body-heavy ingress guards).
+            lambda: app.add_middleware(RateLimitMiddleware),
+        )
     _ensure_idempotency_inner(app)
 
     # ---- Ensure only our /metrics is registered and uses v0.0.4 ----
