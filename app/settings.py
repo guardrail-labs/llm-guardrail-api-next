@@ -29,6 +29,11 @@ CONFUSABLES_MAX_BODY_BYTES: int = int(
     os.getenv("CONFUSABLES_MAX_BODY_BYTES", "131072") or "131072"
 )
 
+HTTPX_MAX_CONNECTIONS: int = 200
+HTTPX_MAX_KEEPALIVE: int = 100
+HTTPX_KEEPALIVE_S: int = 20
+HTTPX_TIMEOUT_S: int = 30
+
 IdemMode = Literal["off", "observe", "enforce"]
 
 _DEFAULT_IDEMPOTENCY_MODE: IdemMode = "observe"

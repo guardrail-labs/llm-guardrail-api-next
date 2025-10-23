@@ -19,6 +19,13 @@
 - fix(middleware): correct middleware registration order (Unicode ingress first; SSE vs
   compression)
 
+### Changed
+- perf(redis): atomic token-bucket via Lua (1 RTT)
+- perf(redis): idempotency SET NX PX + pipeline touch
+- perf(http): shared AsyncClient with tuned pool/keepalive
+- perf(app): lifespan warm-up (Lua scripts, compliance registry)
+- metrics: request latency histogram and middleware
+
 ## [v1.0.0-rc1] - 2025-09-23
 ### Added
 - Security model doc: clarified **enforcement posture** — disallowed outputs are intercepted

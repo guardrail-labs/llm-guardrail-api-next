@@ -11,6 +11,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
+from app.services.redis_runtime import _scripts, get_redis
+
 # --------------------------- Constants / defaults ----------------------------
 
 PROBE_PATHS = {"/readyz", "/livez", "/metrics", "/healthz"}
@@ -143,6 +145,55 @@ def _blocked_headers(limit_str: str, retry_after_s: int) -> Dict[str, str]:
     return h
 
 
+# ----------------------------- Redis limiter ---------------------------------
+
+
+def _to_float(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return float(value.decode("utf-8"))
+        except Exception:
+            return 0.0
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+class RateLimiter:
+    def __init__(self, *, capacity: int, per_minute: int) -> None:
+        self.capacity = float(capacity)
+        self.per_min = float(per_minute)
+        self.refill_per_sec = self.per_min / 60.0 if per_minute else 0.0
+        self._redis = get_redis()
+
+    async def allow(self, bucket_key: str, cost: float = 1.0) -> tuple[bool, float]:
+        sha = _scripts.rate_token_sha
+        if not sha:
+            return False, 0.0
+        now = time.time()
+        redis_key = f"ratelimit:{bucket_key}"
+        try:
+            result = await self._redis.evalsha(
+                sha,
+                1,
+                redis_key,
+                self.capacity,
+                self.refill_per_sec,
+                cost,
+                now,
+            )
+        except Exception:
+            return False, 0.0
+
+        allowed_raw, tokens_raw = result
+        allowed = bool(int(_to_float(allowed_raw)))
+        tokens = _to_float(tokens_raw)
+        return allowed, tokens
+
+
 # ----------------------------- Middleware ------------------------------------
 
 
@@ -232,4 +283,4 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
 
 
-__all__ = ["RateLimitMiddleware", "RATE_LIMIT_BLOCKS"]
+__all__ = ["RateLimitMiddleware", "RATE_LIMIT_BLOCKS", "RateLimiter"]
