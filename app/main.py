@@ -21,7 +21,6 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from app import settings
-from app.metrics.route_label import route_label
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
@@ -46,6 +45,7 @@ from app.middleware.ingress_unicode import UnicodeIngressSanitizer
 from app.middleware.ingress_unicode_sanitizer import (
     IngressUnicodeSanitizerMiddleware,
 )
+from app.middleware.latency_instrument import LatencyMiddleware
 from app.middleware.multimodal_middleware import MultimodalGateMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
@@ -62,20 +62,9 @@ from app.services.bindings.utils import (
     propagate_bindings as _propagate_bindings,
     read_policy_version as _read_policy_version,
 )
+from app.services.compliance.registry import ComplianceRegistry
+from app.services.redis_runtime import runtime_warmup
 from app.telemetry.tracing import TracingMiddleware
-
-# Prometheus (optional; tests expect metrics but we guard imports)
-try:  # pragma: no cover
-    from prometheus_client import (
-        REGISTRY as _PromRegistryObj,
-        Histogram as _PromHistogramCls,
-    )
-
-    PromHistogram: Any | None = _PromHistogramCls
-    PromRegistry: Any | None = _PromRegistryObj
-except Exception:  # pragma: no cover
-    PromHistogram = None
-    PromRegistry = None
 
 RequestHandler = Callable[[StarletteRequest], Awaitable[StarletteResponse]]
 
@@ -152,54 +141,6 @@ def _start_prune_task(app: FastAPI) -> None:
         app.state.prune_task = task
 
     _best_effort("start prune loop", _start)
-
-
-def _get_or_create_latency_histogram() -> Optional[Any]:
-    if PromHistogram is None or PromRegistry is None:  # pragma: no cover
-        return None
-    name = "guardrail_latency_seconds"
-    try:
-        names_map = getattr(PromRegistry, "_names_to_collectors", None)
-        if isinstance(names_map, dict):
-            existing = names_map.get(name)
-            if existing is not None:
-                return existing
-    except Exception as exc:
-        _log.debug("inspect prometheus registry failed: %s", exc)
-    try:
-        return PromHistogram(name, "Request latency in seconds", ["route", "method"])
-    except ValueError:
-        try:
-            names_map = getattr(PromRegistry, "_names_to_collectors", None)
-            if isinstance(names_map, dict):
-                return names_map.get(name)
-        except Exception as exc:
-            _log.debug("fallback latency histogram lookup failed: %s", exc)
-            return None
-        return None
-
-
-class _LatencyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app):
-        super().__init__(app)
-        self._hist = _get_or_create_latency_histogram()
-
-    async def dispatch(
-        self, request: StarletteRequest, call_next: RequestHandler
-    ) -> StarletteResponse:
-        start = time.perf_counter()
-        try:
-            return await call_next(request)
-        finally:
-            if self._hist is not None:
-                hist = self._hist
-
-                def _observe() -> None:
-                    dur = max(time.perf_counter() - start, 0.0)
-                    safe_route = route_label(request.url.path)
-                    hist.labels(route=safe_route, method=request.method).observe(dur)
-
-                _best_effort("observe latency", _observe)
 
 
 _RATE_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
@@ -608,8 +549,15 @@ async def lifespan(app: FastAPI):
 
     _webhooks_module = None
 
-    # Ensure latency histogram is registered once.
-    _get_or_create_latency_histogram()
+    try:
+        await runtime_warmup()
+    except Exception as exc:
+        _log.debug("runtime warmup failed: %s", exc)
+
+    try:
+        app.state.compliance_registry = ComplianceRegistry()
+    except Exception as exc:
+        _log.debug("compliance registry init failed: %s", exc)
 
     # Fail fast if probe is enabled but required env vars are missing.
     if sysmod._probe_enabled():
@@ -942,7 +890,7 @@ def create_app() -> FastAPI:
     else:
         _best_effort("install max body middleware", lambda: max_body_mod.install_max_body(app))
 
-    app.add_middleware(_LatencyMiddleware)
+    app.add_middleware(LatencyMiddleware)
     app.add_middleware(_NormalizeUnauthorizedMiddleware)
     app.add_middleware(HttpStatusMetricsMiddleware)
     if settings.IDEMP_ENABLED:
