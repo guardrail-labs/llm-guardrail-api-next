@@ -1,32 +1,37 @@
 from __future__ import annotations
 
+import re
 from typing import Final
 
-# Fixed allow-list to prevent high-cardinality label explosions in Prometheus.
-# Any path not present maps to "other".
-_ALLOWED: Final[set[str]] = {
-    "/",
-    "/health",
-    "/metrics",
-    "/guardrail",
-    "/guardrail/",
-    "/guardrail/evaluate",
-    "/guardrail/egress_evaluate",
-    "/guardrail/batch_evaluate",
-    "/guardrail/evaluate_multipart",
-    "/guardrail/output",
-    "/admin/policy/reload",
-    "/admin/threat/reload",
-    "/proxy/chat",
-    "/v1/chat/completions",
-}
+_UUID_RE: Final = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+)
+_HEX_RE: Final = re.compile(r"^[0-9a-fA-F]{8,}$")
+_NUM_RE: Final = re.compile(r"^[0-9]{4,}$")
+_ULID_RE: Final = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+
+def _normalize_path(path: str) -> str:
+    segs: list[str] = []
+    for segment in path.split("/"):
+        if not segment:
+            continue
+        if _UUID_RE.match(segment) or _ULID_RE.match(segment):
+            segs.append(":id")
+        elif len(segment) > 32:
+            segs.append(":seg")
+        elif _NUM_RE.match(segment) or _HEX_RE.match(segment):
+            segs.append(":id")
+        else:
+            segs.append(segment)
+    return "/" + "/".join(segs) if segs else "/"
 
 
 def route_label(path: str) -> str:
-    """
-    Clamp a raw URL path to a safe label. Unknown/dynamic paths collapse to "other".
-    """
+    """Clamp a raw URL path to a safe Prometheus label."""
+
     if not path:
         return "other"
-    p = path.split("?", 1)[0]
-    return p if p in _ALLOWED else "other"
+    trimmed = path.split("?", 1)[0]
+    return _normalize_path(trimmed)
