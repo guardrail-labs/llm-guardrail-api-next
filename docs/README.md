@@ -1,37 +1,6 @@
-# LLM Guardrail API Ops Bundle
+# Guardrail Docs Portal Pointer
 
-This service brokers guardrail policies, enforcement, and admin tooling for LLM surfaces. Use this bundle for day-to-day operations, smoke validation, and configuration lookups.
+This repository ships the core runtime. All deployment guides, dashboards, admin UX docs, and
+extended tutorials now live in the Guardrail umbrella portal:
 
-## Quick Smoke Checklist
-
-Run the following from the repo root after updating dependencies or infrastructure:
-
-```bash
-ruff check --fix .
-mypy .
-pytest -q
-scripts/smoke.sh
-```
-
-## Next Steps
-
-* [Operations Quickstart](./ops-quickstart.md) – probes, metrics, and dashboards to watch.
-* [Configuration Matrix](./config-matrix.md) – environment variables and their effects.
-* [Alert Runbook](./runbook-alerts.md) – actionable playbooks when alerts fire.
-
-## Operability
-- [SLOs & SLIs](./operability/SLOs.md)
-- Runbooks: [DLQ](./operability/runbooks/DLQ.md), [Readiness](./operability/runbooks/Readiness.md)
-- Prometheus rules: `deploy/monitoring/prometheus/rules/`
-- Alertmanager routes: `deploy/monitoring/alertmanager/alertmanager.yaml`
-
-### Monitoring config checks
-CI validates Prometheus rules and Alertmanager config via `promtool`/`amtool`.
-Run locally with:
-
-```bash
-make monitoring-lint
-```
-
-## API Reference
-- [Admin API (endpoints, pagination, exports)](./api/README.md)
+<https://docs.guardrail.dev/portal>
