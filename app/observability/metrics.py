@@ -139,6 +139,17 @@ unicode_blocked = _get_or_create_counter(
     ("tenant", "bot", "flag"),
 )
 
+unicode_suspicious_total = _get_or_create_counter(
+    "guardrail_unicode_suspicious_total",
+    "Unicode sanitizer suspicious detections by reason.",
+    ("reason",),
+)
+
+unicode_normalized_total = _get_or_create_counter(
+    "guardrail_unicode_normalized_total",
+    "Unicode strings normalized via ingress sanitizer.",
+)
+
 
 duplicate_header_seen = _get_or_create_counter(
     "guardrail_ingress_duplicate_header_total",

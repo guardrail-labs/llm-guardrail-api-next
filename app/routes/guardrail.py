@@ -43,7 +43,7 @@ from app.services.threat_feed import (
     threat_feed_enabled as tf_enabled,
 )
 from app.services import runtime_flags
-from app.services.clarify import respond_with_clarify, INCIDENT_HEADER
+from app.services.clarify import make_incident_id, respond_with_clarify, INCIDENT_HEADER
 from app.services.rulepacks_engine import ingress_should_block, ingress_mode
 from app.services.fingerprint import fingerprint
 from app.services import escalation as esc
@@ -71,7 +71,14 @@ from app.telemetry.metrics import (
     inc_shadow_disagreement,
 )
 from app.services.audit import emit_audit_event as _emit
+from app.security.unicode_sanitizer import (
+    UnicodeSanitizerCfg,
+    normalize_nfkc,
+    sanitize_unicode,
+)
+from app import settings
 from app.services import ocr as _ocr
+from app.observability.metrics import unicode_normalized_total, unicode_suspicious_total
 
 # Normalized config values (module-level; safe to import elsewhere)
 VERIFIER_LATENCY_BUDGET_MS = get_verifier_latency_budget_ms()
@@ -207,6 +214,24 @@ def _coerce_score(val: Any) -> Optional[float]:
     if not math.isfinite(coerced):
         return None
     return coerced
+
+
+def _coerce_float_value(val: Any, default: float = 0.0) -> float:
+    if isinstance(val, bool):
+        return float(val)
+    try:
+        return float(val)
+    except Exception:
+        return default
+
+
+def _coerce_int_value(val: Any, default: int = 0) -> int:
+    if isinstance(val, bool):
+        return int(val)
+    try:
+        return int(val)
+    except Exception:
+        return default
 
 
 def _log_adjudication(
@@ -1564,11 +1589,14 @@ async def guardrail_evaluate(request: Request):
         combined_text, mods, sources, _docx_unused = await _read_form_and_merge(
             request, decode_pdf=False
         )
+        for src in sources:
+            fname = src.get("filename")
+            if fname:
+                src["filename"] = normalize_nfkc(str(fname))
         request_payload_dict = {"text": combined_text}
-
-    prompt_hash_val = _prompt_hash(combined_text)
-
     request_id = _req_id(explicit_request_id or req_header_request_id)
+    unicode_header_payload: Optional[str] = None
+    unicode_annotation: Optional[Dict[str, Any]] = None
 
     def finalize_response(
         response: Response,
@@ -1668,6 +1696,9 @@ async def guardrail_evaluate(request: Request):
             policy_result=policy_result,
         )
 
+        if unicode_header_payload:
+            resp.headers.setdefault("X-Guardrail-Unicode", unicode_header_payload)
+
         # 3) Determine final mode (prefer header set by finalizer)
         final_mode = resp.headers.get("X-Guardrail-Mode")
         if not final_mode:
@@ -1695,7 +1726,7 @@ async def guardrail_evaluate(request: Request):
         # We publish the fields we can reliably determine here. tenant/bot/endpoint
         # may be injected elsewhere; if you already add them to headers, they will
         # appear here; otherwise they default to "unknown".
-        event_payload = {
+        event_payload: Dict[str, object] = {
             "incident_id": resp.headers.get("X-Guardrail-Incident-ID"),
             "request_id": request_id,
             "tenant": resp.headers.get("X-Guardrail-Tenant", "unknown"),
@@ -1710,6 +1741,8 @@ async def guardrail_evaluate(request: Request):
             "shadow_rule_ids": shadow_rule_ids_list,
             # latency_ms can be added here if you track it on request.state.*
         }
+        if unicode_annotation:
+            event_payload["unicode"] = unicode_annotation
         publish(event_payload)
 
         cfg = get_config()
@@ -1764,6 +1797,101 @@ async def guardrail_evaluate(request: Request):
         )
 
         return resp
+
+    if settings.UNICODE_SANITIZER_ENABLED and combined_text:
+        unicode_cfg = UnicodeSanitizerCfg(
+            normalize_only=False,
+            block_on_controls=settings.UNICODE_BLOCK_ON_BIDI,
+            block_on_mixed_script=settings.UNICODE_BLOCK_ON_MIXED_SCRIPT,
+            emoji_ratio_warn=settings.UNICODE_EMOJI_RATIO_WARN,
+        )
+        unicode_result = sanitize_unicode(combined_text, unicode_cfg)
+        combined_text = unicode_result.text
+        if isinstance(request_payload_dict, dict):
+            request_payload_dict["text"] = combined_text
+        if unicode_result.normalized:
+            unicode_normalized_total.inc()
+        raw_reasons = unicode_result.report.get("reasons", [])
+        if isinstance(raw_reasons, (list, tuple, set)):
+            reasons_iter = raw_reasons
+        elif raw_reasons is None:
+            reasons_iter = []
+        else:
+            reasons_iter = [raw_reasons]
+        reasons_all = sorted({str(reason) for reason in reasons_iter if str(reason)})
+        emoji_ratio_val = _coerce_float_value(unicode_result.report.get("emoji_ratio", 0.0))
+        emoji_count_val = _coerce_int_value(unicode_result.report.get("emoji_count", 0))
+        mixed_tokens_val = _coerce_int_value(
+            unicode_result.report.get("mixed_script_tokens", 0)
+        )
+        confusables_val = _coerce_int_value(
+            unicode_result.report.get("confusables_count", 0)
+        )
+        for reason in reasons_all:
+            unicode_suspicious_total.labels(reason=reason).inc()
+        unicode_annotation = {
+            "normalized": bool(unicode_result.normalized),
+            "suspicious": bool(unicode_result.report.get("suspicious", False)),
+            "reasons": reasons_all,
+            "block_reasons": list(unicode_result.block_reasons),
+            "emoji_ratio": round(emoji_ratio_val, 4),
+            "emoji_count": emoji_count_val,
+            "mixed_script_tokens": mixed_tokens_val,
+            "confusables_count": confusables_val,
+            "has_bidi": bool(unicode_result.report.get("has_bidi", False)),
+            "has_zw": bool(unicode_result.report.get("has_zw", False)),
+            "has_invisible": bool(unicode_result.report.get("has_invisible", False)),
+            "has_tags": bool(unicode_result.report.get("has_tags", False)),
+        }
+        unicode_annotation["suspicious_reasons"] = list(unicode_result.suspicious_reasons)
+        unicode_annotation["blocked"] = unicode_result.should_block
+        if unicode_result.should_block:
+            message = (
+                "Suspicious Unicode characters detected. Please resend plain text "
+                "without invisible or mixed-script characters."
+            )
+            incident_id = make_incident_id()
+            block_payload = {
+                "action": "block_input_only",
+                "reason": "suspicious_unicode",
+                "message": message,
+                "incident_id": incident_id,
+                "meta": {
+                    "unicode_reasons": ",".join(unicode_result.block_reasons) or "unknown",
+                },
+            }
+            resp = JSONResponse(status_code=200, content=block_payload)
+            resp.headers[INCIDENT_HEADER] = incident_id
+            attach_guardrail_headers(
+                resp,
+                decision="block",
+                ingress_action="block_input_only",
+                egress_action="allow",
+            )
+            unicode_header_payload = json.dumps(
+                unicode_annotation, separators=(",", ":"), ensure_ascii=False
+            )
+            _record_actor_metric(request, "block_input_only")
+            return finalize_response(
+                resp,
+                decision_family="deny",
+                rule_ids=None,
+                policy_result={
+                    "action": "block_input_only",
+                    "reason": "suspicious_unicode",
+                    "unicode_reasons": list(unicode_result.block_reasons),
+                },
+            )
+        has_unicode_signal = unicode_result.normalized or bool(reasons_all)
+        if has_unicode_signal:
+            unicode_header_payload = json.dumps(
+                unicode_annotation, separators=(",", ":"), ensure_ascii=False
+            )
+        else:
+            unicode_annotation = None
+            unicode_header_payload = None
+
+    prompt_hash_val = _prompt_hash(combined_text)
 
     # Ingress rulepack enforcement (opt-in)
     should_block, hits = ingress_should_block(combined_text or "")
@@ -1982,6 +2110,8 @@ async def guardrail_evaluate(request: Request):
     if dbg is not None:
         base_decision["debug"] = dbg
     base_decision = apply_injection_default(base_decision)
+    if unicode_annotation:
+        base_decision.setdefault("unicode", unicode_annotation)
     action = base_decision.get("action", action)
     dbg = base_decision.get("debug", dbg)
 
@@ -2152,7 +2282,110 @@ async def guardrail_evaluate_multipart(request: Request):
     combined_text, mods, sources, docx_results = await _read_form_and_merge(
         request, decode_pdf=True
     )
+    for src in sources:
+        fname = src.get("filename")
+        if fname:
+            src["filename"] = normalize_nfkc(str(fname))
     request_id = _req_id(req_header_request_id)
+    unicode_header_payload: Optional[str] = None
+    unicode_annotation_mp: Optional[Dict[str, Any]] = None
+    if settings.UNICODE_SANITIZER_ENABLED and combined_text:
+        unicode_cfg = UnicodeSanitizerCfg(
+            normalize_only=False,
+            block_on_controls=settings.UNICODE_BLOCK_ON_BIDI,
+            block_on_mixed_script=settings.UNICODE_BLOCK_ON_MIXED_SCRIPT,
+            emoji_ratio_warn=settings.UNICODE_EMOJI_RATIO_WARN,
+        )
+        unicode_result = sanitize_unicode(combined_text, unicode_cfg)
+        combined_text = unicode_result.text
+        if unicode_result.normalized:
+            unicode_normalized_total.inc()
+        raw_reasons = unicode_result.report.get("reasons", [])
+        if isinstance(raw_reasons, (list, tuple, set)):
+            reasons_iter = raw_reasons
+        elif raw_reasons is None:
+            reasons_iter = []
+        else:
+            reasons_iter = [raw_reasons]
+        reasons_all = sorted({str(reason) for reason in reasons_iter if str(reason)})
+        emoji_ratio_val = _coerce_float_value(unicode_result.report.get("emoji_ratio", 0.0))
+        emoji_count_val = _coerce_int_value(unicode_result.report.get("emoji_count", 0))
+        mixed_tokens_val = _coerce_int_value(
+            unicode_result.report.get("mixed_script_tokens", 0)
+        )
+        confusables_val = _coerce_int_value(
+            unicode_result.report.get("confusables_count", 0)
+        )
+        for reason in reasons_all:
+            unicode_suspicious_total.labels(reason=reason).inc()
+        unicode_annotation_mp = {
+            "normalized": bool(unicode_result.normalized),
+            "suspicious": bool(unicode_result.report.get("suspicious", False)),
+            "reasons": reasons_all,
+            "block_reasons": list(unicode_result.block_reasons),
+            "emoji_ratio": round(emoji_ratio_val, 4),
+            "emoji_count": emoji_count_val,
+            "mixed_script_tokens": mixed_tokens_val,
+            "confusables_count": confusables_val,
+            "has_bidi": bool(unicode_result.report.get("has_bidi", False)),
+            "has_zw": bool(unicode_result.report.get("has_zw", False)),
+            "has_invisible": bool(unicode_result.report.get("has_invisible", False)),
+            "has_tags": bool(unicode_result.report.get("has_tags", False)),
+        }
+        unicode_annotation_mp["suspicious_reasons"] = list(unicode_result.suspicious_reasons)
+        unicode_annotation_mp["blocked"] = unicode_result.should_block
+        if unicode_result.should_block:
+            message = (
+                "Suspicious Unicode characters detected. Please resend plain text "
+                "without invisible or mixed-script characters."
+            )
+            incident_id = make_incident_id()
+            block_payload = {
+                "action": "block_input_only",
+                "reason": "suspicious_unicode",
+                "message": message,
+                "incident_id": incident_id,
+                "meta": {
+                    "unicode_reasons": ",".join(unicode_result.block_reasons) or "unknown",
+                },
+            }
+            resp = JSONResponse(status_code=200, content=block_payload)
+            resp.headers[INCIDENT_HEADER] = incident_id
+            attach_guardrail_headers(
+                resp,
+                decision="block",
+                ingress_action="block_input_only",
+                egress_action="allow",
+            )
+            unicode_header_payload = json.dumps(
+                unicode_annotation_mp, separators=(",", ":"), ensure_ascii=False
+            )
+            _record_actor_metric(request, "block_input_only")
+            finalized_block = _finalize_ingress_response(
+                resp,
+                request_id=request_id,
+                fingerprint_value=fingerprint_value,
+                decision_family="deny",
+                rule_ids=[],
+                policy_result={
+                    "action": "block_input_only",
+                    "reason": "suspicious_unicode",
+                    "unicode_reasons": list(unicode_result.block_reasons),
+                },
+            )
+            if unicode_header_payload:
+                finalized_block.headers.setdefault(
+                    "X-Guardrail-Unicode", unicode_header_payload
+                )
+            return finalized_block
+        has_unicode_signal = unicode_result.normalized or bool(reasons_all)
+        if has_unicode_signal:
+            unicode_header_payload = json.dumps(
+                unicode_annotation_mp, separators=(",", ":"), ensure_ascii=False
+            )
+        else:
+            unicode_annotation_mp = None
+            unicode_header_payload = None
     prompt_hash_val = _prompt_hash(combined_text)
 
     action, policy_hits, policy_dbg = _evaluate_ingress_policy(
@@ -2341,6 +2574,8 @@ async def guardrail_evaluate_multipart(request: Request):
         rule_ids=_rule_ids_from_hits(policy_hits),
         policy_result=base_decision,
     )
+    if unicode_header_payload:
+        finalized.headers.setdefault("X-Guardrail-Unicode", unicode_header_payload)
 
     provider_hint = adjudication_provider
     if isinstance(base_decision, Mapping):
