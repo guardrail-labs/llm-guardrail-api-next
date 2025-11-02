@@ -2377,6 +2377,41 @@ async def guardrail_evaluate_multipart(request: Request):
                 finalized_block.headers.setdefault(
                     "X-Guardrail-Unicode", unicode_header_payload
                 )
+            prompt_hash_val = _prompt_hash(combined_text)
+            _audit(
+                "ingress",
+                combined_text,
+                combined_text,
+                "block_input_only",
+                tenant,
+                bot,
+                request_id,
+                [],
+                0,
+            )
+            _bump_family("ingress", "ingress_evaluate", "block_input_only", tenant, bot)
+            latency_ms = int((time.perf_counter() - t_start) * 1000)
+            policy_version_hint = finalized_block.headers.get(
+                "X-Guardrail-Policy-Version"
+            )
+            rules_path = (
+                finalized_block.headers.get("X-Guardrail-Rules-Path")
+                or rules_path_hint
+            )
+            _log_adjudication(
+                request_id=request_id,
+                tenant=tenant,
+                bot=bot,
+                decision="block_input_only",
+                rule_ids=[],
+                latency_ms=latency_ms,
+                policy_version=policy_version_hint,
+                rules_path=rules_path,
+                sampled=False,
+                prompt_sha256=prompt_hash_val,
+                provider=None,
+                score=None,
+            )
             return finalized_block
         has_unicode_signal = unicode_result.normalized or bool(reasons_all)
         if has_unicode_signal:
