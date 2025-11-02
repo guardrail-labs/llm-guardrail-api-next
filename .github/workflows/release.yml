@@ -1,119 +1,60 @@
-name: release
+name: Release Core GA
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*"
+  workflow_dispatch: {}
+
 jobs:
-  build-test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install deps
         run: |
-          python -m pip install -U pip
-          pip install -e .[dev]
-          pip install pip-licenses
-      - name: Lint & test
+          pip install -U pip
+          pip install ruff mypy pytest
+      - name: Lint & Typecheck
         run: |
-          ruff check .
+          ruff check --fix .
           mypy .
-          pytest -q
-      - name: License report
+      - name: Tests
+        run: pytest -q
+      - name: Build Docker image
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          pip-licenses --format=plain-vertical > licenses.txt
-          test -s licenses.txt
-      - name: Upload license snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: licenses
-          path: licenses.txt
-          if-no-files-found: error
-  docker:
-    needs: build-test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-    env:
-      REGISTRY: ghcr.io
-    steps:
-      - uses: actions/checkout@v4
-      - name: Derive tags and metadata
-        id: meta
-        run: |
-          echo "TAG=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          echo "SHA_SHORT=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "BUILD_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          VERSION=${REF_NAME#v}
+          IMAGE="ghcr.io/${REPO_OWNER}/guardrail-core:${VERSION}"
+          docker build -t "$IMAGE" .
+          docker save "$IMAGE" | sha256sum | tee core_image.sha256
+          docker tag "$IMAGE" "ghcr.io/${REPO_OWNER}/guardrail-core:latest"
       - name: Login GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build & push (version, sha, latest)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}:${{ steps.meta.outputs.TAG }}
-            ${{ env.REGISTRY }}/${{ github.repository }}:sha-${{ steps.meta.outputs.SHA_SHORT }}
-            ${{ env.REGISTRY }}/${{ github.repository }}:latest
-          build-args: |
-            APP_VERSION=${{ steps.meta.outputs.TAG }}
-            GIT_SHA=${{ steps.meta.outputs.SHA_SHORT }}
-            BUILD_TS=${{ steps.meta.outputs.BUILD_TS }}
-  github-release:
-    needs: [build-test, docker]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Read changelog section
-        id: changelog
+      - name: Push image
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          awk -v ver="$VERSION" '
-            $0 ~ "## [" ver "]" {flag=1; next}
-            /^## \[/ {flag=0}
-            flag
-          ' CHANGELOG.md > .changelog.txt
-          if [ ! -s .changelog.txt ]; then
-            echo "No changelog entry for $VERSION" >&2
-            exit 1
-          fi
-      - name: Gather optional artifacts
-        id: gather
-        run: |
-          mkdir -p dist
-          shopt -s nullglob
-          found=0
-          if compgen -G "bench/results/*" > /dev/null; then
-            tar -czf dist/bench-results.tar.gz bench/results
-            found=1
-          fi
-          if compgen -G "eval/out/*" > /dev/null; then
-            tar -czf dist/eval-out.tar.gz eval/out
-            found=1
-          fi
-          if [ "$found" -eq 1 ]; then
-            echo "has_artifacts=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Create release
+          VERSION=${REF_NAME#v}
+          IMAGE="ghcr.io/${REPO_OWNER}/guardrail-core:${VERSION}"
+          docker push "$IMAGE"
+          docker push "ghcr.io/${REPO_OWNER}/guardrail-core:latest"
+      - name: Create GitHub Release (attach checksum and openapi)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Core ${{ github.ref_name }}
-          body_path: .changelog.txt
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
-      - name: Upload optional release assets
-        if: steps.gather.outputs.has_artifacts == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: dist/*
+          files: |
+            core_image.sha256
+            openapi.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

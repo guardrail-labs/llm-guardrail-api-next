@@ -8,7 +8,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-APP_VERSION = os.getenv("APP_VERSION", "1.0.0-rc1")
+APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 GIT_SHA = os.getenv("GIT_SHA", "")
 BUILD_TS = os.getenv("BUILD_TS", "")
 
