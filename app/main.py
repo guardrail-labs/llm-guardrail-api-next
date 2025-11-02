@@ -662,7 +662,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="LLM Guardrail API",
         description="Policy enforcement, adjudication, and observability for LLM apps.",
-        version="1.0.0-rc1",
+        version="1.0.0",
         contact={"name": "Guardrail Team"},
         license_info={"name": "Apache-2.0"},
         lifespan=lifespan,

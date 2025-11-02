@@ -26,6 +26,12 @@
 - perf(app): lifespan warm-up (Lua scripts, compliance registry)
 - metrics: request latency histogram and middleware
 
+## 1.0.0 — GA (2025-11-02)
+- Core LLM firewall stabilized (ingress/egress sanitizers, rate-limit, idempotency).
+- OpenAPI schema frozen and committed.
+- Production Docker image build workflow with SHA256 digests.
+- Compatible with Enterprise 1.0.0 and Verifier 1.0.0.
+
 ## [v1.0.0-rc1] - 2025-09-23
 ### Added
 - Security model doc: clarified **enforcement posture** — disallowed outputs are intercepted

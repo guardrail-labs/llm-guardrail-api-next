@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/your-org/llm-guardrail-api-next
-  tag: "v1.0.0-rc1"
+  tag: "v1.0.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 2
