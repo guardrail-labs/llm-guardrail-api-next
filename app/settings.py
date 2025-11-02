@@ -29,6 +29,26 @@ CONFUSABLES_MAX_BODY_BYTES: int = int(
     os.getenv("CONFUSABLES_MAX_BODY_BYTES", "131072") or "131072"
 )
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+UNICODE_SANITIZER_ENABLED: bool = _env_bool("UNICODE_SANITIZER_ENABLED", True)
+UNICODE_BLOCK_ON_BIDI: bool = _env_bool("UNICODE_BLOCK_ON_BIDI", True)
+UNICODE_BLOCK_ON_MIXED_SCRIPT: bool = _env_bool("UNICODE_BLOCK_ON_MIXED_SCRIPT", True)
+UNICODE_EMOJI_RATIO_WARN: float = float(
+    os.getenv("UNICODE_EMOJI_RATIO_WARN", "0.5") or "0.5"
+)
+
 HTTPX_MAX_CONNECTIONS: int = 200
 HTTPX_MAX_KEEPALIVE: int = 100
 HTTPX_KEEPALIVE_S: int = 20
