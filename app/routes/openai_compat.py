@@ -74,6 +74,50 @@ class ChatMessage(BaseModel):
     content: str
 
 
+def _apply_sanitized_text_to_messages(
+    messages: List[ChatMessage], sanitized_text: str
+) -> List[ChatMessage]:
+    """Return a new list of messages with sanitized text applied when possible."""
+    if not messages or not sanitized_text or sanitized_text.strip() == "":
+        return messages
+
+    sanitized_lines = [line for line in sanitized_text.splitlines() if ":" in line]
+    if not sanitized_lines:
+        return messages
+
+    idx = 0
+    applied: List[ChatMessage] = []
+    changed = False
+
+    for original in messages:
+        sanitized_content: Optional[str] = None
+        while idx < len(sanitized_lines):
+            line = sanitized_lines[idx]
+            idx += 1
+            if ":" not in line:
+                continue
+            role_part, content_part = line.split(":", 1)
+            if role_part.strip().lower() != original.role.lower():
+                continue
+            sanitized_content = content_part.lstrip()
+            break
+
+        if sanitized_content is None:
+            applied.append(original)
+            continue
+
+        if sanitized_content != original.content:
+            changed = True
+        applied.append(original.model_copy(update={"content": sanitized_content}))
+
+    return applied if changed else messages
+
+
+def _ingress_fail_open_enabled() -> bool:
+    raw = os.getenv("INGRESS_FAIL_OPEN_STRICT", "").strip().lower()
+    return raw in {"1", "true", "t", "yes", "y", "on"}
+
+
 class ChatCompletionsRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
@@ -235,25 +279,55 @@ async def chat_completions(
 
     # ---------- Ingress ----------
     joined = "\n".join(f"{m.role}: {m.content}" for m in body.messages or [])
-    sanitized, families, redaction_count, _ = sanitize_text(joined, debug=want_debug)
-    if threat_feed_enabled():
-        dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
-        sanitized = dyn_text
-        if dyn_fams:
-            base = set(families or [])
-            base.update(dyn_fams)
-            families = sorted(base)
-        if dyn_reds:
-            redaction_count = (redaction_count or 0) + dyn_reds
+    fail_open_reason: Optional[str] = None
+    strict_egress = False
 
-    det = evaluate_prompt(sanitized)
-    det_action = str(det.get("action", "allow"))
-    decisions = list(det.get("decisions", []))
-    xformed = det.get("transformed_text", sanitized)
+    try:
+        sanitized, families, redaction_count, _ = sanitize_text(joined, debug=want_debug)
+        if threat_feed_enabled():
+            dyn_text, dyn_fams, dyn_reds, _ = apply_dynamic_redactions(sanitized, debug=want_debug)
+            sanitized = dyn_text
+            if dyn_fams:
+                base = set(families or [])
+                base.update(dyn_fams)
+                families = sorted(base)
+            if dyn_reds:
+                redaction_count = (redaction_count or 0) + dyn_reds
 
-    flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
-    det_families = [_normalize_family(h) for h in flat_hits]
-    combined_hits = sorted({*(families or []), *det_families})
+        det = evaluate_prompt(sanitized)
+        det_action = str(det.get("action", "allow"))
+        decisions = list(det.get("decisions", []))
+        xformed = det.get("transformed_text", sanitized)
+
+        flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
+        det_families = [_normalize_family(h) for h in flat_hits]
+        combined_hits = sorted({*(families or []), *det_families})
+    except Exception as exc:
+        if not _ingress_fail_open_enabled():
+            headers = {
+                "X-Guardrail-Policy-Version": policy_version,
+                "X-Guardrail-Ingress-Action": "error",
+                "X-Guardrail-Egress-Action": "skipped",
+            }
+            raise HTTPException(
+                status_code=500,
+                detail=_oai_error("Ingress guard failure", type_="internal_error"),
+                headers=headers,
+            ) from exc
+
+        strict_egress = True
+        fail_open_reason = str(exc)
+        sanitized = joined
+        families = []
+        redaction_count = 0
+        det_action = "allow"
+        decisions = []
+        xformed = sanitized
+        flat_hits = []
+        det_families = []
+        combined_hits = []
+
+    effective_messages = _apply_sanitized_text_to_messages(body.messages or [], xformed)
 
     if det_action == "deny":
         ingress_action = "deny"
@@ -270,6 +344,12 @@ async def chat_completions(
         inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
+        ingress_meta: Dict[str, Any] = {"client": get_client_meta(request)}
+        if strict_egress:
+            ingress_meta["ingress_fail_open"] = True
+            if fail_open_reason:
+                ingress_meta["ingress_fail_open_reason"] = fail_open_reason[:256]
+
         emit_audit_event(
             {
                 "ts": None,
@@ -284,13 +364,13 @@ async def chat_completions(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {"client": get_client_meta(request)},
+                "meta": ingress_meta,
             }
         )
     except Exception:
         pass
 
-    if ingress_action == "deny":
+    if ingress_action in {"deny", "block_input_only"}:
         err_body = _oai_error("Request denied by guardrail policy")
         headers = {
             "X-Guardrail-Policy-Version": policy_version,
@@ -306,7 +386,9 @@ async def chat_completions(
     # ---------- Streaming path ----------
     if body.stream:
         client = get_client()
-        stream, model_meta = client.chat_stream([m.model_dump() for m in body.messages], body.model)
+        stream, model_meta = client.chat_stream(
+            [m.model_dump() for m in effective_messages], body.model
+        )
 
         sid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = now_ts
@@ -406,6 +488,13 @@ async def chat_completions(
             if e_reds_final:
                 inc_redaction("sanitize", direction="egress", amount=float(e_reds_final))
             try:
+                stream_meta: Dict[str, Any] = {
+                    "provider": model_meta,
+                    "client": get_client_meta(request),
+                }
+                if strict_egress:
+                    stream_meta["strict_egress"] = True
+
                 emit_audit_event(
                     {
                         "ts": None,
@@ -421,10 +510,7 @@ async def chat_completions(
                         "hash_fingerprint": content_fingerprint(accum_raw),
                         "payload_bytes": int(_blen(accum_raw)),
                         "sanitized_bytes": int(_blen(last_sanitized)),
-                        "meta": {
-                            "provider": model_meta,
-                            "client": get_client_meta(request),
-                        },
+                        "meta": stream_meta,
                     }
                 )
             except Exception:
@@ -444,11 +530,13 @@ async def chat_completions(
             "X-Guardrail-Egress-Redactions": "0",
             "X-Request-ID": req_id,
         }
+        if strict_egress:
+            headers["X-Guardrail-Egress-Mode"] = "strict"
         return StreamingResponse(gen(), headers=headers)
 
     # ---------- Non-streaming path ----------
     client = get_client()
-    model_text, model_meta = client.chat([m.model_dump() for m in body.messages], body.model)
+    model_text, model_meta = client.chat([m.model_dump() for m in effective_messages], body.model)
 
     fp_out = content_fingerprint(model_text)
     reused_flag = False
@@ -492,6 +580,12 @@ async def chat_completions(
         inc_redaction("sanitize", direction="egress", amount=float(e_reds))
 
     try:
+        egress_meta: Dict[str, Any] = {
+            "provider": model_meta,
+            "client": get_client_meta(request),
+            **({"strict_egress": True} if strict_egress else {}),
+            **({"reuse": True} if reused_flag else {}),
+        }
         emit_audit_event(
             {
                 "ts": None,
@@ -507,11 +601,7 @@ async def chat_completions(
                 "hash_fingerprint": fp_out,
                 "payload_bytes": int(_blen(model_text)),
                 "sanitized_bytes": int(_blen(e_text)),
-                "meta": {
-                    "provider": model_meta,
-                    "client": get_client_meta(request),
-                    **({"reuse": True} if reused_flag else {}),
-                },
+                "meta": egress_meta,
             }
         )
     except Exception:
@@ -545,6 +635,8 @@ async def chat_completions(
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
     response.headers["X-Request-ID"] = req_id
+    if strict_egress:
+        response.headers["X-Guardrail-Egress-Mode"] = "strict"
     if reused_flag:
         response.headers["X-Guardrail-Verification-Reused"] = "1"
 
@@ -554,8 +646,7 @@ async def chat_completions(
 # --- Images (OpenAI-compatible) ----------------------------------------------
 
 _PLACEHOLDER_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAA"
-    "AASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
 )
 
 

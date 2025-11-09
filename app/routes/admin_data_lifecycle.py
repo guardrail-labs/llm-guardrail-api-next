@@ -104,10 +104,18 @@ def _iter_records(
             if _match_common(record, tenant=tenant, bot=bot, since=since, until=until):
                 yield {"kind": "adjudications", **record}
     if "audit" in kinds:
+        yielded = False
         for record in audit_log.iter_events(since=since, until=until, tenant=tenant, bot=bot):
             payload = dict(record)
             payload.setdefault("ts_ms", _extract_ts_ms(payload))
+            yielded = True
             yield {"kind": "audit", **payload}
+        if not yielded:
+            for record in audit_log.recent(limit=1000):
+                if _match_common(record, tenant=tenant, bot=bot, since=since, until=until):
+                    payload = dict(record)
+                    payload.setdefault("ts_ms", _extract_ts_ms(payload))
+                    yield {"kind": "audit", **payload}
 
 
 def _emit_ndjson(objs: Iterable[Dict[str, Any]], counter: Counter) -> Iterator[bytes]:
