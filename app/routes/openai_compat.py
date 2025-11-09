@@ -77,38 +77,90 @@ class ChatMessage(BaseModel):
 def _apply_sanitized_text_to_messages(
     messages: List[ChatMessage], sanitized_text: str
 ) -> List[ChatMessage]:
-    """Return a new list of messages with sanitized text applied when possible."""
-    if not messages or not sanitized_text or sanitized_text.strip() == "":
+    """
+    Apply sanitized text back onto a list of ChatMessage objects.
+
+    The sanitized_text is expected to be a plaintext transcript with lines of the form:
+        "<role>: <content...>"
+    where <content> may span multiple subsequent lines until the next "<role>:" marker.
+
+    We preserve full multiline content for each message and only update when content differs.
+    """
+    if not messages:
+        return messages
+    if not sanitized_text or not sanitized_text.strip():
         return messages
 
-    sanitized_lines = [line for line in sanitized_text.splitlines() if ":" in line]
-    if not sanitized_lines:
+    # Known roles we expect in OpenAI-style chat; keep lowercase for matching.
+    KNOWN_ROLES = {"system", "user", "assistant", "tool", "function"}
+
+    lines = sanitized_text.splitlines()
+
+    # Parse sanitized transcript into an ordered list of (role, text) blocks,
+    # where each block's text may span multiple lines.
+    blocks: List[tuple[str, str]] = []
+    current_role: Optional[str] = None
+    current_buf: List[str] = []
+
+    def _flush() -> None:
+        nonlocal blocks, current_role, current_buf
+        if current_role is not None:
+            # Strip one trailing newline but keep internal newlines intact
+            blocks.append((current_role, "\n".join(current_buf)))
+        current_role = None
+        current_buf = []
+
+    for raw in lines:
+        # Detect a new role marker at the start of the line: "<role>:"
+        # We match only known roles to avoid false positives like "Note: ..."
+        marker_role: Optional[str] = None
+        remainder: Optional[str] = None
+        if ":" in raw:
+            head, tail = raw.split(":", 1)
+            r = head.strip().lower()
+            if r in KNOWN_ROLES:
+                marker_role = r
+                remainder = tail.lstrip()
+
+        if marker_role is not None:
+            # Starting a new block; flush the previous one
+            _flush()
+            current_role = marker_role
+            current_buf = [remainder or ""]
+        else:
+            # Continuation of the current block (if any)
+            if current_role is None:
+                # No active block yet; ignore leading noise until a valid role marker appears
+                continue
+            current_buf.append(raw)
+
+    _flush()
+
+    if not blocks:
+        # Nothing to apply; keep original messages
         return messages
 
-    idx = 0
-    applied: List[ChatMessage] = []
+    # Build per-role queues so we can apply sanitized blocks in-order to the original roles
+    from collections import defaultdict, deque
+
+    role_queues: Dict[str, deque[str]] = defaultdict(deque)
+    for role, text in blocks:
+        role_queues[role].append(text)
+
     changed = False
+    applied: List[ChatMessage] = []
 
     for original in messages:
-        sanitized_content: Optional[str] = None
-        while idx < len(sanitized_lines):
-            line = sanitized_lines[idx]
-            idx += 1
-            if ":" not in line:
-                continue
-            role_part, content_part = line.split(":", 1)
-            if role_part.strip().lower() != original.role.lower():
-                continue
-            sanitized_content = content_part.lstrip()
-            break
-
-        if sanitized_content is None:
+        role_key = (original.role or "").lower()
+        if role_key in role_queues and role_queues[role_key]:
+            new_text = role_queues[role_key].popleft()
+            if new_text != original.content:
+                changed = True
+                applied.append(original.model_copy(update={"content": new_text}))
+            else:
+                applied.append(original)
+        else:
             applied.append(original)
-            continue
-
-        if sanitized_content != original.content:
-            changed = True
-        applied.append(original.model_copy(update={"content": sanitized_content}))
 
     return applied if changed else messages
 
