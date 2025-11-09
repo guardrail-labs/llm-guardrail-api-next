@@ -7,11 +7,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PIP_INDEX_URL: https://pypi.org/simple
-      # Test-only env to align with your suite
-      GUARDRAIL_DISABLE_AUTH: "1"   # bypass admin auth in tests
+      GUARDRAIL_DISABLE_AUTH: "1"
       CORS_ALLOW_ORIGINS: ""
       PYTHONPATH: .
     steps:
@@ -20,7 +22,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           check-latest: true
           cache: pip
           cache-dependency-path: |
@@ -31,9 +33,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .pip-wheelhouse
-          key: pipwheel-${{ runner.os }}-3.11-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          key: pipwheel-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
           restore-keys: |
-            pipwheel-${{ runner.os }}-3.11-
+            pipwheel-${{ runner.os }}-${{ matrix.python-version }}-
 
       - name: Download wheels (retry-friendly)
         env:
@@ -52,12 +54,13 @@ jobs:
           if [ -f pyproject.toml ]; then python -m pip install --no-deps -e .; fi
 
       - name: Lint (ruff)
-        run: |
-          ruff check --fix .
+        run: ruff check .
+
+      - name: Format (ruff)
+        run: ruff format --check .
 
       - name: Typecheck (mypy)
         run: mypy .
 
       - name: Tests (pytest)
-        run: |
-          pytest -q
+        run: pytest -q --cov=app --cov-report=term-missing --cov-fail-under=80
