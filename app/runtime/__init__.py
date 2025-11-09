@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import inspect
 from typing import Dict, Optional
 
@@ -111,9 +112,7 @@ def get_idempotency_store() -> IdempotencyStore:
         backend = "memory"
 
     # Prefer Redis when a non-memory Redis URL is configured.
-    if backend == "memory" and not settings.IDEMP_REDIS_URL.startswith(
-        "memory://"
-    ):
+    if backend == "memory" and not settings.IDEMP_REDIS_URL.startswith("memory://"):
         backend = "redis"
 
     if backend == "redis":
@@ -219,3 +218,6 @@ async def _close_client(client: Optional[Redis]) -> None:
             result = disconnect()
         if inspect.isawaitable(result):
             await result
+
+
+router = importlib.import_module("app.runtime.router")
