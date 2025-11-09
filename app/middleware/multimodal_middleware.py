@@ -97,9 +97,7 @@ def _json_body(raw: bytes) -> JsonObj | None:
 
 
 class MultimodalGateMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         tenant = get_tenant_id_from_headers(request.headers.get)
         flags = get_multimodal_flags(tenant)
 
@@ -127,15 +125,11 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
                     family = sniff_mime(val.filename, val.content_type)
                     if family == "pdf":
                         if not pdf_supported():
-                            sanitizer_events.labels(
-                                tenant, "multimodal_pdf_unsupported"
-                            ).inc()
+                            sanitizer_events.labels(tenant, "multimodal_pdf_unsupported").inc()
                             continue
                         raw, truncated = await _read_upload(val, flags.max_bytes)
                         if truncated:
-                            sanitizer_events.labels(
-                                tenant, "multimodal_oversize_skip"
-                            ).inc()
+                            sanitizer_events.labels(tenant, "multimodal_oversize_skip").inc()
                             size_skips += 1
                             continue
                         if not raw:
@@ -145,15 +139,11 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
                         hits += _scan_text(tenant, text)
                     elif family == "image":
                         if not image_supported():
-                            sanitizer_events.labels(
-                                tenant, "multimodal_image_unsupported"
-                            ).inc()
+                            sanitizer_events.labels(tenant, "multimodal_image_unsupported").inc()
                             continue
                         raw, truncated = await _read_upload(val, flags.max_bytes)
                         if truncated:
-                            sanitizer_events.labels(
-                                tenant, "multimodal_oversize_skip"
-                            ).inc()
+                            sanitizer_events.labels(tenant, "multimodal_oversize_skip").inc()
                             size_skips += 1
                             continue
                         if not raw:
@@ -173,15 +163,11 @@ class MultimodalGateMiddleware(BaseHTTPMiddleware):
                         if not isinstance(value, str):
                             continue
                         if not image_supported():
-                            sanitizer_events.labels(
-                                tenant, "multimodal_image_unsupported"
-                            ).inc()
+                            sanitizer_events.labels(tenant, "multimodal_image_unsupported").inc()
                             continue
                         estimated = estimate_base64_size(value)
                         if estimated > flags.max_bytes:
-                            sanitizer_events.labels(
-                                tenant, "multimodal_oversize_skip"
-                            ).inc()
+                            sanitizer_events.labels(tenant, "multimodal_oversize_skip").inc()
                             size_skips += 1
                             continue
                         sanitizer_events.labels(tenant, "multimodal_scan").inc()

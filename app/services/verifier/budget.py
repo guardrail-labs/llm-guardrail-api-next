@@ -10,9 +10,7 @@ class VerifierTimedOut(TimeoutError):
     """Raised when a verifier call exceeds the configured latency budget."""
 
 
-async def within_budget(
-    coro_factory: Callable[[], Awaitable[T]], *, budget_ms: Optional[int]
-) -> T:
+async def within_budget(coro_factory: Callable[[], Awaitable[T]], *, budget_ms: Optional[int]) -> T:
     """Run the given coroutine factory within an optional latency budget.
 
     If ``budget_ms`` is ``None`` the coroutine runs without a timeout. If the
@@ -25,6 +23,4 @@ async def within_budget(
     try:
         return await asyncio.wait_for(coro_factory(), timeout=timeout_s)
     except asyncio.TimeoutError as exc:  # pragma: no cover - sanity
-        raise VerifierTimedOut(
-            f"Verifier exceeded budget: {budget_ms} ms"
-        ) from exc
+        raise VerifierTimedOut(f"Verifier exceeded budget: {budget_ms} ms") from exc

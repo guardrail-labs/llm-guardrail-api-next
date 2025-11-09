@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 # ---------- Internal utilities ----------
 
+
 def _coerce_num(raw: str | float | int) -> Optional[float]:
     """Best-effort numeric coercion. Returns None on failure or NaN.
 
@@ -49,6 +50,7 @@ def _parse_ms(raw: str | float | int) -> Optional[float]:
 
 # ---------- Public helpers (generic) ----------
 
+
 def get_bool(env: str, *, default: bool = False) -> bool:
     """Parse boolean-ish env var; supports: 1/0, true/false, yes/no, on/off.
     Missing => default.
@@ -71,8 +73,7 @@ def get_int(
     min_value: Optional[int] = None,
     max_value: Optional[int] = None,
 ) -> int:
-    """Parse int with optional clamps; invalid/missing => default.
-    """
+    """Parse int with optional clamps; invalid/missing => default."""
     raw = os.getenv(env)
     if raw is None:
         return default
@@ -94,8 +95,7 @@ def get_float(
     min_value: Optional[float] = None,
     max_value: Optional[float] = None,
 ) -> float:
-    """Parse float with optional clamps and NaN handling; invalid/missing => default.
-    """
+    """Parse float with optional clamps and NaN handling; invalid/missing => default."""
     raw = os.getenv(env)
     if raw is None:
         return default
@@ -111,6 +111,7 @@ def get_float(
 
 
 # ---------- Public helpers (project-specific) ----------
+
 
 def get_verifier_latency_budget_ms() -> Optional[int]:
     """Read VERIFIER_LATENCY_BUDGET_MS as milliseconds.

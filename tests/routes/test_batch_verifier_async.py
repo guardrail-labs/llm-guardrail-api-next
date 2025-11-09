@@ -37,4 +37,3 @@ def test_batch_verifier_async(monkeypatch) -> None:
     data = r.json()
     assert data["count"] == 1
     assert isinstance(data["items"], list)
-

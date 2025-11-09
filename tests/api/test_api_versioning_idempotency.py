@@ -85,9 +85,7 @@ def test_idempotency_skips_5xx(app, monkeypatch: pytest.MonkeyPatch) -> None:
         assert failing.status_code == 500
         assert failing.headers.get("Idempotency-Replayed") is None
 
-        recovered = local_client.post(
-            "/v1/guardrail", json={"prompt": "broken"}, headers=headers
-        )
+        recovered = local_client.post("/v1/guardrail", json={"prompt": "broken"}, headers=headers)
         assert recovered.status_code == 200
         assert recovered.headers.get("Idempotency-Replayed") != "true"
     assert call_count["value"] >= 2

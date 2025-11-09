@@ -22,4 +22,3 @@ def test_guardrail_decisions_metric_uses_family_label() -> None:
     for line in body.splitlines():
         if line.startswith("guardrail_decisions_total{"):
             assert "action=" not in line
-

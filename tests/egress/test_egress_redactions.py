@@ -15,9 +15,7 @@ def test_egress_redacts_github_pat_allows() -> None:
 
 
 def test_egress_denies_private_key_envelope() -> None:
-    body = {
-        "text": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
-    }
+    body = {"text": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"}
     r = client.post("/guardrail/egress_evaluate", json=body)
     j = r.json()
     assert r.status_code == 200

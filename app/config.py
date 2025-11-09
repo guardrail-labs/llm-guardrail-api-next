@@ -165,12 +165,14 @@ SERVICE_TOKEN_SECRET = os.getenv("SERVICE_TOKEN_SECRET", "").strip()
 SERVICE_TOKEN_TTL_HOURS = int(os.getenv("SERVICE_TOKEN_TTL_HOURS", "720"))
 SERVICE_TOKEN_ISSUER = os.getenv("SERVICE_TOKEN_ISSUER", "guardrail-api")
 SERVICE_TOKEN_AUDIENCE = os.getenv("SERVICE_TOKEN_AUDIENCE", "guardrail-admin")
-SERVICE_TOKEN_USE_REDIS = (
-    os.getenv("SERVICE_TOKEN_USE_REDIS", "").lower() in ("1", "true", "yes", "on")
+SERVICE_TOKEN_USE_REDIS = os.getenv("SERVICE_TOKEN_USE_REDIS", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
 )
-SERVICE_TOKEN_REDIS_PREFIX = os.getenv(
-    "SERVICE_TOKEN_REDIS_PREFIX", "guardrail:svc_tokens"
-)
+SERVICE_TOKEN_REDIS_PREFIX = os.getenv("SERVICE_TOKEN_REDIS_PREFIX", "guardrail:svc_tokens")
+
 
 # OIDC configuration for admin UI/API session auth
 def _truthy_env(name: str) -> bool:

@@ -20,6 +20,7 @@ class ProviderSpec:
     - timeout_sec: max seconds allowed for a single attempt
     - max_retries: number of retries (total attempts = max_retries + 1)
     """
+
     name: str
     fn: ProviderFn
     timeout_sec: float = 1.0
@@ -34,6 +35,7 @@ class RouterConfig:
     - breaker_fail_threshold: consecutive failures to open the circuit
     - breaker_cooldown_sec: seconds to keep the circuit open before half-open probe
     """
+
     total_budget_sec: float = 2.0
     breaker_fail_threshold: int = 3
     breaker_cooldown_sec: float = 30.0
@@ -67,14 +69,10 @@ class VerifierRouter:
         self.config: RouterConfig = config or RouterConfig()
 
         # Per-provider breaker/health state
-        self._state: Dict[str, _ProviderState] = {
-            p.name: _ProviderState() for p in self.providers
-        }
+        self._state: Dict[str, _ProviderState] = {p.name: _ProviderState() for p in self.providers}
 
         # Snapshot ring buffer
-        self._snapshot_max: int = self._parse_int_env(
-            "VERIFIER_ROUTER_SNAPSHOT_MAX", 200
-        )
+        self._snapshot_max: int = self._parse_int_env("VERIFIER_ROUTER_SNAPSHOT_MAX", 200)
         self._order_snapshots: List[Dict[str, Any]] = []
 
     # ---- Utilities ------------------------------------------------------------

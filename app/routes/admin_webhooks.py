@@ -202,9 +202,7 @@ async def webhooks_replay(
         raise HTTPException(status_code=400, detail=f"max_batch exceeds limit {limit_cfg}")
 
     if since_seconds is not None and since_seconds > window_cfg:
-        raise HTTPException(
-            status_code=400, detail=f"since_seconds exceeds window {window_cfg}"
-        )
+        raise HTTPException(status_code=400, detail=f"since_seconds exceeds window {window_cfg}")
 
     if not _REPLAY_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Replay already in progress")

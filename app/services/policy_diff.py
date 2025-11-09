@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 
 def _index_rules(doc: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    rules = (((doc or {}).get("rules") or {}).get("redact") or [])
+    rules = ((doc or {}).get("rules") or {}).get("redact") or []
     out: Dict[str, Dict[str, Any]] = {}
     for r in rules:
         rid = str((r or {}).get("id") or "").strip()

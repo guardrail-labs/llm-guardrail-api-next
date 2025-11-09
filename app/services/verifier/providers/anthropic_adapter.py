@@ -25,9 +25,7 @@ class AnthropicProvider:
         self._anthropic = anthropic.Anthropic(api_key=api_key)
         self._anthropic_mod = anthropic
 
-    async def assess(
-        self, text: str, meta: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    async def assess(self, text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Map Anthropic response into our schema:
           {"status": "...", "reason": "...", "tokens_used": int}

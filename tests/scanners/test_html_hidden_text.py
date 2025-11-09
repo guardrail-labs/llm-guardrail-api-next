@@ -7,7 +7,7 @@ def test_html_detects_style_hidden():
 
 
 def test_html_detects_attr_hidden_and_zero_width():
-    html = '<span hidden>h</span>\u200b'
+    html = "<span hidden>h</span>\u200b"
     out = scan_html_for_hidden(html)
     assert "attr_hidden" in out
     assert "zero_width_chars" in out

@@ -7,7 +7,7 @@ from typing import List
 try:
     import tiktoken
 except Exception:  # pragma: no cover
-    tiktoken = None 
+    tiktoken = None
 
 
 def _fallback_tokenize(text: str) -> List[str]:

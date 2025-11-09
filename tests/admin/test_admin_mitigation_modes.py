@@ -30,9 +30,7 @@ def test_admin_mitigation_modes_crud() -> None:
     tenant = "crud-tenant"
     bot = "crud-bot"
 
-    r_default = client.get(
-        "/admin/mitigation_modes", params={"tenant": tenant, "bot": bot}
-    )
+    r_default = client.get("/admin/mitigation_modes", params={"tenant": tenant, "bot": bot})
     assert r_default.status_code == 200
     body = r_default.json()
     assert body["tenant"] == tenant
@@ -47,21 +45,15 @@ def test_admin_mitigation_modes_crud() -> None:
     saved = resp_put.json()
     assert saved["modes"] == new_modes
 
-    r_get = client.get(
-        "/admin/mitigation_modes", params={"tenant": tenant, "bot": bot}
-    )
+    r_get = client.get("/admin/mitigation_modes", params={"tenant": tenant, "bot": bot})
     assert r_get.status_code == 200
     assert r_get.json()["modes"] == new_modes
 
-    r_delete = client.delete(
-        "/admin/mitigation_modes", params={"tenant": tenant, "bot": bot}
-    )
+    r_delete = client.delete("/admin/mitigation_modes", params={"tenant": tenant, "bot": bot})
     assert r_delete.status_code == 200
     assert r_delete.json()["deleted"] is True
 
-    r_after = client.get(
-        "/admin/mitigation_modes", params={"tenant": tenant, "bot": bot}
-    )
+    r_after = client.get("/admin/mitigation_modes", params={"tenant": tenant, "bot": bot})
     assert r_after.status_code == 200
     assert r_after.json()["modes"] == {"block": False, "redact": False, "clarify_first": False}
 
@@ -126,9 +118,7 @@ def test_guardrail_defaults_present(disable_webhooks) -> None:
     bot = "bot-default"
     expected_modes = {"block": False, "redact": False, "clarify_first": False}
 
-    r_default = client.get(
-        "/admin/mitigation_modes", params={"tenant": tenant, "bot": bot}
-    )
+    r_default = client.get("/admin/mitigation_modes", params={"tenant": tenant, "bot": bot})
     assert r_default.status_code == 200
     assert r_default.json()["modes"] == expected_modes
 

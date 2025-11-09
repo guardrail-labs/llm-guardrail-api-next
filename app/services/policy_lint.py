@@ -15,7 +15,7 @@ class Lint:
 
 
 def _iter_redact_rules(policy: Dict[str, Any]) -> List[Tuple[int, Dict[str, Any]]]:
-    rules = (((policy or {}).get("rules") or {}).get("redact") or [])
+    rules = ((policy or {}).get("rules") or {}).get("redact") or []
     out: List[Tuple[int, Dict[str, Any]]] = []
     if isinstance(rules, list):
         for i, r in enumerate(rules):
@@ -130,9 +130,8 @@ def lint_policy(policy: Dict[str, Any]) -> List[Lint]:
 
         # 7) boundary guidance: common PII often needs word boundaries
         if (
-            ("email" in rid or "ssn" in rid or "credit" in rid or "phone" in rid)
-            and "\\b" not in patt
-        ):
+            "email" in rid or "ssn" in rid or "credit" in rid or "phone" in rid
+        ) and "\\b" not in patt:
             issues.append(
                 Lint(
                     "info",

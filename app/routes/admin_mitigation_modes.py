@@ -107,4 +107,3 @@ def list_modes(
     _session: dict[str, Any] = Depends(require_viewer),
 ) -> List[ListEntry]:
     return [ListEntry(**entry) for entry in MS.list_modes()]
-

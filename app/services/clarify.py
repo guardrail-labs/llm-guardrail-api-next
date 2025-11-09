@@ -11,15 +11,14 @@ from app.observability.metrics import inc_clarify
 from app.shared.headers import attach_guardrail_headers
 
 DEFAULT_STATUS = int(os.getenv("CLARIFY_HTTP_STATUS", "422"))
-DEFAULT_MESSAGE = os.getenv(
-    "CLARIFY_MESSAGE",
-    "I need a bit more detail to safely proceed."
-)
+DEFAULT_MESSAGE = os.getenv("CLARIFY_MESSAGE", "I need a bit more detail to safely proceed.")
 DEFAULT_QUESTIONS = tuple(
-    q.strip() for q in os.getenv(
+    q.strip()
+    for q in os.getenv(
         "CLARIFY_QUESTIONS",
-        "What’s the exact goal of this request?;Will this be used on production or test data?"
-    ).split(";") if q.strip()
+        "What’s the exact goal of this request?;Will this be used on production or test data?",
+    ).split(";")
+    if q.strip()
 )
 
 INCIDENT_HEADER = "X-Guardrail-Incident-ID"

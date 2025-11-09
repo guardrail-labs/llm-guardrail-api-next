@@ -52,6 +52,7 @@ _STORE: Dict[str, Any] = {}
 # Validators
 # ---------------------------------------------------------------------------
 
+
 def _err(msg: str) -> Tuple[None, str]:
     return None, msg
 
@@ -120,12 +121,8 @@ _VALIDATORS = {
     "threat_feed_enabled": _coerce_bool,
     "max_prompt_chars": lambda v: _coerce_int_in_range(v, lo=0, hi=10_000_000),
     "stream_egress_enabled": _coerce_bool,
-    "stream_guard_max_lookback_chars": lambda v: _coerce_int_in_range(
-        v, lo=0, hi=1_000_000
-    ),
-    "stream_guard_flush_min_bytes": lambda v: _coerce_int_in_range(
-        v, lo=0, hi=1_000_000
-    ),
+    "stream_guard_max_lookback_chars": lambda v: _coerce_int_in_range(v, lo=0, hi=1_000_000),
+    "stream_guard_flush_min_bytes": lambda v: _coerce_int_in_range(v, lo=0, hi=1_000_000),
     "stream_guard_deny_on_private_key": _coerce_bool,
 }
 
@@ -133,6 +130,7 @@ _VALIDATORS = {
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def get(name: str) -> Any:
     if name in _STORE:

@@ -161,4 +161,3 @@ def breaker_config_from_env() -> BreakerConfig:
 def breaker_from_env() -> Tuple[bool, CircuitBreaker]:
     enabled = _truthy(os.getenv("VERIFIER_CB_ENABLED"), False)
     return enabled, CircuitBreaker(breaker_config_from_env())
-

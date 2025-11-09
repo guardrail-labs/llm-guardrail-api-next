@@ -2,7 +2,7 @@ from app.sanitizers.unicode_sanitizer import sanitize_payload, sanitize_text
 
 
 def test_sanitize_text_removes_zero_width_and_bidi():
-    s = "pa\u200Bss\u202Eword"  # "pa<ZWSP>ss<RLO>word"
+    s = "pa\u200bss\u202eword"  # "pa<ZWSP>ss<RLO>word"
     out, stats = sanitize_text(s)
     assert out == "password"
     assert stats["zero_width_removed"] >= 1
@@ -20,8 +20,8 @@ def test_confusables_basic_mapping():
 
 def test_payload_recursive_sanitization():
     data = {
-        "ke\u200By": "v\u200Bal",
-        "list": ["\u202Ehide", "ok"],
+        "ke\u200by": "v\u200bal",
+        "list": ["\u202ehide", "ok"],
         "nested": {"\u0430uth": "gr\u0435at"},  # Cyrillic a/e
     }
     out, stats = sanitize_payload(data)
@@ -30,7 +30,5 @@ def test_payload_recursive_sanitization():
     assert out["nested"]["auth"] == "great"
     assert stats["strings_seen"] >= 1
     assert (
-        stats["zero_width_removed"]
-        + stats["bidi_controls_removed"]
-        + stats["confusables_mapped"]
+        stats["zero_width_removed"] + stats["bidi_controls_removed"] + stats["confusables_mapped"]
     ) >= 1

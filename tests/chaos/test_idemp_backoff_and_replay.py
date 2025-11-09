@@ -25,9 +25,7 @@ def _make_app(counter: dict[str, int], delay: float = 0.0):
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode()),
         ]
-        await send(
-            {"type": "http.response.start", "status": 200, "headers": headers}
-        )
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
     return app
@@ -77,9 +75,7 @@ async def _run_once(mid: IdempotencyMiddleware, scope: Scope):
 
 
 async def _concurrent(mid: IdempotencyMiddleware, n: int, scope_factory):
-    results = await asyncio.gather(
-        *[_run_once(mid, scope_factory()) for _ in range(n)]
-    )
+    results = await asyncio.gather(*[_run_once(mid, scope_factory()) for _ in range(n)])
     return results
 
 

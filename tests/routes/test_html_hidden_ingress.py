@@ -7,17 +7,18 @@ from app.telemetry import metrics as m
 
 client = TestClient(app)
 
+
 def test_multipart_html_hidden_exposed_and_redacted():
     m.inc_redaction = lambda *a, **k: None
     # Hidden HTML that also contains an API-like secret to ensure redaction fires.
-    html = '''
+    html = """
     <html>
       <body>
         <div style="display:none">sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ</div>
         <p>hello</p>
       </body>
     </html>
-    '''.encode("utf-8")
+    """.encode("utf-8")
 
     files = [("files", ("hidden.html", html, "text/html"))]
     r = client.post("/guardrail/evaluate_multipart", files=files)

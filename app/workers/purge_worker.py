@@ -13,9 +13,7 @@ from app.services.metrics import (
 from app.services.retention import RetentionPolicy
 
 
-async def run_once(
-    now: Optional[float] = None, per_resource_limit: int = 100
-) -> int:
+async def run_once(now: Optional[float] = None, per_resource_limit: int = 100) -> int:
     if not settings.RETENTION_WORKER_ENABLED:
         return 0
 
@@ -31,9 +29,7 @@ async def run_once(
         if not _policy_active(policy):
             continue
         try:
-            ids = await coordinator.plan(
-                policy.tenant, policy.resource.value, current, limit
-            )
+            ids = await coordinator.plan(policy.tenant, policy.resource.value, current, limit)
             if not ids:
                 continue
             receipt = await coordinator.execute(
@@ -46,9 +42,7 @@ async def run_once(
             )
             deleted_total += int(receipt.count)
             try:
-                purge_items_deleted_total.labels(policy.resource.value).inc(
-                    int(receipt.count)
-                )
+                purge_items_deleted_total.labels(policy.resource.value).inc(int(receipt.count))
             except Exception:
                 pass
         except Exception:

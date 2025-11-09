@@ -1,4 +1,5 @@
 """Prometheus metric helpers and idempotency metrics."""
+
 from __future__ import annotations
 
 from typing import Iterable, Tuple
@@ -113,4 +114,3 @@ IDEMP_EVICTIONS = metric_counter(
     "guardrail_idemp_evictions_total",
     "Explicit evictions from idempotency store",
 )
-

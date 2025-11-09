@@ -15,9 +15,11 @@ def test_breaker_opens_and_skips(monkeypatch):
 
         async def assess(self, text, meta=None):
             import asyncio
+
             raise asyncio.TimeoutError()
 
     import app.services.verifier.providers as prov
+
     monkeypatch.setenv("VERIFIER_PROVIDERS", "failing,local_rules")
     monkeypatch.setitem(__import__("sys").modules, "anthropic", types.SimpleNamespace())
     monkeypatch.setenv("VERIFIER_PROVIDER_BREAKER_FAILS", "2")
@@ -29,6 +31,7 @@ def test_breaker_opens_and_skips(monkeypatch):
             return FailingProv()
         if name == "local_rules":
             from app.services.verifier.providers.local_rules import LocalRulesProvider
+
             return LocalRulesProvider()
         return None
 

@@ -19,11 +19,10 @@ _PRIV_KEY_ENV_RE = re.compile(
     r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
     re.S,
 )
-_PRIV_KEY_MARKER_RE = re.compile(
-    r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-)
+_PRIV_KEY_MARKER_RE = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
 
 # ----------------------------- Optional imports ------------------------------
+
 
 def _noop(*_a: object, **_k: object) -> None:
     return None
@@ -32,6 +31,7 @@ def _noop(*_a: object, **_k: object) -> None:
 try:
     from app.telemetry import metrics as m
 except Exception:  # pragma: no cover
+
     class _M:
         inc_redaction = staticmethod(_noop)
         inc_stream_guard_chunks = staticmethod(_noop)
@@ -146,8 +146,8 @@ class StreamingGuard:
         # If previously denied, yield the block token once and then stop.
         if self._denied and not self._block_yielded:
             self._block_yielded = True
-            self._done = True       # stop the stream after the block token
-            self._tail = ""         # ensure nothing leaks after block
+            self._done = True  # stop the stream after the block token
+            self._tail = ""  # ensure nothing leaks after block
             m.inc_stream_guard_denied()
             return "[STREAM BLOCKED]"
 
@@ -205,7 +205,7 @@ class StreamingGuard:
 
             # Normal case: only emit when buffer exceeds lookback window.
             if len(self._tail) > self._lookback:
-                emit = self._tail[:-self._lookback]
+                emit = self._tail[: -self._lookback]
                 remain = self._tail[-self._lookback :]
                 if self._flush_min:
                     if len(emit.encode(self._encoding)) < self._flush_min:
@@ -221,8 +221,7 @@ class StreamingGuard:
     def _apply_redactions(self) -> None:
         """Apply deny/replace rules over the current tail buffer."""
         if self._deny_on_pk and (
-            _PRIV_KEY_ENV_RE.search(self._tail)
-            or _PRIV_KEY_MARKER_RE.search(self._tail)
+            _PRIV_KEY_ENV_RE.search(self._tail) or _PRIV_KEY_MARKER_RE.search(self._tail)
         ):
             self._denied = True
             self._tail = ""  # drop any accumulated content immediately

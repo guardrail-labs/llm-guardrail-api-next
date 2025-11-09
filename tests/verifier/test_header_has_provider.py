@@ -16,6 +16,7 @@ def test_hardened_sets_provider_header(monkeypatch):
             "tokens_used": 3,
             "provider": "local_rules",
         }
+
     importlib.reload(v)
     monkeypatch.setattr(v, "verify_intent", fake)
     out, headers = _run(v.verify_intent_hardened("hi", {"tenant_id": "t", "bot_id": "b"}))

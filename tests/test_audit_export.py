@@ -32,6 +32,7 @@ def _app_with(rows: List[AuditRecord]) -> FastAPI:
     app = FastAPI()
     app.include_router(audit_router)
     app.dependency_overrides[get_audit_store] = lambda: _FakeStore(rows)
+
     def _allow(_: Request) -> Dict[str, str]:
         return {"email": "tester@example.com", "role": "admin"}
 

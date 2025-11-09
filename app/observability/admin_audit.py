@@ -63,7 +63,7 @@ def _iter_file_lines() -> List[str]:
 
 def _redis_client() -> Any | None:
     global _REDIS_CLIENT, _REDIS_URL
-    url = (os.getenv("REDIS_URL", "").strip() or "redis://localhost:6379/0")
+    url = os.getenv("REDIS_URL", "").strip() or "redis://localhost:6379/0"
     if _REDIS_CLIENT is not None and _REDIS_URL == url:
         return _REDIS_CLIENT
     try:

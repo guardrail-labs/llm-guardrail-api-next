@@ -7,17 +7,17 @@ import zipfile
 from typing import Dict, Iterable, List, Tuple
 
 _MAX_BYTES = 256 * 1024  # 256 KiB hard cap for a single blob
-_MAX_FILES = 64          # max entries listed per archive
-_MAX_DEPTH = 2           # nested archives depth (0=top)
-_MAX_SAMPLE = 4096       # text sample bytes collected per file
+_MAX_FILES = 64  # max entries listed per archive
+_MAX_DEPTH = 2  # nested archives depth (0=top)
+_MAX_SAMPLE = 4096  # text sample bytes collected per file
 
-_TEXT_EXTS = {
-    ".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"
-}
+_TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"}
 _ARCHIVE_HINTS = (".zip", ".tar", ".tgz", ".tar.gz", ".tar.bz2", ".tbz2")
+
 
 def _lc(s: str) -> str:
     return s.casefold()
+
 
 def _is_probably_text(name: str) -> bool:
     n = _lc(name)
@@ -26,9 +26,11 @@ def _is_probably_text(name: str) -> bool:
             return True
     return False
 
+
 def _is_archive_name(name: str) -> bool:
     n = _lc(name)
     return any(n.endswith(ext) for ext in _ARCHIVE_HINTS)
+
 
 def _safe_b64(s: str) -> bytes | None:
     try:
@@ -39,6 +41,7 @@ def _safe_b64(s: str) -> bytes | None:
         return None
     return data
 
+
 def _limit(items: Iterable[str], k: int) -> List[str]:
     out: List[str] = []
     for i, it in enumerate(items):
@@ -46,6 +49,7 @@ def _limit(items: Iterable[str], k: int) -> List[str]:
             break
         out.append(it)
     return out
+
 
 def peek_zip(buf: bytes, depth: int = 0) -> Tuple[List[str], List[str], Dict[str, int]]:
     """
@@ -95,6 +99,7 @@ def peek_zip(buf: bytes, depth: int = 0) -> Tuple[List[str], List[str], Dict[str
         stats["errors"] += 1
     return names, texts, stats
 
+
 def peek_tar(buf: bytes, depth: int = 0) -> Tuple[List[str], List[str], Dict[str, int]]:
     stats = {"files_listed": 0, "samples": 0, "nested_blocked": 0, "errors": 0}
     names: List[str] = []
@@ -127,9 +132,7 @@ def peek_tar(buf: bytes, depth: int = 0) -> Tuple[List[str], List[str], Dict[str
                             nb = f.read(_MAX_BYTES)
                             if nb and len(nb) <= _MAX_BYTES:
                                 nn, tt, st = peek_any(nb, m.name, depth + 1)
-                                names.extend(
-                                    _limit(nn, max(0, _MAX_FILES - len(names)))
-                                )
+                                names.extend(_limit(nn, max(0, _MAX_FILES - len(names))))
                                 texts.extend(tt)
                                 for k, v in st.items():
                                     stats[k] = stats.get(k, 0) + v
@@ -141,8 +144,10 @@ def peek_tar(buf: bytes, depth: int = 0) -> Tuple[List[str], List[str], Dict[str
         stats["errors"] += 1
     return names, texts, stats
 
-def peek_any(buf: bytes, name_hint: str, depth: int = 0
-             ) -> Tuple[List[str], List[str], Dict[str, int]]:
+
+def peek_any(
+    buf: bytes, name_hint: str, depth: int = 0
+) -> Tuple[List[str], List[str], Dict[str, int]]:
     n = _lc(name_hint)
     if n.endswith(".zip"):
         return peek_zip(buf, depth)
@@ -157,8 +162,8 @@ def peek_any(buf: bytes, name_hint: str, depth: int = 0
             return names2, texts2, stats2
     return names, texts, stats
 
-def try_b64_archive(filename: str, b64: str
-                    ) -> Tuple[List[str], List[str], Dict[str, int]]:
+
+def try_b64_archive(filename: str, b64: str) -> Tuple[List[str], List[str], Dict[str, int]]:
     """
     Convenience: base64 'content' + 'filename' fields.
     Returns (filenames, text_samples, stats). If invalid/oversized, returns empty.

@@ -36,4 +36,3 @@ def record_validation_results(issues: Iterable[object]) -> None:
         except Exception:
             items.append(repr(it))
     record_bindings_audit_event("bindings.validation", {"issues": items})
-

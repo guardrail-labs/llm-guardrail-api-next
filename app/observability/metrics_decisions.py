@@ -99,9 +99,7 @@ def inc(outcome: str, tenant: Optional[str] = None, bot: Optional[str] = None) -
         pass
 
 
-def inc_redact(
-    rule_id: str, tenant: Optional[str] = None, bot: Optional[str] = None
-) -> None:
+def inc_redact(rule_id: str, tenant: Optional[str] = None, bot: Optional[str] = None) -> None:
     c = _get_counter_redact()
     if c is None:
         return

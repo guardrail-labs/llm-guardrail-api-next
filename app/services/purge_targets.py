@@ -8,11 +8,9 @@ from app.services.retention import Resource
 
 
 class PurgeTarget(Protocol):
-    async def list_expired(self, tenant: str, now: float, limit: int) -> List[str]:
-        ...
+    async def list_expired(self, tenant: str, now: float, limit: int) -> List[str]: ...
 
-    async def purge_ids(self, tenant: str, ids: List[str]) -> int:
-        ...
+    async def purge_ids(self, tenant: str, ids: List[str]) -> int: ...
 
 
 class RedisZsetTarget(PurgeTarget):
@@ -28,10 +26,7 @@ class RedisZsetTarget(PurgeTarget):
             return []
         key = self._index_key(tenant)
         ids = await self._redis.zrangebyscore(key, "-inf", now, start=0, num=limit)
-        return [
-            item.decode("utf-8") if isinstance(item, bytes) else str(item)
-            for item in ids
-        ]
+        return [item.decode("utf-8") if isinstance(item, bytes) else str(item) for item in ids]
 
     async def purge_ids(self, tenant: str, ids: List[str]) -> int:
         if not ids:

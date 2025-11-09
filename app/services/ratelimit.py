@@ -232,10 +232,7 @@ def get_enforce_unknown(settings=None) -> bool:
         return val
 
     current_env = os.getenv("RATE_LIMIT_ENFORCE_UNKNOWN", "")
-    if (
-        _global_enforce_unknown is not None
-        and _global_enforce_unknown_source == current_env
-    ):
+    if _global_enforce_unknown is not None and _global_enforce_unknown_source == current_env:
         return _global_enforce_unknown
 
     val = _enforce_unknown_from_settings(settings)

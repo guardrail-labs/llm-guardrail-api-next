@@ -39,9 +39,7 @@ async def test_plan_execute_flow() -> None:
     await redis.set("dlq:msg:old1", b"payload1")
     await redis.set("dlq:msg:old2", b"payload2")
 
-    planned = await coordinator.plan(
-        "acme", Resource.DLQ_MSG.value, now, limit=10
-    )
+    planned = await coordinator.plan("acme", Resource.DLQ_MSG.value, now, limit=10)
     assert planned == ["old1", "old2"]
 
     dry_receipt = await coordinator.execute(
@@ -55,9 +53,7 @@ async def test_plan_execute_flow() -> None:
     assert dry_receipt.count == 0
     assert await redis.exists("dlq:msg:old1") == 1
 
-    live_ids = await coordinator.plan(
-        "acme", Resource.DLQ_MSG.value, now, limit=10
-    )
+    live_ids = await coordinator.plan("acme", Resource.DLQ_MSG.value, now, limit=10)
     live_receipt = await coordinator.execute(
         "acme",
         Resource.DLQ_MSG.value,

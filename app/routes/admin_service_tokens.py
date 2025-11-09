@@ -18,9 +18,7 @@ def list_tokens(_: Dict[str, Any] = Depends(require_admin)) -> Dict[str, Any]:
     use_redis = config.SERVICE_TOKEN_USE_REDIS and client is not None
     if use_redis and client is not None:
         try:
-            revoked = list(
-                client.smembers(f"{config.SERVICE_TOKEN_REDIS_PREFIX}:revoked")
-            )
+            revoked = list(client.smembers(f"{config.SERVICE_TOKEN_REDIS_PREFIX}:revoked"))
         except Exception:
             revoked = ST.list_revoked()
             use_redis = False

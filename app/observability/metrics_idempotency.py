@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from prometheus_client import Counter, Gauge, Histogram
 
-IDEMP_HITS = Counter(
-    "guardrail_idemp_hits_total", "Idempotency cache hits", ["method", "tenant"]
-)
+IDEMP_HITS = Counter("guardrail_idemp_hits_total", "Idempotency cache hits", ["method", "tenant"])
 IDEMP_MISSES = Counter(
     "guardrail_idemp_misses_total", "Idempotency cache misses", ["method", "tenant"]
 )
@@ -36,12 +34,8 @@ IDEMP_BODY_TOO_LARGE = Counter(
     "Bodies above cap (not cached)",
     ["tenant"],
 )
-IDEMP_ERRORS = Counter(
-    "guardrail_idemp_errors_total", "Errors by phase", ["phase"]
-)
-IDEMP_LOCK_WAIT = Histogram(
-    "guardrail_idemp_lock_wait_seconds", "Follower lock wait time"
-)
+IDEMP_ERRORS = Counter("guardrail_idemp_errors_total", "Errors by phase", ["phase"])
+IDEMP_LOCK_WAIT = Histogram("guardrail_idemp_lock_wait_seconds", "Follower lock wait time")
 IDEMP_LOCK_WAIT_REASON = Histogram(  # new, labeled variant
     "guardrail_idemp_lock_wait_seconds_by_reason",
     "Follower lock wait by exit reason",

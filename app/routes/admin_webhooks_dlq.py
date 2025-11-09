@@ -44,9 +44,7 @@ def _enforce_csrf(request: Request, token: Optional[str]) -> None:
     if not candidate:
         if not request.cookies.get("ui_csrf"):
             return
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF token required"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF token required")
     _require_ui_csrf(request, candidate)
 
 

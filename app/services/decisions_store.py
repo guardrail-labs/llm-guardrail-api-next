@@ -160,9 +160,7 @@ def _filter_items(
     if outcome is not None:
         filtered = [item for item in filtered if item.get("outcome") == outcome]
     if request_id is not None:
-        filtered = [
-            item for item in filtered if _extract_request_id(item) == request_id
-        ]
+        filtered = [item for item in filtered if _extract_request_id(item) == request_id]
     return filtered
 
 

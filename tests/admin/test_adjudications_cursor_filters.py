@@ -14,9 +14,7 @@ def _rec(
     bot: str = "b",
 ):
     return log.AdjudicationRecord(
-        ts=datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z"),
+        ts=datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
         request_id=request_id,
         tenant=tenant,
         bot=bot,

@@ -5,9 +5,7 @@ def test_rule_hits_metric_emitted(monkeypatch):
     def fake_eval(text: str, want_debug: bool):
         return "deny", {"policy:deny:test": ["match"]}, None
 
-    monkeypatch.setattr(
-        "app.routes.guardrail._evaluate_ingress_policy", fake_eval, raising=False
-    )
+    monkeypatch.setattr("app.routes.guardrail._evaluate_ingress_policy", fake_eval, raising=False)
     monkeypatch.setattr("app.services.escalation.is_enabled", lambda: False, raising=False)
 
     from app.main import create_app

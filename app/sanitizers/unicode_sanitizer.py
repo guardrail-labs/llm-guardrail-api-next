@@ -9,22 +9,22 @@ JsonLike = Union[dict, list, str, int, float, bool, None]
 # Zero-width & formatting controls (incl. soft hyphen, BOM, word-joiner)
 # and bidi override/embedding/isolate controls.
 _ZERO_WIDTH = (
-    "\u200B"  # ZWSP
-    "\u200C"  # ZWNJ
-    "\u200D"  # ZWJ
+    "\u200b"  # ZWSP
+    "\u200c"  # ZWNJ
+    "\u200d"  # ZWJ
     "\u2060"  # WJ
-    "\uFEFF"  # ZWNBSP/BOM
-    "\u00AD"  # SHY
-    "\u200E"  # LRM
-    "\u200F"  # RLM
+    "\ufeff"  # ZWNBSP/BOM
+    "\u00ad"  # SHY
+    "\u200e"  # LRM
+    "\u200f"  # RLM
 )
 
 _BIDI = (
-    "\u202A"  # LRE
-    "\u202B"  # RLE
-    "\u202D"  # LRO
-    "\u202E"  # RLO
-    "\u202C"  # PDF
+    "\u202a"  # LRE
+    "\u202b"  # RLE
+    "\u202d"  # LRO
+    "\u202e"  # RLO
+    "\u202c"  # PDF
     "\u2066"  # LRI
     "\u2067"  # RLI
     "\u2068"  # FSI

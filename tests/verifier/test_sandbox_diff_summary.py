@@ -50,4 +50,3 @@ async def test_summary_attached_on_diff(monkeypatch: pytest.MonkeyPatch):
     # primary likely "safe" (AlwaysSafe), shadow "unsafe" => diff summary present
     summary = out.get("sandbox_summary")
     assert summary is None or isinstance(summary, str)
-

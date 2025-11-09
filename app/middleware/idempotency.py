@@ -1,4 +1,5 @@
 """Idempotency middleware with optional header, owner tokens, and follower backoff."""
+
 from __future__ import annotations
 
 import asyncio
@@ -66,26 +67,19 @@ def _env_touch_on_replay() -> bool:
 class IdemStoreProto(Protocol):
     async def acquire_leader(
         self, key: str, ttl_s: int, body_fp: str
-    ) -> tuple[bool, Optional[str]]:
-        ...
+    ) -> tuple[bool, Optional[str]]: ...
 
-    async def release(self, key: str, owner: Optional[str] = None) -> None:
-        ...
+    async def release(self, key: str, owner: Optional[str] = None) -> None: ...
 
-    async def get(self, key: str) -> Optional[StoredResponse]:
-        ...
+    async def get(self, key: str) -> Optional[StoredResponse]: ...
 
-    async def put(self, key: str, value: StoredResponse, ttl_s: int) -> None:
-        ...
+    async def put(self, key: str, value: StoredResponse, ttl_s: int) -> None: ...
 
-    async def meta(self, key: str) -> Mapping[str, Any]:
-        ...
+    async def meta(self, key: str) -> Mapping[str, Any]: ...
 
-    async def bump_replay(self, key: str) -> Optional[int]:
-        ...
+    async def bump_replay(self, key: str) -> Optional[int]: ...
 
-    async def touch(self, key: str, ttl_s: int) -> None:
-        ...
+    async def touch(self, key: str, ttl_s: int) -> None: ...
 
 
 class IdempotencyMiddleware:
@@ -111,13 +105,9 @@ class IdempotencyMiddleware:
         self.cache_streaming = cache_streaming
         self.tenant_provider = tenant_provider or (lambda scope: "default")
         self.touch_on_replay = (
-            bool(touch_on_replay)
-            if touch_on_replay is not None
-            else _env_touch_on_replay()
+            bool(touch_on_replay) if touch_on_replay is not None else _env_touch_on_replay()
         )
-        self.wait_budget_ms = (
-            int(wait_budget_ms) if wait_budget_ms is not None else None
-        )
+        self.wait_budget_ms = int(wait_budget_ms) if wait_budget_ms is not None else None
         self.jitter_ms = int(jitter_ms) if jitter_ms is not None else None
         self.strict_fail_closed = (
             bool(strict_fail_closed) if strict_fail_closed is not None else None
@@ -204,9 +194,7 @@ class IdempotencyMiddleware:
             fp = meta.get("payload_fingerprint") if isinstance(meta, dict) else None
             if fp and fp != body_fp:
                 conflict = True
-                IDEMP_CONFLICTS.labels(
-                    method=method, tenant=tenant, role="follower"
-                ).inc()
+                IDEMP_CONFLICTS.labels(method=method, tenant=tenant, role="follower").inc()
                 log_idempotency_event(
                     "conflict",
                     key=key,
@@ -240,9 +228,7 @@ class IdempotencyMiddleware:
                     wait_ms=wait_ms,
                 )
                 try:
-                    ok2, owner2 = await self.store.acquire_leader(
-                        key, self.ttl_s, body_fp
-                    )
+                    ok2, owner2 = await self.store.acquire_leader(key, self.ttl_s, body_fp)
                 except Exception:
                     IDEMP_ERRORS.labels(phase="acquire").inc()
                     ok2, owner2 = False, None
@@ -309,9 +295,7 @@ class IdempotencyMiddleware:
     ) -> None:
         """Run downstream as leader, decide caching, always release lock."""
         try:
-            status, resp_headers, resp_body, is_streaming = await self._run_downstream(
-                scope, body
-            )
+            status, resp_headers, resp_body, is_streaming = await self._run_downstream(scope, body)
         except Exception:
             # Ensure followers can proceed, then emit a 500.
             try:

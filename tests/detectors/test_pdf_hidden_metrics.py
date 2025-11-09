@@ -36,4 +36,3 @@ def test_pdf_hidden_metrics_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert 'guardrail_pdf_hidden_total{reason="white_on_white"}' in text
     assert 'guardrail_pdf_hidden_total{reason="tiny_font"}' in text
     assert "guardrail_pdf_hidden_bytes_total" in text
-

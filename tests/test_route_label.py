@@ -14,10 +14,7 @@ def test_route_label_normalizes_allowlisted_template(monkeypatch) -> None:
     allow = set(getattr(rl, "_ALLOWED", set()))
     allow.add("/guardrail/:id")
     monkeypatch.setattr(rl, "_ALLOWED", allow, raising=False)
-    assert (
-        rl.route_label("/guardrail/123e4567-e89b-12d3-a456-426614174000")
-        == "/guardrail/:id"
-    )
+    assert rl.route_label("/guardrail/123e4567-e89b-12d3-a456-426614174000") == "/guardrail/:id"
 
 
 def test_route_label_strips_query_string() -> None:

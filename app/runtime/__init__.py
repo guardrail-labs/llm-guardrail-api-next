@@ -111,9 +111,7 @@ def get_idempotency_store() -> IdempotencyStore:
         backend = "memory"
 
     # Prefer Redis when a non-memory Redis URL is configured.
-    if backend == "memory" and not settings.IDEMP_REDIS_URL.startswith(
-        "memory://"
-    ):
+    if backend == "memory" and not settings.IDEMP_REDIS_URL.startswith("memory://"):
         backend = "redis"
 
     if backend == "redis":

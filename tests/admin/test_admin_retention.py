@@ -15,11 +15,7 @@ from app.services import retention as retention_service
 
 
 def _ts(ms: int) -> str:
-    return (
-        datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def seed_adjudications(base: int, extra: List[AL.AdjudicationRecord] | None = None) -> None:
@@ -236,10 +232,7 @@ def test_execute_respects_filters_and_batch_limit(
     data = resp.json()
     assert data["deleted"]["decisions"] == 2
     assert data["deleted"]["adjudications"] == 0
-    assert all(
-        entry["bot"] != "b" or cast(int, entry["ts_ms"]) >= base - 1
-        for entry in decisions
-    )
+    assert all(entry["bot"] != "b" or cast(int, entry["ts_ms"]) >= base - 1 for entry in decisions)
 
 
 def test_auth_and_csrf_enforced(monkeypatch: pytest.MonkeyPatch):
@@ -259,9 +252,7 @@ def test_auth_and_csrf_enforced(monkeypatch: pytest.MonkeyPatch):
         raise HTTPException(status_code=400, detail="csrf")
 
     monkeypatch.setattr(retention_service, "_decisions_supports_sql", lambda: False)
-    monkeypatch.setattr(
-        store, "_fetch_decisions_sorted_desc", lambda **_: [], raising=False
-    )
+    monkeypatch.setattr(store, "_fetch_decisions_sorted_desc", lambda **_: [], raising=False)
     app2 = create_app()
     app2.dependency_overrides[rbac.require_viewer] = lambda request: None
     app2.dependency_overrides[rbac.require_operator] = lambda request: None

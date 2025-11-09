@@ -47,9 +47,7 @@ def require_field(r: JSONDict, key: str) -> float:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Compare bench results against baseline"
-    )
+    ap = argparse.ArgumentParser(description="Compare bench results against baseline")
     ap.add_argument("--baseline", required=True)
     ap.add_argument("--result", required=True)
     ap.add_argument("--max-p95-reg-pct", type=float, default=20.0)
@@ -92,13 +90,9 @@ def main() -> int:
     if r_ok < args.min_success_rate:
         failures.append(f"success_rate {r_ok:.2f}% < {args.min_success_rate}%")
     if p95_reg_pct > args.max_p95_reg_pct:
-        failures.append(
-            f"p95 regression {p95_reg_pct:.2f}% > {args.max_p95_reg_pct}%"
-        )
+        failures.append(f"p95 regression {p95_reg_pct:.2f}% > {args.max_p95_reg_pct}%")
     if rps_drop_pct > args.max_rps_drop_pct:
-        failures.append(
-            f"rps drop {rps_drop_pct:.2f}% > {args.max_rps_drop_pct}%"
-        )
+        failures.append(f"rps drop {rps_drop_pct:.2f}% > {args.max_rps_drop_pct}%")
 
     if failures:
         print("FAIL: " + "; ".join(failures), file=sys.stderr)

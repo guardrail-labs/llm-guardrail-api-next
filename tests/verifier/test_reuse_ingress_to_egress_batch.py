@@ -48,4 +48,3 @@ async def test_reuse_short_circuits_egress(monkeypatch) -> None:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
-

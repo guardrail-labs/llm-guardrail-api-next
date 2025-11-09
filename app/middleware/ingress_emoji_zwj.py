@@ -36,7 +36,7 @@ class IngressEmojiZWJMiddleware(BaseHTTPMiddleware):
     """
 
     # Sensitivity knobs (conservative defaults)
-    sensitive_zwj_min = 4        # many joins in a single request
+    sensitive_zwj_min = 4  # many joins in a single request
     sensitive_tag_chars_min = 6  # enough ASCII to matter
 
     async def dispatch(
@@ -83,7 +83,7 @@ class IngressEmojiZWJMiddleware(BaseHTTPMiddleware):
             setattr(
                 request.state,
                 "guardrail_plaintexts",
-                list(existing) + derived_texts, 
+                list(existing) + derived_texts,
             )
 
         # Optionally mark sensitive to trigger timing normalization
@@ -94,8 +94,10 @@ class IngressEmojiZWJMiddleware(BaseHTTPMiddleware):
 
         # Replay body if consumed
         if raw is not None:
+
             async def receive() -> dict:
                 return {"type": "http.request", "body": raw, "more_body": False}
+
             request = Request(request.scope, receive)
 
         # Metrics

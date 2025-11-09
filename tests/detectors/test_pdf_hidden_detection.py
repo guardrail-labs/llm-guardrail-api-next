@@ -18,7 +18,7 @@ def test_pdf_hidden_hex_is_exposed_and_redacted():
         b"%PDF-1.4\n"
         b"1 0 obj << /Type /Catalog >> endobj\n"
         b"stream\n"
-        b"1 1 1 rg\n"              # white non-stroking fill
+        b"1 1 1 rg\n"  # white non-stroking fill
         b"<" + hex_text + b"> Tj\n"
         b"endstream\n%%EOF\n"
     )

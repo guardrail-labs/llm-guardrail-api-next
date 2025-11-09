@@ -24,6 +24,7 @@ def _mk_app() -> FastAPI:
 
     return app
 
+
 def _get_all_header_values(response: Any, name: str) -> list[str]:
     def _values_from(source: Any, attr: str) -> list[str]:
         getter = getattr(source, attr, None)
@@ -54,11 +55,7 @@ def _get_all_header_values(response: Any, name: str) -> list[str]:
         if values:
             return values
 
-    return [
-        str(value)
-        for key, value in response.headers.items()
-        if key.lower() == name.lower()
-    ]
+    return [str(value) for key, value in response.headers.items() if key.lower() == name.lower()]
 
 
 def test_oversize_keeps_duplicate_headers(monkeypatch) -> None:
@@ -77,4 +74,3 @@ def test_oversize_keeps_duplicate_headers(monkeypatch) -> None:
     content_type = response.headers.get("content-type", "")
     assert content_type.lower().startswith("text/plain;")
     assert "charset=" in content_type.lower()
-

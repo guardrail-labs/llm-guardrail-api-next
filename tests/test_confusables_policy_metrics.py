@@ -30,9 +30,7 @@ def test_flag_default_adds_header() -> None:
 
     with patch(
         "app.policy.flags.get_sanitizer_flags",
-        return_value=SanitizerFlags(
-            confusables_action="flag", max_confusables_ratio=0.0
-        ),
+        return_value=SanitizerFlags(confusables_action="flag", max_confusables_ratio=0.0),
     ):
         res = client.post("/echo", json={"text": CONFUSABLE_TEXT})
         assert res.status_code == 200
@@ -46,9 +44,7 @@ def test_escape_policy_escapes_confusables() -> None:
 
     with patch(
         "app.policy.flags.get_sanitizer_flags",
-        return_value=SanitizerFlags(
-            confusables_action="escape", max_confusables_ratio=0.0
-        ),
+        return_value=SanitizerFlags(confusables_action="escape", max_confusables_ratio=0.0),
     ):
         res = client.post("/echo", json={"text": CONFUSABLE_TEXT})
         assert res.status_code == 200
@@ -62,9 +58,7 @@ def test_clarify_sets_header() -> None:
 
     with patch(
         "app.policy.flags.get_sanitizer_flags",
-        return_value=SanitizerFlags(
-            confusables_action="clarify", max_confusables_ratio=0.0
-        ),
+        return_value=SanitizerFlags(confusables_action="clarify", max_confusables_ratio=0.0),
     ):
         res = client.post("/echo", json={"text": CONFUSABLE_TEXT})
         assert res.status_code == 200
@@ -77,9 +71,7 @@ def test_block_sets_decision_header() -> None:
 
     with patch(
         "app.policy.flags.get_sanitizer_flags",
-        return_value=SanitizerFlags(
-            confusables_action="block", max_confusables_ratio=0.0
-        ),
+        return_value=SanitizerFlags(confusables_action="block", max_confusables_ratio=0.0),
     ):
         res = client.post("/echo", json={"text": CONFUSABLE_TEXT})
         assert res.status_code == 200

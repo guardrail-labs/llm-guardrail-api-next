@@ -80,4 +80,3 @@ def test_soft_fallback_on_eval_error(monkeypatch):
     assert isinstance(allowed, bool)
     assert retry_after >= 0.0
     assert remaining >= 0.0
-

@@ -14,6 +14,7 @@ def _client_with_env(env: dict[str, str]) -> TestClient:
     for k, v in env.items():
         os.environ[k] = v
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 
@@ -33,4 +34,3 @@ def test_logs_config_snapshot_and_access() -> None:
     client = _client_with_env({})
     r = client.get("/health")
     assert r.status_code in (200, 401, 302, 307)
-

@@ -103,16 +103,13 @@ def policy_reload(
     lint_items = lint_policy(merged_policy if merged_policy is not None else {})
     lint_dicts = [asdict(item) for item in lint_items]
     if isinstance(merged_policy, dict):
-        merged_yaml_text = yaml.safe_dump(
-            merged_policy, sort_keys=False, allow_unicode=True
-        )
+        merged_yaml_text = yaml.safe_dump(merged_policy, sort_keys=False, allow_unicode=True)
     else:
         merged_yaml_text = str(merged_policy or "")
 
     allow_apply, validation = validate_text_for_reload(merged_yaml_text)
-    lint_block = (
-        validation.get("enforcement_mode") == "block"
-        and any(item.get("severity") == "error" for item in lint_dicts)
+    lint_block = validation.get("enforcement_mode") == "block" and any(
+        item.get("severity") == "error" for item in lint_dicts
     )
     if lint_block:
         allow_apply = False

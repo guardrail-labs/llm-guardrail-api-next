@@ -94,9 +94,7 @@ def test_retry_then_live_override(monkeypatch):
     monkeypatch.setattr("app.routes.guardrail._maybe_hardened_verify", _fake)
 
     action, headers = asyncio.run(
-        _maybe_hardened(
-            text="hi", direction="ingress", tenant="t", bot="b", family=None
-        )
+        _maybe_hardened(text="hi", direction="ingress", tenant="t", bot="b", family=None)
     )
     assert action == "deny"
     assert headers.get("X-Guardrail-Verifier-Mode") == "live"
@@ -116,9 +114,7 @@ def test_all_timeouts_apply_error_fallback(monkeypatch):
     monkeypatch.setattr("app.routes.guardrail._maybe_hardened_verify", _fake)
 
     hv_action, hv_headers = asyncio.run(
-        _maybe_hardened(
-            text="hi", direction="ingress", tenant="t", bot="b", family=None
-        )
+        _maybe_hardened(text="hi", direction="ingress", tenant="t", bot="b", family=None)
     )
     assert hv_action is None
     assert hv_headers.get("X-Guardrail-Verifier-Mode") == "fallback"
@@ -140,9 +136,7 @@ def test_unsafe_no_retry(monkeypatch):
     monkeypatch.setattr("app.routes.guardrail._maybe_hardened_verify", _fake)
 
     action, headers = asyncio.run(
-        _maybe_hardened(
-            text="hi", direction="ingress", tenant="t", bot="b", family=None
-        )
+        _maybe_hardened(text="hi", direction="ingress", tenant="t", bot="b", family=None)
     )
     assert action == "deny"
     assert headers.get("X-Guardrail-Verifier-Mode") == "live"

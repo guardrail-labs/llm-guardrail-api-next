@@ -32,16 +32,12 @@ _DEFAULT_SSE_MIN_WINDOW = int(os.getenv("EGRESS_SSE_MIN_WINDOW", "128") or "128"
 
 
 class EgressGuardMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Read env-driven toggles dynamically so tests can flip them per test.
         enabled = os.getenv("EGRESS_FILTER_ENABLED", "1") == "1"
 
         # Respect env first, then fall back to module-level attributes
-        streaming_redact_enabled = (
-            os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "")
-        )
+        streaming_redact_enabled = os.getenv("EGRESS_STREAMING_REDACT_ENABLED", "")
         if streaming_redact_enabled == "":
             sr_enabled = STREAMING_REDACT_ENABLED
         else:

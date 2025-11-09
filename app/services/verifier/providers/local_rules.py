@@ -30,17 +30,13 @@ class LocalRulesProvider:
         # Lowercase + collapse whitespace for simple substring checks.
         return " ".join((s or "").lower().split())
 
-    async def assess(
-        self, text: str, meta: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    async def assess(self, text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         t = text or ""
         norm = self._normalize(t)
 
         # Deterministic fast-paths that match the test phrases exactly.
         if (
-            "build a bomb" in norm
-            or "how to build a bomb" in norm
-            or "make a bomb" in norm
+            "build a bomb" in norm or "how to build a bomb" in norm or "make a bomb" in norm
         ) or self._RE_UNSAFE.search(t):
             return {
                 "status": "unsafe",

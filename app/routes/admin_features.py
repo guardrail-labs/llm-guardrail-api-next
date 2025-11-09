@@ -20,4 +20,3 @@ def get_features(_session: None = Depends(require_admin_session)) -> FeaturesRes
     settings = get_settings()
     enabled = bool(getattr(settings, "ADMIN_ENABLE_GOLDEN_ONE_CLICK", False))
     return FeaturesResp(golden_one_click=enabled)
-

@@ -59,6 +59,8 @@ def _lt_get(tenant: str, bot: str, sess: str) -> str:
         _LAST_TEXT.pop(_lt_key(tenant, bot, sess), None)
         return ""
     return text
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -158,6 +160,7 @@ class IngressProbingMiddleware(BaseHTTPMiddleware):
         )
 
         if raw_body is not None:
+
             async def receive() -> dict:
                 return {"type": "http.request", "body": raw_body, "more_body": False}
 

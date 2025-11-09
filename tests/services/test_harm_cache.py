@@ -43,4 +43,3 @@ def test_redis_cache_path(monkeypatch):
     assert v.is_known_harmful(fp) is False
     v.mark_harmful(fp)
     assert v.is_known_harmful(fp) is True  # via redis -> warms memory path too
-

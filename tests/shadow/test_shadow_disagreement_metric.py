@@ -29,6 +29,7 @@ def test_shadow_disagreement_increments(tmp_path, monkeypatch):
     )
 
     from app.main import create_app  # ← import from package entrypoint
+
     app = create_app()
     c = TestClient(app)
 

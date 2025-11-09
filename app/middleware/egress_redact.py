@@ -69,24 +69,14 @@ def _emit_decision_hooks(request: Request, counts: Dict[str, int]) -> None:
         pass
 
     tenant_value = (
-        tenant_state
-        if tenant_state is not None
-        else request.headers.get(TENANT_HEADER, "unknown")
+        tenant_state if tenant_state is not None else request.headers.get(TENANT_HEADER, "unknown")
     )
-    bot_value = (
-        bot_state
-        if bot_state is not None
-        else request.headers.get(BOT_HEADER, "unknown")
-    )
+    bot_value = bot_state if bot_state is not None else request.headers.get(BOT_HEADER, "unknown")
 
     try:
         from app.services import decisions as decisions_store
 
-        redactions = [
-            {"rule_id": rid, "count": int(ct)}
-            for rid, ct in counts.items()
-            if ct
-        ]
+        redactions = [{"rule_id": rid, "count": int(ct)} for rid, ct in counts.items() if ct]
         if not redactions:
             return
         decisions_store.record(
@@ -124,10 +114,7 @@ def _choose_encoding(headers: Dict[str, str]) -> str:
     content_type = (headers.get("content-type") or "").lower()
     if "charset=" in content_type:
         try:
-            return (
-                content_type.split("charset=", 1)[1].split(";", 1)[0].strip()
-                or "utf-8"
-            )
+            return content_type.split("charset=", 1)[1].split(";", 1)[0].strip() or "utf-8"
         except Exception:
             return "utf-8"
     return "utf-8"
@@ -185,9 +172,7 @@ class EgressRedactMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         if not _redact_enabled(request):
             return response

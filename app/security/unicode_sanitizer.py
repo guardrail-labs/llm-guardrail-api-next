@@ -346,8 +346,10 @@ def sanitize_unicode(
 
     normalized = normalize_nfkc(text)
     normalized_changed = normalized != text
-    scan = dict(report) if report is not None else scan_unicode_threats(
-        normalized, emoji_warn_ratio=cfg.emoji_ratio_warn
+    scan = (
+        dict(report)
+        if report is not None
+        else scan_unicode_threats(normalized, emoji_warn_ratio=cfg.emoji_ratio_warn)
     )
 
     raw_reasons_obj = scan.get("reasons", [])

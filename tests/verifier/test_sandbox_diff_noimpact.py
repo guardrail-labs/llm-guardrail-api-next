@@ -47,4 +47,3 @@ async def test_diff_detects_but_does_not_change_decision(monkeypatch: pytest.Mon
     # If sandbox ran sync, we may have a header summary plumbed via result
     # (exact presence depends on local_rules outcome)
     _ = out.get("sandbox_summary")
-

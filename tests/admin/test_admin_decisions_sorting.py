@@ -90,9 +90,7 @@ def test_ndjson_respects_timestamp_order(client: TestClient) -> None:
     asc_response = client.get("/admin/decisions.ndjson", params={"sort": "ts_asc"})
     assert asc_response.status_code == 200
     asc_lines = [
-        json.loads(line)
-        for line in asc_response.text.strip().splitlines()
-        if line.strip()
+        json.loads(line) for line in asc_response.text.strip().splitlines() if line.strip()
     ]
     asc_ts = [item["ts"] for item in asc_lines]
     assert asc_ts == sorted(asc_ts)
@@ -100,9 +98,7 @@ def test_ndjson_respects_timestamp_order(client: TestClient) -> None:
     desc_response = client.get("/admin/decisions.ndjson", params={"sort": "ts_desc"})
     assert desc_response.status_code == 200
     desc_lines = [
-        json.loads(line)
-        for line in desc_response.text.strip().splitlines()
-        if line.strip()
+        json.loads(line) for line in desc_response.text.strip().splitlines() if line.strip()
     ]
     desc_ts = [item["ts"] for item in desc_lines]
     assert desc_ts == sorted(desc_ts, reverse=True)
@@ -138,13 +134,9 @@ def test_timestamp_ties_preserve_insertion_order(client: TestClient) -> None:
     desc_ndjson = client.get("/admin/decisions.ndjson", params={"sort": "ts_desc"})
     assert desc_ndjson.status_code == 200
     desc_lines = [
-        json.loads(line)
-        for line in desc_ndjson.text.strip().splitlines()
-        if line.strip()
+        json.loads(line) for line in desc_ndjson.text.strip().splitlines() if line.strip()
     ]
-    assert [
-        item["request_id"]
-        for item in desc_lines
-        if item["ts"] == 200
-    ] == ["tie-first", "tie-second"]
-
+    assert [item["request_id"] for item in desc_lines if item["ts"] == 200] == [
+        "tie-first",
+        "tie-second",
+    ]

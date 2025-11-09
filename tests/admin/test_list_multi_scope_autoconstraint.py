@@ -39,8 +39,7 @@ def client_flag_on(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 @pytest.fixture
-def seed_adjudications_multi_tenant(
-) -> Iterator[list[adjudication_log.AdjudicationRecord]]:
+def seed_adjudications_multi_tenant() -> Iterator[list[adjudication_log.AdjudicationRecord]]:
     adjudication_log.clear()
     base = datetime(2024, 2, 1, tzinfo=timezone.utc)
     records = [

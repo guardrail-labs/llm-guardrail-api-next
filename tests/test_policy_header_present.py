@@ -31,4 +31,3 @@ def test_policy_header_on_egress_evaluate() -> None:
     assert r.status_code == 200
     assert HDR in r.headers
     assert r.headers[HDR]
-

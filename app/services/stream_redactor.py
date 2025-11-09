@@ -15,6 +15,7 @@ _SECRET_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"(?:api|key|token)[=:]\s*[A-Za-z0-9_\-]{24,}"),
 ]
 
+
 class RedactorBoundaryWriter:
     """Incrementally redact secrets without leaking across chunk boundaries."""
 

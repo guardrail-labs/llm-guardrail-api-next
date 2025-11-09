@@ -1067,6 +1067,16 @@ def create_app() -> FastAPI:
             ),
         )
 
+    try:
+        from app.runtime import router as runtime_router
+    except Exception as exc:
+        _log.debug("import runtime router failed: %s", exc)
+    else:
+        _best_effort(
+            "include runtime router",
+            lambda: app.include_router(runtime_router.router),
+        )
+
     # --- Public egress route once ---
     app.include_router(egress_router)
 

@@ -131,9 +131,7 @@ guardrail_rate_limited_total: CounterLike = _mk_counter(
     labels=["tenant", "bot"],
 )
 
-purge_runs_total: CounterLike = _mk_counter(
-    "purge_runs_total", "Total purge runs executed."
-)
+purge_runs_total: CounterLike = _mk_counter("purge_runs_total", "Total purge runs executed.")
 purge_items_deleted_total: CounterLike = _mk_counter(
     "purge_items_deleted_total",
     "Total items deleted by purge runs.",

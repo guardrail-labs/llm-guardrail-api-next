@@ -1,4 +1,5 @@
 """In-memory storage for mitigation modes per tenant/bot."""
+
 from __future__ import annotations
 
 from threading import RLock
