@@ -1,12 +1,11 @@
-# ruff: noqa: E402
 from __future__ import annotations
 
 import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from app.services.decisions import _finalize_decision
-from app.services.mitigation_store import reset_for_tests, set_mode
+from app.services.decisions import _finalize_decision  # noqa: E402
+from app.services.mitigation_store import reset_for_tests, set_mode  # noqa: E402
 
 
 class Dummy:
