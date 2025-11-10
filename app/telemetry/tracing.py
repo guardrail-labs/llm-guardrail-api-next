@@ -13,16 +13,15 @@ from starlette.types import ASGIApp
 
 log = logging.getLogger(__name__)
 
+
 # ----------------------------- No-op tracing shim -----------------------------
 
 
 class _NoopSpan:
     def set_attribute(self, *_: Any, **__: Any) -> None:
-        """No-op attribute setter."""
         return
 
     def get_span_context(self) -> Any:
-        # Mimic OTEL SpanContext enough for get_trace_id()
         class _Ctx:
             is_valid = False
             trace_id = 0
@@ -48,13 +47,10 @@ class _UseSpanCtx:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        # Do not suppress exceptions
         return None
 
 
 class _NoopTrace:
-    """Subset of opentelemetry.trace used by this middleware."""
-
     def get_tracer(self, _name: str) -> _NoopTracer:
         return _NoopTracer()
 
@@ -72,38 +68,30 @@ class TracingMiddleware(BaseHTTPMiddleware):
     """
     Lightweight optional OpenTelemetry wiring.
 
-    - If OTEL_ENABLED is not truthy, this is a no-op.
-    - If opentelemetry packages are not installed, we log a warning and proceed
-      with tracing disabled.
-    - We import OTel lazily at runtime to keep imports optional and avoid mypy
-      issues.
+    - Controlled by OTEL_ENABLED env var.
+    - Imports OTEL lazily, proceeding as no-op if unavailable.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
         self.enabled: bool = _truthy(os.getenv("OTEL_ENABLED", "false"))
         self._initialized: bool = False
-        # When initialized and OTEL libs are present, this holds the module;
-        # otherwise it remains None and we act as a no-op.
         self._trace: Any | None = None
 
     async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         if not self.enabled:
             return await call_next(request)
 
-        # Lazy init to avoid side effects during import time.
         if not self._initialized:
             self._initialized = self._ensure_tracer_provider()
 
         if not self._initialized or self._trace is None:
-            # Tracing unavailable; proceed normally.
             return await call_next(request)
 
         tracer = self._trace.get_tracer("llm-guardrail")
         route = request.url.path
         peer_ip = request.client.host if request.client else "unknown"
 
-        # Minimal span around the request
         with self._trace.use_span(tracer.start_span(route), end_on_exit=True) as span:
             span.set_attribute("http.method", request.method)
             span.set_attribute("http.route", route)
@@ -114,8 +102,8 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
     def _ensure_tracer_provider(self) -> bool:
         """
-        Try to configure OTEL. If not installed, log a warning and report initialized=True
-        so callers can proceed with tracing disabled (self._trace stays None).
+        Try to configure OTEL. If not installed, log a warning and report
+        initialized=True so callers can proceed with tracing disabled.
         """
         try:  # pragma: no cover
             from opentelemetry import trace as _trace
@@ -126,7 +114,6 @@ class TracingMiddleware(BaseHTTPMiddleware):
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
-            # OTEL not available; leave self._trace as None to satisfy tests.
             log.warning("opentelemetry is not installed; tracing disabled.")
             return True
 
@@ -138,13 +125,11 @@ class TracingMiddleware(BaseHTTPMiddleware):
             provider = TracerProvider(resource=resource)
             if endpoint:
                 exporter = OTLPSpanExporter(endpoint=endpoint)
-                processor = BatchSpanProcessor(exporter)
-                provider.add_span_processor(processor)
+                provider.add_span_processor(BatchSpanProcessor(exporter))
             _trace.set_tracer_provider(provider)
             self._trace = _trace
             return True
         except Exception as e:
-            # Initialization failed; keep tracing disabled and log.
             log.warning(
                 "Failed to initialize OpenTelemetry provider; tracing disabled. %s",
                 e,
@@ -161,10 +146,7 @@ def _truthy(val: object) -> bool:
 
 
 def get_request_id() -> Optional[str]:
-    """
-    Thin wrapper so other modules can import from here without caring
-    where the request-id is actually implemented.
-    """
+    """Return current request id if the middleware is present."""
     try:
         from app.middleware.request_id import get_request_id as _get
 
