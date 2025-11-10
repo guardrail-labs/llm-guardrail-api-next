@@ -16,7 +16,7 @@ Tests may monkeypatch fetch_verdict; the symbol and signature are preserved.
 from __future__ import annotations
 
 import os
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -135,7 +135,7 @@ class AbuseGateMiddleware(BaseHTTPMiddleware):
             # Attach normalized payload for the adapter to read
             request.state.normalized_payload = build_normalized_payload(request, body_bytes)
 
-            async def _receive() -> dict:
+            async def _receive() -> Dict[str, Any]:
                 return {"type": "http.request", "body": body_bytes, "more_body": False}
 
             # Restore stream for downstream

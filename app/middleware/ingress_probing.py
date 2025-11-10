@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Awaitable, Callable, Dict, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -161,7 +161,7 @@ class IngressProbingMiddleware(BaseHTTPMiddleware):
 
         if raw_body is not None:
 
-            async def receive() -> dict:
+            async def receive() -> Dict[str, Any]:
                 return {"type": "http.request", "body": raw_body, "more_body": False}
 
             request = Request(request.scope, receive)

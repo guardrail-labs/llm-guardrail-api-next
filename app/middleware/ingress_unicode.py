@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -67,7 +67,7 @@ class UnicodeIngressSanitizer(BaseHTTPMiddleware):
 
         new_body = json.dumps(sanitized).encode("utf-8")
 
-        async def receive() -> dict:
+        async def receive() -> Dict[str, Any]:
             return {"type": "http.request", "body": new_body, "more_body": False}
 
         # Rebuild request with sanitized body

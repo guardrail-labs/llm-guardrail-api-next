@@ -172,7 +172,7 @@ def _cutoff_dt(cutoff_ms: int) -> datetime:
     return datetime.fromtimestamp(cutoff / 1000.0, tz=timezone.utc)
 
 
-def _decision_matches(entry: dict, cutoff_ms: int) -> bool:
+def _decision_matches(entry: Dict[str, Any], cutoff_ms: int) -> bool:
     try:
         ts = int(entry.get("ts_ms") or 0)
     except Exception:

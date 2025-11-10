@@ -59,7 +59,7 @@ class AdjudicationRecord:
     prompt_sha256: Optional[str]
     rule_id: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         if data.get("rule_id") is None:
             data.pop("rule_id", None)

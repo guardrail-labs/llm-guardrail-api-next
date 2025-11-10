@@ -351,7 +351,7 @@ def _install_bindings_fallback(app: FastAPI) -> None:
 
     @admin.put("/bindings")
     async def put_bindings(
-        payload: dict,
+        payload: Dict[str, Any],
         x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key"),
     ) -> dict:
         _require_admin_key(x_admin_key)
@@ -385,7 +385,7 @@ def _install_bindings_fallback(app: FastAPI) -> None:
         return {"bindings": out}
 
     @admin.get("/bindings")
-    async def list_bindings() -> dict:
+    async def list_bindings() -> Dict[str, Any]:
         items: List[Dict[str, str]] = []
         for (tenant, bot), rec in sorted(_BINDINGS.items()):
             items.append(

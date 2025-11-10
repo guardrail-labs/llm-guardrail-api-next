@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Awaitable, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -116,7 +116,7 @@ class IngressRiskMiddleware(BaseHTTPMiddleware):
         )
 
         # Re-inject original body if consumed
-        async def receive() -> dict:
+        async def receive() -> Dict[str, Any]:
             body = raw if raw is not None else b""
             return {
                 "type": "http.request",

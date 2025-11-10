@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Pattern, Tuple
+from typing import Any, Dict, List, Pattern, Tuple
 
 import yaml
 
@@ -15,7 +15,7 @@ from app.config import Settings
 
 @dataclass
 class PolicyBlob:
-    rules: dict
+    rules: Dict[str, Any]
     version: str
     path: str
     mtime: float
@@ -112,7 +112,7 @@ def _flag_bits(flags: List[str] | None) -> int:
     return bits
 
 
-def _compile_deny(rules: dict) -> List[Tuple[str, Pattern[str]]]:
+def _compile_deny(rules: Dict[str, Any]) -> List[Tuple[str, Pattern[str]]]:
     out: List[Tuple[str, Pattern[str]]] = []
     deny = rules.get("deny", [])
     if not isinstance(deny, list):

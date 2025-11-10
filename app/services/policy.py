@@ -110,7 +110,7 @@ def resolve_injection_default_action() -> Action:
     return coerced or Action.BLOCK
 
 
-def apply_injection_default(decision: dict) -> dict:
+def apply_injection_default(decision: Dict[str, Any]) -> Dict[str, Any]:
     action = decision.get("action")
     hits = decision.get("rule_hits") or {}
 
@@ -122,7 +122,7 @@ def apply_injection_default(decision: dict) -> dict:
     return decision
 
 
-def maybe_route_to_verifier(decision: dict, *, text: str) -> dict:
+def maybe_route_to_verifier(decision: Dict[str, Any], *, text: str) -> Dict[str, Any]:
     """Route to verifier if gray-area conditions are met and track outcome."""
     s = get_settings()
     if not getattr(s, "verifier_enabled", False):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from prometheus_client import REGISTRY, Counter, Gauge
 
@@ -248,7 +248,7 @@ _global_enabled: Optional[bool] = None
 _global_limiter: Optional[RateLimiter] = None
 
 
-def _config_tuple(enabled: bool, limiter: RateLimiter) -> tuple:
+def _config_tuple(enabled: bool, limiter: RateLimiter) -> Tuple[Any, ...]:
     return (bool(enabled), float(limiter.refill_rate), float(limiter.capacity))
 
 
@@ -274,4 +274,4 @@ def get_global(settings=None) -> Tuple[bool, RateLimiter]:
         _global_enabled = enabled
         _global_limiter = limiter
 
-    return _global_enabled, _global_limiter  # type: ignore[return-value]
+    return _global_enabled, _global_limiter

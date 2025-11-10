@@ -92,7 +92,7 @@ def _blen(s: Optional[str]) -> int:
 
 def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
     """
-    Same normalization used elsewhere: flatten to 'source:list:id' strings.
+    Same normalization used elsewhere: flatten to 'source: List[Any]:id' strings.
     """
     out: List[str] = []
 

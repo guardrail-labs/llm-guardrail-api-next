@@ -107,7 +107,7 @@ def _family_for(action: str, redactions: int) -> str:
 
 def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[str]:
     """
-    Normalize detector hits and decision metadata to flat 'source:list:id' strings.
+    Normalize detector hits and decision metadata to flat 'source: List[Any]:id' strings.
     Mirrors the helper in routes/guardrail.py.
     """
     out: List[str] = []
