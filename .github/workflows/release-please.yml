@@ -23,4 +23,4 @@ jobs:
           extra-files: |
             pyproject.toml
           # Only applied when triggered via workflow_dispatch with an input
-          release-as: ${{ github.event.inputs.release-as }}
+          release-as: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs['release-as'] || '' }}
