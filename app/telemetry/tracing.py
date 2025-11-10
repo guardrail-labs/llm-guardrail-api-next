@@ -120,13 +120,13 @@ class TracingMiddleware(BaseHTTPMiddleware):
         so callers can proceed with tracing disabled (self._trace stays None).
         """
         try:  # pragma: no cover
-            from opentelemetry import trace as _trace  # type: ignore
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore
+            from opentelemetry import trace as _trace  
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  
                 OTLPSpanExporter,
             )
-            from opentelemetry.sdk.resources import Resource  # type: ignore
-            from opentelemetry.sdk.trace import TracerProvider  # type: ignore
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore
+            from opentelemetry.sdk.resources import Resource  
+            from opentelemetry.sdk.trace import TracerProvider  
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor  
         except Exception:
             # OTEL not available; leave self._trace as None to satisfy tests.
             log.warning("opentelemetry is not installed; tracing disabled.")
@@ -182,7 +182,7 @@ def get_trace_id() -> Optional[str]:
     Safe to call even when OTEL is not installed or no span is active.
     """
     try:  # pragma: no cover
-        from opentelemetry import trace as _trace  # type: ignore
+        from opentelemetry import trace as _trace 
 
         span = _trace.get_current_span()
         if span is None:
