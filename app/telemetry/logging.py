@@ -9,17 +9,13 @@ from typing import Any, Dict, Mapping, MutableMapping, Tuple
 
 from app.telemetry.tracing import get_request_id, get_trace_id
 
-
 # ------------------------------- JSON utilities -------------------------------
-
 
 def _iso8601(dt: datetime) -> str:
     # Always UTC, explicit trailing 'Z'
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-
 _JSON_SAFE_PRIMITIVES = (str, int, float, bool, type(None))
-
 
 def _json_sanitize(value: Any) -> Any:
     """
@@ -41,9 +37,7 @@ def _json_sanitize(value: Any) -> Any:
         return [_json_sanitize(v) for v in value]
     return str(value)
 
-
 # ------------------------------ JSON formatter --------------------------------
-
 
 class JsonFormatter(logging.Formatter):
     """
@@ -104,21 +98,16 @@ class JsonFormatter(logging.Formatter):
             payload["trace_id"] = tid
 
         if extra:
-            # Sanitize nested extras safely
             payload.update(_json_sanitize(extra))
 
-        # Include exception info (if any) in a structured way
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
 
         return json.dumps(payload, ensure_ascii=False)
 
-
 # ------------------------------ Logger helpers --------------------------------
 
-
 _configured = False
-
 
 def configure_root_logging(level: int | str = "INFO") -> None:
     """
@@ -130,10 +119,9 @@ def configure_root_logging(level: int | str = "INFO") -> None:
 
     root = logging.getLogger()
 
-    if isinstance(level, int):
-        resolved_level = level
-    else:
-        resolved_level = getattr(logging, str(level).upper(), logging.INFO)
+    resolved_level = level if isinstance(level, int) else getattr(
+        logging, str(level).upper(), logging.INFO
+    )
     root.setLevel(resolved_level)
 
     # Remove pre-existing handlers to avoid duplicate lines in tests
@@ -146,8 +134,7 @@ def configure_root_logging(level: int | str = "INFO") -> None:
 
     _configured = True
 
-
-class ContextAdapter(logging.LoggerAdapter[Dict[str, Any]]):
+class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
     """
     Bind static context (e.g., tenant_id, component) to a logger, ensuring those
     keys appear on every log line via the 'extra' mechanism.
@@ -165,16 +152,14 @@ class ContextAdapter(logging.LoggerAdapter[Dict[str, Any]]):
         call_extra = kwargs.get("extra")
         if isinstance(call_extra, Mapping):
             merged_extra.update(dict(call_extra))
-        # Adapter context wins unless caller explicitly overrides
         for k, v in self.extra.items():
             merged_extra.setdefault(k, v)
         kwargs["extra"] = merged_extra
         return msg, kwargs
 
-
 def bind(logger: logging.Logger | None = None, **context: Any) -> ContextAdapter:
     """
-    Return a LoggerAdapter with bound context. Usage:
+    Return a LoggerAdapter with bound context.
 
         log = bind(logging.getLogger(__name__), tenant_id="acme", component="proxy")
         log.info("started")
