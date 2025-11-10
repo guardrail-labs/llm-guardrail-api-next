@@ -54,9 +54,7 @@ def test_apply_strict_first_time(monkeypatch, tmp_path):
     assert bindings_resp.status_code == 200
     doc: Dict[str, object] = bindings_resp.json()
     assert any(
-        b["tenant"] == "acme"
-        and b["bot"] == "support"
-        and b["rules_path"] == str(strict_path)
+        b["tenant"] == "acme" and b["bot"] == "support" and b["rules_path"] == str(strict_path)
         for b in doc["bindings"]
     )
 
@@ -121,9 +119,7 @@ def test_apply_strict_overwrites_existing(monkeypatch, tmp_path):
     assert bindings_resp.status_code == 200
     doc = bindings_resp.json()
     assert any(
-        b["tenant"] == "acme"
-        and b["bot"] == "support"
-        and b["rules_path"] == str(strict_path)
+        b["tenant"] == "acme" and b["bot"] == "support" and b["rules_path"] == str(strict_path)
         for b in doc["bindings"]
     )
 

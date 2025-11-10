@@ -397,7 +397,7 @@ async def egress_batch(
                 inc_verifier_reuse(reused)
                 payload_bytes = int(_blen(text_in))
                 xformed = text_in
-                hits = (hits or None)
+                hits = hits or None
                 out_items.append(
                     BatchItemOut(
                         request_id=req_id,

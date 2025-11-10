@@ -10,9 +10,7 @@ except Exception:  # pragma: no cover - gracefully degrade when unavailable
     _emit_audit_event = None  # type: ignore[assignment]
 
 
-def record_scope_autoconstraint_audit(
-    *, tenant: str, bot: str, multi: bool, endpoint: str
-) -> None:
+def record_scope_autoconstraint_audit(*, tenant: str, bot: str, multi: bool, endpoint: str) -> None:
     """Emit an audit event describing an auto-constrained scope decision."""
 
     if _emit_audit_event is None:

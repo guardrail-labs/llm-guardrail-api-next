@@ -143,6 +143,7 @@ async def ready() -> JSONResponse:
 
 # -------- Test helpers (no runtime effect) --------
 
+
 def _enter_draining_for_tests() -> None:  # pragma: no cover
     global _draining
     _draining = True

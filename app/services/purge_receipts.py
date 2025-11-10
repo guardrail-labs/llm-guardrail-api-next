@@ -83,11 +83,9 @@ class PurgeReceipt:
 
 
 class Signer(Protocol):
-    def sign(self, receipt: PurgeReceipt) -> Dict[str, str]:
-        ...
+    def sign(self, receipt: PurgeReceipt) -> Dict[str, str]: ...
 
-    def verify(self, receipt: PurgeReceipt, signature: Dict[str, str]) -> bool:
-        ...
+    def verify(self, receipt: PurgeReceipt, signature: Dict[str, str]) -> bool: ...
 
 
 class HmacSigner:
@@ -104,9 +102,7 @@ class HmacSigner:
 
     def sign(self, receipt: PurgeReceipt) -> Dict[str, str]:
         message = _canonical_json(receipt.to_payload())
-        digest = self._hmac.new(
-            self._secret, message, self._hashlib.sha256
-        ).digest()
+        digest = self._hmac.new(self._secret, message, self._hashlib.sha256).digest()
         return {
             "alg": "HS256",
             "kid": self._key_id,
@@ -153,9 +149,7 @@ class Ed25519Signer:
             return False
 
 
-async def store_receipt(
-    redis: Redis, receipt: PurgeReceipt, signature: Dict[str, str]
-) -> None:
+async def store_receipt(redis: Redis, receipt: PurgeReceipt, signature: Dict[str, str]) -> None:
     key = f"retention:receipt:{receipt.id}"
     payload = {
         "receipt": receipt.to_payload(),
@@ -191,16 +185,12 @@ async def load_receipt(
         meta={str(k): str(v) for k, v in dict(body.get("meta", {})).items()},
     )
     signature = {
-        str(k): str(v)
-        for k, v in dict(payload.get("signature", {})).items()
-        if v is not None
+        str(k): str(v) for k, v in dict(payload.get("signature", {})).items() if v is not None
     }
     return receipt, signature
 
 
-async def latest_receipts(
-    redis: Redis, tenant: str, limit: int
-) -> List[PurgeReceipt]:
+async def latest_receipts(redis: Redis, tenant: str, limit: int) -> List[PurgeReceipt]:
     if limit <= 0:
         return []
     key = f"retention:receipt:tenant:{tenant}"

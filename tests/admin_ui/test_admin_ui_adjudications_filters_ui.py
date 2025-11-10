@@ -116,7 +116,7 @@ def test_controls_render(admin_client: TestClient) -> None:
     assert 'id="filter-sort"' in html
     assert 'id="filter-limit" value="50"' in html
     assert 'id="adjudications-download"' in html
-    assert 'Download NDJSON' in html
+    assert "Download NDJSON" in html
 
 
 def test_filters_apply(monkeypatch: pytest.MonkeyPatch, admin_client: TestClient) -> None:

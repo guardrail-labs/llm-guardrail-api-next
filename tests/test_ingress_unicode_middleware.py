@@ -39,11 +39,7 @@ def test_unicode_sanitizer_runs_before_handler() -> None:
     sanitized_text = data["text"]
     assert "\u200b" not in sanitized_text
     assert "\u202e" not in sanitized_text
-    assert (
-        "\\u202e" in sanitized_text
-        or "\\u200e" in sanitized_text
-        or "\\u200f" in sanitized_text
-    )
+    assert "\\u202e" in sanitized_text or "\\u200e" in sanitized_text or "\\u200f" in sanitized_text
 
     sanitized_msg0 = data["messages"][0]
     assert isinstance(sanitized_msg0, str)

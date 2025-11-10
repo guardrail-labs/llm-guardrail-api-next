@@ -2,7 +2,7 @@ from app.sanitizers.metadata import sanitize_filename, sanitize_header_value
 
 
 def test_sanitize_header_basic():
-    out, st = sanitize_header_value("ok\u200Bval\u202E")
+    out, st = sanitize_header_value("ok\u200bval\u202e")
     assert out == "okval"
     assert st["zero_width_removed"] >= 1 or st["bidi_controls_removed"] >= 1
 

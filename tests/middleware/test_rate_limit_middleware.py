@@ -42,9 +42,7 @@ def test_rate_limit_reads_settings(monkeypatch):
     _reset(monkeypatch)
 
     settings = SimpleNamespace(
-        ingress=SimpleNamespace(
-            rate_limit=SimpleNamespace(enabled=True, rps=1.0, burst=1.0)
-        )
+        ingress=SimpleNamespace(rate_limit=SimpleNamespace(enabled=True, rps=1.0, burst=1.0))
     )
 
     app = _make_app()

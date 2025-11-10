@@ -8,4 +8,3 @@ def get_bool(name: str, default: bool = False) -> bool:
     if val is None:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on"}
-

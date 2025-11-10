@@ -19,9 +19,7 @@ _SEP_PATTERN = re.compile(r"[\\/]+")
 
 # Quick reject: if raw path contains obviously suspicious encodings.
 # %2e%2e, %2F, %5C in any case, overlong dot encodings, or mixed separators.
-_SUSPICIOUS_RAW = re.compile(
-    r"(%2e){2}|%2f|%5c|%2F|%5C|%u2215|%u2044|%u2216", re.IGNORECASE
-)
+_SUSPICIOUS_RAW = re.compile(r"(%2e){2}|%2f|%5c|%2F|%5C|%u2215|%u2044|%u2216", re.IGNORECASE)
 
 
 # Two-step decode to catch double-encoding tricks like %252e%252e => %2e%2e => ..

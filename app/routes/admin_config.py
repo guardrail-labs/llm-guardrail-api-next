@@ -15,9 +15,7 @@ router = APIRouter(prefix="/admin", tags=["admin-config"])
 # ---- Helpers ----------------------------------------------------------------
 
 
-def _extract_csrf_token(
-    request: Request, payload: Optional[Mapping[str, Any]]
-) -> Optional[str]:
+def _extract_csrf_token(request: Request, payload: Optional[Mapping[str, Any]]) -> Optional[str]:
     """
     Try to get a CSRF token from (in order):
       1) Header: X-CSRF-Token
@@ -44,9 +42,7 @@ def _csrf_check_or_400(request: Request, csrf_token: Optional[str]) -> None:
         and compare_digest(cookie, csrf_token)
     )
     if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed")
 
 
 # ---- Endpoints ---------------------------------------------------------------
@@ -58,9 +54,7 @@ def get_cfg(_: None = Depends(require_auth)) -> JSONResponse:
 
 
 @router.post("/config")
-async def update_runtime_config(
-    request: Request, _: None = Depends(require_auth)
-) -> JSONResponse:
+async def update_runtime_config(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
     """
     Accept JSON or form POST to update runtime configuration, with CSRF equality check.
 
@@ -77,14 +71,10 @@ async def update_runtime_config(
         try:
             payload = await request.json()
         except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json"
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid json")
 
         if not isinstance(payload, Mapping):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload"
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload")
 
         csrf_token = _extract_csrf_token(request, payload)
         _csrf_check_or_400(request, csrf_token)
@@ -97,9 +87,7 @@ async def update_runtime_config(
     try:
         form = await request.form()
     except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid form"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid form")
 
     csrf_token_val = (form.get("csrf_token") or "") if form else ""
     csrf_token = str(csrf_token_val) if csrf_token_val is not None else ""

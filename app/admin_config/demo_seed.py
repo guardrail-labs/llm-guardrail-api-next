@@ -55,8 +55,7 @@ def seed_demo_defaults() -> None:
     updated = False
     for tenant, bot, pack in _DEMO_BINDINGS:
         if any(
-            b["tenant"] == tenant and b["bot"] == bot and b["rules_path"] == pack
-            for b in bindings
+            b["tenant"] == tenant and b["bot"] == bot and b["rules_path"] == pack for b in bindings
         ):
             continue
         bindings.append({"tenant": tenant, "bot": bot, "rules_path": pack})
@@ -75,4 +74,3 @@ def seed_demo_defaults() -> None:
         propagate_bindings(payload)
     except Exception:
         pass
-

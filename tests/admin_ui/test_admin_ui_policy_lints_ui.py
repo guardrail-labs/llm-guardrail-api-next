@@ -67,8 +67,7 @@ def test_badges_render_by_severity() -> None:
     assert len(rows) == 3
 
     badge_text = [
-        badge.text.strip()
-        for badge in soup.select("#lints-list .lint-row span.lint-badge")
+        badge.text.strip() for badge in soup.select("#lints-list .lint-row span.lint-badge")
     ]
     assert badge_text == ["ERROR", "WARNING", "INFO"]
 

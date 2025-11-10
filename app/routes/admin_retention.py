@@ -333,9 +333,7 @@ async def purge_admin(
     limit = payload.limit or settings.RETENTION_MAX_IDS_PER_RUN
     ids = list(payload.ids or [])
     if not ids:
-        ids = await coordinator.plan(
-            payload.tenant, resource.value, time.time(), limit
-        )
+        ids = await coordinator.plan(payload.tenant, resource.value, time.time(), limit)
     else:
         ids = ids[:limit]
     receipt = await coordinator.execute(

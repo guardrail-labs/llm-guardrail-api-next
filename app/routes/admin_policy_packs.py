@@ -247,8 +247,7 @@ async def ui_packs(
         items = [
             item
             for item in items
-            if needle in item.id.lower()
-            or (item.source and needle in item.source.lower())
+            if needle in item.id.lower() or (item.source and needle in item.source.lower())
         ]
     return templates.TemplateResponse(
         request,

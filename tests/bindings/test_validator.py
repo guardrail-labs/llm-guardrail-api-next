@@ -58,4 +58,3 @@ def test_choose_binding_prefers_higher_priority_then_specificity() -> None:
     selected, candidates = choose_binding_for([b1, b2, b3], "t1", "b1")
     assert selected is b2  # highest priority wins even if less specific
     assert len(candidates) == 3
-

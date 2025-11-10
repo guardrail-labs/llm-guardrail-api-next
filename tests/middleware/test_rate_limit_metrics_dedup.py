@@ -39,8 +39,10 @@ def test_rate_limit_does_not_emit_generic_decision_metric(
     monkeypatch.setitem(sys.modules, "app.observability.metrics_decisions", sentinel)
 
     import app.services.ratelimit as ratelimit
+
     importlib.reload(ratelimit)
     import app.middleware.rate_limit as rate_limit_mod
+
     importlib.reload(rate_limit_mod)
 
     app = _app()

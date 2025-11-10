@@ -17,14 +17,16 @@ try:
 
     def _read_cfg() -> Dict[str, object]:
         try:
-            cfg = _get_config()  
+            cfg = _get_config()
             return dict(cfg) if isinstance(cfg, dict) else {}
         except Exception:
             return {}
 
 except Exception:
+
     def _read_cfg() -> Dict[str, object]:
         return {}
+
 
 _HDR_TENANT = "X-Guardrail-Tenant"
 _HDR_BOT = "X-Guardrail-Bot"

@@ -46,7 +46,7 @@ def _checkbox_checked(html: str, element_id: str) -> bool:
     marker = f'id="{element_id}"'
     idx = html.find(marker)
     assert idx != -1, f"checkbox {element_id} missing"
-    end = html.find('>', idx)
+    end = html.find(">", idx)
     if end == -1:
         end = len(html)
     snippet = html[idx:end]
@@ -61,9 +61,7 @@ def test_mitigation_toggles_render_current_modes(admin_client: TestClient) -> No
         "bot": bot,
         "modes": {"block": True, "redact": False, "clarify_first": False},
     }
-    save_resp = admin_client.put(
-        "/admin/mitigation_modes", headers=_auth_headers(), json=payload
-    )
+    save_resp = admin_client.put("/admin/mitigation_modes", headers=_auth_headers(), json=payload)
     assert save_resp.status_code == 200
 
     page = admin_client.get(
@@ -84,9 +82,7 @@ def test_mitigation_toggle_save_flow(admin_client: TestClient) -> None:
         "bot": bot,
         "modes": {"block": True, "redact": False, "clarify_first": False},
     }
-    save_resp = admin_client.put(
-        "/admin/mitigation_modes", headers=_auth_headers(), json=payload
-    )
+    save_resp = admin_client.put("/admin/mitigation_modes", headers=_auth_headers(), json=payload)
     assert save_resp.status_code == 200
     follow = admin_client.get(
         "/admin/mitigation_modes",
@@ -111,9 +107,7 @@ def test_mitigation_block_effect(admin_client: TestClient) -> None:
         "bot": bot,
         "modes": {"block": True, "redact": False, "clarify_first": False},
     }
-    save_resp = admin_client.put(
-        "/admin/mitigation_modes", headers=_auth_headers(), json=payload
-    )
+    save_resp = admin_client.put("/admin/mitigation_modes", headers=_auth_headers(), json=payload)
     assert save_resp.status_code == 200
 
     headers = {
@@ -140,9 +134,7 @@ def test_mitigation_error_banner_surfaces_detail(admin_client: TestClient) -> No
         "bot": bot,
         "modes": {"block": "yes"},
     }
-    error_resp = admin_client.put(
-        "/admin/mitigation_modes", headers=_auth_headers(), json=bad
-    )
+    error_resp = admin_client.put("/admin/mitigation_modes", headers=_auth_headers(), json=bad)
     assert error_resp.status_code == 400
     detail = error_resp.json()["error"]
     assert detail

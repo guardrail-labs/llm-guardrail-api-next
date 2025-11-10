@@ -7,13 +7,15 @@ from typing import Dict, Optional, Tuple
 # Simple in-memory risk store with TTL buckets.
 # Keyed by (tenant, bot, session_id). session_id is best-effort from headers.
 _DEFAULT_TTL_SECS = 15 * 60  # 15 minutes
-_MAX_ENTRIES = 50_000        # guard memory in hot tenants
+_MAX_ENTRIES = 50_000  # guard memory in hot tenants
+
 
 @dataclass
 class RiskEntry:
     score: float
     last: float
     ttl: float
+
 
 class SessionRiskStore:
     def __init__(self) -> None:
@@ -78,8 +80,10 @@ class SessionRiskStore:
         self._store[key] = entry
         return entry.score
 
+
 # Global singleton
 _session_risk_store = SessionRiskStore()
+
 
 def session_risk_store() -> SessionRiskStore:
     return _session_risk_store

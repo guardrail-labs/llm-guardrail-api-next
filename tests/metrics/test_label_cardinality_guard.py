@@ -6,6 +6,7 @@ from prometheus_client import generate_latest
 def test_label_cardinality_overflow(monkeypatch):
     monkeypatch.setenv("METRICS_LABEL_CARDINALITY_MAX", "2")
     import app.observability.metrics as metrics
+
     metrics = importlib.reload(metrics)
 
     for i in range(4):
@@ -22,6 +23,7 @@ def test_label_pair_cardinality_overflow(monkeypatch):
     monkeypatch.setenv("METRICS_LABEL_CARDINALITY_MAX", "100")
     monkeypatch.setenv("METRICS_LABEL_PAIR_CARDINALITY_MAX", "2")
     import app.observability.metrics as metrics
+
     metrics = importlib.reload(metrics)
 
     metrics.inc_verifier_router_rank("t1", "b1")

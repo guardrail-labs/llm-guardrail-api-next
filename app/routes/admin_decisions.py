@@ -325,9 +325,7 @@ def export_decisions_ndjson(
 
 
 @router.get("/decisions/export.csv")
-def export_decisions_csv(
-    req: Request, _: None = Depends(require_auth)
-) -> PlainTextResponse:
+def export_decisions_csv(req: Request, _: None = Depends(require_auth)) -> PlainTextResponse:
     filters, limit, sse_flag = _parse_params(req)  # noqa: F841
     events = [e for e in reversed(snapshot()) if _match(e, filters)][:limit]
 

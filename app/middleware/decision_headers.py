@@ -42,9 +42,7 @@ class DecisionHeaderMiddleware(BaseHTTPMiddleware):
         outcome = _coerce_str(decision.get("outcome") or decision.get("decision"))
         mode = _coerce_str(decision.get("mode"))
         incident_id = _coerce_str(
-            decision.get("incident_id")
-            or decision.get("incident")
-            or decision.get("request_id")
+            decision.get("incident_id") or decision.get("incident") or decision.get("request_id")
         )
 
         try:

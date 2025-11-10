@@ -106,9 +106,7 @@ def is_revoked(jti: str) -> bool:
     if config.SERVICE_TOKEN_USE_REDIS:
         client = _redis()
         if client:
-            return bool(
-                client.sismember(f"{config.SERVICE_TOKEN_REDIS_PREFIX}:revoked", jti)
-            )
+            return bool(client.sismember(f"{config.SERVICE_TOKEN_REDIS_PREFIX}:revoked", jti))
     return jti in _REV_MEM
 
 

@@ -29,9 +29,7 @@ def test_request_id_inputs_render(admin_client: TestClient) -> None:
     assert 'id="filter-request-id"' in decisions_page.text
     assert 'name="request_id"' in decisions_page.text
 
-    adjudications_page = admin_client.get(
-        "/admin/ui/adjudications", headers=_auth_headers()
-    )
+    adjudications_page = admin_client.get("/admin/ui/adjudications", headers=_auth_headers())
     assert adjudications_page.status_code == 200
     assert 'id="filter-request-id"' in adjudications_page.text
     assert 'name="request_id"' in adjudications_page.text

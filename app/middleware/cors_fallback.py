@@ -36,11 +36,7 @@ class _CORSFallback(BaseHTTPMiddleware):
         method = request.method.upper()
 
         # Handle preflight
-        if (
-            method == "OPTIONS"
-            and origin
-            and request.headers.get("access-control-request-method")
-        ):
+        if method == "OPTIONS" and origin and request.headers.get("access-control-request-method"):
             if self._is_origin_allowed(origin):
                 h = {
                     "access-control-allow-origin": origin,
@@ -65,4 +61,3 @@ class _CORSFallback(BaseHTTPMiddleware):
 def install_cors_fallback(app) -> None:
     if get_bool("CORS_ENABLED"):
         app.add_middleware(_CORSFallback)
-

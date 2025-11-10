@@ -33,4 +33,3 @@ def test_egress_streaming_untouched():
     assert r.status_code == 200
     assert "text/event-stream" in r.headers.get("content-type", "").lower()
     assert "content-length" not in {k.lower() for k in r.headers}
-

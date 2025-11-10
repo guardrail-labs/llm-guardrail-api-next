@@ -20,11 +20,13 @@ _DOC_PARTS = (
     "word/footer3.xml",
 )
 
+
 def _docx_bytes_to_zip(buf: bytes) -> zipfile.ZipFile | None:
     try:
         return zipfile.ZipFile(io.BytesIO(buf))
     except Exception:
         return None
+
 
 def _scan_part(z: zipfile.ZipFile, name: str, reasons: List[str]) -> None:
     try:
@@ -42,6 +44,7 @@ def _scan_part(z: zipfile.ZipFile, name: str, reasons: List[str]) -> None:
     if root.findall(f".//{_W}del"):
         reasons.append("docx_track_del")
 
+
 def _scan_comments(z: zipfile.ZipFile, reasons: List[str]) -> None:
     try:
         with z.open("word/comments.xml") as fp:
@@ -49,6 +52,7 @@ def _scan_comments(z: zipfile.ZipFile, reasons: List[str]) -> None:
             reasons.append("docx_comments")
     except Exception:
         return
+
 
 def scan_docx_for_hidden(buf: bytes) -> List[str]:
     reasons: List[str] = []

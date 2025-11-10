@@ -30,14 +30,18 @@ if TYPE_CHECKING:
 try:  # pragma: no cover - optional dependency
     from app.services.bindings import list_bindings
 except Exception:  # pragma: no cover - import error fallback
+
     def list_bindings() -> List[Dict[str, Any]]:
         return []
+
 
 try:  # pragma: no cover - optional dependency
     from app.services.mitigation_modes import get_modes as get_mitigation_modes
 except Exception:  # pragma: no cover - mitigation store unavailable
+
     def get_mitigation_modes(tenant: str, bot: str) -> Dict[str, bool]:
         return {"block": False, "redact": False, "clarify_first": False}
+
 
 router = APIRouter(tags=["admin-ui"])
 templates = Jinja2Templates(directory="app/ui/templates")
@@ -717,9 +721,7 @@ def ui_config(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
 
 
 @router.get("/admin/ui/config/history", response_class=HTMLResponse)
-def ui_config_history(
-    req: Request, _: None = Depends(require_auth)
-) -> HTMLResponse:
+def ui_config_history(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     resp = templates.TemplateResponse("config_history.html", {"request": req})
     issue_csrf(resp)
     return resp
@@ -741,9 +743,7 @@ def ui_webhooks(req: Request, _: None = Depends(require_auth)) -> HTMLResponse:
 
 
 @router.get("/admin/policy", response_class=HTMLResponse)
-def policy_page(
-    request: Request, _: None = Depends(require_auth)
-) -> HTMLResponse:
+def policy_page(request: Request, _: None = Depends(require_auth)) -> HTMLResponse:
     """Render Policy admin page with active version and configured packs."""
 
     csrf_token = _csrf_token()
@@ -793,9 +793,7 @@ def ui_reload(
 
 
 @router.get("/admin/ui/export/decisions")
-def export_decisions(
-    n: int = 1000, _: None = Depends(require_auth)
-) -> StreamingResponse:
+def export_decisions(n: int = 1000, _: None = Depends(require_auth)) -> StreamingResponse:
     buf = io.StringIO()
     records = _decisions_mod().list_decisions(sort="ts_desc")[: max(int(n), 0)]
     for item in records:
@@ -980,4 +978,3 @@ def ui_apply_demo_defaults(
             "bindings": bindings,
         }
     )
-

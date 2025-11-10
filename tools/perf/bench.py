@@ -134,9 +134,7 @@ def summarize(bucket: StatBucket, duration_s: float) -> Dict[str, Any]:
         "p50_ms": _quantile_ms(bucket, 0.50),
         "p95_ms": _quantile_ms(bucket, 0.95),
         "p99_ms": _quantile_ms(bucket, 0.99),
-        "success_rate": 0.0
-        if bucket.total == 0
-        else round(successes / bucket.total * 100.0, 2),
+        "success_rate": 0.0 if bucket.total == 0 else round(successes / bucket.total * 100.0, 2),
     }
 
 
@@ -197,9 +195,7 @@ async def run_bench(
         verify=not insecure,
     ) as client:
         tasks = [
-            asyncio.create_task(
-                worker(client, stop_at, endpoints, buckets, auth_header)
-            )
+            asyncio.create_task(worker(client, stop_at, endpoints, buckets, auth_header))
             for _ in range(concurrency)
         ]
         await asyncio.gather(*tasks)
@@ -252,9 +248,7 @@ async def run_bench(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Tiny async perf smoke for Guardrail API"
-    )
+    parser = argparse.ArgumentParser(description="Tiny async perf smoke for Guardrail API")
     parser.add_argument(
         "--base",
         default=os.getenv("BASE", "http://localhost:8000"),

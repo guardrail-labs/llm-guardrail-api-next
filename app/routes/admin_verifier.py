@@ -18,7 +18,7 @@ async def verifier_router_snapshot() -> List[Any]:
     Returns an empty list if the router is not initialized or an error occurs.
     """
     try:
-        router_obj = _ROUTER 
+        router_obj = _ROUTER
     except Exception:
         router_obj = None
 

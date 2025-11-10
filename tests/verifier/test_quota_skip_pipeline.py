@@ -48,4 +48,3 @@ def test_quota_skip(monkeypatch):
     time.sleep(1.1)
     out3 = run(v.verify_intent("hello", {"tenant_id": "t", "bot_id": "b"}))
     assert out3["status"] in ("safe",)
-

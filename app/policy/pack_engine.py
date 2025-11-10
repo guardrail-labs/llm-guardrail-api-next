@@ -59,9 +59,7 @@ def evaluate_text(text: str, packs: LoadedPacks) -> Tuple[List[Violation], Advis
     return hits, max_action
 
 
-def policy_headers(
-    violations: Sequence[Violation], action: AdvisoryLevel
-) -> Dict[str, str]:
+def policy_headers(violations: Sequence[Violation], action: AdvisoryLevel) -> Dict[str, str]:
     if not violations:
         return {}
     items = [f"{violation.pack}:{violation.rule_id}" for violation in violations]
@@ -74,4 +72,3 @@ def _has_any_term(text: str, terms: Iterable[str]) -> bool:
         if term.lower() in text:
             return True
     return False
-

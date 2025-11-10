@@ -16,6 +16,7 @@ class StubRedisNoscriptOnce:
     def evalsha(self, sha, numkeys, key, now, rps, burst, cost):
         self._evalsha_calls += 1
         if self._evalsha_calls == 1:
+
             class _E(Exception):
                 pass
 

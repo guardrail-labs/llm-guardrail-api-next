@@ -74,9 +74,7 @@ def _call_decisions_provider(
         sig = inspect.signature(fn)
         params = sig.parameters
         if all(param in params for param in ("page", "page_size")):
-            return _normalize_provider_result(
-                fn(page=page, page_size=page_size, **base)
-            )
+            return _normalize_provider_result(fn(page=page, page_size=page_size, **base))
     except Exception:
         pass
 
@@ -86,9 +84,7 @@ def _call_decisions_provider(
         limit = page_size
         offset = max((page - 1) * page_size, 0)
         try:
-            return _normalize_provider_result(
-                fn(limit=limit, offset=offset, **base)
-            )
+            return _normalize_provider_result(fn(limit=limit, offset=offset, **base))
         except TypeError:
             try:
                 return _normalize_provider_result(
@@ -335,6 +331,7 @@ def _get_provider() -> DecisionProvider:
         return _provider
     detected = _auto_detect_provider()
     if detected is None:
+
         def empty_provider(
             since: Optional[datetime],
             tenant: Optional[str],
@@ -393,7 +390,6 @@ def _norm_item(d: Dict[str, Any]) -> DecisionItem:
     )
 
 
-
 def _list_decisions_offset_path(
     *,
     since: Optional[str],
@@ -413,6 +409,7 @@ def _list_decisions_offset_path(
     sort_lower = (sort or "").lower()
     sort_key_safe: SortKey = cast(SortKey, sort_lower) if sort_lower in SORT_KEYS else "ts"
     sort_dir_safe: SortDir = "asc" if sort_dir == "asc" else "desc"
+
     def _filter_reqid(items: Iterable[Dict[str, Any]]) -> ProviderResult:
         materialized = list(items)
         if request_id is None:
@@ -420,9 +417,7 @@ def _list_decisions_offset_path(
         filtered = [
             item
             for item in materialized
-            if (
-                isinstance(item, dict) and item.get("request_id") == request_id
-            )
+            if (isinstance(item, dict) and item.get("request_id") == request_id)
             or getattr(item, "request_id", None) == request_id
         ]
         return filtered, len(filtered)
@@ -663,9 +658,7 @@ async def get_decisions(
         except ValueError:
             effective_limit = max(int(limit), 1)
     effective_offset = (
-        int(offset)
-        if offset is not None
-        else max((int(page) - 1) * requested_page_size, 0)
+        int(offset) if offset is not None else max((int(page) - 1) * requested_page_size, 0)
     )
 
     if cursor is None and query_dir and query_dir not in {"next", "prev"}:
@@ -925,12 +918,8 @@ def _stream_jsonl(
         200: {
             "description": "Decision export stream.",
             "content": {
-                "text/csv": {
-                    "example": "id,ts,outcome\ndec_123,2024-01-01T12:00:00Z,allow"
-                },
-                "application/x-ndjson": {
-                    "example": "{\"id\":\"dec_123\",\"tenant\":\"tenant-123\"}\n"
-                },
+                "text/csv": {"example": "id,ts,outcome\ndec_123,2024-01-01T12:00:00Z,allow"},
+                "application/x-ndjson": {"example": '{"id":"dec_123","tenant":"tenant-123"}\n'},
             },
         },
         401: {"description": "Authentication required."},

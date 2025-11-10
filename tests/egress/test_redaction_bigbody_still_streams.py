@@ -28,4 +28,3 @@ def test_big_body_streams_without_content_length(monkeypatch):
     response = client.get("/big")
     assert response.status_code == 200
     assert "content-length" not in {key.lower(): value for key, value in response.headers.items()}
-

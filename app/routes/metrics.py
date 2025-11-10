@@ -20,6 +20,7 @@ try:  # pragma: no cover
         REGISTRY as PROM_REGISTRY,
         generate_latest as prom_generate_latest,
     )
+
     REGISTRY: Any | None = PROM_REGISTRY
     generate_latest: Optional[Callable[[Any], bytes]] = prom_generate_latest
 except Exception:  # pragma: no cover

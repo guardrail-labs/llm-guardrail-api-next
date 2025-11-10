@@ -30,9 +30,7 @@ _cache: Dict[str, PolicyBlob] = {}
 _CTX_TENANT: contextvars.ContextVar[str] = contextvars.ContextVar(
     "policy_tenant", default="default"
 )
-_CTX_BOT: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "policy_bot", default="default"
-)
+_CTX_BOT: contextvars.ContextVar[str] = contextvars.ContextVar("policy_bot", default="default")
 
 
 def set_binding_context(tenant: str, bot: str) -> None:
@@ -42,9 +40,7 @@ def set_binding_context(tenant: str, bot: str) -> None:
 
 
 def _default_path() -> str:
-    return str(
-        Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
-    )
+    return str(Path(__file__).resolve().parent.parent / "policy" / "rules.yaml")
 
 
 def _binding_path_or_none(tenant: str, bot: str) -> str | None:
@@ -185,6 +181,7 @@ def reload_now() -> PolicyBlob:
 
 
 # ---- Optional binding inspection (admin ergonomics) --------------------------
+
 
 def describe_binding(tenant: str, bot: str) -> Dict[str, object]:
     """

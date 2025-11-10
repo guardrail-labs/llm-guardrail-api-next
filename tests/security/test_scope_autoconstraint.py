@@ -119,9 +119,7 @@ def seed_decisions_multi_tenant(monkeypatch: pytest.MonkeyPatch) -> list[dict[st
 @pytest.fixture
 def client_flag_on(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("SCOPE_AUTOCONSTRAIN_ENABLED", "true")
-    monkeypatch.setattr(
-        services_config, "SCOPE_AUTOCONSTRAIN_ENABLED", True, raising=False
-    )
+    monkeypatch.setattr(services_config, "SCOPE_AUTOCONSTRAIN_ENABLED", True, raising=False)
     _configure_tokens(monkeypatch)
     app = create_app()
     return TestClient(app)
@@ -130,9 +128,7 @@ def client_flag_on(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 @pytest.fixture
 def client_flag_off(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("SCOPE_AUTOCONSTRAIN_ENABLED", "false")
-    monkeypatch.setattr(
-        services_config, "SCOPE_AUTOCONSTRAIN_ENABLED", False, raising=False
-    )
+    monkeypatch.setattr(services_config, "SCOPE_AUTOCONSTRAIN_ENABLED", False, raising=False)
     _configure_tokens(monkeypatch)
     app = create_app()
     return TestClient(app)

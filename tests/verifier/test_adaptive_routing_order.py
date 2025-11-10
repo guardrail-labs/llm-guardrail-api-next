@@ -10,6 +10,7 @@ class SlowOK:
 
     async def assess(self, text, meta=None):
         import asyncio
+
         await asyncio.sleep(0.01)
         return {"status": "safe", "reason": "ok", "tokens_used": 1}
 
@@ -24,6 +25,7 @@ class FastTimeoutThenOK:
         self.called += 1
         if self.called <= 2:
             import asyncio
+
             raise asyncio.TimeoutError()
         return {"status": "safe", "reason": "ok", "tokens_used": 1}
 
@@ -42,9 +44,7 @@ async def test_adaptive_reranks_after_timeouts(monkeypatch):
     monkeypatch.setattr(
         prov,
         "build_provider",
-        lambda n: FastTimeoutThenOK()
-        if n == "fast"
-        else (SlowOK() if n == "slow" else None),
+        lambda n: FastTimeoutThenOK() if n == "fast" else (SlowOK() if n == "slow" else None),
         raising=True,
     )
 
@@ -62,4 +62,3 @@ async def test_adaptive_reranks_after_timeouts(monkeypatch):
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
-

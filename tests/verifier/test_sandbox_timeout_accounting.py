@@ -16,6 +16,7 @@ class SlowProv:
 
     async def assess(self, text, meta=None):
         import asyncio
+
         # Sleep long enough to exceed sandbox timebox to verify timeout handling.
         await asyncio.sleep(1.0)
         return {"status": "safe", "reason": "ok", "tokens_used": 1}

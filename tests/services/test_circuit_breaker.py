@@ -73,4 +73,3 @@ def test_half_open_failure_reopens(monkeypatch) -> None:
     assert cb.state == "open"
     # and block until next cooldown
     assert cb.allow_call() is False
-

@@ -80,4 +80,3 @@ def security_txt() -> Response:
         media_type="text/plain; charset=utf-8",
         headers={"Cache-Control": "public, max-age=600"},
     )
-

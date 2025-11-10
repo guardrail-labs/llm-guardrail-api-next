@@ -14,7 +14,7 @@ def _write_rules(path: Path, version: str) -> str:
     """
     Minimal rules.yaml writer: sets a distinct version for assertion.
     """
-    text = f'version: "{version}"\n' "deny: []\n"
+    text = f'version: "{version}"\ndeny: []\n'
     path.write_text(text, encoding="utf-8")
     return str(path)
 
@@ -51,4 +51,3 @@ def test_bindings_resolve_returns_rules_path_and_version(tmp_path: Path, monkeyp
     assert body["bot"] == "bot-a"
     assert body["rules_path"] == rules_a
     assert body["policy_version"] == "A"
-

@@ -195,10 +195,7 @@ def _render_report(name: str, summary: Dict[str, Any]) -> str:
         f"# Bench Report — {name}",
         f"- total responses: {summary['count']}",
         f"- approx_rps: {summary['approx_rps']:.2f}",
-        (
-            "- p50/p95/p99 latency ms: "
-            f"{lat['p50']:.1f}/{lat['p95']:.1f}/{lat['p99']:.1f}"
-        ),
+        (f"- p50/p95/p99 latency ms: {lat['p50']:.1f}/{lat['p95']:.1f}/{lat['p99']:.1f}"),
         f"- error_rate: {summary['error_rate']:.4f}",
         f"- decisions: {decisions}",
     ]
@@ -250,7 +247,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     async def run_workers() -> None:
         tasks = [
             _worker(
-                name=f"w{i+1}",
+                name=f"w{i + 1}",
                 base_url=args.base_url,
                 endpoints=scenario.endpoints,
                 stop_at=stop_at,

@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 # Code point helpers
-ZWJ = "\u200d"       # Zero-Width Joiner
-ZWNJ = "\u200c"      # Zero-Width Non-Joiner
-ZWSP = "\u200b"      # Zero-Width Space
-VS16 = "\ufe0f"      # Variation Selector-16 (emoji presentation)
-KEYCAP = "\u20e3"    # COMBINING ENCLOSING KEYCAP
+ZWJ = "\u200d"  # Zero-Width Joiner
+ZWNJ = "\u200c"  # Zero-Width Non-Joiner
+ZWSP = "\u200b"  # Zero-Width Space
+VS16 = "\ufe0f"  # Variation Selector-16 (emoji presentation)
+KEYCAP = "\u20e3"  # COMBINING ENCLOSING KEYCAP
 
 # Tags: U+E0000..U+E007F ; CANCEL TAG = U+E007F
 _TAG_BASE = 0xE0000

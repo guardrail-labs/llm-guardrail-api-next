@@ -41,9 +41,7 @@ def test_admin_adjudications_sanitize_nonfinite_scores(
     def _fake_finalize(response, *, policy_result=None, **kwargs):
         if isinstance(policy_result, dict):
             policy_result["score"] = bad_score
-        return original_finalize(
-            response, policy_result=policy_result, **kwargs
-        )
+        return original_finalize(response, policy_result=policy_result, **kwargs)
 
     monkeypatch.setattr(guardrail, "_finalize_ingress_response", _fake_finalize)
 
@@ -56,9 +54,7 @@ def test_admin_adjudications_sanitize_nonfinite_scores(
     assert items, "expected adjudication records"
     assert items[0]["score"] is None
 
-    export = admin_client.get(
-        "/admin/adjudications.ndjson", headers=_admin_headers()
-    )
+    export = admin_client.get("/admin/adjudications.ndjson", headers=_admin_headers())
     assert export.status_code == 200
     lines = [json.loads(line) for line in export.text.splitlines() if line.strip()]
     assert lines, "expected NDJSON entries"

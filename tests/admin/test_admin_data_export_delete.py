@@ -46,10 +46,12 @@ def app_builder(prepare_audit) -> Callable[[bool, bool], Tuple[TestClient, Any]]
     ) -> Tuple[TestClient, Any]:
         app = create_app()
         if require_admin_override:
-            app.dependency_overrides[rbac.require_admin] = (
-                lambda: {"email": "admin@test", "role": "admin"}
-            )
+            app.dependency_overrides[rbac.require_admin] = lambda: {
+                "email": "admin@test",
+                "role": "admin",
+            }
         if require_csrf_override:
+
             def _noop_csrf(_: Request) -> None:
                 return None
 
@@ -62,9 +64,7 @@ def app_builder(prepare_audit) -> Callable[[bool, bool], Tuple[TestClient, Any]]
 
 def _seed_data(audit_module: Any, base_ms: int) -> None:
     decisions_bus.configure(reset=True)
-    decisions_bus.publish(
-        {"ts_ms": base_ms - 5000, "tenant": "t", "bot": "b", "request_id": "d1"}
-    )
+    decisions_bus.publish({"ts_ms": base_ms - 5000, "tenant": "t", "bot": "b", "request_id": "d1"})
     decisions_bus.publish(
         {"ts_ms": base_ms + 5000, "tenant": "t", "bot": "other", "request_id": "d2"}
     )
@@ -176,9 +176,7 @@ def test_delete_removes_records_and_audit(app_builder):
     assert counts["audit"] >= 1
     remaining_decisions = decisions_bus.snapshot()
     assert all(
-        item.get("tenant") != "t"
-        or item.get("bot") != "b"
-        or item.get("ts_ms", 0) >= base
+        item.get("tenant") != "t" or item.get("bot") != "b" or item.get("ts_ms", 0) >= base
         for item in remaining_decisions
     )
     remaining_adj = list(adj_log.iter_all())

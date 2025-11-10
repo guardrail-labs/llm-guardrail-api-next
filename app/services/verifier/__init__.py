@@ -253,6 +253,7 @@ class _RedisHarmStore:
         self._cli = None
         try:
             import redis
+
             self._cli = redis.from_url(url, decode_responses=True)
         except Exception:
             self._cli = None
@@ -349,6 +350,7 @@ def get_ops_overview(tenant: str | None = None, bot: str | None = None) -> Dict[
 
     return {"providers": provs, "effective_order": effective_order}
 
+
 async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
     """
     Provider-backed verification. Returns legacy shape plus "provider":
@@ -428,13 +430,12 @@ async def verify_intent(text: str, ctx_meta: Dict[str, Any]) -> Dict[str, Any]:
         last_provider = pname
 
         try:
+
             async def _run() -> Dict[str, Any]:
                 return await prov.assess(text, meta=ctx_meta)
 
             t0 = time.perf_counter()
-            eff_timeout = (
-                min(timeout_s, budget_s) if budget_s is not None else timeout_s
-            )
+            eff_timeout = min(timeout_s, budget_s) if budget_s is not None else timeout_s
             res: Dict[str, Any] = await asyncio.wait_for(_run(), timeout=eff_timeout)
 
             try:

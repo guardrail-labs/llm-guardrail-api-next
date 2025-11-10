@@ -74,4 +74,3 @@ def set_decisive(key: str, outcome: Outcome) -> None:
 
 def reset_memory() -> None:
     _MEM.clear()
-

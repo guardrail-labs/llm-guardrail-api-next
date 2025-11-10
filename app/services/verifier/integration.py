@@ -13,6 +13,7 @@ def error_fallback_action() -> str:
         return v
     return "allow"
 
+
 # ---------------------------------------------------------------------
 # Env helpers
 # ---------------------------------------------------------------------
@@ -72,20 +73,14 @@ async def maybe_verify_and_headers(
 
     default_action = _get_default_action()
     vfunc: Any = verify_intent_hardened
-    out_obj, hdr_in = cast(
-        Tuple[Dict[str, Any], Dict[str, Any]], await vfunc(text, ctx)
-    )
+    out_obj, hdr_in = cast(Tuple[Dict[str, Any], Dict[str, Any]], await vfunc(text, ctx))
 
     outcome = out_obj if isinstance(out_obj, dict) else {}
     headers_in = hdr_in if isinstance(hdr_in, dict) else {}
 
     status = str(outcome.get("status", "")).lower()
     reason = outcome.get("reason")
-    provider = str(
-        outcome.get("provider")
-        or headers_in.get("X-Guardrail-Verifier")
-        or "unknown"
-    )
+    provider = str(outcome.get("provider") or headers_in.get("X-Guardrail-Verifier") or "unknown")
 
     if status == "safe":
         decision = "allow"
@@ -118,4 +113,3 @@ async def maybe_verify_and_headers(
         headers["X-Guardrail-Verifier"] = provider
 
     return decision, headers
-

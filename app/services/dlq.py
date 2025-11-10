@@ -61,9 +61,7 @@ class DLQService:
         await self._redis.hset(key, mapping=cast(RedisHashMapping, record))
         await self._redis.zadd(zset_key, {msg_id: now})
         if error_text:
-            await self._redis.hset(
-                key, mapping=cast(RedisHashMapping, {"last_error": error_text})
-            )
+            await self._redis.hset(key, mapping=cast(RedisHashMapping, {"last_error": error_text}))
         message = DLQMessage(
             id=msg_id,
             tenant=tenant,
@@ -110,15 +108,9 @@ class DLQService:
         }
         if tries >= self.max_tries:
             mapping["next_attempt_ts"] = str(now)
-            await self._redis.hset(
-                hash_key, mapping=cast(RedisHashMapping, mapping)
-            )
-            await self._redis.zrem(
-                self._zset_key(message.tenant, message.topic), msg_id
-            )
-            await self._redis.sadd(
-                self._quarantine_key(message.tenant, message.topic), msg_id
-            )
+            await self._redis.hset(hash_key, mapping=cast(RedisHashMapping, mapping))
+            await self._redis.zrem(self._zset_key(message.tenant, message.topic), msg_id)
+            await self._redis.sadd(self._quarantine_key(message.tenant, message.topic), msg_id)
             return None
         delay = self._compute_delay(tries)
         next_attempt = max(now + delay, now)
@@ -127,9 +119,7 @@ class DLQService:
         await self._redis.zadd(
             self._zset_key(message.tenant, message.topic), {msg_id: next_attempt}
         )
-        await self._redis.srem(
-            self._quarantine_key(message.tenant, message.topic), msg_id
-        )
+        await self._redis.srem(self._quarantine_key(message.tenant, message.topic), msg_id)
         return DLQMessage(
             id=message.id,
             tenant=message.tenant,
@@ -152,12 +142,8 @@ class DLQService:
             self._msg_key(msg_id),
             mapping=cast(RedisHashMapping, {"next_attempt_ts": str(now)}),
         )
-        await self._redis.zadd(
-            self._zset_key(message.tenant, message.topic), {msg_id: now}
-        )
-        await self._redis.srem(
-            self._quarantine_key(message.tenant, message.topic), msg_id
-        )
+        await self._redis.zadd(self._zset_key(message.tenant, message.topic), {msg_id: now})
+        await self._redis.srem(self._quarantine_key(message.tenant, message.topic), msg_id)
         return DLQMessage(
             id=message.id,
             tenant=message.tenant,
@@ -171,16 +157,12 @@ class DLQService:
             last_error=message.last_error,
         )
 
-    async def list_pending(
-        self, tenant: str, topic: str, limit: int = 100
-    ) -> list[DLQMessage]:
+    async def list_pending(self, tenant: str, topic: str, limit: int = 100) -> list[DLQMessage]:
         key = self._zset_key(tenant, topic)
         ids = await self._redis.zrange(key, 0, limit - 1)
         return await self._load_messages(ids)
 
-    async def list_quarantine(
-        self, tenant: str, topic: str, limit: int = 200
-    ) -> list[str]:
+    async def list_quarantine(self, tenant: str, topic: str, limit: int = 200) -> list[str]:
         members = await self._redis.smembers(self._quarantine_key(tenant, topic))
         ids = sorted(self._decode(member) for member in members)
         return ids[: limit if limit >= 0 else len(ids)]
@@ -212,9 +194,7 @@ class DLQService:
             return None
         return self._parse_record(msg_id, record)
 
-    def _parse_record(
-        self, msg_id: str, record: Mapping[bytes, bytes]
-    ) -> Optional[DLQMessage]:
+    def _parse_record(self, msg_id: str, record: Mapping[bytes, bytes]) -> Optional[DLQMessage]:
         if not record:
             return None
         tenant = self._decode(record.get(b"tenant"))
@@ -226,14 +206,10 @@ class DLQService:
         tries = self._parse_int_bytes(record.get(b"tries"), default=0)
         created_raw = self._parse_float_bytes(record.get(b"created_ts"), default=0.0)
         created_ts = created_raw if created_raw is not None else 0.0
-        first_raw = self._parse_float_bytes(
-            record.get(b"first_failure_ts"), default=created_ts
-        )
+        first_raw = self._parse_float_bytes(record.get(b"first_failure_ts"), default=created_ts)
         first_failure_ts = first_raw if first_raw is not None else created_ts
         last_attempt_ts = self._parse_float_bytes(record.get(b"last_attempt_ts"))
-        next_raw = self._parse_float_bytes(
-            record.get(b"next_attempt_ts"), default=created_ts
-        )
+        next_raw = self._parse_float_bytes(record.get(b"next_attempt_ts"), default=created_ts)
         next_attempt_ts = next_raw if next_raw is not None else created_ts
         last_error = self._decode(record.get(b"last_error")) or None
         return DLQMessage(

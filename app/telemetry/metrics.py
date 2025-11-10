@@ -231,9 +231,7 @@ guardrail_actor_decisions_total: CounterLike = _mk_counter(
 )
 
 
-def inc_actor_decisions_total(
-    family: str, tenant: str | None, bot: str | None
-) -> None:
+def inc_actor_decisions_total(family: str, tenant: str | None, bot: str | None) -> None:
     fam = (family or "unknown").strip() or "unknown"
     tenant_raw = (tenant or "").strip()
     bot_raw = (bot or "").strip()
@@ -241,6 +239,7 @@ def inc_actor_decisions_total(
     bot_val = bot_raw if bot_raw else "unknown"
     safe_tenant, safe_bot = _limit_labels(tenant_val, bot_val)
     guardrail_actor_decisions_total.labels(fam, safe_tenant, safe_bot).inc()
+
 
 # Directional redactions (direction, tag)
 guardrail_redactions_total: CounterLike = _mk_counter(
@@ -574,7 +573,8 @@ def inc_verifier_retry(verifier: str) -> None:
 
 def inc_verifier_error(verifier: str, kind: str) -> None:
     guardrail_verifier_error_total.labels(
-        str(verifier or "unknown"), str(kind or "other"),
+        str(verifier or "unknown"),
+        str(kind or "other"),
     ).inc()
 
 
@@ -639,9 +639,9 @@ def inc_sandbox(provider: str, kind: str) -> None:
 
 
 def observe_sandbox_latency(provider: str, seconds: float) -> None:
-    guardrail_verifier_sandbox_latency_seconds.labels(
-        str(provider or "unknown")
-    ).observe(float(seconds))
+    guardrail_verifier_sandbox_latency_seconds.labels(str(provider or "unknown")).observe(
+        float(seconds)
+    )
 
 
 def inc_sandbox_disagreement(provider: str, primary: str, shadow: str) -> None:
@@ -775,8 +775,7 @@ def export_family_breakdown_lines() -> List[str]:
     tenant_agg = _aggregate_tenant_totals()
     if tenant_agg:
         lines.append(
-            "# HELP guardrail_decisions_family_tenant_total "
-            "Decision totals by tenant and family."
+            "# HELP guardrail_decisions_family_tenant_total Decision totals by tenant and family."
         )
         lines.append("# TYPE guardrail_decisions_family_tenant_total counter")
         for (tenant, family), v in sorted(tenant_agg.items()):
@@ -788,8 +787,7 @@ def export_family_breakdown_lines() -> List[str]:
     # Tenant/bot-level totals
     if _FAMILY_TENANT_BOT:
         lines.append(
-            "# HELP guardrail_decisions_family_bot_total "
-            "Decision totals by tenant/bot and family."
+            "# HELP guardrail_decisions_family_bot_total Decision totals by tenant/bot and family."
         )
         lines.append("# TYPE guardrail_decisions_family_bot_total counter")
         for (family, tenant, bot), v in sorted(_FAMILY_TENANT_BOT.items()):
@@ -806,6 +804,7 @@ def export_family_breakdown_lines() -> List[str]:
 
 def get_metric(name: str) -> Any:
     return _registry_map().get(name)
+
 
 # --- Hidden-text scanning telemetry ------------------------------------------
 
@@ -830,9 +829,7 @@ guardrail_hidden_text_actions_total: CounterLike = _mk_counter(
 
 
 def inc_hidden_text(fmt: str, reason: str) -> None:
-    guardrail_hidden_text_total.labels(
-        str(fmt or "unknown"), str(reason or "unknown")
-    ).inc()
+    guardrail_hidden_text_total.labels(str(fmt or "unknown"), str(reason or "unknown")).inc()
 
 
 def inc_hidden_text_action(fmt: str, reason: str, action: str) -> None:
@@ -848,6 +845,7 @@ def add_hidden_text_bytes(fmt: str, n: int | float) -> None:
         v = 0.0
     guardrail_hidden_text_bytes_total.labels(str(fmt or "unknown")).inc(v)
 
+
 # --- PDF hidden-text telemetry ------------------------------------------------
 # Placed here to avoid touching existing counters and keep diff minimal.
 
@@ -862,6 +860,7 @@ guardrail_pdf_hidden_bytes_total: CounterLike = _mk_counter(
     "Total bytes of PDFs flagged for hidden text.",
 )
 
+
 def inc_pdf_hidden(reason: str) -> None:
     """Increment hidden-text detection counter for the given reason."""
     guardrail_pdf_hidden_total.labels(str(reason or "unknown")).inc()
@@ -874,6 +873,7 @@ def add_pdf_hidden_bytes(n: int) -> None:
     except Exception:
         v = 0.0
     guardrail_pdf_hidden_bytes_total.inc(v)
+
 
 # HTML hidden-text telemetry
 guardrail_html_hidden_total: CounterLike = _mk_counter(

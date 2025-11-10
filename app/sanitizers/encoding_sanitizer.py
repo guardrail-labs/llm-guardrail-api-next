@@ -16,6 +16,7 @@ _RE_HEX = re.compile(r"^[0-9A-Fa-f]+$")
 # Consider URL-encoded if it has %XX patterns or pluses and decodes to more ASCII
 _RE_URL_HINT = re.compile(r"%(?:[0-9A-Fa-f]{2})")
 
+
 def _shannon_entropy(s: bytes) -> float:
     if not s:
         return 0.0
@@ -82,7 +83,7 @@ def _maybe_decode_hex(text: str) -> Tuple[str, int]:
 
 
 def _maybe_decode_url(text: str) -> Tuple[str, int]:
-    if ("%2" not in text and "%3" not in text and "+" not in text):
+    if "%2" not in text and "%3" not in text and "+" not in text:
         # Fast path skip when no obvious hints
         if not _RE_URL_HINT.search(text):
             return text, 0

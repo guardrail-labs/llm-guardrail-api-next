@@ -31,9 +31,7 @@ class PurgeCoordinator:
         self._signer = signer
         self._targets = targets
 
-    async def plan(
-        self, tenant: str, resource: str, now: float, limit: int
-    ) -> List[str]:
+    async def plan(self, tenant: str, resource: str, now: float, limit: int) -> List[str]:
         if limit <= 0:
             return []
         policy = await self._store.get_policy(tenant, resource)
@@ -82,9 +80,7 @@ class PurgeCoordinator:
     async def latest_receipts(self, tenant: str, limit: int) -> List[PurgeReceipt]:
         return await load_latest_receipts(self._redis, tenant, limit)
 
-    async def get_receipt(
-        self, receipt_id: str
-    ) -> Optional[Tuple[PurgeReceipt, Dict[str, str]]]:
+    async def get_receipt(self, receipt_id: str) -> Optional[Tuple[PurgeReceipt, Dict[str, str]]]:
         return await load_receipt(self._redis, receipt_id)
 
     async def verify_receipt(self, receipt_id: str) -> bool:

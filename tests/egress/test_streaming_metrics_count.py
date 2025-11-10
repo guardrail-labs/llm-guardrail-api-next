@@ -6,6 +6,7 @@ from starlette.responses import StreamingResponse
 
 router = APIRouter()
 
+
 @router.get("/metrics/test/stream-sse")
 async def stream_sse():
     async def gen():
@@ -13,22 +14,25 @@ async def stream_sse():
         yield b"data: part1 a@g"
         await asyncio.sleep(0)
         yield b"mail.com part2\n\n"
+
     return StreamingResponse(gen(), media_type="text/event-stream")
+
 
 def _get_stream_redactions_counter(client) -> float:
     m = client.get("/metrics")
     assert m.status_code == 200
     text = m.text
     pat = re.compile(
-        r'(?m)^guardrail_egress_redactions_total\{'
+        r"(?m)^guardrail_egress_redactions_total\{"
         r'(?=[^}]*tenant="default")'
         r'(?=[^}]*bot="default")'
         r'(?=[^}]*kind="text/stream")'
-        r'[^}]*\}'
+        r"[^}]*\}"
         r"\s+([0-9]+(?:\.[0-9]+)?)$"
     )
     match = pat.search(text)
     return float(match.group(1)) if match else 0.0
+
 
 def test_streaming_redaction_increments_counter(client, monkeypatch, app):
     monkeypatch.setenv("EGRESS_STREAMING_REDACT_ENABLED", "1")

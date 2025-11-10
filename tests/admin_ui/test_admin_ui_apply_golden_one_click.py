@@ -46,10 +46,10 @@ def _golden_button_snippet(html: str) -> str:
     marker = 'id="apply-golden-button"'
     idx = html.find(marker)
     assert idx != -1, "apply golden button missing"
-    start = html.rfind('<button', 0, idx)
-    end = html.find('</button>', idx)
+    start = html.rfind("<button", 0, idx)
+    end = html.find("</button>", idx)
     if start == -1 or end == -1:
-        return html[idx: idx + 64]
+        return html[idx : idx + 64]
     return html[start:end]
 
 
@@ -59,9 +59,7 @@ def test_button_hidden_without_flag(admin_client: TestClient) -> None:
     assert 'id="apply-golden-button"' not in resp.text
 
 
-def test_button_visible_with_flag(
-    admin_client: TestClient, monkeypatch: MonkeyPatch
-) -> None:
+def test_button_visible_with_flag(admin_client: TestClient, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
     resp = admin_client.get("/admin/ui/bindings", headers=_auth_headers())
     assert resp.status_code == 200
@@ -78,25 +76,17 @@ def test_button_disabled_without_context(
     assert "disabled" in snippet
 
 
-def test_button_enabled_with_context(
-    admin_client: TestClient, monkeypatch: MonkeyPatch
-) -> None:
+def test_button_enabled_with_context(admin_client: TestClient, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
-    resp = admin_client.get(
-        "/admin/ui/bindings?tenant=ten&bot=bot", headers=_auth_headers()
-    )
+    resp = admin_client.get("/admin/ui/bindings?tenant=ten&bot=bot", headers=_auth_headers())
     assert resp.status_code == 200
     snippet = _golden_button_snippet(resp.text)
     assert "disabled" not in snippet
 
 
-def test_template_copies_cover_statuses(
-    admin_client: TestClient, monkeypatch: MonkeyPatch
-) -> None:
+def test_template_copies_cover_statuses(admin_client: TestClient, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
-    resp = admin_client.get(
-        "/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers()
-    )
+    resp = admin_client.get("/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers())
     assert resp.status_code == 200
     html = resp.text
     assert "Refreshed Golden Packs" in html
@@ -106,9 +96,7 @@ def test_template_copies_cover_statuses(
     assert "applied: " in html
 
 
-def test_apply_golden_happy_path(
-    admin_client: TestClient, monkeypatch: MonkeyPatch
-) -> None:
+def test_apply_golden_happy_path(admin_client: TestClient, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
 
     captured: dict[str, dict[str, str]] = {}
@@ -131,9 +119,7 @@ def test_apply_golden_happy_path(
         lambda: [{"tenant": "t1", "bot": "b1", "policy_version": "pol-9"}],
     )
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=t1&bot=b1", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=t1&bot=b1", headers=_auth_headers())
     csrf = page.cookies.get("ui_csrf")
     assert csrf
 
@@ -154,9 +140,7 @@ def test_apply_golden_happy_path(
     assert any(b["policy_version"] == "pol-9" for b in body["bindings"])
 
 
-def test_apply_golden_refresh_flow(
-    admin_client: TestClient, monkeypatch: MonkeyPatch
-) -> None:
+def test_apply_golden_refresh_flow(admin_client: TestClient, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
 
     def fake_apply(payload: dict[str, str]) -> dict[str, Any]:
@@ -176,9 +160,7 @@ def test_apply_golden_refresh_flow(
         lambda: [{"tenant": "acme", "bot": "bot", "policy_version": "pol-10"}],
     )
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=acme&bot=bot", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=acme&bot=bot", headers=_auth_headers())
     csrf = page.cookies.get("ui_csrf")
     assert csrf
 
@@ -196,9 +178,7 @@ def test_apply_golden_refresh_flow(
     assert binding["rules_path"] == "/policies/golden.yaml"
 
 
-def test_apply_golden_error_surface(
-    admin_client: TestClient, monkeypatch: MonkeyPatch
-) -> None:
+def test_apply_golden_error_surface(admin_client: TestClient, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("ADMIN_ENABLE_GOLDEN_ONE_CLICK", "1")
 
     def fake_apply(payload: dict[str, str]) -> dict[str, str]:
@@ -206,9 +186,7 @@ def test_apply_golden_error_surface(
 
     monkeypatch.setattr(admin_ui_mod, "apply_golden_action", fake_apply)
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=acme&bot=bot", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=acme&bot=bot", headers=_auth_headers())
     csrf = page.cookies.get("ui_csrf")
     assert csrf
 

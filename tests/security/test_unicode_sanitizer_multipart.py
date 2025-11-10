@@ -47,7 +47,7 @@ def test_multipart_unicode_block_audited_and_counted(
 
     before = metrics_snapshot()
 
-    files = {"file": ("note.txt", "hello\u202Eworld")}
+    files = {"file": ("note.txt", "hello\u202eworld")}
     resp = client.post("/guardrail/evaluate_multipart", files=files)
     assert resp.status_code == 200
 
@@ -62,12 +62,8 @@ def test_multipart_unicode_block_audited_and_counted(
     deny_after = after.counter("guardrail_decisions_family_total", family="deny")
     assert deny_after >= deny_before + 1
 
-    suspicious_before = before.counter(
-        "guardrail_unicode_suspicious_total", reason="bidi_control"
-    )
-    suspicious_after = after.counter(
-        "guardrail_unicode_suspicious_total", reason="bidi_control"
-    )
+    suspicious_before = before.counter("guardrail_unicode_suspicious_total", reason="bidi_control")
+    suspicious_after = after.counter("guardrail_unicode_suspicious_total", reason="bidi_control")
     assert suspicious_after >= suspicious_before + 1
 
     assert audit_events, "expected audit payload recorded"

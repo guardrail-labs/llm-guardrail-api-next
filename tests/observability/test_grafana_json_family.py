@@ -15,4 +15,3 @@ def test_grafana_panels_group_by_family():
                 exprs.append(e)
     assert exprs, "Dashboard should include queries for guardrail_decisions_total"
     assert any("sum by (family)" in e for e in exprs), "Queries must group by family"
-

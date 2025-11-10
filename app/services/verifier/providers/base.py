@@ -26,8 +26,6 @@ class Provider(Protocol):
 class ProviderRateLimited(Exception):
     """Provider indicated a rate/quotas limit."""
 
-    def __init__(
-        self, message: str = "rate_limited", retry_after_s: float | None = None
-    ) -> None:
+    def __init__(self, message: str = "rate_limited", retry_after_s: float | None = None) -> None:
         super().__init__(message)
         self.retry_after_s = retry_after_s

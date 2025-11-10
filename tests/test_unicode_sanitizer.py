@@ -36,9 +36,7 @@ def test_compound_attack_string() -> None:
     assert "Un" in out
     assert not contains_zero_width(out)
     assert not contains_raw_bidi(out)
-    assert any(
-        escape in out for escape in ("\\u202e", "\\u2066", "\\u200f")
-    )
+    assert any(escape in out for escape in ("\\u202e", "\\u2066", "\\u200f"))
 
 
 def test_bom_and_soft_hyphen_removed() -> None:

@@ -1,4 +1,5 @@
 """Redis-backed idempotency store with ownership tokens and replay bump."""
+
 from __future__ import annotations
 
 import base64
@@ -111,9 +112,7 @@ class RedisIdemStore(IdemStore):
         """
         lock_key = self._k(key, "lock")
         owner = secrets.token_urlsafe(16)
-        payload = json.dumps(
-            {"owner": owner, "payload_fingerprint": payload_fingerprint}
-        )
+        payload = json.dumps({"owner": owner, "payload_fingerprint": payload_fingerprint})
         ok = await self.r.set(lock_key, payload, ex=ttl_s, nx=True)
         if ok:
             state_key = self._k(key, "state")
@@ -136,9 +135,7 @@ class RedisIdemStore(IdemStore):
             return None
         data = json.loads(raw)
         body = base64.b64decode(data["body_b64"])
-        headers: Mapping[str, str] = {
-            k.lower(): v for k, v in data.get("headers", {}).items()
-        }
+        headers: Mapping[str, str] = {k.lower(): v for k, v in data.get("headers", {}).items()}
         return StoredResponse(
             status=int(data["status"]),
             headers=headers,

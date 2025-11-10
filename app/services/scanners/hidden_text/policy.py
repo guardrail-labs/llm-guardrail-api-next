@@ -21,9 +21,7 @@ def _format_allowed(fmt: str) -> bool:
     return (not allowed) or (fmt.lower() in allowed)
 
 
-def decide_for_hidden_reasons(
-    fmt: str, reasons: Iterable[str]
-) -> Tuple[Optional[str], List[str]]:
+def decide_for_hidden_reasons(fmt: str, reasons: Iterable[str]) -> Tuple[Optional[str], List[str]]:
     """
     Returns (action, matched_reasons). action in {"deny","clarify",None}
     - Applies MIN_MATCH threshold per action.

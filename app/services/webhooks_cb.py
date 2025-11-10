@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 try:  # pragma: no cover - exercised in tests
     from app.services.config_store import get_webhook_cb_tuning
 except Exception:  # pragma: no cover - defensive fallback for runtime import issues
+
     def get_webhook_cb_tuning() -> Dict[str, int]:
         return {
             "webhook_cb_error_threshold": 8,
@@ -105,7 +106,7 @@ def backoff_with_jitter(
 ) -> int:
     if attempt < 0:
         attempt = 0
-    raw = base_ms * (2 ** attempt)
+    raw = base_ms * (2**attempt)
     capped = cap_ms if raw > cap_ms else raw
     factor = 0.5 + float(rnd())
     return int(capped * factor)

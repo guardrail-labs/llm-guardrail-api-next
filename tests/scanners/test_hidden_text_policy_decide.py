@@ -22,8 +22,6 @@ def test_policy_clarify_threshold(monkeypatch):
     monkeypatch.setenv("HIDDEN_TEXT_CLARIFY_REASONS", "style_hidden,zero_width_chars")
     reload(settings)
     reload(pol)
-    action, matched = pol.decide_for_hidden_reasons(
-        "html", ["style_hidden", "zero_width_chars"]
-    )
+    action, matched = pol.decide_for_hidden_reasons("html", ["style_hidden", "zero_width_chars"])
     assert action == "clarify"
     assert set(matched) == {"style_hidden", "zero_width_chars"}

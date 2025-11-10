@@ -26,6 +26,7 @@ _SAFE_LABEL_RE = re.compile(r"[^a-zA-Z0-9:_-]+")
 try:
     from app.services.ratelimit import RATE_LIMIT_BLOCKS as _GLOBAL_BLOCK_COUNTER
 except Exception:  # pragma: no cover
+
     class _NoopCounter:
         def labels(self, *args: Any, **kwargs: Any) -> "_NoopCounter":
             return self
@@ -203,9 +204,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path in PROBE_PATHS:
             return await call_next(request)
 

@@ -17,7 +17,6 @@ else:  # pragma: no cover - flag for skipif
     HYP = True
 
 
-
 @pytest.fixture()
 def make_app():
     def _factory():

@@ -13,6 +13,7 @@ def _client_with_env(monkeypatch, env: dict[str, str]) -> TestClient:
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     import app.main as main
+
     importlib.reload(main)
     return TestClient(main.app)
 

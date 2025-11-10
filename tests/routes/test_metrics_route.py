@@ -55,4 +55,3 @@ def test_metrics_requires_key_when_configured(monkeypatch) -> None:
     # Correct via Bearer -> 200
     r4 = client.get("/metrics", headers={"Authorization": "Bearer sekret"})
     assert r4.status_code == 200
-

@@ -9,9 +9,7 @@ client = TestClient(app)
 
 def test_legacy_guardrail_redaction_header() -> None:
     payload = {"prompt": "secret sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ is here"}
-    r = client.post(
-        "/guardrail", json=payload, headers={"X-API-Key": "anything"}
-    )
+    r = client.post("/guardrail", json=payload, headers={"X-API-Key": "anything"})
     assert r.status_code == 200
     assert r.headers.get("X-Guardrail-Ingress-Redactions") == "1"
     body = r.json()

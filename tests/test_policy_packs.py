@@ -48,12 +48,8 @@ def test_tenant_overrides_apply_per_pack_independently() -> None:
     v1o, a1o = evaluate_text(text_email, ov)
     v2o, a2o = evaluate_text(text_ssn, ov)
 
-    gdpr_email = [
-        v for v in v1o if v.pack == "GDPR" and v.rule_id == "gdpr.pii.email"
-    ]
-    hipaa_ssn = [
-        v for v in v2o if v.pack == "HIPAA" and v.rule_id == "hipaa.phi.ssn"
-    ]
+    gdpr_email = [v for v in v1o if v.pack == "GDPR" and v.rule_id == "gdpr.pii.email"]
+    hipaa_ssn = [v for v in v2o if v.pack == "HIPAA" and v.rule_id == "hipaa.phi.ssn"]
     assert gdpr_email and gdpr_email[0].advisory == "clarify"
     assert hipaa_ssn and hipaa_ssn[0].advisory == "block"
 

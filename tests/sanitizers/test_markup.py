@@ -21,7 +21,7 @@ def test_strip_script_style_svg_foreign():
 
 
 def test_strip_svg_like():
-    svg = '<svg><text>hi</text><foreignObject><div>x</div></foreignObject></svg>'
+    svg = "<svg><text>hi</text><foreignObject><div>x</div></foreignObject></svg>"
     out, st = strip_markup_to_text(svg)
     assert "hi" in out
     assert st["foreign_removed"] >= 1

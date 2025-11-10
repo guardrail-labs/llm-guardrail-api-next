@@ -100,9 +100,9 @@ def _iter_decisions_ndjson(
             if outcome and entry.get("outcome") != outcome:
                 continue
             payload = _normalize_decision(entry)
-            yield (
-                json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
-            ).encode("utf-8")
+            yield (json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+                "utf-8"
+            )
 
 
 @router.get("/decisions/export.ndjson")

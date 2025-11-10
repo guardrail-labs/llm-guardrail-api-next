@@ -13,9 +13,7 @@ def require_admin(request: Request) -> None:
 
     expect = config_store.get_admin_api_key().strip()
     if not expect:
-        raise HTTPException(
-            status_code=503, detail="Admin RBAC enabled but admin_api_key not set"
-        )
+        raise HTTPException(status_code=503, detail="Admin RBAC enabled but admin_api_key not set")
 
     header = (request.headers.get("X-Admin-Key") or "").strip()
     cookie = (request.cookies.get("admin_key") or "").strip()

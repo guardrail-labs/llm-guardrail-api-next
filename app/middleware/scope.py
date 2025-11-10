@@ -41,11 +41,7 @@ def require_effective_scope(
 ) -> Effective:
     """Return the effective tenant/bot scope for the current user."""
 
-    scope = (
-        user.get("scope")
-        if isinstance(user, dict)
-        else getattr(user, "scope", None)
-    ) or {}
+    scope = (user.get("scope") if isinstance(user, dict) else getattr(user, "scope", None)) or {}
     tenant_scope = scope.get("tenants", "*") if isinstance(scope, dict) else "*"
     bot_scope = scope.get("bots", "*") if isinstance(scope, dict) else "*"
 
@@ -140,9 +136,7 @@ def set_effective_scope_headers(
     response.headers["X-Guardrail-Scope-Bot"] = _fmt_scope_val(bot)
 
 
-def as_iterable_scope(
-    value: Optional[Union[str, Iterable[str]]]
-) -> Optional[Iterable[str]]:
+def as_iterable_scope(value: Optional[Union[str, Iterable[str]]]) -> Optional[Iterable[str]]:
     """Normalize a scope value to an iterable of strings or ``None``."""
 
     if value is None:
@@ -168,8 +162,5 @@ def as_single_scope(
         return str(items[0])
     raise HTTPException(
         status_code=400,
-        detail=(
-            f"multiple {field} scopes; specify ?{field}= or use a bulk export strategy"
-        ),
+        detail=(f"multiple {field} scopes; specify ?{field}= or use a bulk export strategy"),
     )
-

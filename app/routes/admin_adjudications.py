@@ -227,7 +227,6 @@ def _parse_filters_no_pagination(
     return filters, error
 
 
-
 @router.get("/adjudications")
 async def list_adjudications(
     tenant: Optional[str] = Query(default=None),
@@ -412,4 +411,3 @@ async def export_adjudications(
 
     stream = _ndjson_stream(filters)
     return StreamingResponse(stream, media_type="application/x-ndjson")
-

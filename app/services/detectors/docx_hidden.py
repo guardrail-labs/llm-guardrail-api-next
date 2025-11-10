@@ -14,9 +14,7 @@ def _is_hidden_run(run) -> List[str]:
     except Exception:
         pass
     try:
-        if run.font.color and run.font.color.rgb and str(run.font.color.rgb).lower() in {
-            "ffffff"
-        }:
+        if run.font.color and run.font.color.rgb and str(run.font.color.rgb).lower() in {"ffffff"}:
             reasons.append("font:white")
     except Exception:
         pass

@@ -50,9 +50,7 @@ def test_adjudication_retention_keeps_newer_records() -> None:
         )
     )
 
-    deleted = retention.delete_adjudications_before(
-        base, tenant="tenant", bot="bot", limit=10
-    )
+    deleted = retention.delete_adjudications_before(base, tenant="tenant", bot="bot", limit=10)
     assert deleted == 1
 
     remaining = [record.request_id for record in log._snapshot_records_desc()]

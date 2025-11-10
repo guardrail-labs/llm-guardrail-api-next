@@ -28,11 +28,7 @@ def test_readyz_redis_gauge_is_one_when_unconfigured(
 
     metrics_text = client.get("/metrics").text
     line = next(
-        (
-            ln
-            for ln in metrics_text.splitlines()
-            if ln.startswith("guardrail_readyz_redis_ok")
-        ),
+        (ln for ln in metrics_text.splitlines() if ln.startswith("guardrail_readyz_redis_ok")),
         "guardrail_readyz_redis_ok 0",
     )
     parts = line.split()

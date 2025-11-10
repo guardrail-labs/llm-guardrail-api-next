@@ -24,6 +24,7 @@ _RE_ATTRS: Iterable[re.Pattern[str]] = [
 # Zero-width / invisible chars
 _RE_ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff]")
 
+
 def scan_html_for_hidden(html: str) -> List[str]:
     reasons: List[str] = []
     t = html or ""

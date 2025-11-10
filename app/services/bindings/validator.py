@@ -8,8 +8,8 @@ from app.services.bindings.models import Binding
 
 @dataclass(frozen=True)
 class BindingIssue:
-    kind: str          # "duplicate" | "incompatible" | "overlap" | "shadowed" | "invalid"
-    severity: str      # "error" | "warning" | "info"
+    kind: str  # "duplicate" | "incompatible" | "overlap" | "shadowed" | "invalid"
+    severity: str  # "error" | "warning" | "info"
     message: str
     a: Optional[Binding] = None
     b: Optional[Binding] = None
@@ -135,4 +135,3 @@ def choose_binding_for(
 
     selected = sorted(candidates, key=score, reverse=True)[0]
     return selected, candidates
-

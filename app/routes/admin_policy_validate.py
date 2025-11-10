@@ -111,8 +111,6 @@ async def policy_validate(payload: dict = Body(...)) -> JSONResponse:
         pass
 
     status_code = (
-        status.HTTP_200_OK
-        if status_value == "ok"
-        else status.HTTP_422_UNPROCESSABLE_ENTITY
+        status.HTTP_200_OK if status_value == "ok" else status.HTTP_422_UNPROCESSABLE_ENTITY
     )
     return JSONResponse(result, status_code=status_code)

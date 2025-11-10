@@ -62,9 +62,7 @@ def bindings_resolve(request: Request, tenant: str = "default", bot: str = "defa
     if admin_key:
         provided = request.headers.get("X-Admin-Key") or ""
         if provided != admin_key:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
     # Resolve using the same loader logic used by enforcement.
     # We set the binding context temporarily for this request and read the policy blob.

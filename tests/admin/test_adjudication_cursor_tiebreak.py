@@ -24,15 +24,9 @@ def _record(ts: str, request_id: str) -> log.AdjudicationRecord:
 def test_equal_timestamp_cursor_uses_index_tiebreak():
     log.clear()
 
-    ts_shared = (
-        datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    ts_shared = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     ts_older = (
-        datetime(2023, 12, 31, 23, 59, tzinfo=timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z")
+        datetime(2023, 12, 31, 23, 59, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
     )
 
     first = _record(ts_shared, "req-1")
