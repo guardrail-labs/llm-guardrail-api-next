@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
@@ -86,7 +86,7 @@ def policy_diff(packs_list: Optional[str] = Query(None, alias="packs")) -> JSONR
 @router.post("/admin/api/policy/reload")
 def policy_reload(
     request: Request,
-    payload: dict = Body(...),
+    payload: Dict[str, Any] = Body(...),
     _admin: None = Depends(require_admin),
 ) -> JSONResponse:
     """

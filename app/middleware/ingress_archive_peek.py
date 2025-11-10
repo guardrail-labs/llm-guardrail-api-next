@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Awaitable, Callable, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -118,7 +118,7 @@ class IngressArchivePeekMiddleware(BaseHTTPMiddleware):
         # Replay body if consumed
         if raw is not None:
 
-            async def receive() -> dict:
+            async def receive() -> Dict[str, Any]:
                 return {"type": "http.request", "body": raw, "more_body": False}
 
             request = Request(request.scope, receive)

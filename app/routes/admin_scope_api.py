@@ -256,7 +256,7 @@ def get_secret_sets(
     current_user: Any = Depends(_require_admin_dep),
 ) -> SecretsResponse:
     """
-    Read-only: list **names** of secret sets available to tenant/bot (no values).
+    Read-only: List[Any] **names** of secret sets available to tenant/bot (no values).
     """
     eff_tenant, eff_bot = _rbac.require_effective_scope(
         user=current_user,

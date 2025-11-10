@@ -6,7 +6,7 @@ import json
 import os
 import random
 import time
-from typing import Sequence
+from typing import Any, Dict, Sequence
 from urllib.parse import urlparse
 
 SAFE = [
@@ -48,7 +48,7 @@ def _make_connection(parsed, timeout: float) -> http.client.HTTPConnection:
 def _post_json(
     base_url: str,
     path: str,
-    payload: dict,
+    payload: Dict[str, Any],
     headers: dict[str, str],
     *,
     timeout: float,

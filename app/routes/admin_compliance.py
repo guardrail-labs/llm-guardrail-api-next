@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Dict
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -16,7 +18,7 @@ class HashIn(BaseModel):
 
 
 @router.get("/status")
-def status() -> dict:
+def status() -> Dict[str, Any]:
     s = get_settings()
     return {
         "ok": True,
@@ -29,8 +31,8 @@ def status() -> dict:
 
 
 @router.post("/hash")
-def do_hash(inp: HashIn) -> dict:
-    out: dict = {"ok": True}
+def do_hash(inp: HashIn) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ok": True}
     if inp.email:
         out["email_hash"] = hash_email(inp.email)
     if inp.phone:

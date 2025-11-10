@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 from dataclasses import asdict
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -73,7 +73,7 @@ def _require_admin_dep(request: Request):
 
 
 @router.post("/admin/api/policy/validate", dependencies=[Depends(_require_admin_dep)])
-async def policy_validate(payload: dict = Body(...)) -> JSONResponse:
+async def policy_validate(payload: Dict[str, Any] = Body(...)) -> JSONResponse:
     text = payload.get("yaml") or payload.get("text") or ""
     from app.services.policy_validate import validate_yaml_text
 

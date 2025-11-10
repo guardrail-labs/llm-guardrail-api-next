@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Awaitable, Callable, List, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Tuple
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -143,7 +143,7 @@ class IngressMetadataMiddleware(BaseHTTPMiddleware):
                     if touched:
                         new_body = json.dumps(data).encode("utf-8")
 
-                        async def receive() -> dict:
+                        async def receive() -> Dict[str, Any]:
                             return {
                                 "type": "http.request",
                                 "body": new_body,
