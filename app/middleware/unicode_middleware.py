@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from typing import Any, Callable, Dict, Tuple, cast
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 
+from app import settings
 from app.metrics_sanitizer import sanitizer_actions, sanitizer_events
+from app.observability.metrics import inc_sanitizer_confusable_detected
 from app.policy import flags as policy_flags
 from app.policy.flags import SanitizerFlags
 from app.sanitizers.confusables import analyze_confusables, escape_confusables
 from app.sanitizers.unicode import sanitize_unicode
+from app.sanitizers.unicode_sanitizer import detect_unicode_anomalies
 
 JsonObj = Dict[str, Any]
 JsonVal = Any
@@ -88,6 +92,29 @@ class UnicodeSanitizerMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
 
             joined = _collect_strings(data)
+            unicode_findings_summary = request.scope.get("unicode_findings_summary")
+            if unicode_findings_summary:
+                setattr(request.state, "unicode_findings_summary", unicode_findings_summary)
+            elif settings.SANITIZER_CONFUSABLES_ENABLED:
+                anomalies = detect_unicode_anomalies(joined)
+                if anomalies:
+                    totals: Counter[str] = Counter()
+                    samples: Dict[str, Dict[str, str]] = {}
+                    for finding in anomalies:
+                        kind = finding["type"]
+                        totals[kind] += 1
+                        inc_sanitizer_confusable_detected(kind)
+                        samples.setdefault(
+                            kind,
+                            {"char": finding["char"], "codepoint": finding["codepoint"]},
+                        )
+                    unicode_findings_summary = {
+                        "totals_by_type": {k: int(v) for k, v in totals.items()},
+                        "sample_chars": samples,
+                    }
+                    request.scope["unicode_findings_summary"] = unicode_findings_summary
+                    setattr(request.state, "unicode_findings_summary", unicode_findings_summary)
+
             report = analyze_confusables(joined)
             action, triggered = _resolve_confusables_action(
                 report.confusable_count, report.ratio, flags
