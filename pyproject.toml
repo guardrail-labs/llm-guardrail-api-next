@@ -36,11 +36,17 @@ dev = [
 addopts = "-q"
 pythonpath = ["app"]
 
-[tool.mypy]
-python_version = "3.11"
-ignore_missing_imports = true
-install_types = false
-exclude = "(^docker/tools/)"
-
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"

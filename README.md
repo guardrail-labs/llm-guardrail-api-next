@@ -1,30 +1,63 @@
-# LLM Guardrail Core Runtime
+<!-- Badges -->
+![version](https://img.shields.io/badge/version-v1.4.0--rc1-blue)
+![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776ab)
+![tests](https://img.shields.io/badge/tests-passing-brightgreen)
+![coverage](https://img.shields.io/badge/coverage-%E2%89%A585%25-brightgreen)
 
-The Guardrail API is the **core runtime** behind the Guardrail firewall. It runs in-band with your
-LLM traffic to inspect ingress/egress prompts, enforce policy packs, and emit signed audit events
-for downstream observability. This repo contains the enforcement engine, REST API surface, and the
-foundational rule execution pipeline. Deployment tooling, dashboards, and admin interfaces live in
-the umbrella docs portal referenced below.
+# Guardrail API — Core Runtime
 
-## Run it locally
-```bash
-# install dependencies (includes the API runtime and shared rulepacks)
-uv sync  # or: pip install -e .[server]
+## What is this?
+Guardrail Core is the public runtime that sits between clients and models to:
+- Sanitize inputs (unicode/confusables/hidden text) **before** policy evaluation.
+- Enforce policies with a **clarify-first, then block** approach.
+- Keep **ingress** and **egress** enforcement **independent** to avoid single points of failure.
 
-# boot the ASGI server
-uv run python -m app.main
+## Clarify-First Policy
+Ambiguous intent → return `202` with `{ "clarify": true }`, never executing unverified requests.
 
-# health probe
-curl -s http://localhost:8000/healthz
+```mermaid
+flowchart LR
+A[Request In] --> B[Sanitizer (unicode/confusables)]
+B --> C[Ingress Policy]
+C -- allow --> D[Model Call]
+C -- clarify --> E[202 Clarify]
+C -- block_input_only/deny/lock --> F[400 Blocked]
+D --> G[Egress Policy]
+G -- allow --> H[Response Out]
+G -- block/lock --> I[400 Blocked]
 ```
 
-## Docs & references
-Full product documentation lives in the Guardrail umbrella portal. Jump directly to:
+## Dual-Arm Isolation (Ingress/Egress)
+Ingress and egress run independently. A failure or block in one arm does not disable the other. This eliminates single-point-of-failure risks and preserves output-guarding even if ingress is degraded.
 
-- [Quickstart](https://docs.guardrail.dev/portal/quickstart)
-- [Policy Packs](https://docs.guardrail.dev/portal/policy-packs)
-- [Confusables backlog (P1)](https://docs.guardrail.dev/portal/confusables-p1)
-- [API reference](https://docs.guardrail.dev/portal/api)
+## Unicode/Confusables Sanitizer (Default-On)
+Normalizes unicode, strips zero-widths, detects confusables.
 
-Looking for deployment blueprints, dashboards, or advanced tuning guides? These also live in the
-umbrella portal so they stay in sync with the managed platform releases.
+Runs before policy evaluation.
+
+Sanitized text is applied back into structured payloads (without dropping metadata).
+
+## Quick Start (FastAPI)
+```python
+from fastapi import FastAPI
+from app.runtime.router import router as core_router
+
+app = FastAPI()
+app.include_router(core_router, prefix="")  # /chat/completions
+```
+
+Run:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+## Policy Actions & Router Semantics
+- Ingress actions that block model calls: `deny`, `block`, `lock`, `block_input_only`
+- Clarify: `clarify` → HTTP 202 with `{ "clarify": true }`
+- Egress runs even if ingress allowed, guarding outbound content.
+
+## CI & Quality Gates
+- `ruff format --check .` and `ruff check .`
+- `mypy --strict app`
+- `pytest --cov=app --cov-report=term-missing --maxfail=1 --quiet` with `--cov-fail-under=85`
