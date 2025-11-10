@@ -15,19 +15,25 @@ log = logging.getLogger(__name__)
 
 # ----------------------------- No-op tracing shim -----------------------------
 
+
 class _NoopSpan:
     def set_attribute(self, *_: Any, **__: Any) -> None:
+        """No-op attribute setter."""
         return
 
     def get_span_context(self) -> Any:
+        # Mimic OTEL SpanContext enough for get_trace_id()
         class _Ctx:
             is_valid = False
             trace_id = 0
+
         return _Ctx()
+
 
 class _NoopTracer:
     def start_span(self, _name: str) -> _NoopSpan:
         return _NoopSpan()
+
 
 class _UseSpanCtx:
     def __init__(self, span: _NoopSpan, *_: Any, **__: Any) -> None:
@@ -42,7 +48,9 @@ class _UseSpanCtx:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        # Do not suppress exceptions
         return None
+
 
 class _NoopTrace:
     """Subset of opentelemetry.trace used by this middleware."""
@@ -53,9 +61,12 @@ class _NoopTrace:
     def use_span(self, span: _NoopSpan, *args: Any, **kwargs: Any) -> _UseSpanCtx:
         return _UseSpanCtx(span, *args, **kwargs)
 
+
 # --------------------------------- Middleware ---------------------------------
 
+
 RequestHandler = Callable[[Request], Awaitable[Response]]
+
 
 class TracingMiddleware(BaseHTTPMiddleware):
     """
@@ -72,22 +83,27 @@ class TracingMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.enabled: bool = _truthy(os.getenv("OTEL_ENABLED", "false"))
         self._initialized: bool = False
+        # When initialized and OTEL libs are present, this holds the module;
+        # otherwise it remains None and we act as a no-op.
         self._trace: Any | None = None
 
     async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         if not self.enabled:
             return await call_next(request)
 
+        # Lazy init to avoid side effects during import time.
         if not self._initialized:
             self._initialized = self._ensure_tracer_provider()
 
         if not self._initialized or self._trace is None:
+            # Tracing unavailable; proceed normally.
             return await call_next(request)
 
         tracer = self._trace.get_tracer("llm-guardrail")
         route = request.url.path
         peer_ip = request.client.host if request.client else "unknown"
 
+        # Minimal span around the request
         with self._trace.use_span(tracer.start_span(route), end_on_exit=True) as span:
             span.set_attribute("http.method", request.method)
             span.set_attribute("http.route", route)
@@ -110,6 +126,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
         except Exception:
+            # OTEL not available; leave self._trace as None to satisfy tests.
             log.warning("opentelemetry is not installed; tracing disabled.")
             return True
 
@@ -127,6 +144,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
             self._trace = _trace
             return True
         except Exception as e:
+            # Initialization failed; keep tracing disabled and log.
             log.warning(
                 "Failed to initialize OpenTelemetry provider; tracing disabled. %s",
                 e,
@@ -134,10 +152,13 @@ class TracingMiddleware(BaseHTTPMiddleware):
             self._trace = None
             return True
 
+
 def _truthy(val: object) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
+
 # ---- simple adapters used elsewhere -----------------------------------------
+
 
 def get_request_id() -> Optional[str]:
     """
@@ -146,10 +167,12 @@ def get_request_id() -> Optional[str]:
     """
     try:
         from app.middleware.request_id import get_request_id as _get
+
         rid = _get()
         return str(rid) if rid is not None else None
     except Exception:
         return None
+
 
 def get_trace_id() -> Optional[str]:
     """
@@ -158,6 +181,7 @@ def get_trace_id() -> Optional[str]:
     """
     try:  # pragma: no cover
         from opentelemetry import trace as _trace
+
         span = _trace.get_current_span()
         if span is None:
             return None
