@@ -25,11 +25,17 @@ def list_clarifications(
     user: Dict[str, Any] = Depends(require_viewer),
     tenant: Optional[str] = Query(
         None,
-        description="Filter clarifications for a specific tenant. Scoped tokens must provide this filter.",
+        description=(
+            "Filter clarifications for a specific tenant. "
+            "Scoped tokens must provide this filter."
+        ),
     ),
     bot: Optional[str] = Query(
         None,
-        description="Optional bot filter. Scoped tokens must provide this when their bot scope is limited.",
+        description=(
+            "Optional bot filter. "
+            "Scoped tokens must provide this when their bot scope is limited."
+        ),
     ),
     limit: int = Query(
         50,
@@ -70,7 +76,7 @@ def list_clarifications(
             since_ts_ms=since,
             outcome="clarify",
         )
-    except CursorError as exc:
+    except (CursorError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     items: List[Dict[str, Any]] = []
