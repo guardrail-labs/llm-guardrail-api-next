@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.observability.metrics import GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL
-from app.services import ratelimit_backends as rb, ratelimit_backends_async as rba
+from app.services import ratelimit_backends as rb
+from app.services import ratelimit_backends_async as rba
 
 pytestmark = pytest.mark.asyncio
 

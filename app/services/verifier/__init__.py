@@ -18,8 +18,14 @@ from app.services.verifier.provider_router import ProviderRouter
 from app.services.verifier.providers.base import Provider, ProviderRateLimited
 from app.services.verifier.result_cache import (
     CACHE as RC,
+)
+from app.services.verifier.result_cache import (
     ENABLED as RC_ENABLED,
+)
+from app.services.verifier.result_cache import (
     cache_key,
+)
+from app.services.verifier.result_cache import (
     reset_memory as RC_RESET_MEMORY,
 )
 from app.services.verifier.sandbox import analyze_and_surface_diffs, maybe_schedule_sandbox

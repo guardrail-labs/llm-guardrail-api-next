@@ -6,7 +6,8 @@ Counter: Any
 Gauge: Any
 
 try:  # pragma: no cover - optional dependency
-    from prometheus_client import Counter as _CounterImpl, Gauge as _GaugeImpl
+    from prometheus_client import Counter as _CounterImpl
+    from prometheus_client import Gauge as _GaugeImpl
 except Exception:  # pragma: no cover - fallback when metrics disabled
     Counter = None
     Gauge = None

@@ -10,7 +10,8 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Patter
 
 from app.config import get_settings
 from app.models.verifier import VerifierInput
-from app.services import runtime_flags, verifier_client as vcli
+from app.services import runtime_flags
+from app.services import verifier_client as vcli
 from app.services.config_store import get_policy_packs
 from app.services.policy_packs import merge_packs
 

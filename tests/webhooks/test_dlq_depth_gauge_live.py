@@ -35,7 +35,8 @@ def test_dlq_depth_gauge_updates_on_push_without_admin_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    from app.services import webhooks as wh, webhooks_dlq as dlq
+    from app.services import webhooks as wh
+    from app.services import webhooks_dlq as dlq
 
     dlq_path = tmp_path / "dlq.jsonl"
     monkeypatch.setenv("WEBHOOK_DLQ_PATH", str(dlq_path))
@@ -67,7 +68,8 @@ def test_dlq_depth_gauge_resets_on_purge_and_retry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    from app.services import webhooks as wh, webhooks_dlq as dlq
+    from app.services import webhooks as wh
+    from app.services import webhooks_dlq as dlq
 
     dlq_path = tmp_path / "dlq.jsonl"
     monkeypatch.setenv("WEBHOOK_DLQ_PATH", str(dlq_path))

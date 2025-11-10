@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.main import create_app
-from app.security import oidc as oidc_helpers, rbac
+from app.security import oidc as oidc_helpers
+from app.security import rbac
 
 
 def test_map_role_supports_nested_claim(monkeypatch: pytest.MonkeyPatch) -> None:

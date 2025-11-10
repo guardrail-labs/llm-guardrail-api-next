@@ -24,7 +24,9 @@ CounterClass: Any
 HistogramClass: Any
 
 try:
-    from prometheus_client import REGISTRY as _PREG, Counter as _PCounter, Histogram as _PHistogram
+    from prometheus_client import REGISTRY as _PREG
+    from prometheus_client import Counter as _PCounter
+    from prometheus_client import Histogram as _PHistogram
 
     PROM_REGISTRY = _PREG
     CounterClass = _PCounter

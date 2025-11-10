@@ -10,7 +10,8 @@ from starlette.testclient import TestClient
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 
 try:  # pragma: no cover - optional dependency
-    from hypothesis import given, settings, strategies as st
+    from hypothesis import given, settings
+    from hypothesis import strategies as st
 except Exception:  # pragma: no cover - Hypothesis optional
     HYP = False
 else:  # pragma: no cover - flag for skipif

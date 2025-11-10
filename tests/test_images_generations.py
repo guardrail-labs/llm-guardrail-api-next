@@ -5,7 +5,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.routes import openai_compat as compat
-from app.routes.openai_compat import azure_router, router as oai_router
+from app.routes.openai_compat import azure_router
+from app.routes.openai_compat import router as oai_router
 
 
 @pytest.fixture

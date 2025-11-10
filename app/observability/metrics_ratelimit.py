@@ -13,6 +13,8 @@ _reload_helper: Optional[Any]
 try:  # pragma: no cover
     from app.observability.metrics import (
         GUARDRAIL_RATELIMIT_REDIS_SCRIPT_RELOAD_TOTAL as _reload_counter,
+    )
+    from app.observability.metrics import (
         inc_ratelimit_script_reload as _reload_helper,
     )
 except Exception:  # pragma: no cover

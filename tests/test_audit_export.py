@@ -6,7 +6,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from app.audit.models import AuditRecord, AuditStore
-from app.routes.admin_audit import get_audit_store, router as audit_router
+from app.routes.admin_audit import get_audit_store
+from app.routes.admin_audit import router as audit_router
 from app.security.rbac import require_admin
 
 

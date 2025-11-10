@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.routes.admin_ui import _csrf_token
 from app.security import rbac
-from app.services import retention as retention_service, webhooks_dlq as dlq_service
+from app.services import retention as retention_service
+from app.services import webhooks_dlq as dlq_service
 
 
 @pytest.fixture()

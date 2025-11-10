@@ -59,7 +59,11 @@ from app.routes.egress import router as egress_router
 from app.runtime import idem_store
 from app.services.bindings.utils import (
     compute_version_for_path as _compute_version_for_path,
+)
+from app.services.bindings.utils import (
     propagate_bindings as _propagate_bindings,
+)
+from app.services.bindings.utils import (
     read_policy_version as _read_policy_version,
 )
 from app.services.compliance.registry import ComplianceRegistry
@@ -1029,6 +1033,8 @@ def create_app() -> FastAPI:
         # Lazy import so optional admin deps don’t crash startup at module import time.
         from app.routes import (
             admin_mitigation as admin_mitigation_module,
+        )
+        from app.routes import (
             admin_mitigation_modes,
         )
     except Exception as exc:

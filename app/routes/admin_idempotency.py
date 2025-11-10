@@ -12,7 +12,8 @@ from app.idempotency.redis_store import RedisIdemStore
 from app.idempotency.store import IdemStore
 from app.metrics import IDEMP_PURGES, IDEMP_RECENT_SIZE, IDEMP_STUCK_LOCKS
 from app.routes.admin_rbac import require_admin
-from app.runtime import idem_store as runtime_idem_store, redis_client
+from app.runtime import idem_store as runtime_idem_store
+from app.runtime import redis_client
 
 router = APIRouter(prefix="/admin/idempotency", tags=["Admin / Idempotency"])
 

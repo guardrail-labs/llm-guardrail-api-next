@@ -17,12 +17,17 @@ def _build_client(
 ) -> TestClient:
     monkeypatch.setenv("ADMIN_API_KEY", "k")
 
-    from app.routes import admin_policy_api as policy_api, admin_policy_packs, admin_rbac
+    from app.routes import admin_policy_api as policy_api
+    from app.routes import admin_policy_packs, admin_rbac
     from app.services import (
         config_store,
-        policy as policy_service,
-        policy_packs as policy_packs_service,
         policy_validate_enforce,
+    )
+    from app.services import (
+        policy as policy_service,
+    )
+    from app.services import (
+        policy_packs as policy_packs_service,
     )
 
     def _require_admin_dep(request: Request) -> None:

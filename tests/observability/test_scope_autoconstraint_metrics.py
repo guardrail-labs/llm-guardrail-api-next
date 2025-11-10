@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from app import config as app_config
 from app.main import create_app
 from app.security import service_tokens
-from app.services import config as services_config, decisions_store
+from app.services import config as services_config
+from app.services import decisions_store
 
 
 def _auth(token: str) -> Dict[str, str]:

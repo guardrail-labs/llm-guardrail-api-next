@@ -12,7 +12,11 @@ from app.services.rulepacks_engine import egress_mode, ingress_mode, rulepacks_e
 try:
     from app.services.policy import (
         current_rules_version as _current_rules_version,
+    )
+    from app.services.policy import (
         map_classifier_outcome_to_action as _map_classifier_outcome_to_action,
+    )
+    from app.services.policy import (
         map_verifier_outcome_to_action as _map_verifier_outcome_to_action,
     )
 except Exception:  # pragma: no cover

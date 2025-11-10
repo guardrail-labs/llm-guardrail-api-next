@@ -10,9 +10,11 @@ from redis.asyncio import Redis
 from app.services.purge_receipts import (
     PurgeReceipt,
     Signer,
-    latest_receipts as load_latest_receipts,
     load_receipt,
     store_receipt,
+)
+from app.services.purge_receipts import (
+    latest_receipts as load_latest_receipts,
 )
 from app.services.purge_targets import PurgeTarget
 from app.services.retention import RetentionStore

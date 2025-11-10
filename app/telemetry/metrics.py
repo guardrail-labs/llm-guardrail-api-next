@@ -41,8 +41,14 @@ GaugeClass: Any
 try:
     from prometheus_client import (
         REGISTRY as _PREG,
+    )
+    from prometheus_client import (
         Counter as _PCounter,
+    )
+    from prometheus_client import (
         Gauge as _PGauge,
+    )
+    from prometheus_client import (
         Histogram as _PHistogram,
     )
 

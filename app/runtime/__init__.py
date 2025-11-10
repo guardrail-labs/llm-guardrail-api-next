@@ -5,7 +5,8 @@ import importlib
 import inspect
 from typing import Dict, Optional
 
-from redis.asyncio import Redis, from_url as redis_from_url
+from redis.asyncio import Redis
+from redis.asyncio import from_url as redis_from_url
 from redis.asyncio.connection import BlockingConnectionPool
 
 from app import settings

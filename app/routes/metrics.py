@@ -18,6 +18,8 @@ router = APIRouter()
 try:  # pragma: no cover
     from prometheus_client import (
         REGISTRY as PROM_REGISTRY,
+    )
+    from prometheus_client import (
         generate_latest as prom_generate_latest,
     )
 

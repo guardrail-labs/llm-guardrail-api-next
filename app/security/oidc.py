@@ -5,7 +5,8 @@ from typing import Any, Dict, Iterable, Optional, cast
 
 import httpx
 import jwt
-from jwt import PyJWTError, algorithms as jwt_algorithms
+from jwt import PyJWTError
+from jwt import algorithms as jwt_algorithms
 
 from app import config
 

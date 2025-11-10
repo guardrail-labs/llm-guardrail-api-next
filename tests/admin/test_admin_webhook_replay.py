@@ -61,7 +61,8 @@ def fake_dlq_service() -> FakeDLQService:
 @pytest.fixture()
 def client(fake_dlq_service: FakeDLQService) -> TestClient:
     from app.main import create_app
-    from app.routes import admin_rbac, admin_ui, admin_webhook_replay as replay_route
+    from app.routes import admin_rbac, admin_ui
+    from app.routes import admin_webhook_replay as replay_route
     from app.runtime import get_dlq_service
 
     app = create_app()
