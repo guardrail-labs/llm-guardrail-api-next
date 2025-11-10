@@ -27,12 +27,12 @@ class IngressGuard:
         else:
             # Normalize to an async runner so downstream code is simple and well-typed.
             if inspect.iscoroutinefunction(policy_runner):
-                self._policy_runner = policy_runner  # type: ignore[assignment]
+                self._policy_runner = policy_runner  
             else:
                 sync_runner = policy_runner
 
                 async def _wrapped(ctx: Context) -> Decision:
-                    return sync_runner(ctx)  # type: ignore[misc,call-arg]
+                    return sync_runner(ctx)  
 
                 self._policy_runner = _wrapped
 
