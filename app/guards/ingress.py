@@ -26,14 +26,20 @@ class IngressGuard:
 
         sanitized = sanitize_input(raw_text)
         ctx["payload_raw"] = raw_text
-        ctx["payload_normalized"] = sanitized
 
-        self._update_payload(ctx, payload, sanitized)
+        normalized = self._normalize_payload(payload, sanitized)
+        ctx["payload_normalized"] = normalized
+
+        self._update_payload(ctx, normalized)
 
         decision = await self._execute_policy(ctx)
 
         if decision.get("action", "allow") == "allow":
-            ctx["payload"] = ctx.get("payload_normalized", ctx.get("payload"))
+            normalized = ctx.get("payload_normalized")
+            if normalized is not None and (
+                isinstance(payload, MutableMapping) == isinstance(normalized, MutableMapping)
+            ):
+                ctx["payload"] = normalized
 
         return decision, ctx
 
@@ -54,13 +60,17 @@ class IngressGuard:
         return str(payload)
 
     @staticmethod
-    def _update_payload(ctx: Context, payload: Any, sanitized: str) -> None:
-        if isinstance(payload, MutableMapping) and "text" in payload:
-            normalized_payload = dict(payload)
-            normalized_payload["text"] = sanitized
-            ctx["payload"] = normalized_payload
-        else:
-            ctx["payload"] = sanitized
+    def _normalize_payload(payload: Any, sanitized: str) -> Any:
+        if isinstance(payload, MutableMapping):
+            normalized_payload: dict[str, Any] = dict(payload)
+            if "text" in normalized_payload:
+                normalized_payload["text"] = sanitized
+            return normalized_payload
+        return sanitized
+
+    @staticmethod
+    def _update_payload(ctx: Context, normalized: Any) -> None:
+        ctx["payload"] = normalized
 
     async def _execute_policy(self, ctx: Context) -> Decision:
         result = self._policy_runner(ctx)
