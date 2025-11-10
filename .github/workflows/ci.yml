@@ -29,11 +29,11 @@ jobs:
         with: { python-version: '3.12' }
       - run: python -m pip install -U pip
       - run: pip install -e .[dev]
-      - run: python -m mypy --install-types --non-interactive || true
+      - run: python -m mypy --config-file mypy.ini --install-types --non-interactive || true
       - name: mypy (non-blocking)
         run: |
           set -o pipefail
-          python -m mypy . --strict | tee mypy-pr.txt
+          python -m mypy --config-file mypy.ini --strict | tee mypy-pr.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -50,8 +50,8 @@ jobs:
         with: { python-version: '3.12' }
       - run: python -m pip install -U pip
       - run: pip install -e .[dev]
-      - run: python -m mypy --install-types --non-interactive || true
-      - run: python -m mypy . --strict
+      - run: python -m mypy --config-file mypy.ini --install-types --non-interactive || true
+      - run: python -m mypy --config-file mypy.ini --strict
 
   # ---- Tests no longer depend on typecheck to avoid red-cascades ----
   test:
