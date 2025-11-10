@@ -27,7 +27,7 @@ jobs:
       - name: Lint & Typecheck
         run: |
           ruff check --fix .
-          python -m mypy --config-file mypy.ini
+          tools/ci/mypy_strict.sh
       - name: Tests
         run: pytest -q
       - name: Build Docker image
