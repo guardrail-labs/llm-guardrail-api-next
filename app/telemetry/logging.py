@@ -9,13 +9,17 @@ from typing import Any, Dict, Mapping, MutableMapping, Tuple
 
 from app.telemetry.tracing import get_request_id, get_trace_id
 
+
 # ------------------------------- JSON utilities -------------------------------
+
 
 def _iso8601(dt: datetime) -> str:
     # Always UTC, explicit trailing 'Z'
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
+
 _JSON_SAFE_PRIMITIVES = (str, int, float, bool, type(None))
+
 
 def _json_sanitize(value: Any) -> Any:
     """
@@ -37,7 +41,9 @@ def _json_sanitize(value: Any) -> Any:
         return [_json_sanitize(v) for v in value]
     return str(value)
 
+
 # ------------------------------ JSON formatter --------------------------------
+
 
 class JsonFormatter(logging.Formatter):
     """
@@ -105,9 +111,12 @@ class JsonFormatter(logging.Formatter):
 
         return json.dumps(payload, ensure_ascii=False)
 
+
 # ------------------------------ Logger helpers --------------------------------
 
+
 _configured = False
+
 
 def configure_root_logging(level: int | str = "INFO") -> None:
     """
@@ -119,8 +128,8 @@ def configure_root_logging(level: int | str = "INFO") -> None:
 
     root = logging.getLogger()
 
-    resolved_level = level if isinstance(level, int) else getattr(
-        logging, str(level).upper(), logging.INFO
+    resolved_level = (
+        level if isinstance(level, int) else getattr(logging, str(level).upper(), logging.INFO)
     )
     root.setLevel(resolved_level)
 
@@ -133,6 +142,7 @@ def configure_root_logging(level: int | str = "INFO") -> None:
     root.addHandler(handler)
 
     _configured = True
+
 
 class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
     """
@@ -152,10 +162,12 @@ class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
         call_extra = kwargs.get("extra")
         if isinstance(call_extra, Mapping):
             merged_extra.update(dict(call_extra))
+        # Adapter context wins unless caller explicitly overrides
         for k, v in self.extra.items():
             merged_extra.setdefault(k, v)
         kwargs["extra"] = merged_extra
         return msg, kwargs
+
 
 def bind(logger: logging.Logger | None = None, **context: Any) -> ContextAdapter:
     """
