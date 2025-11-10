@@ -2,9 +2,17 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
-JsonLike = Union[dict, list, str, int, float, bool, None]
+__all__ = ["normalize_nfkc", "sanitize_text", "sanitize_payload"]
+
+JsonLike = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
+
+
+def normalize_nfkc(text: str) -> str:
+    """Return ``text`` normalized using the NFKC form."""
+
+    return unicodedata.normalize("NFKC", text)
 
 # Zero-width & formatting controls (incl. soft hyphen, BOM, word-joiner)
 # and bidi override/embedding/isolate controls.
@@ -121,7 +129,7 @@ def sanitize_text(s: str) -> Tuple[str, Dict[str, int]]:
     }
 
     original = s
-    s = unicodedata.normalize("NFKC", s)
+    s = normalize_nfkc(s)
     if s != original:
         stats["normalized"] = 1
 

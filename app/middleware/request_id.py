@@ -4,7 +4,7 @@ import uuid
 from contextvars import ContextVar
 from typing import Optional
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
@@ -34,7 +34,11 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
         # Ingest or generate.
         rid = request.headers.get(_HEADER) or str(uuid.uuid4())
         token = _REQUEST_ID.set(rid)

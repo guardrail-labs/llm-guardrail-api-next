@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import logging
 import os
+from types import TracebackType
 from typing import Any, Optional
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp
+
+from app.middleware.request_id import get_request_id as _get_request_id
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +45,12 @@ class _UseSpanCtx:
     def __enter__(self) -> _NoopSpan:
         return self._span
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         # Do not suppress exceptions
         return None
 
@@ -76,7 +85,11 @@ class TracingMiddleware(BaseHTTPMiddleware):
         self._initialized = False
         self._trace: Any = None  # set on init if libs are available
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
         if not self.enabled:
             return await call_next(request)
 
@@ -107,11 +120,12 @@ class TracingMiddleware(BaseHTTPMiddleware):
         so callers can proceed with tracing disabled (self._trace stays None).
         """
         try:  # pragma: no cover
-            from opentelemetry import trace as _trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.resources import Resource
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            # ruff: noqa: I001
+            from opentelemetry import trace as _trace  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter  # type: ignore[import-not-found]
+            from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
+            from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore[import-not-found]
         except Exception:
             # OTEL not available; leave self._trace as None to satisfy tests.
             log.warning("opentelemetry is not installed; tracing disabled.")
@@ -153,9 +167,7 @@ def get_request_id() -> Optional[str]:
     where the request-id is actually implemented.
     """
     try:
-        from app.middleware.request_id import get_request_id as _get
-
-        rid = _get()
+        rid = _get_request_id()
         return str(rid) if rid is not None else None
     except Exception:
         return None
@@ -167,6 +179,7 @@ def get_trace_id() -> Optional[str]:
     Safe to call even when OTEL is not installed or no span is active.
     """
     try:  # pragma: no cover
+        # Import inside the function to avoid requiring opentelemetry at import time.
         from opentelemetry import trace as _trace
 
         span = _trace.get_current_span()

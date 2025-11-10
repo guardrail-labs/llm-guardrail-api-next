@@ -1,4 +1,4 @@
-from app.sanitizers.unicode_sanitizer import sanitize_payload, sanitize_text
+from app.sanitizers.unicode_sanitizer import normalize_nfkc, sanitize_payload, sanitize_text
 
 
 def test_sanitize_text_removes_zero_width_and_bidi():
@@ -32,3 +32,22 @@ def test_payload_recursive_sanitization():
     assert (
         stats["zero_width_removed"] + stats["bidi_controls_removed"] + stats["confusables_mapped"]
     ) >= 1
+
+
+def test_normalize_nfkc_fullwidth_to_ascii() -> None:
+    text = "ＡＢＣｄｅｆ"
+    normalized = normalize_nfkc(text)
+    assert normalized == "ABCdef"
+
+
+def test_normalize_nfkc_idempotent_text() -> None:
+    text = "Café"
+    normalized = normalize_nfkc(text)
+    assert normalized == text
+
+
+def test_normalize_nfkc_handles_zero_width() -> None:
+    text = "\u200b"
+    normalized = normalize_nfkc(text)
+    assert isinstance(normalized, str)
+    assert normalized is not None
