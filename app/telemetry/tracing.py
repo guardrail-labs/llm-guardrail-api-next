@@ -1,22 +1,25 @@
+# app/telemetry/tracing.py
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional
+from types import TracebackType
+from typing import Any, Awaitable, Callable, Optional, Type
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp
 
 log = logging.getLogger(__name__)
 
 
 # ----------------------------- No-op tracing shim -----------------------------
-# (Kept for completeness; not used by tests now that they expect _trace to be None)
+# (Kept for completeness; used when OTEL is disabled or unavailable)
 
 
 class _NoopSpan:
-    def set_attribute(self, *_: Any, **__: Any) -> None:  # noqa: D401
+    def set_attribute(self, *_: Any, **__: Any) -> None:
         """No-op attribute setter."""
         return
 
@@ -41,7 +44,12 @@ class _UseSpanCtx:
     def __enter__(self) -> _NoopSpan:
         return self._span
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: Type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         # Do not suppress exceptions
         return None
 
@@ -59,6 +67,9 @@ class _NoopTrace:
 # --------------------------------- Middleware ---------------------------------
 
 
+RequestHandler = Callable[[Request], Awaitable[Response]]
+
+
 class TracingMiddleware(BaseHTTPMiddleware):
     """
     Lightweight optional OpenTelemetry wiring.
@@ -72,11 +83,13 @@ class TracingMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
-        self.enabled = _truthy(os.getenv("OTEL_ENABLED", "false"))
-        self._initialized = False
-        self._trace: Any = None  # set on init if libs are available
+        self.enabled: bool = _truthy(os.getenv("OTEL_ENABLED", "false"))
+        self._initialized: bool = False
+        # When initialized and OTEL libs are present, this holds the module;
+        # otherwise it remains None and we act as a no-op.
+        self._trace: Any | None = None
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: RequestHandler) -> Response:
         if not self.enabled:
             return await call_next(request)
 
@@ -107,11 +120,13 @@ class TracingMiddleware(BaseHTTPMiddleware):
         so callers can proceed with tracing disabled (self._trace stays None).
         """
         try:  # pragma: no cover
-            from opentelemetry import trace as _trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.resources import Resource
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from opentelemetry import trace as _trace  # type: ignore
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.resources import Resource  # type: ignore
+            from opentelemetry.sdk.trace import TracerProvider  # type: ignore
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore
         except Exception:
             # OTEL not available; leave self._trace as None to satisfy tests.
             log.warning("opentelemetry is not installed; tracing disabled.")
@@ -167,7 +182,7 @@ def get_trace_id() -> Optional[str]:
     Safe to call even when OTEL is not installed or no span is active.
     """
     try:  # pragma: no cover
-        from opentelemetry import trace as _trace
+        from opentelemetry import trace as _trace  # type: ignore
 
         span = _trace.get_current_span()
         if span is None:
