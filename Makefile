@@ -1,17 +1,24 @@
 SHELL := /bin/bash
 TAG ?=
 
-.PHONY: install lint type test run docker-build docker-run compose-up compose-down demo-traffic docs-check monitoring-lint audits perf-smoke perf-smoke-run rc
+.PHONY: install fmt lint type test ci run docker-build docker-run compose-up compose-down demo-traffic docs-check monitoring-lint audits perf-smoke perf-smoke-run rc
 
 install:
 	pip install -r requirements.txt || pip install .
 
+fmt:
+	ruff format .
+
 lint:
-	ruff check --fix .
-	test -f mypy.ini && mypy . || true
+	ruff check .
+
+type:
+	mypy --strict app
 
 test:
 	pytest -q
+
+ci: fmt lint type test
 
 run:
 	python -m app.run

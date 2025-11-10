@@ -26,6 +26,14 @@
 - perf(app): lifespan warm-up (Lua scripts, compliance registry)
 - metrics: request latency histogram and middleware
 
+## [1.4.0] - 2025-11-09
+### Added
+- Dual-arm runtime separation (Ingress/Egress) and decision headers.
+- Sanitizer upgrades: Unicode normalization, confusables, zero-width & ZWJ blockers.
+
+### CI
+- Enforce ruff format, ruff check, mypy --strict app.
+
 ## 1.0.0 — GA (2025-11-02)
 - Core LLM firewall stabilized (ingress/egress sanitizers, rate-limit, idempotency).
 - OpenAPI schema frozen and committed.
