@@ -1,12 +1,11 @@
-# ruff: noqa: E402
 from __future__ import annotations
 
 import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from app.observability.metrics import mitigation_override_counter
-from app.services.mitigation_prefs import _STORE, set_mode
+from app.observability.metrics import mitigation_override_counter  # noqa: E402
+from app.services.mitigation_prefs import _STORE, set_mode  # noqa: E402
 
 
 class DummyResult:
