@@ -147,7 +147,7 @@ def configure_root_logging(level: int | str = "INFO") -> None:
     _configured = True
 
 
-class ContextAdapter(logging.LoggerAdapter):
+class ContextAdapter(logging.LoggerAdapter[Dict[str, Any]]):
     """
     Bind static context (e.g., tenant_id, component) to a logger, ensuring those
     keys appear on every log line via the 'extra' mechanism.
