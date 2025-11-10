@@ -1,0 +1,20 @@
+name: release-please
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/release-please-action@v4
+        with:
+          release-type: python
+          package-name: llm-guardrail-api-next
+          bump-minor-pre-major: true
+          extra-files: |
+            pyproject.toml
+            README.md
+            VERSION

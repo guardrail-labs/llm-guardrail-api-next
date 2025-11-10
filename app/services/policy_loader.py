@@ -5,6 +5,7 @@ import contextvars
 import os
 import re
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Dict, List, Pattern, Tuple
 
@@ -40,7 +41,8 @@ def set_binding_context(tenant: str, bot: str) -> None:
 
 
 def _default_path() -> str:
-    return str(Path(__file__).resolve().parent.parent / "policy" / "rules.yaml")
+    pkg_path = resources.files("app").joinpath("policy/rules.yaml")
+    return str(pkg_path)
 
 
 def _binding_path_or_none(tenant: str, bot: str) -> str | None:
@@ -85,9 +87,10 @@ def _resolve_path() -> str:
       3) Bundled default rules.yaml
     """
     # 1) ENV override (read directly so test-time changes are honored)
-    env_raw = os.environ.get("POLICY_RULES_PATH", "")
-    if env_raw and env_raw.strip():
-        return env_raw.strip()
+    for env_key in ("GUARDRAIL_RULES_PATH", "POLICY_RULES_PATH"):
+        env_raw = os.environ.get(env_key, "")
+        if env_raw and env_raw.strip():
+            return env_raw.strip()
 
     # 2) Binding store (optional)
     tenant = _CTX_TENANT.get()

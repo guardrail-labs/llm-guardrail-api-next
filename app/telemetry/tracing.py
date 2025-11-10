@@ -8,6 +8,24 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
 
+try:  # pragma: no cover - optional runtime dependency
+    from opentelemetry import trace as _OTEL_TRACE
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+except Exception:  # pragma: no cover - tracing disabled
+    _OTEL_TRACE = None  # type: ignore[assignment]
+    OTLPSpanExporter = None  # type: ignore[assignment]
+    Resource = None  # type: ignore[assignment]
+    TracerProvider = None  # type: ignore[assignment]
+    BatchSpanProcessor = None  # type: ignore[assignment]
+
+try:
+    from app.middleware.request_id import get_request_id as _request_id_getter
+except Exception:  # pragma: no cover - defensive, middleware optional
+    _request_id_getter = None  # type: ignore[assignment]
+
 log = logging.getLogger(__name__)
 
 
@@ -106,14 +124,7 @@ class TracingMiddleware(BaseHTTPMiddleware):
         Try to configure OTEL. If not installed, log a warning and report initialized=True
         so callers can proceed with tracing disabled (self._trace stays None).
         """
-        try:  # pragma: no cover
-            from opentelemetry import trace as _trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.resources import Resource
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        except Exception:
-            # OTEL not available; leave self._trace as None to satisfy tests.
+        if None in (_OTEL_TRACE, OTLPSpanExporter, Resource, TracerProvider, BatchSpanProcessor):
             log.warning("opentelemetry is not installed; tracing disabled.")
             return True
 
@@ -121,14 +132,14 @@ class TracingMiddleware(BaseHTTPMiddleware):
         service_name = os.getenv("OTEL_SERVICE_NAME", "llm-guardrail-api")
 
         try:  # pragma: no cover
-            resource = Resource.create({"service.name": service_name})
-            provider = TracerProvider(resource=resource)
+            resource = Resource.create({"service.name": service_name})  # type: ignore[misc]
+            provider = TracerProvider(resource=resource)  # type: ignore[call-arg]
             if endpoint:
-                exporter = OTLPSpanExporter(endpoint=endpoint)
-                processor = BatchSpanProcessor(exporter)
+                exporter = OTLPSpanExporter(endpoint=endpoint)  # type: ignore[call-arg]
+                processor = BatchSpanProcessor(exporter)  # type: ignore[call-arg]
                 provider.add_span_processor(processor)
-            _trace.set_tracer_provider(provider)
-            self._trace = _trace
+            _OTEL_TRACE.set_tracer_provider(provider)  # type: ignore[union-attr]
+            self._trace = _OTEL_TRACE
             return True
         except Exception as e:
             # Initialization failed; keep tracing disabled and log.
@@ -152,13 +163,13 @@ def get_request_id() -> Optional[str]:
     Thin wrapper so other modules can import from here without caring
     where the request-id is actually implemented.
     """
+    if _request_id_getter is None:
+        return None
     try:
-        from app.middleware.request_id import get_request_id as _get
-
-        rid = _get()
-        return str(rid) if rid is not None else None
+        rid = _request_id_getter()
     except Exception:
         return None
+    return str(rid) if rid is not None else None
 
 
 def get_trace_id() -> Optional[str]:
@@ -166,10 +177,10 @@ def get_trace_id() -> Optional[str]:
     Return current OpenTelemetry trace id as 32-char hex if available.
     Safe to call even when OTEL is not installed or no span is active.
     """
+    if _OTEL_TRACE is None:  # pragma: no cover - optional dependency
+        return None
     try:  # pragma: no cover
-        from opentelemetry import trace as _trace
-
-        span = _trace.get_current_span()
+        span = _OTEL_TRACE.get_current_span()
         if span is None:
             return None
         ctx = span.get_span_context()

@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import queue
+import threading
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -22,6 +23,22 @@ router = APIRouter(prefix="/admin", tags=["admin-decisions"])
 
 _VALID_DECISIONS = {"allow", "block", "clarify", "redact", "deny"}
 _VALID_SORT = {"ts_desc", "ts_asc"}
+
+_CLIENTS = 0
+_CLIENTS_LOCK = threading.Lock()
+
+
+def _inc_clients() -> None:
+    global _CLIENTS
+    with _CLIENTS_LOCK:
+        _CLIENTS += 1
+
+
+def _dec_clients() -> None:
+    global _CLIENTS
+    with _CLIENTS_LOCK:
+        if _CLIENTS > 0:
+            _CLIENTS -= 1
 
 
 class _Filters(TypedDict):
@@ -359,7 +376,12 @@ def export_decisions_csv(req: Request, _: None = Depends(require_auth)) -> Plain
 @router.get("/decisions/stream")
 def stream_decisions(req: Request, _: None = Depends(require_auth)) -> StreamingResponse:
     filters, limit, sse_flag = _parse_params(req)  # noqa: F841
-    sub = subscribe()
+    _inc_clients()
+    try:
+        sub = subscribe()
+    except Exception as exc:
+        _dec_clients()
+        raise HTTPException(status_code=503, detail="Subscription unavailable") from exc
 
     def _sse():
         # initial snapshot (newest first → present oldest of slice first)
@@ -381,5 +403,6 @@ def stream_decisions(req: Request, _: None = Depends(require_auth)) -> Streaming
                     yield b"data: " + json.dumps(evt).encode("utf-8") + b"\n\n"
         finally:
             unsubscribe(sub)
+            _dec_clients()
 
     return StreamingResponse(_sse(), media_type="text/event-stream")

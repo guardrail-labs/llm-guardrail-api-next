@@ -1,5 +1,7 @@
 # LLM Guardrail Core Runtime
 
+![version: v1.4.0](https://img.shields.io/badge/version-v1.4.0-blue.svg)
+
 The Guardrail API is the **core runtime** behind the Guardrail firewall. It runs in-band with your
 LLM traffic to inspect ingress/egress prompts, enforce policy packs, and emit signed audit events
 for downstream observability. This repo contains the enforcement engine, REST API surface, and the
