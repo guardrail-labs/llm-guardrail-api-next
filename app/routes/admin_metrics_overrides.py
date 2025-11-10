@@ -61,10 +61,7 @@ def _collect_totals() -> Dict[str, int]:
     for metric in collections:
         samples = getattr(metric, "samples", [])
         for sample in samples:
-            if (
-                isinstance(sample, Sample)
-                and sample.name == "guardrail_mitigation_override_total"
-            ):
+            if isinstance(sample, Sample) and sample.name == "guardrail_mitigation_override_total":
                 mode = (sample.labels or {}).get("mode")
                 if mode in totals:
                     try:

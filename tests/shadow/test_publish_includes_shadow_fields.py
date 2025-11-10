@@ -29,6 +29,7 @@ def test_decision_event_contains_shadow_fields(tmp_path, monkeypatch):
     )
 
     from app.main import create_app  # ← import from package entrypoint
+
     app = create_app()
     c = TestClient(app)
 

@@ -16,6 +16,7 @@ try:
         map_verifier_outcome_to_action as _map_verifier_outcome_to_action,
     )
 except Exception:  # pragma: no cover
+
     def _current_rules_version() -> str:
         return os.getenv("POLICY_VERSION", "test-policy")
 
@@ -28,6 +29,7 @@ except Exception:  # pragma: no cover
         o: Literal["allow", "block", "timeout", "error", "uncertain"],
     ) -> str:
         return {"allow": "allow", "block": "block_input_only"}.get(o, "clarify")
+
 
 current_rules_version = _current_rules_version
 map_classifier_outcome_to_action = _map_classifier_outcome_to_action
@@ -50,17 +52,19 @@ def _collect_active_policy(overrides: Optional[Dict[str, str]] = None) -> Dict[s
         "EGRESS_POLICY_CHECK_ENABLED": _env_flag("EGRESS_POLICY_CHECK_ENABLED", "0", overrides),
         "CLARIFY_HTTP_STATUS": _env_flag("CLARIFY_HTTP_STATUS", "422", overrides),
     }
-    env_toggles.update({
-        "RULEPACKS_ENFORCE": "1" if rulepacks_enabled() else "0",
-        "RULEPACKS_ACTIVE": os.getenv("RULEPACKS_ACTIVE", ""),
-        "RULEPACKS_INGRESS_MODE": ingress_mode(),
-        "RULEPACKS_EGRESS_MODE": egress_mode(),
-        "ESCALATION_ENABLED": os.getenv("ESCALATION_ENABLED", "0"),
-        "ESCALATION_WINDOW_SEC": os.getenv("ESCALATION_WINDOW_SEC", "300"),
-        "ESCALATION_TIER1_THRESHOLD": os.getenv("ESCALATION_TIER1_THRESHOLD", "3"),
-        "ESCALATION_TIER2_THRESHOLD": os.getenv("ESCALATION_TIER2_THRESHOLD", "10"),
-        "ESCALATION_COOLDOWN_SEC": os.getenv("ESCALATION_COOLDOWN_SEC", "300"),
-    })
+    env_toggles.update(
+        {
+            "RULEPACKS_ENFORCE": "1" if rulepacks_enabled() else "0",
+            "RULEPACKS_ACTIVE": os.getenv("RULEPACKS_ACTIVE", ""),
+            "RULEPACKS_INGRESS_MODE": ingress_mode(),
+            "RULEPACKS_EGRESS_MODE": egress_mode(),
+            "ESCALATION_ENABLED": os.getenv("ESCALATION_ENABLED", "0"),
+            "ESCALATION_WINDOW_SEC": os.getenv("ESCALATION_WINDOW_SEC", "300"),
+            "ESCALATION_TIER1_THRESHOLD": os.getenv("ESCALATION_TIER1_THRESHOLD", "3"),
+            "ESCALATION_TIER2_THRESHOLD": os.getenv("ESCALATION_TIER2_THRESHOLD", "10"),
+            "ESCALATION_COOLDOWN_SEC": os.getenv("ESCALATION_COOLDOWN_SEC", "300"),
+        }
+    )
     decision_map = {
         "classifier.allow": map_classifier_outcome_to_action("allow"),
         "classifier.block": map_classifier_outcome_to_action("block"),

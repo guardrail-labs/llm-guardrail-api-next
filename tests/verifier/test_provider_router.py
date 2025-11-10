@@ -105,4 +105,3 @@ def test_circuit_breaker_opens_then_half_open():
     tried = any(a["provider"] == "flaky" and a.get("attempt") == 1 for a in log4 if "attempt" in a)
     skipped = any(a.get("err") == "circuit_open" for a in log4)
     assert tried or skipped
-

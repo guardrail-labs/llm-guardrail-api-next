@@ -31,4 +31,3 @@ def test_multipart_html_clean_is_allowed_like_baseline():
     assert r.status_code == 200
     assert (body := r.json())
     assert body["action"] in {"allow", "sanitize", "clarify", "deny"}
-

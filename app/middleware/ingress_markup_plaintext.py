@@ -76,12 +76,14 @@ class IngressMarkupPlaintextMiddleware(BaseHTTPMiddleware):
 
         # Attach derived plaintexts for downstream scanners (non-breaking)
         if plaintexts:
-            request.state.guardrail_plaintexts = plaintexts  
+            request.state.guardrail_plaintexts = plaintexts
 
         # Re-inject body if consumed
         if raw is not None:
+
             async def receive() -> dict:
                 return {"type": "http.request", "body": raw, "more_body": False}
+
             request = Request(request.scope, receive)
 
         # Metrics

@@ -62,4 +62,3 @@ class VerifierEnforcer:
     def on_failure(self, ctx: VerifierContext) -> Dict[str, Any]:
         """Record a failed verifier run and return state info."""
         return {}
-

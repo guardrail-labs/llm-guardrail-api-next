@@ -8,8 +8,6 @@ def test_defaults_off_no_execute_locked(monkeypatch):
     # Deny stays deny when feature off
     assert enf.choose_mode(policy_result=None, family="deny") == "deny"
     # Explicit policy lock is treated as deny when feature off (harden-by-default)
-    assert (
-        enf.choose_mode(policy_result={"action": "lock"}, family="deny") == "deny"
-    )
+    assert enf.choose_mode(policy_result={"action": "lock"}, family="deny") == "deny"
     # Allow stays allow
     assert enf.choose_mode(policy_result=None, family="allow") == "allow"

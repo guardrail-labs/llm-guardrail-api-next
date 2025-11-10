@@ -22,9 +22,7 @@ def _make_app():
             (b"content-type", b"application/json"),
             (b"content-length", str(len(body)).encode()),
         ]
-        await send(
-            {"type": "http.response.start", "status": 200, "headers": headers}
-        )
+        await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
     return app

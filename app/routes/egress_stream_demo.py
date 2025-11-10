@@ -40,9 +40,7 @@ def _will_deny(text: str) -> bool:
         r"-----BEGIN PRIVATE KEY-----.*?-----END PRIVATE KEY-----",
         re.S,
     )
-    marker_re = re.compile(
-        r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-    )
+    marker_re = re.compile(r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)")
     return bool(env_re.search(text) or marker_re.search(text))
 
 
@@ -86,6 +84,4 @@ async def demo_egress_stream(
         headers["X-Guardrail-Streaming"] = "0"
         body = _to_bytes(src, encoding=encoding)
 
-    return StreamingResponse(
-        body, headers=headers, media_type="application/octet-stream"
-    )
+    return StreamingResponse(body, headers=headers, media_type="application/octet-stream")

@@ -46,9 +46,7 @@ def test_adjudications_export_filters(app_factory):
 
     def _record(ts_ms: int, rid: str, decision: str, hits=None):
         ts = (
-            datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-            .isoformat()
-            .replace("+00:00", "Z")
+            datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
         )
         return log.AdjudicationRecord(
             ts=ts,

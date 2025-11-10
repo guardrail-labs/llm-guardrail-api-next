@@ -29,11 +29,9 @@ class VerifierTimeout(VerifierError):
 class Verifier(Protocol):
     name: str
 
-    def health(self) -> bool:
-        ...
+    def health(self) -> bool: ...
 
-    def verify(self, req: VerifyInput, timeout_s: float = 5.0) -> VerifyResult:
-        ...
+    def verify(self, req: VerifyInput, timeout_s: float = 5.0) -> VerifyResult: ...
 
 
 def new_incident_id() -> str:

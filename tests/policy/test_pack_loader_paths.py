@@ -60,6 +60,7 @@ def test_partial_local_override_falls_back_to_bundled(tmp_path, monkeypatch):
     monkeypatch.chdir(repo)
 
     import app.services.policy_packs as pp
+
     try:
         pp.project_root = proj_root
     except Exception:

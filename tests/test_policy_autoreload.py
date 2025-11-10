@@ -82,9 +82,7 @@ def test_manual_reload_endpoint_when_autoreload_off():
         assert r2.json()["policy_version"] == "1"
 
         # Force reload via admin endpoint -> now v2
-        r3 = client.post(
-            "/admin/policy/reload", headers={"Authorization": "Bearer test-token"}
-        )
+        r3 = client.post("/admin/policy/reload", headers={"Authorization": "Bearer test-token"})
         assert r3.status_code == 200
         assert r3.json()["ok"] is True
         assert r3.json()["version"] == "2"

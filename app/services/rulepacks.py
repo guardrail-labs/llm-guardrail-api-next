@@ -20,4 +20,3 @@ def load_rulepack(name: str) -> Dict[str, Any]:
 
 def list_rulepacks() -> Dict[str, str]:
     return {"hipaa": "HIPAA scaffolding", "gdpr": "GDPR scaffolding"}
-

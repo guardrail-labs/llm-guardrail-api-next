@@ -32,15 +32,11 @@ def main() -> int:
     params = _build_params(args)
     base = args.base_url.rstrip("/")
 
-    json_response = requests.get(
-        f"{base}/admin/audit/export", params={**params, "fmt": "json"}
-    )
+    json_response = requests.get(f"{base}/admin/audit/export", params={**params, "fmt": "json"})
     json_response.raise_for_status()
     bundle = json_response.json()
 
-    csv_response = requests.get(
-        f"{base}/admin/audit/export", params={**params, "fmt": "csv"}
-    )
+    csv_response = requests.get(f"{base}/admin/audit/export", params={**params, "fmt": "csv"})
     csv_response.raise_for_status()
     csv_text = csv_response.text
 

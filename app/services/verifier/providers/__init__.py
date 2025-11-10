@@ -20,6 +20,7 @@ def build_provider(name: str) -> Optional[Provider]:
     if key in ("openai", "gpt"):
         try:
             from .openai_adapter import OpenAIProvider  # lazy import
+
             return OpenAIProvider()
         except Exception:
             return None
@@ -27,6 +28,7 @@ def build_provider(name: str) -> Optional[Provider]:
     if key in ("anthropic", "claude"):
         try:
             from .anthropic_adapter import AnthropicProvider
+
             return AnthropicProvider(ANTHROPIC_API_KEY, VERIFIER_ANTHROPIC_MODEL)
         except Exception:
             return None

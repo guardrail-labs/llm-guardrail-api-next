@@ -67,8 +67,8 @@ class GZipMiddleware(BaseHTTPMiddleware):
         if (
             resp.status_code in (204, 304)  # no-body statuses
             or resp.headers.get("content-encoding")  # already encoded (e.g., upstream)
-            or _is_streaming_response(resp)          # true streaming bodies
-            or _is_sse(resp)                          # explicit SSE content-type
+            or _is_streaming_response(resp)  # true streaming bodies
+            or _is_sse(resp)  # explicit SSE content-type
         ):
             return resp
 

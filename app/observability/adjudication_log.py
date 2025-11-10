@@ -17,11 +17,7 @@ from app.utils.cursor import CursorError
 def _now_ts() -> str:
     """Return current UTC timestamp as RFC3339 string."""
 
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _parse_ts(value: str) -> Optional[datetime]:
@@ -229,6 +225,7 @@ def delete_where(
                 _BUFFER.append(record)
     return removed
 
+
 def clear() -> None:
     """Clear all buffered records (testing/support)."""
 
@@ -357,8 +354,6 @@ def paged_query(
         total += 1
 
     return items, total
-
-
 
 
 def _record_ts_ms(record: AdjudicationRecord) -> int:
@@ -515,6 +510,7 @@ def list_with_cursor(
 
     records = [rec for rec, _ts, _idx in page_entries]
     return records, next_cursor_token, prev_cursor_token
+
 
 def query(
     *,

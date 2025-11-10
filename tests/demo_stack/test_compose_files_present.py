@@ -11,4 +11,3 @@ def test_compose_and_configs_present_and_valid() -> None:
     p = Path("observability/grafana/guardrail.json")
     assert p.exists(), "observability/grafana/guardrail.json missing"
     json.loads(p.read_text(encoding="utf-8"))
-

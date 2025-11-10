@@ -58,9 +58,7 @@ def test_filters_applied_before_cursor(monkeypatch) -> None:
     assert prev_cursor2 is not None
 
 
-def test_route_respects_filters_and_invalid_cursor(
-    client: TestClient, monkeypatch
-) -> None:
+def test_route_respects_filters_and_invalid_cursor(client: TestClient, monkeypatch) -> None:
     base = 1_700_000_000_000
     records = [
         _mk_record(base + 1, "RID-X", outcome="allow"),
@@ -94,8 +92,10 @@ def test_route_respects_filters_and_invalid_cursor(
 
     monkeypatch.setattr(decisions_store, "_fetch_decisions_sorted_desc", fake_fetch)
 
-    since_iso = datetime.fromtimestamp((base + 2) / 1000, tz=timezone.utc).isoformat().replace(
-        "+00:00", "Z"
+    since_iso = (
+        datetime.fromtimestamp((base + 2) / 1000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
     response = client.get(
         "/admin/api/decisions",

@@ -30,9 +30,7 @@ class _MemCache:
 
     def _prune_expired(self, now: float) -> None:
         """Remove all expired entries. Called periodically under the lock."""
-        expired_keys = [
-            k for k, (_outcome, ts) in self._data.items() if now - ts > self._ttl
-        ]
+        expired_keys = [k for k, (_outcome, ts) in self._data.items() if now - ts > self._ttl]
         for k in expired_keys:
             self._data.pop(k, None)
 
@@ -76,6 +74,7 @@ class _RedisCache:
         self._cli = None
         try:
             import redis  # noqa: F401
+
             self._cli = redis.from_url(url, decode_responses=True)
         except Exception:
             self._cli = None

@@ -30,4 +30,3 @@ def list_bindings() -> List[Dict[str, Any]]:
 
 
 __all__ = ["list_bindings"]
-

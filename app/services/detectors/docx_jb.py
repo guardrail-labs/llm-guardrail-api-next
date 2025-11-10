@@ -118,15 +118,9 @@ def _scan_hidden_runs(docx_bytes: bytes) -> Tuple[List[str], List[str]]:
         color_el = rpr.find("w:color", _DOCX_NS)
         shd_el = rpr.find("w:shd", _DOCX_NS)
         sz_el = rpr.find("w:sz", _DOCX_NS)
-        color_val = (
-            color_el.get(f"{{{_DOCX_NS['w']}}}val") if color_el is not None else None
-        )
-        shd_val = (
-            shd_el.get(f"{{{_DOCX_NS['w']}}}fill") if shd_el is not None else None
-        )
-        sz_val = (
-            sz_el.get(f"{{{_DOCX_NS['w']}}}val") if sz_el is not None else None
-        )
+        color_val = color_el.get(f"{{{_DOCX_NS['w']}}}val") if color_el is not None else None
+        shd_val = shd_el.get(f"{{{_DOCX_NS['w']}}}fill") if shd_el is not None else None
+        sz_val = sz_el.get(f"{{{_DOCX_NS['w']}}}val") if sz_el is not None else None
 
         def _is_white(v: str | None) -> bool:
             return bool(v and v.lower() in {"fff", "ffffff"})

@@ -90,9 +90,9 @@ def make_app() -> FastAPI:
 def test_sort_by_tenant_asc() -> None:
     with TestClient(make_app()) as client:
         response = client.get(
-        "/admin/api/decisions?sort=tenant&dir=asc",
-        headers={"X-Admin-Key": "k"},
-    )
+            "/admin/api/decisions?sort=tenant&dir=asc",
+            headers={"X-Admin-Key": "k"},
+        )
         assert response.status_code == 200
         tenants = [row["tenant"] for row in response.json()["items"]]
         assert tenants == ["a", "a", "b"]
@@ -101,9 +101,9 @@ def test_sort_by_tenant_asc() -> None:
 def test_sort_default_ts_desc() -> None:
     with TestClient(make_app()) as client:
         response = client.get(
-        "/admin/api/decisions",
-        headers={"X-Admin-Key": "k"},
-    )
+            "/admin/api/decisions",
+            headers={"X-Admin-Key": "k"},
+        )
         assert response.status_code == 200
         timestamps = [row["ts"] for row in response.json()["items"]]
         assert timestamps == [
@@ -116,9 +116,9 @@ def test_sort_default_ts_desc() -> None:
 def test_invalid_sort_falls_back() -> None:
     with TestClient(make_app()) as client:
         response = client.get(
-        "/admin/api/decisions?sort=__bad__&dir=wat",
-        headers={"X-Admin-Key": "k"},
-    )
+            "/admin/api/decisions?sort=__bad__&dir=wat",
+            headers={"X-Admin-Key": "k"},
+        )
         assert response.status_code == 200
         timestamps = [row["ts"] for row in response.json()["items"]]
         assert timestamps[0] == "2025-09-18T11:00:00Z"

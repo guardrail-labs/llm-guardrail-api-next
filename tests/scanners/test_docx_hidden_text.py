@@ -11,7 +11,7 @@ def _mk_docx_with(xml: str) -> bytes:
             "word/document.xml",
             f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            f"{xml}</w:document>"
+            f"{xml}</w:document>",
         )
     return buf.getvalue()
 

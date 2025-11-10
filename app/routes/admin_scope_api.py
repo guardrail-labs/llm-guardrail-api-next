@@ -23,6 +23,7 @@ _admin_session: Any = importlib.import_module("app.middleware.admin_session")
 
 # ------------------------- Typed payloads -------------------------
 
+
 class PolicyPackInfo(TypedDict):
     name: str
     source: str  # "golden" | "local" | "remote"
@@ -52,12 +53,14 @@ class SecretsResponse(TypedDict):
 
 # ------------------------- Dependency wrappers -------------------------
 
+
 def _require_admin_dep(request: Request) -> Any:
     """Wrapper around middleware-admin require_admin."""
     return _admin_session.require_admin(request)
 
 
 # ------------------------- Import helpers -------------------------
+
 
 def _try_import(module: str) -> Optional[Any]:
     try:
@@ -67,6 +70,7 @@ def _try_import(module: str) -> Optional[Any]:
 
 
 # ------------------------- Provider adapters -------------------------
+
 
 def _coerce_pack(obj: Any) -> PolicyPackInfo:
     if isinstance(obj, dict):
@@ -104,10 +108,7 @@ def _get_policy_packs(tenant: str, bot: str) -> List[PolicyPackInfo]:
     # No provider found
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=(
-            "No policy pack provider configured "
-            "(enable scope_read or policy_packs service)."
-        ),
+        detail=("No policy pack provider configured (enable scope_read or policy_packs service)."),
     )
 
 
@@ -182,14 +183,12 @@ def _get_secret_set_names(tenant: str, bot: str) -> List[str]:
 
     raise HTTPException(
         status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=(
-            "No secrets provider configured "
-            "(enable scope_read or secrets service)."
-        ),
+        detail=("No secrets provider configured (enable scope_read or secrets service)."),
     )
 
 
 # ------------------------- Endpoints -------------------------
+
 
 @router.get("/effective", response_model=EffectiveScope)
 def get_effective_scope(

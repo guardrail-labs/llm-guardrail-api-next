@@ -71,9 +71,9 @@ def _iter_adjudications_ndjson(
             payload = record.to_dict()
         else:
             payload = dict(vars(record))
-        yield (
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
-        ).encode("utf-8")
+        yield (json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
 
 
 @router.get("/adjudications/export.ndjson")

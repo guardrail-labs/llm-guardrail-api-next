@@ -14,9 +14,9 @@ else:  # pragma: no cover
     try:
         from redis.exceptions import NoScriptError, RedisError
     except Exception:
+
         class RedisError(Exception):
             """Fallback RedisError when redis-py is unavailable."""
-
 
         class NoScriptError(RedisError):
             """Fallback NoScriptError when redis-py is unavailable."""
@@ -328,4 +328,3 @@ def build_backend() -> RateLimiterBackend:
     except Exception:
         _mrl.set_backend_in_use("local")
         return LocalTokenBucket()
-

@@ -10,10 +10,10 @@ from typing import List, Optional, Union
 
 @dataclass(frozen=True)
 class HiddenTextFinding:
-    filetype: str           # "html" | "docx"
-    reason: str             # short tag like "display:none", "w:vanish"
+    filetype: str  # "html" | "docx"
+    reason: str  # short tag like "display:none", "w:vanish"
     location: Optional[str] = None  # e.g., "line:col" or path within archive
-    snippet: Optional[str] = None   # small excerpt if available
+    snippet: Optional[str] = None  # small excerpt if available
 
 
 # --------------------------- HTML detection ----------------------------------
@@ -64,24 +64,18 @@ def detect_hidden_text_html(html: str) -> List[HiddenTextFinding]:
         props = _normalize_css(raw)
         loc = f"pos:{m.start()}-{m.end()}"
         if props.get("display") == "none":
-            findings.append(
-                HiddenTextFinding("html", "display:none", location=loc, snippet=raw)
-            )
+            findings.append(HiddenTextFinding("html", "display:none", location=loc, snippet=raw))
         if props.get("visibility") == "hidden":
             findings.append(
                 HiddenTextFinding("html", "visibility:hidden", location=loc, snippet=raw)
             )
         if props.get("font-size") in {"0", "0px", "0rem", "0em"}:
-            findings.append(
-                HiddenTextFinding("html", "font-size:0", location=loc, snippet=raw)
-            )
+            findings.append(HiddenTextFinding("html", "font-size:0", location=loc, snippet=raw))
         # color equals background-color (simple hex comparison)
         col, bg = props.get("color"), props.get("background-color")
         if col and bg and _same_color(col, bg):
             findings.append(
-                HiddenTextFinding(
-                    "html", "color==background-color", location=loc, snippet=raw
-                )
+                HiddenTextFinding("html", "color==background-color", location=loc, snippet=raw)
             )
 
     # 2) Hidden attributes
@@ -92,9 +86,7 @@ def detect_hidden_text_html(html: str) -> List[HiddenTextFinding]:
         loc = f"pos:{m.start()}-{m.end()}"
         findings.append(HiddenTextFinding("html", "hidden-attr", location=loc))
 
-    aria_hidden_true_pat = re.compile(
-        r"""aria-hidden\s*=\s*["']\s*true\s*["']""", re.IGNORECASE
-    )
+    aria_hidden_true_pat = re.compile(r"""aria-hidden\s*=\s*["']\s*true\s*["']""", re.IGNORECASE)
     for m in aria_hidden_true_pat.finditer(html):
         loc = f"pos:{m.start()}-{m.end()}"
         findings.append(HiddenTextFinding("html", "aria-hidden=true", location=loc))

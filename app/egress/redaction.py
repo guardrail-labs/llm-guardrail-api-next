@@ -43,9 +43,7 @@ def _scrub_message_payload(payload: Dict[str, Any]) -> None:
         if isinstance(value, str):
             payload[key] = _redact_text(value)
         elif isinstance(value, list):
-            payload[key] = [
-                _redact_text(v) if isinstance(v, str) else v for v in value
-            ]
+            payload[key] = [_redact_text(v) if isinstance(v, str) else v for v in value]
         elif isinstance(value, dict):
             _scrub_message_payload(value)
 
@@ -73,9 +71,7 @@ def _scrub_json_object(obj: Dict[str, Any]) -> Dict[str, Any]:
 
 def redact_response_body(body: bytes, content_type: str | None) -> bytes:
     content_type = (content_type or "").lower()
-    if content_type and (
-        "application/json" in content_type or content_type.endswith("+json")
-    ):
+    if content_type and ("application/json" in content_type or content_type.endswith("+json")):
         try:
             parsed = json.loads(body.decode("utf-8"))
         except Exception:
@@ -96,9 +92,7 @@ def redact_response_body(body: bytes, content_type: str | None) -> bytes:
             return body
     if content_type.startswith("text/"):
         try:
-            return _redact_text(body.decode("utf-8", errors="replace")).encode(
-                "utf-8"
-            )
+            return _redact_text(body.decode("utf-8", errors="replace")).encode("utf-8")
         except Exception:
             return body
     return body

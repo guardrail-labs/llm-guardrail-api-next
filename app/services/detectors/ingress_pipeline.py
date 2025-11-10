@@ -70,8 +70,6 @@ def _enabled(env: str, default: bool = True) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-
-
 # ---------------- PDF ---------------------------------------------------------
 
 

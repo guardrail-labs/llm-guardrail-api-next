@@ -9,4 +9,3 @@ def test_quota_registry_basic(monkeypatch):
     assert q.is_skipped("p")
     q.clear("p")
     assert not q.is_skipped("p")
-

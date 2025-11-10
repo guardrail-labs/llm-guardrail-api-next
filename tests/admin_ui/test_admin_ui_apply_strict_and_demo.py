@@ -71,9 +71,7 @@ def test_apply_strict_flow(
 ) -> None:
     strict_path = _strict_policy(monkeypatch, tmp_path)
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers())
     assert page.status_code == 200
     csrf_token = page.cookies.get("ui_csrf")
     assert csrf_token
@@ -93,9 +91,7 @@ def test_apply_strict_flow(
     assert bindings_resp.status_code == 200
     doc = bindings_resp.json()
     assert any(
-        b["tenant"] == "acme"
-        and b["bot"] == "support"
-        and b.get("rules_path") == str(strict_path)
+        b["tenant"] == "acme" and b["bot"] == "support" and b.get("rules_path") == str(strict_path)
         for b in doc.get("bindings", [])
     )
 
@@ -105,9 +101,7 @@ def test_apply_demo_flow(
 ) -> None:
     demo_path = _demo_policy(monkeypatch, tmp_path)
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=tenant&bot=bot", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=tenant&bot=bot", headers=_auth_headers())
     csrf_token = page.cookies.get("ui_csrf")
     assert csrf_token
 
@@ -126,9 +120,7 @@ def test_apply_demo_flow(
     assert bindings_resp.status_code == 200
     doc = bindings_resp.json()
     assert any(
-        b["tenant"] == "tenant"
-        and b["bot"] == "bot"
-        and b.get("rules_path") == str(demo_path)
+        b["tenant"] == "tenant" and b["bot"] == "bot" and b.get("rules_path") == str(demo_path)
         for b in doc.get("bindings", [])
     )
 
@@ -138,9 +130,7 @@ def test_reapply_is_idempotent(
 ) -> None:
     _strict_policy(monkeypatch, tmp_path)
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers())
     csrf_token = page.cookies.get("ui_csrf")
     assert csrf_token
 
@@ -170,9 +160,7 @@ def test_apply_error_detail_surface(
     missing_path = tmp_path / "missing.yaml"
     monkeypatch.setenv("STRICT_SECRETS_POLICY_PATH", str(missing_path))
 
-    page = admin_client.get(
-        "/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers()
-    )
+    page = admin_client.get("/admin/ui/bindings?tenant=acme&bot=support", headers=_auth_headers())
     csrf_token = page.cookies.get("ui_csrf")
     assert csrf_token
 
@@ -184,4 +172,3 @@ def test_apply_error_detail_surface(
     assert response.status_code == 404
     body = response.json()
     assert body["detail"] == "Strict secrets policy not found."
-

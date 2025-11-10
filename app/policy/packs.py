@@ -74,9 +74,7 @@ class LoadedPacks:
 TenantOverrides = Mapping[str, Mapping[str, RuleOverride]]
 
 
-def apply_overrides(
-    packs: LoadedPacks, overrides: Optional[TenantOverrides]
-) -> LoadedPacks:
+def apply_overrides(packs: LoadedPacks, overrides: Optional[TenantOverrides]) -> LoadedPacks:
     if not overrides:
         return packs
 
@@ -196,9 +194,7 @@ def _compile_rule(pack: str, raw: Mapping[str, Any], source: str) -> Rule:
         try:
             compiled = re.compile(pattern_text, re.IGNORECASE)
         except re.error as exc:
-            raise ValueError(
-                f"Invalid regex for rule {pack}:{rid} in {source}: {exc}"
-            ) from exc
+            raise ValueError(f"Invalid regex for rule {pack}:{rid} in {source}: {exc}") from exc
     terms: Optional[Tuple[str, ...]] = None
     if "any_terms" in raw:
         items = tuple(str(term) for term in raw["any_terms"])
@@ -238,7 +234,5 @@ def _yaml_load(text: str) -> Dict[str, Any]:
         return loaded
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "YAML parsing failed and PyYAML not installed; install pyyaml or "
-            "provide JSON."
+            "YAML parsing failed and PyYAML not installed; install pyyaml or provide JSON."
         ) from exc
-

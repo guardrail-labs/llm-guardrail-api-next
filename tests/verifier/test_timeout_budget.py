@@ -12,8 +12,10 @@ class SlowProvider:
         await asyncio.sleep(0.01)
         return {"status": "safe", "reason": "ok", "tokens_used": 1}
 
+
 def run(coro):
     return asyncio.run(coro)
+
 
 def test_timeout_budget(monkeypatch):
     monkeypatch.setenv("VERIFIER_PROVIDERS", "slow")

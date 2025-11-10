@@ -21,4 +21,3 @@ def test_redaction_label_shapes() -> None:
     metrics.guardrail_redactions_total.labels("unknown", "mask-only")
     metrics.guardrail_redactions_total.labels("ingress", "mask-two")
     metrics.guardrail_redactions_total.labels("egress", "mask-three")
-

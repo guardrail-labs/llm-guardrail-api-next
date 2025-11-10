@@ -198,4 +198,3 @@ def test_decisions_ndjson_link_includes_request(
     assert query.get("request_id") == ["abc123"]
     assert "offset" not in query
     assert "limit" not in query
-

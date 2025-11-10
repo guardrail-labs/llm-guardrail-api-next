@@ -42,27 +42,18 @@ def expires_at(created_ts: float, ttl_seconds: int) -> float:
 
 @runtime_checkable
 class RetentionStore(Protocol):
-    async def get_policy(
-        self, tenant: str, resource: str
-    ) -> Optional[RetentionPolicy]:
-        ...
+    async def get_policy(self, tenant: str, resource: str) -> Optional[RetentionPolicy]: ...
 
-    async def set_policy(self, policy: RetentionPolicy) -> None:
-        ...
+    async def set_policy(self, policy: RetentionPolicy) -> None: ...
 
-    async def list_policies(
-        self, tenant: Optional[str] = None
-    ) -> List[RetentionPolicy]:
-        ...
+    async def list_policies(self, tenant: Optional[str] = None) -> List[RetentionPolicy]: ...
 
 
 class InMemoryRetentionStore(RetentionStore):
     def __init__(self) -> None:
         self._policies: Dict[tuple[str, str], RetentionPolicy] = {}
 
-    async def get_policy(
-        self, tenant: str, resource: str
-    ) -> Optional[RetentionPolicy]:
+    async def get_policy(self, tenant: str, resource: str) -> Optional[RetentionPolicy]:
         key = (tenant, resource)
         return self._policies.get(key)
 
@@ -70,9 +61,7 @@ class InMemoryRetentionStore(RetentionStore):
         key = (policy.tenant, policy.resource.value)
         self._policies[key] = policy
 
-    async def list_policies(
-        self, tenant: Optional[str] = None
-    ) -> List[RetentionPolicy]:
+    async def list_policies(self, tenant: Optional[str] = None) -> List[RetentionPolicy]:
         items = list(self._policies.values())
         if tenant is None:
             return sorted(items, key=lambda pol: (pol.tenant, pol.resource.value))
@@ -119,9 +108,7 @@ class RedisRetentionStore(RetentionStore):
             enabled=bool(data.get("enabled", True)),
         )
 
-    async def get_policy(
-        self, tenant: str, resource: str
-    ) -> Optional[RetentionPolicy]:
+    async def get_policy(self, tenant: str, resource: str) -> Optional[RetentionPolicy]:
         key = self._policy_key(tenant, resource)
         raw = await self._redis.get(key)
         if raw is None:
@@ -132,13 +119,9 @@ class RedisRetentionStore(RetentionStore):
         key = self._policy_key(policy.tenant, policy.resource.value)
         await self._redis.set(key, self._encode(policy))
         await self._redis.sadd("retention:pol:tenants", policy.tenant)
-        await self._redis.sadd(
-            self._tenant_index_key(policy.tenant), policy.resource.value
-        )
+        await self._redis.sadd(self._tenant_index_key(policy.tenant), policy.resource.value)
 
-    async def list_policies(
-        self, tenant: Optional[str] = None
-    ) -> List[RetentionPolicy]:
+    async def list_policies(self, tenant: Optional[str] = None) -> List[RetentionPolicy]:
         if tenant is not None:
             return await self._list_for_tenant(tenant)
         tenants = await self._redis.smembers("retention:pol:tenants")

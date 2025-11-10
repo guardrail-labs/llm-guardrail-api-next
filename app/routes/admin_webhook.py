@@ -29,11 +29,7 @@ def _csrf_token(request: Request, payload: Optional[Mapping[str, Any]]) -> Optio
 def _csrf_check_or_400(request: Request, token: Optional[str]) -> None:
     cookie = request.cookies.get("ui_csrf", "")
     ok = bool(
-        cookie
-        and token
-        and _csrf_ok(cookie)
-        and _csrf_ok(token)
-        and compare_digest(cookie, token)
+        cookie and token and _csrf_ok(cookie) and _csrf_ok(token) and compare_digest(cookie, token)
     )
     if not ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed")

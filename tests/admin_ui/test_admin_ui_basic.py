@@ -67,4 +67,3 @@ def test_policy_page_has_copy_button() -> None:
     r = c.get("/admin/policy", headers={"Authorization": "Bearer secret"})
     assert r.status_code == 200
     assert 'id="copy-lints-json"' in r.text
-

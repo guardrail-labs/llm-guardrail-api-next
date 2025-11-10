@@ -16,15 +16,11 @@ def test_policy_lock_maps_to_execute_locked_when_enabled(monkeypatch):
         updated["rule_ids"] = ["LOCK-TST"]
         return updated
 
-    monkeypatch.setattr(
-        "app.routes.guardrail._evaluate_ingress_policy", fake_eval, raising=False
-    )
+    monkeypatch.setattr("app.routes.guardrail._evaluate_ingress_policy", fake_eval, raising=False)
     monkeypatch.setattr("app.routes.guardrail._verifier_sampling_pct", lambda: 1.0)
     monkeypatch.setattr("app.routes.guardrail._hits_trigger_verifier", lambda _: True)
     monkeypatch.setattr(random, "random", lambda: 0.0)
-    monkeypatch.setattr(
-        "app.routes.guardrail.maybe_route_to_verifier", fake_route, raising=False
-    )
+    monkeypatch.setattr("app.routes.guardrail.maybe_route_to_verifier", fake_route, raising=False)
     monkeypatch.setattr("app.services.escalation.is_enabled", lambda: False, raising=False)
 
     from app.main import create_app

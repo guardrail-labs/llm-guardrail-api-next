@@ -6,6 +6,7 @@ from typing import Dict, Literal, Tuple
 
 Mode = Literal["normal", "execute_locked", "full_quarantine"]
 
+
 def _enabled() -> bool:
     return os.getenv("ESCALATION_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
@@ -32,6 +33,7 @@ def _cooldown_secs() -> int:
     except Exception:
         raw = 900
     return max(1, raw)
+
 
 _STATE: Dict[str, Tuple[float, int, float]] = {}
 

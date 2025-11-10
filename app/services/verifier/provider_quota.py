@@ -37,4 +37,3 @@ class QuotaSkipRegistry:
     def clear(self, name: str) -> None:
         if name in self._states:
             self._states[name] = _QState(0.0)
-

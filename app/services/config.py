@@ -16,7 +16,4 @@ def _to_bool(val: object, default: bool = False) -> bool:
 
 
 # Feature flag (default OFF): when ON, missing tenant/bot are auto-constrained to token scope
-SCOPE_AUTOCONSTRAIN_ENABLED: bool = _to_bool(
-    os.getenv("SCOPE_AUTOCONSTRAIN_ENABLED"), False
-)
-
+SCOPE_AUTOCONSTRAIN_ENABLED: bool = _to_bool(os.getenv("SCOPE_AUTOCONSTRAIN_ENABLED"), False)

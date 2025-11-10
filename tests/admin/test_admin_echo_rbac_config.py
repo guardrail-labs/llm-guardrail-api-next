@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -55,7 +54,5 @@ def test_admin_echo_fallbacks_to_key_when_no_guards(monkeypatch):
     monkeypatch.setenv("ADMIN_API_KEY", "k")
     response2 = client.get("/admin/echo", params={"text": "hello"})
     assert response2.status_code == 401
-    response3 = client.get(
-        "/admin/echo", params={"text": "hello"}, headers={"X-Admin-Key": "k"}
-    )
+    response3 = client.get("/admin/echo", params={"text": "hello"}, headers={"X-Admin-Key": "k"})
     assert response3.status_code == 200

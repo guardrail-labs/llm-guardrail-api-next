@@ -47,8 +47,8 @@ class StreamingRedactor:
             self._tail = buf
             return ""
 
-        emit = buf[:-self._overlap]
-        kept = buf[-self._overlap:]
+        emit = buf[: -self._overlap]
+        kept = buf[-self._overlap :]
 
         redacted = self._apply(emit)
         if redacted != emit:

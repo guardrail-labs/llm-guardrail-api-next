@@ -18,4 +18,3 @@ def test_features_reflect_config(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body.get("golden_one_click") is True
-

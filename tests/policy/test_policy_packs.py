@@ -40,4 +40,3 @@ def test_merge_three_packs():
     assert "redact.pii.phone" in redact_ids
 
     assert merged["settings"]["data_retention_days"] == 30
-

@@ -55,9 +55,7 @@ def _sanitize_with_flags(
     return cast(JsonObj, _deep_map_str(data, _sanitize_str))
 
 
-def _resolve_confusables_action(
-    hits: int, ratio: float, flags: SanitizerFlags
-) -> Tuple[str, bool]:
+def _resolve_confusables_action(hits: int, ratio: float, flags: SanitizerFlags) -> Tuple[str, bool]:
     threshold_met = hits > 0 and ratio >= flags.max_confusables_ratio
     if not threshold_met or flags.confusables_action == "off":
         return "pass", False
@@ -68,9 +66,7 @@ def _resolve_confusables_action(
 
 
 class UnicodeSanitizerMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         ctype = request.headers.get("content-type", "")
         method = request.method.upper()
         is_json = "application/json" in ctype

@@ -31,14 +31,10 @@ class DeadLetterQueue:
         )
         return [WebhookJob.from_json(item.decode("utf-8")) for item in raw]
 
-    async def replay_to(
-        self, retry_queue: "RetryQueue", limit: int, now_s: float
-    ) -> int:
+    async def replay_to(self, retry_queue: "RetryQueue", limit: int, now_s: float) -> int:
         moved = 0
         for _ in range(max(0, limit)):
-            item = await cast(
-                Awaitable[Optional[bytes]], self._redis.lpop(self._key)
-            )
+            item = await cast(Awaitable[Optional[bytes]], self._redis.lpop(self._key))
             if item is None:
                 break
             await retry_queue.enqueue_raw(item.decode("utf-8"), now_s)

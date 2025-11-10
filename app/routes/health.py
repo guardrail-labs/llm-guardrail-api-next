@@ -219,11 +219,7 @@ def _check_redis() -> Dict[str, Any]:
 def _check_audit_file() -> Dict[str, Any]:
     from app import config
 
-    audit_backend = (
-        os.getenv("AUDIT_BACKEND", getattr(config, "AUDIT_BACKEND", ""))
-        .strip()
-        .lower()
-    )
+    audit_backend = os.getenv("AUDIT_BACKEND", getattr(config, "AUDIT_BACKEND", "")).strip().lower()
     audit_file_env = os.getenv("AUDIT_LOG_FILE", "")
     audit_file_config = getattr(config, "AUDIT_LOG_FILE", "")
     audit_file = audit_file_env or audit_file_config

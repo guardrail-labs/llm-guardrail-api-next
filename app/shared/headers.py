@@ -23,13 +23,10 @@ def attach_guardrail_headers(
     """
 
     try:
-        response.headers.setdefault(
-            "X-Guardrail-Policy-Version", current_rules_version()
-        )
+        response.headers.setdefault("X-Guardrail-Policy-Version", current_rules_version())
     except Exception:  # pragma: no cover
         pass
 
     response.headers.setdefault("X-Guardrail-Ingress-Action", ingress_action)
     response.headers.setdefault("X-Guardrail-Egress-Action", egress_action)
     response.headers.setdefault("X-Guardrail-Decision", decision)
-

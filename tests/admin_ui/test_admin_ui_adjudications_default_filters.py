@@ -36,9 +36,7 @@ def _auth_headers() -> Dict[str, str]:
     return {"Authorization": "Bearer secret"}
 
 
-def _install_fake_paged_query(
-    monkeypatch: pytest.MonkeyPatch, capture: Dict[str, Any]
-) -> None:
+def _install_fake_paged_query(monkeypatch: pytest.MonkeyPatch, capture: Dict[str, Any]) -> None:
     def fake_paged_query(**kwargs: Any) -> tuple[list[Any], int]:
         capture.update(kwargs)
         return [], 0

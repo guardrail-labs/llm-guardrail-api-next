@@ -19,9 +19,7 @@ def scan():
                 continue
             action, ref = m.group(1).strip(), m.group(2).strip()
             if not PINNED_SHA.search(ref):
-                results.append(
-                    {"file": str(y), "line": i, "action": action, "ref": ref}
-                )
+                results.append({"file": str(y), "line": i, "action": action, "ref": ref})
     return results
 
 
@@ -36,8 +34,7 @@ def main():
     with open("unpinned-actions.md", "w", encoding="utf-8") as f:
         if not unpinned:
             success_md = (
-                "# Unpinned Actions Audit\n\n"
-                "✅ All GitHub Actions are pinned to commit SHAs.\n"
+                "# Unpinned Actions Audit\n\n✅ All GitHub Actions are pinned to commit SHAs.\n"
             )
             f.write(success_md)
         else:
@@ -49,10 +46,7 @@ def main():
             f.write(header_md)
 
             for r in unpinned:
-                f.write(
-                    f"- `{r['file']}:{r['line']}` — "
-                    f"**{r['action']}@{r['ref']}**\n"
-                )
+                f.write(f"- `{r['file']}:{r['line']}` — **{r['action']}@{r['ref']}**\n")
 
             why_md = (
                 "\n## Why pin?\n"

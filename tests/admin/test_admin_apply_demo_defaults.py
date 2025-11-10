@@ -28,9 +28,7 @@ def _reset_bindings(tmp_path, monkeypatch):
     main_mod._BINDINGS.clear()
 
 
-def _make_demo_policy(
-    monkeypatch, tmp_path, content: str = 'policy_version: "demo"\n'
-) -> Path:
+def _make_demo_policy(monkeypatch, tmp_path, content: str = 'policy_version: "demo"\n') -> Path:
     demo_path = tmp_path / "demo.yaml"
     demo_path.write_text(content, encoding="utf-8")
     monkeypatch.setenv("DEMO_POLICY_PATH", str(demo_path))
@@ -56,9 +54,7 @@ def test_apply_demo_defaults_first_time(monkeypatch, tmp_path):
     assert bindings_resp.status_code == 200
     doc: Dict[str, object] = bindings_resp.json()
     assert any(
-        b["tenant"] == "acme"
-        and b["bot"] == "support"
-        and b["rules_path"] == str(demo_path)
+        b["tenant"] == "acme" and b["bot"] == "support" and b["rules_path"] == str(demo_path)
         for b in doc["bindings"]
     )
 
@@ -89,9 +85,7 @@ def test_apply_demo_defaults_idempotent_refresh(monkeypatch, tmp_path):
     assert bindings_resp.status_code == 200
     doc = bindings_resp.json()
     assert any(
-        b["tenant"] == "acme"
-        and b["bot"] == "support"
-        and b.get("policy_version") == "2"
+        b["tenant"] == "acme" and b["bot"] == "support" and b.get("policy_version") == "2"
         for b in doc["bindings"]
     )
 
@@ -115,9 +109,7 @@ def test_apply_demo_defaults_overwrites_existing(monkeypatch, tmp_path):
     bindings_resp = client.get("/admin/bindings")
     doc = bindings_resp.json()
     assert any(
-        b["tenant"] == "acme"
-        and b["bot"] == "support"
-        and b["rules_path"] == str(demo_path)
+        b["tenant"] == "acme" and b["bot"] == "support" and b["rules_path"] == str(demo_path)
         for b in doc["bindings"]
     )
 

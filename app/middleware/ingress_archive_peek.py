@@ -19,6 +19,7 @@ _HDR_BOT = "X-Guardrail-Bot"
 _NAME_KEYS = {"filename", "file_name"}
 _B64_KEYS = {"content_base64", "content_b64", "data_base64"}
 
+
 def _walk_candidates(obj) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     if isinstance(obj, dict):
@@ -42,6 +43,7 @@ def _walk_candidates(obj) -> List[Tuple[str, str]]:
         for it in obj:
             out.extend(_walk_candidates(it))
     return out
+
 
 class IngressArchivePeekMiddleware(BaseHTTPMiddleware):
     """
@@ -95,10 +97,7 @@ class IngressArchivePeekMiddleware(BaseHTTPMiddleware):
                         # - file listing (one line)
                         # - each text sample
                         if fnames:
-                            derived.append(
-                                f"[archive:{fname}] files="
-                                + ", ".join(fnames[:10])
-                            )
+                            derived.append(f"[archive:{fname}] files=" + ", ".join(fnames[:10]))
                         for t in texts:
                             if t:
                                 derived.append(t)
@@ -113,13 +112,15 @@ class IngressArchivePeekMiddleware(BaseHTTPMiddleware):
                         setattr(
                             request.state,
                             "guardrail_plaintexts",
-                            list(existing) + derived,  
+                            list(existing) + derived,
                         )
 
         # Replay body if consumed
         if raw is not None:
+
             async def receive() -> dict:
                 return {"type": "http.request", "body": raw, "more_body": False}
+
             request = Request(request.scope, receive)
 
         archive_ingress_report(

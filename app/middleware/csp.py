@@ -33,7 +33,9 @@ def install_csp(app) -> None:
     if not get_bool("CSP_ENABLED"):
         return
     csp_val = (os.getenv("CSP_VALUE") or _DEFAULT_CSP).strip()
-    rp_val = (os.getenv("REFERRER_POLICY_VALUE") or "no-referrer").strip() \
-        if get_bool("REFERRER_POLICY_ENABLED") else None
+    rp_val = (
+        (os.getenv("REFERRER_POLICY_VALUE") or "no-referrer").strip()
+        if get_bool("REFERRER_POLICY_ENABLED")
+        else None
+    )
     app.add_middleware(_CSPMiddleware, csp=csp_val, referrer_policy=rp_val)
-

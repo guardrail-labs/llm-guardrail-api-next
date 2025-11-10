@@ -123,9 +123,7 @@ def _backoff_params() -> tuple[int, int, int, int]:
     else:
         cfg_attempts = None
 
-    max_attempts = (
-        env_attempts if cfg_attempts is None else min(env_attempts, cfg_attempts)
-    )
+    max_attempts = env_attempts if cfg_attempts is None else min(env_attempts, cfg_attempts)
 
     # IMPORTANT: keep default horizon constant (15m) unless explicitly overridden.
     # Do NOT couple to per-attempt max backoff; callers lowering max_ms should not
@@ -433,9 +431,7 @@ def _deliver_with_client(
     body_bytes = json.dumps(evt).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
-        "X-Guardrail-Idempotency-Key": (
-            evt.get("incident_id") or evt.get("request_id") or ""
-        ),
+        "X-Guardrail-Idempotency-Key": (evt.get("incident_id") or evt.get("request_id") or ""),
     }
     if secret:
         secret_bytes = secret.encode("utf-8")
@@ -470,9 +466,7 @@ def _deliver_with_client(
             resp = client.post(url, content=body_bytes, headers=headers)
             last_code = resp.status_code
             last_exc = None
-            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(
-                time.perf_counter() - t0
-            )
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
             if 200 <= resp.status_code < 300:
                 reg.on_success(url)
                 webhook_processed_inc()
@@ -483,17 +477,13 @@ def _deliver_with_client(
             last_code = None
             last_exc = "timeout"
             reg.on_failure(url)
-            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(
-                time.perf_counter() - t0
-            )
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
             err_kind = "timeout"
         except Exception:
             last_code = None
             last_exc = "error"
             reg.on_failure(url)
-            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(
-                time.perf_counter() - t0
-            )
+            telemetry_metrics.WEBHOOK_LATENCY_SECONDS.observe(time.perf_counter() - t0)
             err_kind = "network"
         else:
             err_kind = None
@@ -556,9 +546,7 @@ def _worker() -> None:
                 ).inc()
                 # Ensure "enqueued" shows up in flaky CI paths for failure outcomes
                 if outcome != "sent":
-                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels(
-                        "enqueued"
-                    ).inc()
+                    telemetry_metrics.WEBHOOK_EVENTS_TOTAL.labels("enqueued").inc()
             except Exception as e:  # pragma: no cover
                 with _lock:
                     _stats["processed"] += 1

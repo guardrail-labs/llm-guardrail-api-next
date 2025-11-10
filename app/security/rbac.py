@@ -236,9 +236,7 @@ def coerce_query_to_scope(scope_value: object, candidate: Optional[str]):
     raise RBACError("out of scope")
 
 
-def ensure_scope(
-    user: dict[str, Any], *, tenant: Optional[str], bot: Optional[str]
-) -> None:
+def ensure_scope(user: dict[str, Any], *, tenant: Optional[str], bot: Optional[str]) -> None:
     """Validate tenant/bot filters against the caller's scope."""
 
     if isinstance(user, dict):
@@ -260,4 +258,3 @@ def ensure_scope(
         raise RBACError(f"tenant '{tenant}' out of scope")
     if not _value_in_scope(bot_scope, bot):
         raise RBACError(f"bot '{bot}' out of scope")
-

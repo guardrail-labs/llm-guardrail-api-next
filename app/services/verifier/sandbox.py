@@ -219,7 +219,7 @@ def analyze_and_surface_diffs(
                             "provider": primary_provider,
                             "status": primary_status,
                         },
-                        "disagreements": disagreements[: VERIFIER_SANDBOX_DIFF_MAX_ATTACH],
+                        "disagreements": disagreements[:VERIFIER_SANDBOX_DIFF_MAX_ATTACH],
                     }
                 )
         except Exception:

@@ -16,11 +16,9 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
         self._session_cookie = (
-            (os.getenv("ADMIN_SESSION_COOKIE") or "admin_sess").strip() or "admin_sess"
-        )
-        self._csrf_cookie = (
-            (os.getenv("ADMIN_CSRF_COOKIE") or "admin_csrf").strip() or "admin_csrf"
-        )
+            os.getenv("ADMIN_SESSION_COOKIE") or "admin_sess"
+        ).strip() or "admin_sess"
+        self._csrf_cookie = (os.getenv("ADMIN_CSRF_COOKIE") or "admin_csrf").strip() or "admin_csrf"
         path = (os.getenv("ADMIN_COOKIE_PATH") or "/admin").strip() or "/admin"
         if not path.startswith("/"):
             path = f"/{path}"
@@ -92,7 +90,7 @@ class AdminSessionMiddleware(BaseHTTPMiddleware):
         def _response_has_cookie(resp: Response, name: str) -> bool:
             try:
                 raw_headers = getattr(resp, "raw_headers", None) or []
-                for (k, v) in raw_headers:
+                for k, v in raw_headers:
                     if k.lower() != b"set-cookie":
                         continue
                     try:

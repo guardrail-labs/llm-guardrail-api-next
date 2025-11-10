@@ -11,6 +11,7 @@ def make_app(redact_target: str = "secretEmail@example.com"):
     app = FastAPI()
 
     from app.middleware.egress_redact import EgressRedactMiddleware
+
     app.add_middleware(EgressRedactMiddleware)
 
     @app.get("/split")
@@ -74,4 +75,3 @@ def test_sse_still_skipped(monkeypatch):
     response = client.get("/sse")
     assert response.status_code == 200
     assert response.headers.get("X-Redaction-Skipped") == "streaming"
-

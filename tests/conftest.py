@@ -53,8 +53,7 @@ def pytest_pyfunc_call(pyfuncitem: pytest.Function) -> bool | None:
         try:
             asyncio.set_event_loop(loop)
             call_kwargs = {
-                name: pyfuncitem.funcargs[name]
-                for name in pyfuncitem._fixtureinfo.argnames
+                name: pyfuncitem.funcargs[name] for name in pyfuncitem._fixtureinfo.argnames
             }
             loop.run_until_complete(test_func(**call_kwargs))
         finally:

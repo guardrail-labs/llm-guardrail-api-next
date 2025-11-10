@@ -48,6 +48,7 @@ class MaxBodyMiddleware(BaseHTTPMiddleware):
 
         cl = request.headers.get("content-length")
         if cl:
+
             def _parse_content_length() -> int:
                 return int(cl)
 
@@ -62,4 +63,3 @@ class MaxBodyMiddleware(BaseHTTPMiddleware):
 def install_max_body(app) -> None:
     if _limit() is not None:
         app.add_middleware(MaxBodyMiddleware)
-

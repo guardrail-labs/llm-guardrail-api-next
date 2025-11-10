@@ -39,11 +39,7 @@ def _read_audit(max_rows: int) -> List[Dict[str, Any]]:
 def _csrf_ok_equal(request: Request, token: Optional[str]) -> None:
     cookie = request.cookies.get("ui_csrf", "")
     if not (
-        cookie
-        and token
-        and _csrf_ok(cookie)
-        and _csrf_ok(token)
-        and compare_digest(cookie, token)
+        cookie and token and _csrf_ok(cookie) and _csrf_ok(token) and compare_digest(cookie, token)
     ):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CSRF failed")
 

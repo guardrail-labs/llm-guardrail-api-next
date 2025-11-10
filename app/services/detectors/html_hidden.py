@@ -50,9 +50,7 @@ _CLASS_HIDDEN = {
 }
 
 # Fallback regexes (simple, conservative)
-_FALLBACK_ATTR_HIDDEN_RE = re.compile(
-    r"<[^>]+\s(hidden|aria-hidden=['\"]?true['\"]?)", re.I
-)
+_FALLBACK_ATTR_HIDDEN_RE = re.compile(r"<[^>]+\s(hidden|aria-hidden=['\"]?true['\"]?)", re.I)
 _FALLBACK_CLASS_HIDDEN_RE = re.compile(
     r'class\s*=\s*["\'][^"\']*('
     r"sr-only|sr-only-focusable|visually-hidden|u-visually-hidden|vh|"

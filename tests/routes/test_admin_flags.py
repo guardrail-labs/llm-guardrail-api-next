@@ -55,9 +55,7 @@ def test_flags_update_and_snapshot():
     assert 0.1 == body2["flags"]["verifier_sampling_pct"]
     assert body2["flags"]["pdf_detector_enabled"] is False
 
-    r_bad = client.post(
-        "/admin/flags", headers=_auth(), json={"verifier_sampling_pct": 2}
-    )
+    r_bad = client.post("/admin/flags", headers=_auth(), json={"verifier_sampling_pct": 2})
     assert r_bad.status_code == 400
 
     r_reload = client.post("/admin/policy/reload", headers=_auth())
