@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
-JsonLike = Union[dict, list, str, int, float, bool, None]
+JsonLike = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
 
 # Zero-width & formatting controls (incl. soft hyphen, BOM, word-joiner)
 # and bidi override/embedding/isolate controls.
