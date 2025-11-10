@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/WesMilam/llm-guardrail-api-next/compare/v1.0.1...v1.1.0) (2025-11-10)
+
+
+### Features
+
+* **core:** enable confusables sanitizer and arm isolation ([69ec10f](https://github.com/WesMilam/llm-guardrail-api-next/commit/69ec10fcd7e56df587628c2ba6e0fdeaa9d2d22b))
+
+
+### Bug Fixes
+
+* **ingress:** preserve structured payloads after sanitization ([88ca3be](https://github.com/WesMilam/llm-guardrail-api-next/commit/88ca3bece9d2e7378e52fc48b8dd86be071f7352))
+* **openai-compat:** preserve multiline content when applying sanitized ingress ([eb01635](https://github.com/WesMilam/llm-guardrail-api-next/commit/eb01635606e00a335b8a7a61a663da668ce85a50))
+
 ## [Unreleased]
 ### Added
 - Added Redis-backed DLQ for webhooks (schedule, replay, quarantine)
