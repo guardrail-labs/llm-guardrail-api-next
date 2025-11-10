@@ -130,9 +130,10 @@ def configure_root_logging(level: int | str = "INFO") -> None:
 
     root = logging.getLogger()
 
-    resolved_level = level if isinstance(level, int) else getattr(
-        logging, str(level).upper(), logging.INFO
-    )
+    if isinstance(level, int):
+        resolved_level = level
+    else:
+        resolved_level = getattr(logging, str(level).upper(), logging.INFO)
     root.setLevel(resolved_level)
 
     # Remove pre-existing handlers to avoid duplicate lines in tests
@@ -146,7 +147,7 @@ def configure_root_logging(level: int | str = "INFO") -> None:
     _configured = True
 
 
-class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
+class ContextAdapter(logging.LoggerAdapter[Dict[str, Any]]):
     """
     Bind static context (e.g., tenant_id, component) to a logger, ensuring those
     keys appear on every log line via the 'extra' mechanism.
