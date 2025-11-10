@@ -162,7 +162,6 @@ class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
         call_extra = kwargs.get("extra")
         if isinstance(call_extra, Mapping):
             merged_extra.update(dict(call_extra))
-        # Adapter context wins unless caller explicitly overrides
         for k, v in self.extra.items():
             merged_extra.setdefault(k, v)
         kwargs["extra"] = merged_extra
