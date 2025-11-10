@@ -1,7 +1,13 @@
 name: release-please
 
 on:
-  workflow_dispatch: {}
+  # allow manual runs with an optional forced version
+  workflow_dispatch:
+    inputs:
+      release-as:
+        description: 'Force next version (e.g., 1.4.0). Leave empty for auto-bump.'
+        required: false
+        type: string
   push:
     branches: [main]
 
@@ -16,3 +22,5 @@ jobs:
           bump-minor-pre-major: true
           extra-files: |
             pyproject.toml
+          # Only applied when triggered via workflow_dispatch with an input
+          release-as: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs['release-as'] || '' }}
