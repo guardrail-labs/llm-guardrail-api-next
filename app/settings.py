@@ -41,6 +41,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 UNICODE_SANITIZER_ENABLED: bool = _env_bool("UNICODE_SANITIZER_ENABLED", True)
+SANITIZER_CONFUSABLES_ENABLED: bool = _env_bool("SANITIZER_CONFUSABLES_ENABLED", False)
 UNICODE_BLOCK_ON_BIDI: bool = _env_bool("UNICODE_BLOCK_ON_BIDI", True)
 UNICODE_BLOCK_ON_MIXED_SCRIPT: bool = _env_bool("UNICODE_BLOCK_ON_MIXED_SCRIPT", True)
 UNICODE_EMOJI_RATIO_WARN: float = float(os.getenv("UNICODE_EMOJI_RATIO_WARN", "0.5") or "0.5")

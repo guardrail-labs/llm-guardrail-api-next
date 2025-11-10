@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import unicodedata as ud
+from collections import Counter
 from typing import Literal, Optional, cast
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app import settings
+from app.observability.metrics import inc_sanitizer_confusable_detected
+from app.sanitizers.unicode_sanitizer import detect_unicode_anomalies
 
 _NormalForm = Literal["NFC", "NFD", "NFKC", "NFKD"]
 _CollectError = Literal["too_large", "other"]
@@ -34,6 +39,31 @@ class UnicodeNormalizeGuard:
             return
 
         body, err, disconnect = await self._collect_body(receive)
+        unicode_summary = None
+        if body and settings.SANITIZER_CONFUSABLES_ENABLED:
+            try:
+                text_for_detection = body.decode("utf-8")
+            except UnicodeDecodeError:
+                text_for_detection = None
+            else:
+                anomalies = detect_unicode_anomalies(text_for_detection)
+                if anomalies:
+                    totals: Counter[str] = Counter()
+                    samples: dict[str, dict[str, str]] = {}
+                    for finding in anomalies:
+                        kind = finding["type"]
+                        totals[kind] += 1
+                        inc_sanitizer_confusable_detected(kind)
+                        samples.setdefault(
+                            kind,
+                            {"char": finding["char"], "codepoint": finding["codepoint"]},
+                        )
+                    unicode_summary = {
+                        "totals_by_type": {k: int(v) for k, v in totals.items()},
+                        "sample_chars": samples,
+                    }
+                    scope.setdefault("state", {})["unicode_findings_summary"] = unicode_summary
+                    scope["unicode_findings_summary"] = unicode_summary
         if err == "too_large":
             await _send_413(send)
             return

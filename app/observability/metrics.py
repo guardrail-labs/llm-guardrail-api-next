@@ -416,6 +416,12 @@ _unicode_mixed_script_inputs_total = _get_or_create_counter(
     ("tenant", "bot"),
 )
 
+_sanitizer_confusables_detected_total = _get_or_create_counter(
+    "guardrail_sanitizer_confusables_detected_total",
+    "Unicode confusable or control characters detected during ingress inspection.",
+    ("type",),
+)
+
 
 def unicode_ingress_report(
     *,
@@ -448,6 +454,21 @@ def unicode_ingress_report(
             _unicode_mixed_script_inputs_total.labels(tenant=tenant_l, bot=bot_l).inc(mixed_scripts)
 
     _best_effort("inc unicode ingress metrics", _do)
+
+
+def inc_sanitizer_confusable_detected(anomaly_type: str, count: int = 1) -> None:
+    label = str(anomaly_type or "unknown")
+    try:
+        amount = int(count)
+    except Exception:
+        amount = 0
+    if amount <= 0:
+        return
+
+    def _do() -> None:
+        _sanitizer_confusables_detected_total.labels(type=label).inc(amount)
+
+    _best_effort("inc unicode confusable detection", _do)
 
 
 # --- Decode ingress metrics --------------------------------------------------

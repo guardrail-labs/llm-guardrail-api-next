@@ -2,17 +2,89 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
-__all__ = ["normalize_nfkc", "sanitize_text", "sanitize_payload"]
+__all__ = [
+    "normalize_nfkc",
+    "sanitize_text",
+    "sanitize_payload",
+    "detect_unicode_anomalies",
+]
 
 JsonLike = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
+
+
+class Finding(TypedDict):
+    type: str
+    span: Tuple[int, int]
+    char: str
+    codepoint: str
 
 
 def normalize_nfkc(text: str) -> str:
     """Return ``text`` normalized using the NFKC form."""
 
     return unicodedata.normalize("NFKC", text)
+
+
+_ZERO_WIDTH_DETECTION = {
+    0x200B,
+    0x200C,
+    0x200D,
+    0x2060,
+}
+
+_BIDI_CONTROL_RANGES = ((0x202A, 0x202E), (0x2066, 0x2069))
+_VARIATION_SELECTOR_RANGE = (0xFE00, 0xFE0F)
+_FULLWIDTH_RANGE = (0xFF00, 0xFFEF)
+_GREEK_RANGE = (0x0370, 0x03FF)
+_CYRILLIC_RANGE = (0x0400, 0x04FF)
+_MATH_ALPHANUMERIC_RANGE = (0x1D400, 0x1D7FF)
+
+
+def _format_codepoint(cp: int) -> str:
+    if cp <= 0xFFFF:
+        return f"U+{cp:04X}"
+    return f"U+{cp:06X}"
+
+
+def _in_ranges(cp: int, ranges: Tuple[Tuple[int, int], ...]) -> bool:
+    return any(start <= cp <= end for start, end in ranges)
+
+
+def detect_unicode_anomalies(text: str) -> List[Finding]:
+    """Return metadata for suspicious Unicode characters within ``text``."""
+
+    findings: List[Finding] = []
+    for idx, ch in enumerate(text):
+        cp = ord(ch)
+        category: Optional[str] = None
+        if cp in _ZERO_WIDTH_DETECTION:
+            category = "zero_width"
+        elif _in_ranges(cp, _BIDI_CONTROL_RANGES):
+            category = "bidi_control"
+        elif _VARIATION_SELECTOR_RANGE[0] <= cp <= _VARIATION_SELECTOR_RANGE[1]:
+            category = "variation_selector"
+        elif _FULLWIDTH_RANGE[0] <= cp <= _FULLWIDTH_RANGE[1]:
+            category = "fullwidth"
+        elif _GREEK_RANGE[0] <= cp <= _GREEK_RANGE[1]:
+            category = "greek"
+        elif _CYRILLIC_RANGE[0] <= cp <= _CYRILLIC_RANGE[1]:
+            category = "cyrillic"
+        elif _MATH_ALPHANUMERIC_RANGE[0] <= cp <= _MATH_ALPHANUMERIC_RANGE[1]:
+            category = "math_alphanum"
+
+        if category:
+            findings.append(
+                Finding(
+                    type=category,
+                    span=(idx, idx + 1),
+                    char=ch,
+                    codepoint=_format_codepoint(cp),
+                )
+            )
+
+    return findings
 
 # Zero-width & formatting controls (incl. soft hyphen, BOM, word-joiner)
 # and bidi override/embedding/isolate controls.

@@ -1,6 +1,7 @@
 # ruff: noqa: I001
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import random
@@ -8,6 +9,7 @@ import re
 import uuid
 import time
 import math
+from collections import Counter
 from typing import (
     Any,
     Callable,
@@ -77,9 +79,14 @@ from app.security.unicode_sanitizer import (
     normalize_nfkc,
     sanitize_unicode,
 )
+from app.sanitizers.unicode_sanitizer import detect_unicode_anomalies
 from app import settings
 from app.services import ocr as _ocr
-from app.observability.metrics import unicode_normalized_total, unicode_suspicious_total
+from app.observability.metrics import (
+    inc_sanitizer_confusable_detected,
+    unicode_normalized_total,
+    unicode_suspicious_total,
+)
 
 # Normalized config values (module-level; safe to import elsewhere)
 VERIFIER_LATENCY_BUDGET_MS = get_verifier_latency_budget_ms()
@@ -118,6 +125,33 @@ router = APIRouter()
 # ------------------------- helpers & constants -------------------------
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _inspect_unicode_findings(text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    if not text:
+        return text, None
+
+    findings = detect_unicode_anomalies(text)
+    normalized = normalize_nfkc(text)
+    if not findings:
+        return normalized, None
+
+    totals = Counter()
+    samples: Dict[str, Dict[str, str]] = {}
+    for finding in findings:
+        kind = finding["type"]
+        totals[kind] += 1
+        inc_sanitizer_confusable_detected(kind)
+        samples.setdefault(
+            kind,
+            {"char": finding["char"], "codepoint": finding["codepoint"]},
+        )
+
+    summary: Dict[str, Any] = {
+        "totals_by_type": {k: int(v) for k, v in totals.items()},
+        "sample_chars": samples,
+    }
+    return normalized, summary
 
 _BLOCK_DECISIONS = {"block", "block_input_only", "deny", "lock"}
 
@@ -1542,6 +1576,7 @@ async def guardrail_evaluate(request: Request):
     request_id = _req_id(explicit_request_id or req_header_request_id)
     unicode_header_payload: Optional[str] = None
     unicode_annotation: Optional[Dict[str, Any]] = None
+    unicode_findings_summary: Optional[Dict[str, Any]] = None
 
     def finalize_response(
         response: Response,
@@ -1678,6 +1713,8 @@ async def guardrail_evaluate(request: Request):
         }
         if unicode_annotation:
             event_payload["unicode"] = unicode_annotation
+        if unicode_findings_summary:
+            event_payload["unicode_findings"] = unicode_findings_summary
         publish(event_payload)
 
         cfg = get_config()
@@ -1733,6 +1770,20 @@ async def guardrail_evaluate(request: Request):
 
         return resp
 
+    unicode_findings_summary_state = getattr(request.state, "unicode_findings_summary", None)
+    if not unicode_findings_summary_state:
+        unicode_findings_summary_state = request.scope.get("unicode_findings_summary")
+    if unicode_findings_summary_state:
+        unicode_findings_summary = copy.deepcopy(unicode_findings_summary_state)
+        if combined_text:
+            combined_text = normalize_nfkc(combined_text)
+            if isinstance(request_payload_dict, dict):
+                request_payload_dict["text"] = combined_text
+    elif settings.SANITIZER_CONFUSABLES_ENABLED and combined_text:
+        combined_text, unicode_findings_summary = _inspect_unicode_findings(combined_text)
+        if isinstance(request_payload_dict, dict):
+            request_payload_dict["text"] = combined_text
+
     if settings.UNICODE_SANITIZER_ENABLED and combined_text:
         unicode_cfg = UnicodeSanitizerCfg(
             normalize_only=False,
@@ -1776,6 +1827,8 @@ async def guardrail_evaluate(request: Request):
         }
         unicode_annotation["suspicious_reasons"] = list(unicode_result.suspicious_reasons)
         unicode_annotation["blocked"] = unicode_result.should_block
+        if unicode_findings_summary:
+            unicode_annotation["findings"] = copy.deepcopy(unicode_findings_summary)
         if unicode_result.should_block:
             message = (
                 "Suspicious Unicode characters detected. Please resend plain text "
@@ -2215,6 +2268,11 @@ async def guardrail_evaluate_multipart(request: Request):
     request_id = _req_id(req_header_request_id)
     unicode_header_payload: Optional[str] = None
     unicode_annotation_mp: Optional[Dict[str, Any]] = None
+    unicode_findings_summary_mp: Optional[Dict[str, Any]] = None
+
+    if settings.SANITIZER_CONFUSABLES_ENABLED and combined_text:
+        combined_text, unicode_findings_summary_mp = _inspect_unicode_findings(combined_text)
+        
     if settings.UNICODE_SANITIZER_ENABLED and combined_text:
         unicode_cfg = UnicodeSanitizerCfg(
             normalize_only=False,
@@ -2256,6 +2314,8 @@ async def guardrail_evaluate_multipart(request: Request):
         }
         unicode_annotation_mp["suspicious_reasons"] = list(unicode_result.suspicious_reasons)
         unicode_annotation_mp["blocked"] = unicode_result.should_block
+        if unicode_findings_summary_mp:
+            unicode_annotation_mp["findings"] = copy.deepcopy(unicode_findings_summary_mp)
         if unicode_result.should_block:
             message = (
                 "Suspicious Unicode characters detected. Please resend plain text "
