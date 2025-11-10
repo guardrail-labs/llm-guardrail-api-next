@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Awaitable, Callable, Dict, MutableMapping, Tuple, Union, cast
+from collections.abc import Awaitable, Callable, MutableMapping
+from typing import Any, cast, Dict
 
 from app.sanitizer import sanitize_input
 
 Decision = Dict[str, Any]
 Context = Dict[str, Any]
-PolicyRunner = Callable[[Context], Union[Awaitable[Decision], Decision]]
+PolicyRunner = Callable[[Context], Awaitable[Decision] | Decision]
 
 
 class IngressGuard:
@@ -19,7 +20,7 @@ class IngressGuard:
     def __init__(self, *, policy_runner: PolicyRunner | None = None) -> None:
         self._policy_runner: PolicyRunner = policy_runner or self._default_policy
 
-    async def run(self, ctx: Context) -> Tuple[Decision, Context]:
+    async def run(self, ctx: Context) -> tuple[Decision, Context]:
         payload = ctx.get("payload", "")
         raw_text = self._extract_text(payload)
 
@@ -31,14 +32,21 @@ class IngressGuard:
 
         self._update_payload(ctx, normalized)
 
-        decision = await self._execute_policy(ctx)
+        # ---- execute policy without type: ignore ----
+        res = self._policy_runner(ctx)
+        if inspect.isawaitable(res):
+            decision = await cast(Awaitable[Decision], res)
+        else:
+            decision = cast(Decision, res)
+        # ---------------------------------------------
 
         if decision.get("action", "allow") == "allow":
-            normalized2 = ctx.get("payload_normalized")
-            if normalized2 is not None and (
-                isinstance(payload, MutableMapping) == isinstance(normalized2, MutableMapping)
+            normalized_after = ctx.get("payload_normalized")
+            if normalized_after is not None and (
+                isinstance(payload, MutableMapping)
+                == isinstance(normalized_after, MutableMapping)
             ):
-                ctx["payload"] = normalized2
+                ctx["payload"] = normalized_after
 
         return decision, ctx
 
@@ -59,7 +67,7 @@ class IngressGuard:
     @staticmethod
     def _normalize_payload(payload: Any, sanitized: str) -> Any:
         if isinstance(payload, MutableMapping):
-            normalized_payload: Dict[str, Any] = dict(payload)
+            normalized_payload: dict[str, Any] = dict(payload)
             if "text" in normalized_payload:
                 normalized_payload["text"] = sanitized
             return normalized_payload
@@ -68,14 +76,6 @@ class IngressGuard:
     @staticmethod
     def _update_payload(ctx: Context, normalized: Any) -> None:
         ctx["payload"] = normalized
-
-    async def _execute_policy(self, ctx: Context) -> Decision:
-        result: Any = self._policy_runner(ctx)
-        if inspect.isawaitable(result):
-            decision = await result  # type: ignore[no-any-return]
-        else:
-            decision = result
-        return cast(Decision, decision)
 
     @staticmethod
     def _default_policy(ctx: Context) -> Decision:
