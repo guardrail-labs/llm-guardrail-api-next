@@ -132,7 +132,7 @@ def _get_or_create(name: str, factory: Callable[[], T]) -> T:
     created = factory()
     # best-effort: mirror how prometheus_client tracks collectors
     _registry_map()[name] = created
-    return cast(T, created)
+    return created
 
 
 # ---- Collector factories ------------------------------------------------------
