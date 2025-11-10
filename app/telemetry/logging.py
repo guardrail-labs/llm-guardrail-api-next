@@ -1,3 +1,4 @@
+# app/telemetry/logging.py
 from __future__ import annotations
 
 import json
@@ -7,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, MutableMapping, Tuple
 
 from app.telemetry.tracing import get_request_id, get_trace_id
+
 
 # ------------------------------- JSON utilities -------------------------------
 
@@ -45,11 +47,11 @@ def _json_sanitize(value: Any) -> Any:
 
 class JsonFormatter(logging.Formatter):
     """
-    Minimal, fast JSON formatter with stable keys. Avoids surprises in CI by
-    ensuring everything is JSON-serializable and line-oriented.
+    Minimal, fast JSON formatter with stable keys. Ensures all fields are
+    JSON-serializable and line-oriented.
     """
 
-    #: standard LogRecord attributes to exclude from "extra"
+    # Standard LogRecord attributes to exclude from "extra"
     _std_keys: Tuple[str, ...] = (
         "name",
         "msg",
@@ -73,10 +75,7 @@ class JsonFormatter(logging.Formatter):
         "process",
     )
 
-    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
-        """
-        Format a LogRecord as a single JSON line.
-        """
+    def format(self, record: logging.LogRecord) -> str:
         # message resolving (handles %-style on .msg/.args)
         message = record.getMessage()
 
@@ -91,7 +90,9 @@ class JsonFormatter(logging.Formatter):
         tid = extra.get("trace_id") or get_trace_id()
 
         payload: Dict[str, Any] = {
-            "ts": _iso8601(datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)),
+            "ts": _iso8601(
+                datetime.utcfromtimestamp(record.created).replace(tzinfo=timezone.utc)
+            ),
             "level": record.levelname,
             "logger": record.name,
             "message": message,
@@ -129,11 +130,9 @@ def configure_root_logging(level: int | str = "INFO") -> None:
 
     root = logging.getLogger()
 
-    if isinstance(level, int):
-        resolved_level = level
-    else:
-        resolved_level = getattr(logging, str(level).upper(), logging.INFO)
-
+    resolved_level = level if isinstance(level, int) else getattr(
+        logging, str(level).upper(), logging.INFO
+    )
     root.setLevel(resolved_level)
 
     # Remove pre-existing handlers to avoid duplicate lines in tests
@@ -147,28 +146,28 @@ def configure_root_logging(level: int | str = "INFO") -> None:
     _configured = True
 
 
-class ContextAdapter(logging.LoggerAdapter[Dict[str, Any]]):
+class ContextAdapter(logging.LoggerAdapter[logging.Logger]):
     """
     Bind static context (e.g., tenant_id, component) to a logger, ensuring those
     keys appear on every log line via the 'extra' mechanism.
     """
 
+    def __init__(self, logger: logging.Logger, extra: Mapping[str, Any] | None = None):
+        # Store a plain dict to satisfy LoggerAdapter expectations
+        super().__init__(logger, dict(extra or {}))
+
     def process(
         self, msg: Any, kwargs: MutableMapping[str, Any]
     ) -> Tuple[Any, MutableMapping[str, Any]]:
-        extra: Dict[str, Any] = {}
-
-        # Merge caller-provided extra if present and a Mapping
-        caller_extra = kwargs.get("extra")
-        if isinstance(caller_extra, Mapping):
-            extra.update(dict(caller_extra))
-
+        # Merge adapter's context with per-call extra (if any)
+        merged_extra: Dict[str, Any] = {}
+        call_extra = kwargs.get("extra")
+        if isinstance(call_extra, Mapping):
+            merged_extra.update(dict(call_extra))
         # Adapter context wins unless caller explicitly overrides
-        bound_extra: Mapping[str, Any] = self.extra or {}
-        for k, v in bound_extra.items():
-            extra.setdefault(k, v)
-
-        kwargs["extra"] = extra
+        for k, v in self.extra.items():
+            merged_extra.setdefault(k, v)
+        kwargs["extra"] = merged_extra
         return msg, kwargs
 
 
@@ -182,4 +181,4 @@ def bind(logger: logging.Logger | None = None, **context: Any) -> ContextAdapter
     If logger is None, the root logger is used.
     """
     base = logger or logging.getLogger()
-    return ContextAdapter(base, dict(context))
+    return ContextAdapter(base, context)
