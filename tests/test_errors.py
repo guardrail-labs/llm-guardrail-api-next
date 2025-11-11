@@ -50,6 +50,13 @@ def test_404_has_code_and_request_id():
     assert body.get("code") == "not_found"
     assert isinstance(body.get("request_id"), str)
     assert "X-Request-ID" in r.headers
+    assert "X-Guardrail-Mode" in r.headers
+    rid_headers = [
+        name
+        for name, _ in r.headers.raw
+        if name.decode("latin-1").lower() == "x-request-id"
+    ]
+    assert len(rid_headers) == 1
 
 
 def test_413_has_code_and_request_id():
@@ -66,6 +73,7 @@ def test_413_has_code_and_request_id():
         body = r.json()
         assert body.get("code") == "payload_too_large"
         assert "request_id" in body
+        assert "X-Guardrail-Mode" in r.headers
 
 
 def test_429_has_retry_after_and_code():
@@ -91,6 +99,7 @@ def test_429_has_retry_after_and_code():
         assert body.get("detail") == "Rate limit exceeded"
         assert "Retry-After" in r.headers
         assert "X-Request-ID" in r.headers
+        assert "X-Guardrail-Mode" in r.headers
 
 
 def test_500_has_internal_error_with_request_id():
@@ -110,3 +119,4 @@ def test_500_has_internal_error_with_request_id():
     assert body.get("code") == "internal_error"
     assert "request_id" in body
     assert "X-Request-ID" in r.headers
+    assert "X-Guardrail-Mode" in r.headers

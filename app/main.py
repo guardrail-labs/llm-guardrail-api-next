@@ -25,6 +25,7 @@ from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
+from app.middleware.guardrail_mode import GuardrailModeMiddleware, current_guardrail_mode
 from app.middleware.header_canonicalize import HeaderCanonicalizeMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
@@ -165,7 +166,13 @@ def _safe_headers_copy(src_headers) -> dict[str, str]:
                 out.setdefault(k, v)
         except Exception as inner_exc:
             _log.debug("copy mapped headers failed: %s", inner_exc)
-    rid = out.get("X-Request-ID") or (get_request_id() or "")
+    rid: Optional[str] = None
+    for key in list(out.keys()):
+        if key.lower() == "x-request-id":
+            rid = out[key]
+            if key != "X-Request-ID":
+                out.pop(key)
+    rid = rid or get_request_id()
     if rid:
         out["X-Request-ID"] = rid
     now = int(time.time())
@@ -539,7 +546,12 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
         "request_id": get_request_id() or "",
     }
     headers = _safe_headers_copy(base_headers or {})
-    headers["X-Request-ID"] = payload["request_id"]
+    rid = payload.get("request_id")
+    if rid:
+        headers.setdefault("X-Request-ID", rid)
+    mode = current_guardrail_mode()
+    if mode:
+        headers.setdefault("X-Guardrail-Mode", mode)
     return JSONResponse(payload, status_code=status, headers=headers)
 
 
@@ -1118,6 +1130,7 @@ def create_app() -> FastAPI:
             # Register late so it executes early (before body-heavy ingress guards).
             lambda: app.add_middleware(RateLimitMiddleware),
         )
+    app.add_middleware(GuardrailModeMiddleware)
     _ensure_idempotency_inner(app)
 
     # ---- Ensure only our /metrics is registered and uses v0.0.4 ----

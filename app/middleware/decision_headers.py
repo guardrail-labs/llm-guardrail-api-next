@@ -7,10 +7,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
-try:
-    from app.runtime.arm import get_arm_runtime as _get_arm_runtime
-except Exception:  # pragma: no cover - guard against optional runtime packages
-    _get_arm_runtime = None
+from app.middleware.guardrail_mode import current_guardrail_mode
 
 _DECISION_KEY_CANDIDATES = ("guardrail_decision", "decision")
 
@@ -32,47 +29,6 @@ def _coerce_str(value: Any) -> Optional[str]:
     return stringified or None
 
 
-_DEFAULT_MODE_HEADER = "normal"
-
-
-def _mode_header_from_arm(mode_obj: Any) -> Optional[str]:
-    if mode_obj is None:
-        return None
-    header_value: Optional[str] = None
-    try:
-        header_value = getattr(mode_obj, "header_value", None)
-        if callable(header_value):  # pragma: no cover - defensive
-            header_value = header_value()
-    except Exception:  # pragma: no cover - defensive
-        header_value = None
-
-    if not header_value:
-        try:
-            header_value = getattr(mode_obj, "value", None) or str(mode_obj)
-        except Exception:  # pragma: no cover - defensive
-            header_value = None
-
-    return _coerce_str(header_value)
-
-
-def _current_arm_mode_header() -> str:
-    if _get_arm_runtime is None:
-        return _DEFAULT_MODE_HEADER
-
-    try:
-        runtime = _get_arm_runtime()
-    except Exception:  # pragma: no cover - runtime lookup should not break flow
-        return _DEFAULT_MODE_HEADER
-
-    try:
-        mode_obj = runtime.evaluate_mode()
-    except Exception:  # pragma: no cover - runtime lookup should not break flow
-        mode_obj = getattr(runtime, "mode", None)
-
-    mode = _mode_header_from_arm(mode_obj)
-    return mode or _DEFAULT_MODE_HEADER
-
-
 class DecisionHeaderMiddleware(BaseHTTPMiddleware):
     """Add headers that surface guardrail decision metadata if present."""
 
@@ -80,7 +36,7 @@ class DecisionHeaderMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        fallback_mode = _current_arm_mode_header()
+        fallback_mode = current_guardrail_mode()
 
         response = await call_next(request)
         decision = _extract_decision(getattr(request, "state", None))
