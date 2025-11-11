@@ -4,11 +4,13 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from app.middleware.decision_headers import DecisionHeaderMiddleware
+from app.middleware.guardrail_mode import GuardrailModeMiddleware
 
 
 def _app_with_route_sets_state() -> FastAPI:
     app = FastAPI()
     app.add_middleware(DecisionHeaderMiddleware)
+    app.add_middleware(GuardrailModeMiddleware)
 
     @app.get("/decide")
     def decide(request: Request):
@@ -35,6 +37,7 @@ def test_headers_from_request_state() -> None:
 def test_mode_defaults_to_runtime_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.add_middleware(DecisionHeaderMiddleware)
+    app.add_middleware(GuardrailModeMiddleware)
 
     @app.get("/deny")
     def deny(request: Request) -> JSONResponse:
@@ -52,7 +55,7 @@ def test_mode_defaults_to_runtime_when_missing(monkeypatch: pytest.MonkeyPatch) 
             return self.mode
 
     monkeypatch.setattr(
-        "app.middleware.decision_headers._get_arm_runtime",
+        "app.middleware.guardrail_mode._get_arm_runtime",
         lambda: _DummyRuntime(),
         raising=False,
     )
@@ -67,6 +70,7 @@ def test_mode_defaults_to_runtime_when_missing(monkeypatch: pytest.MonkeyPatch) 
 def test_mode_header_emitted_for_404(monkeypatch: pytest.MonkeyPatch) -> None:
     app = FastAPI()
     app.add_middleware(DecisionHeaderMiddleware)
+    app.add_middleware(GuardrailModeMiddleware)
 
     class _DummyMode:
         header_value = "normal"
@@ -81,7 +85,7 @@ def test_mode_header_emitted_for_404(monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = _DummyRuntime()
 
     monkeypatch.setattr(
-        "app.middleware.decision_headers._get_arm_runtime",
+        "app.middleware.guardrail_mode._get_arm_runtime",
         lambda: runtime,
         raising=False,
     )
