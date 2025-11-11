@@ -8,6 +8,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 _DEFAULT_MODE_HEADER = "normal"
+_MODE_HEADER_NAME = "X-Guardrail-Mode"
 
 try:  # pragma: no cover - optional dependency during import
     from app.runtime.arm import get_arm_runtime as _get_arm_runtime
@@ -58,6 +59,49 @@ def current_guardrail_mode() -> str:
     return mode or _DEFAULT_MODE_HEADER
 
 
+def _normalize_header_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        value = str(value)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    value = value.strip()
+    return value or None
+
+
+def ensure_guardrail_mode_header(headers: Any, fallback_mode: Optional[str]) -> None:
+    """Ensure ``headers`` includes the guardrail mode value."""
+
+    if headers is None:  # pragma: no cover - defensive
+        return
+
+    current: Optional[str] = None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        try:
+            current = getter(_MODE_HEADER_NAME)
+        except Exception:  # pragma: no cover - defensive
+            current = None
+    else:  # pragma: no cover - defensive
+        try:
+            current = headers[_MODE_HEADER_NAME]
+        except Exception:
+            current = None
+
+    normalized = _normalize_header_value(current)
+    fallback = _normalize_header_value(fallback_mode)
+    final = normalized or fallback or _DEFAULT_MODE_HEADER
+
+    try:
+        headers[_MODE_HEADER_NAME] = final
+    except Exception:  # pragma: no cover - defensive
+        try:
+            setattr(headers, _MODE_HEADER_NAME, final)
+        except Exception:
+            pass
+
+
 class GuardrailModeMiddleware(BaseHTTPMiddleware):
     """Ensure every response surfaces the guardrail mode header."""
 
@@ -67,8 +111,7 @@ class GuardrailModeMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        response = await call_next(request)
         mode = current_guardrail_mode()
-        if mode and "X-Guardrail-Mode" not in response.headers:
-            response.headers["X-Guardrail-Mode"] = mode
+        response = await call_next(request)
+        ensure_guardrail_mode_header(response.headers, mode)
         return response

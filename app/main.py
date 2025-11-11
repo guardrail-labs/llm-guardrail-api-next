@@ -25,7 +25,10 @@ from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
-from app.middleware.guardrail_mode import GuardrailModeMiddleware, current_guardrail_mode
+from app.middleware.guardrail_mode import (
+    ensure_guardrail_mode_header,
+    current_guardrail_mode,
+)
 from app.middleware.header_canonicalize import HeaderCanonicalizeMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
 from app.middleware.ingress_archive_peek import IngressArchivePeekMiddleware
@@ -549,9 +552,7 @@ def _json_error(detail: str, status: int, base_headers=None) -> JSONResponse:
     rid = payload.get("request_id")
     if rid:
         headers.setdefault("X-Request-ID", rid)
-    mode = current_guardrail_mode()
-    if mode:
-        headers.setdefault("X-Guardrail-Mode", mode)
+    ensure_guardrail_mode_header(headers, current_guardrail_mode())
     return JSONResponse(payload, status_code=status, headers=headers)
 
 
@@ -680,6 +681,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
     )
+    @app.middleware("http")
+    async def _guardrail_mode_header(
+        request: Request, call_next: RequestHandler
+    ) -> StarletteResponse:
+        mode = current_guardrail_mode()
+        response: StarletteResponse = await call_next(request)
+        ensure_guardrail_mode_header(response.headers, mode)
+        return response
+
     try:
         from app.security.rbac import RBACError
     except Exception as exc:
@@ -1130,7 +1140,6 @@ def create_app() -> FastAPI:
             # Register late so it executes early (before body-heavy ingress guards).
             lambda: app.add_middleware(RateLimitMiddleware),
         )
-    app.add_middleware(GuardrailModeMiddleware)
     _ensure_idempotency_inner(app)
 
     # ---- Ensure only our /metrics is registered and uses v0.0.4 ----
