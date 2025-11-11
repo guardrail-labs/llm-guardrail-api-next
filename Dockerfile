@@ -21,6 +21,19 @@ RUN python -m venv /opt/venv && \
 # -------- runtime stage --------
 FROM python:3.11-slim AS runtime
 
+ARG BUILD_VERSION="1.4.0"
+ARG VCS_REF=""
+ARG VCS_URL="https://github.com/WesMilam/llm-guardrail-api-next"
+ARG BUILD_DATE=""
+
+LABEL org.opencontainers.image.title="LLM Guardrail Core" \
+      org.opencontainers.image.description="Guardrail API enforcement runtime service." \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.source="${VCS_URL}" \
+      org.opencontainers.image.url="${VCS_URL}" \
+      org.opencontainers.image.created="${BUILD_DATE}"
+
 # Security posture: non-root, read-only rootfs compatible
 RUN useradd -u 65532 -r -s /usr/sbin/nologin nonroot
 USER nonroot:nonroot

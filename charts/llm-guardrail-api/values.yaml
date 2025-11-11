@@ -1,6 +1,6 @@
 image:
-  repository: ghcr.io/wesmilam/llm-guardrail-api-next
-  tag: latest
+  repository: ghcr.io/guardrail-labs/guardrail-core
+  tag: "1.4.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -21,8 +21,21 @@ serviceAccount:
   create: true
   name: ""
 
-podSecurityContext: {}
-securityContext: {}
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 service:
   type: ClusterIP
@@ -53,6 +66,11 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
 
 podDisruptionBudget:
   enabled: true

@@ -7,6 +7,8 @@ The Guardrail API is the **core runtime** behind the Guardrail firewall. It runs
 
 ## Run it locally
 
+### Python environment
+
 ```bash
 # Install dependencies (includes API runtime and shared rulepacks)
 uv sync           # or: pip install -e .[server]
@@ -19,6 +21,32 @@ curl -s http://127.0.0.1:8000/healthz
 ```
 
 Requires Python 3.11+. We test on 3.11 and 3.12.
+
+### Container image (v1.4.0)
+
+```bash
+docker pull ghcr.io/guardrail-labs/guardrail-core:1.4.0
+docker run --rm -p 8000:8000 \
+  -e API_KEY=dev-secret \
+  ghcr.io/guardrail-labs/guardrail-core:1.4.0
+
+curl -sS -H 'X-API-Key: dev-secret' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "meta-llama-3-8b-instruct",
+    "messages": [{"role": "user", "content": "Hello from smoke"}]
+  }' \
+  http://127.0.0.1:8000/chat/completions | jq .
+```
+
+### Helm install (v1.4.0)
+
+```bash
+helm upgrade -i guardrail ./helm/guardrail \
+  --namespace guardrail --create-namespace \
+  --set image.repository=ghcr.io/guardrail-labs/guardrail-core \
+  --set image.tag=1.4.0
+```
 
 ## Docs & references
 
@@ -124,6 +152,10 @@ pytest -m enterprise --run-enterprise
 CI runs on a self-hosted runner/image when labeled or manually dispatched.
 See docs/enterprise-tests.md.
 
+## SBOM
+
+Every tagged release (starting with v1.4.0) ships an SPDX SBOM artifact named `sbom-core-<version>.spdx.json`. It is attached to the GitHub Release alongside the container digest and OpenAPI schema.
+
 ## Releases
 
 Maintainer steps live in:
@@ -132,7 +164,7 @@ RELEASING.md → points to docs/release-checklist.md
 
 Draft notes stub: docs/release-notes-stub-rc1.md
 
-This repository currently uses manual tags (e.g., v1.4.0) to publish artifacts. If release automation is re-enabled later, this README will be updated.
+Release automation is handled by Release Please. Tags follow the `v1.4.0` convention and automatically bump `pyproject.toml`, chart metadata, and `VERSION` via the configuration in `release-please-config.json`.
 
 ## Reporting security issues
 

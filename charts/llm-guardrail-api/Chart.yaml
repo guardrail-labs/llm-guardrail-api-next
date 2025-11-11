@@ -2,8 +2,8 @@ apiVersion: v2
 name: llm-guardrail-api
 description: LLM Guardrail API (FastAPI) with policy, redaction, limits, metrics, and admin endpoints.
 type: application
-version: 0.1.0
-appVersion: "latest"
+version: 1.4.0
+appVersion: "1.4.0"
 home: https://github.com/WesMilam/llm-guardrail-api-next
 sources:
   - https://github.com/WesMilam/llm-guardrail-api-next

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "python",
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "packages": {
+    ".": {
+      "package-name": "guardrail-api-core",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        "pyproject.toml",
+        "VERSION",
+        "charts/llm-guardrail-api/Chart.yaml",
+        "charts/llm-guardrail-api/values.yaml",
+        "helm/guardrail/Chart.yaml",
+        "helm/guardrail/values.yaml"
+      ]
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{{- if and .Values.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "llm-guardrail-api.fullname" . }}
+  labels:
+    {{- include "llm-guardrail-api.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "llm-guardrail-api.fullname" . }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

@@ -2,6 +2,9 @@
 
 This chart deploys the LLM Guardrail API with sensible defaults for production-oriented rollouts.
 
+- **Chart version:** 1.4.0
+- **App version:** 1.4.0 (image tag `1.4.0` from `ghcr.io/guardrail-labs/guardrail-core`)
+
 ## Prerequisites
 
 * Kubernetes 1.23+
@@ -12,13 +15,18 @@ This chart deploys the LLM Guardrail API with sensible defaults for production-o
 ## Installation
 
 ```bash
-helm upgrade -i guardrail ./helm/guardrail -n guardrail --create-namespace
+helm upgrade -i guardrail ./helm/guardrail \ 
+  --namespace guardrail --create-namespace \ 
+  --set image.repository=ghcr.io/guardrail-labs/guardrail-core \ 
+  --set image.tag=1.4.0
 ```
 
 Override values with your own configuration file:
 
 ```bash
-helm upgrade -i guardrail ./helm/guardrail -n guardrail --create-namespace -f values.override.yaml
+helm upgrade -i guardrail ./helm/guardrail \ 
+  --namespace guardrail --create-namespace \ 
+  -f values.override.yaml
 ```
 
 ## Configuration Highlights
@@ -65,7 +73,7 @@ helm upgrade -i guardrail ./helm/guardrail -n guardrail --create-namespace -f va
 
 ## Notes
 
-ServiceMonitor is **disabled by default** (requires Prometheus Operator CRDs). Enable with:
+ServiceMonitor is **disabled by default** (requires Prometheus Operator CRDs). The template only renders when the `monitoring.coreos.com/v1` API is available. Enable with:
 
 ```yaml
 serviceMonitor:
@@ -77,3 +85,8 @@ HPA:
 - If neither API is present, the HPA template is skipped to avoid install failures.
 
 * Provide sensitive values (e.g., OIDC secrets) via `.Values.secretEnv` or external secret tooling.
+* Container hardening defaults include `runAsNonRoot`, `readOnlyRootFilesystem`, and `capabilities.drop = ["ALL"]`.
+
+### SBOM
+
+The OCI image `ghcr.io/guardrail-labs/guardrail-core:1.4.0` ships with an SPDX SBOM asset attached to the matching GitHub Release (`sbom-core-1.4.0.spdx.json`).

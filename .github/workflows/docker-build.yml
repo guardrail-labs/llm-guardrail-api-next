@@ -15,7 +15,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: llm-guardrail-api-next
+  IMAGE_NAME: guardrail-core
+  GHCR_OWNER: ${{ vars.GHCR_OWNER != '' && vars.GHCR_OWNER || github.repository_owner }}
 
 jobs:
   build:
@@ -46,10 +47,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OWNER_LC="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          OWNER_LC="$(echo "${GHCR_OWNER}" | tr '[:upper:]' '[:lower:]')"
           REPO="${REGISTRY}/${OWNER_LC}/${IMAGE_NAME}"
 
           TAGS=()
+          VERSION="main"
 
           # Tag for pushes to main
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
@@ -59,7 +61,9 @@ jobs:
 
           # Tag for version tags (v*)
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            TAGS+=("${REPO}:${{ github.ref_name }}")
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+            TAGS+=("${REPO}:${VERSION}")
           fi
 
           # Optional manual extra tag from workflow_dispatch
@@ -69,6 +73,9 @@ jobs:
 
           # Emit comma-separated list
           echo "tags=$(IFS=, ; echo "${TAGS[*]}")" >> "$GITHUB_OUTPUT"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build-date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -79,8 +86,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            VCS_URL=https://github.com/${{ github.repository }}
+            BUILD_DATE=${{ steps.meta.outputs['build-date'] }}
           labels: |
-            org.opencontainers.image.title=llm-guardrail-api
-            org.opencontainers.image.version=${{ github.ref_type == 'tag' && github.ref_name || 'main' }}
+            org.opencontainers.image.title=LLM Guardrail Core
+            org.opencontainers.image.description=Guardrail API enforcement runtime service.
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=git://github.com/${{ github.repository }}.git
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.created=${{ steps.meta.outputs['build-date'] }}
