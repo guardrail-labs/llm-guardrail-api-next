@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 import app.runtime.router as runtime_router_module
 from app.main import app
-from app.runtime.arm import ArmMode, get_arm_runtime
+from app.runtime.arm import ArmMode, ArmStatus, get_arm_runtime
 from app.runtime.router import router as runtime_router
 from app.telemetry import metrics
 
@@ -127,3 +127,53 @@ def test_metrics_and_health_endpoint_reflect_degradation() -> None:
     assert data["mode"] == ArmMode.EGRESS_ONLY.value
     assert data["arms"]["ingress"]["state"] == "degraded"
     assert data["ingress_degradation_reason"] == "queue lag high"
+
+
+def test_ingress_probe_reports_tri_state() -> None:
+    runtime = get_arm_runtime()
+
+    with runtime._lock:  # type: ignore[attr-defined]
+        degraded, reason, status = runtime._evaluate_ingress_locked()
+    assert degraded is False
+    assert reason == ""
+    assert status == ArmStatus("up", "healthy")
+
+    runtime.force_ingress_degraded("queue lag 3200ms")
+    with runtime._lock:  # type: ignore[attr-defined]
+        degraded, reason, status = runtime._evaluate_ingress_locked()
+    assert degraded is True
+    assert reason == "queue lag 3200ms"
+    assert status == ArmStatus("degraded", "queue lag 3200ms")
+
+    runtime.force_ingress_down("forced down for maintenance")
+    with runtime._lock:  # type: ignore[attr-defined]
+        degraded, reason, status = runtime._evaluate_ingress_locked()
+    assert degraded is True
+    assert reason == "forced down for maintenance"
+    assert status == ArmStatus("down", "forced down for maintenance")
+
+
+def test_forced_down_updates_metrics_and_health() -> None:
+    runtime = get_arm_runtime()
+    runtime.force_ingress_down("forced down for maintenance")
+
+    with runtime._lock:  # type: ignore[attr-defined]
+        degraded, reason, status = runtime._evaluate_ingress_locked()
+    assert degraded is True
+    assert reason == "forced down for maintenance"
+    assert status == ArmStatus("down", "forced down for maintenance")
+
+    mode = runtime.evaluate_mode()
+    assert mode == ArmMode.EGRESS_ONLY
+
+    ingress_down = metrics.guardrail_arm_status.labels("ingress", "down")
+    ingress_degraded = metrics.guardrail_arm_status.labels("ingress", "degraded")
+    assert _metric_value(ingress_down) == pytest.approx(1.0)
+    assert _metric_value(ingress_degraded) == pytest.approx(0.0)
+
+    health = client.get("/health/arms")
+    data = health.json()
+    assert data["arms"]["ingress"]["state"] == "down"
+    assert data["arms"]["ingress"]["reason"] == "forced down for maintenance"
+    assert data["ingress_degradation_reason"] == "forced down for maintenance"
+    assert data["status"] == "fail"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Literal, Tuple, cast
 
 from app import settings as settings_module
 from app.telemetry import metrics
@@ -35,13 +35,16 @@ class ArmStatus:
         return {"state": self.state, "reason": self.reason}
 
 
+ArmProbeState = Literal["up", "degraded", "down"]
+
+
 class IngressHealthProbe:
     """Evaluate whether ingress is degraded based on simple signals."""
 
     def __init__(self, *, lag_threshold_ms: int) -> None:
         self._lag_threshold_ms = lag_threshold_ms
         self._queue_lag_ms: float | None = None
-        self._forced_state: str | None = None
+        self._forced_state: ArmProbeState | None = None
         self._forced_reason: str = ""
         self._lock = threading.RLock()
 
@@ -62,7 +65,7 @@ class IngressHealthProbe:
             if normalized not in {"up", "degraded", "down"}:
                 raise ValueError(f"invalid forced state: {state!r}")
         with self._lock:
-            self._forced_state = normalized
+            self._forced_state = cast(ArmProbeState | None, normalized)
             self._forced_reason = (reason or "").strip()
 
     def observe_queue_lag(self, lag_ms: float | int | None) -> None:
@@ -72,26 +75,27 @@ class IngressHealthProbe:
             else:
                 self._queue_lag_ms = float(lag_ms)
 
-    def status(self) -> Tuple[bool, str]:
-        """Return (degraded?, reason)."""
+    def status(self) -> Tuple[ArmProbeState, str]:
+        """Return the ingress state and optional reason."""
 
         with self._lock:
             forced = self._forced_state
+            reason = self._forced_reason
             if forced == "down":
-                return True, self._forced_reason or "ingress arm forced down"
+                return "down", reason or "ingress arm forced down"
             if forced == "degraded":
-                return True, self._forced_reason or "ingress arm forced degraded"
+                return "degraded", reason or "ingress arm forced degraded"
             if forced == "up":
-                return False, ""
+                return "up", ""
 
             lag_ms = self._queue_lag_ms
             if lag_ms is not None and lag_ms > self._lag_threshold_ms:
                 rounded = int(lag_ms)
                 return (
-                    True,
+                    "degraded",
                     f"ingress queue lag {rounded}ms > {self._lag_threshold_ms}ms",
                 )
-        return False, ""
+        return "up", ""
 
 
 class ArmRuntime:
@@ -156,10 +160,13 @@ class ArmRuntime:
         if not self.ingress_enabled:
             return True, "ingress arm disabled", ArmStatus("down", "ingress arm disabled")
 
-        degraded, reason = self._probe.status()
-        if degraded:
-            reason = reason or "ingress degraded"
-            return degraded, reason, ArmStatus("degraded", reason)
+        state, reason = self._probe.status()
+        if state == "down":
+            final_reason = reason or "ingress down"
+            return True, final_reason, ArmStatus("down", final_reason)
+        if state == "degraded":
+            final_reason = reason or "ingress degraded"
+            return True, final_reason, ArmStatus("degraded", final_reason)
         return False, "", ArmStatus("up", "healthy")
 
     def is_ingress_degraded(self) -> bool:
