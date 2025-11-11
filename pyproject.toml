@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-guardrail-api-next"
-version = "1.4.0"
+version = "1.5.0"
 description = "Minimal starter for a real-time LLM Guardrail API."
 readme = "README.md"
 requires-python = ">=3.11"

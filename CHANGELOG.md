@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/WesMilam/llm-guardrail-api-next/compare/v1.4.0...v1.5.0) (2025-11-11)
+
+
+### Features
+
+* **observability:** enforce tenant scope guard and tests ([d94778c](https://github.com/WesMilam/llm-guardrail-api-next/commit/d94778cb226488f60b2a8450a2b712f3f933da82))
+
+
+### Documentation
+
+* refresh README + SECURITY for v1.4.0 (Guardrail Labs, LLC — patent pending) ([edb31b2](https://github.com/WesMilam/llm-guardrail-api-next/commit/edb31b274cecb2de3f150da42cdf58a7bf4076b2))
+
 ## [Unreleased]
 ### Added
 - Added Redis-backed DLQ for webhooks (schedule, replay, quarantine)
