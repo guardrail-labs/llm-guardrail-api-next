@@ -7,6 +7,11 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
+try:
+    from app.runtime.arm import get_arm_runtime as _get_arm_runtime
+except Exception:  # pragma: no cover - guard against optional runtime packages
+    _get_arm_runtime = None
+
 _DECISION_KEY_CANDIDATES = ("guardrail_decision", "decision")
 
 
@@ -44,6 +49,29 @@ class DecisionHeaderMiddleware(BaseHTTPMiddleware):
         incident_id = _coerce_str(
             decision.get("incident_id") or decision.get("incident") or decision.get("request_id")
         )
+
+        if not mode and _get_arm_runtime is not None:
+            try:
+                runtime = _get_arm_runtime()
+            except Exception:  # pragma: no cover - runtime lookup should not break flow
+                runtime = None
+            if runtime is not None:
+                arm_mode = getattr(runtime, "mode", None)
+                header_value: Optional[str] = None
+                if arm_mode is not None:
+                    try:
+                        header_value = getattr(arm_mode, "header_value", None)
+                        if callable(header_value):  # pragma: no cover - defensive
+                            header_value = header_value()
+                    except Exception:
+                        header_value = None
+                    if not header_value:
+                        try:
+                            header_value = str(arm_mode)
+                        except Exception:  # pragma: no cover - defensive
+                            header_value = None
+                if header_value:
+                    mode = header_value
 
         try:
             if outcome:
