@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.runtime.arm import current_guardrail_mode
 from app.telemetry.tracing import get_request_id
 
 # Map common HTTP statuses to stable machine-readable codes
@@ -52,6 +53,15 @@ def _json_error(
         body.update(extra)
     resp = JSONResponse(status_code=status, content=body)
     resp.headers["X-Request-ID"] = rid
+
+    if "X-Guardrail-Mode" not in resp.headers:
+        try:
+            mode = current_guardrail_mode()
+            if not isinstance(mode, str):
+                mode = getattr(mode, "value", str(mode))
+        except Exception:
+            mode = "normal"
+        resp.headers["X-Guardrail-Mode"] = mode
     return resp
 
 
