@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app import settings as settings_module
 from app.guards import Context, Decision, EgressGuard, IngressGuard
+from app.runtime.arm import ArmMode, get_arm_runtime
 from app.services import decisions_bus
 
 logger = logging.getLogger(__name__)
@@ -37,12 +38,13 @@ def _emit_arm_failure(arm: str) -> None:
         logger.exception("failed to emit arm_failure metric", extra=payload)
 
 
-def _decision_headers(ingress: Decision, egress: Decision) -> Dict[str, str]:
+def _decision_headers(ingress: Decision, egress: Decision, *, mode: ArmMode) -> Dict[str, str]:
     return {
         "X-Guardrail-Decision-Ingress": str(ingress.get("action", "allow")),
         "X-Guardrail-Decision-Egress": str(egress.get("action", "allow")),
         "X-Guardrail-Arm-Failures-Ingress": str(_ARM_FAILURES["ingress"]),
         "X-Guardrail-Arm-Failures-Egress": str(_ARM_FAILURES["egress"]),
+        "X-Guardrail-Mode": mode.header_value,
     }
 
 
@@ -57,47 +59,78 @@ async def _call_model(ctx: Context) -> Any:
 async def chat_completions(request: Request) -> JSONResponse:
     payload = await request.json()
     ctx: Context = {"payload": payload, "headers": dict(request.headers)}
+    runtime = get_arm_runtime()
+    mode = runtime.evaluate_mode()
 
-    try:
-        ingress_decision, ctx = await _INGRESS_GUARD.run(ctx)
-    except Exception as exc:  # pragma: no cover - defensive path
-        _ARM_FAILURES["ingress"] += 1
-        _emit_arm_failure("ingress")
-        fail_open = getattr(SETTINGS, "INGRESS_FAIL_OPEN_STRICT", False)
-        if not fail_open:
-            egress_decision = _EGRESS_GUARD.skipped()
-            headers = _decision_headers({"action": "error"}, egress_decision)
-            return JSONResponse(
-                {"error": "ingress_failed"},
-                status_code=500,
-                headers=headers,
-            )
-        flags = ctx.setdefault("flags", {})
-        if isinstance(flags, dict):
-            flags["strict_egress"] = True
+    annotations = ctx.setdefault("audit_annotations", {})
+    if isinstance(annotations, dict):
+        annotations["arm_mode"] = mode.value
+        reason = runtime.ingress_degradation_reason
+        if reason:
+            annotations["ingress_degradation_reason"] = reason
+
+    if mode is ArmMode.EGRESS_ONLY or not runtime.ingress_enabled:
+        reason = runtime.ingress_degradation_reason
         ingress_decision = {
-            "action": "allow",
-            "mode": "fail-open",
-            "reason": str(exc),
+            "action": "skipped",
+            "mode": "egress-only" if mode is ArmMode.EGRESS_ONLY else "disabled",
         }
+        if reason:
+            ingress_decision["reason"] = reason
+    else:
+        try:
+            ingress_decision, ctx = await _INGRESS_GUARD.run(ctx)
+        except Exception as exc:  # pragma: no cover - defensive path
+            _ARM_FAILURES["ingress"] += 1
+            _emit_arm_failure("ingress")
+            fail_open = getattr(SETTINGS, "INGRESS_FAIL_OPEN_STRICT", False)
+            if not fail_open:
+                egress_decision = _EGRESS_GUARD.skipped()
+                headers = _decision_headers(
+                    {"action": "error"}, egress_decision, mode=mode
+                )
+                return JSONResponse(
+                    {"error": "ingress_failed"},
+                    status_code=500,
+                    headers=headers,
+                )
+            flags = ctx.setdefault("flags", {})
+            if isinstance(flags, dict):
+                flags["strict_egress"] = True
+            ingress_decision = {
+                "action": "allow",
+                "mode": "fail-open",
+                "reason": str(exc),
+            }
 
     if ingress_decision.get("action") in {"deny", "block", "lock", "block_input_only"}:
         egress_decision = _EGRESS_GUARD.skipped()
-        headers = _decision_headers(ingress_decision, egress_decision)
+        headers = _decision_headers(ingress_decision, egress_decision, mode=mode)
         return JSONResponse({"error": "blocked"}, status_code=400, headers=headers)
 
     model_response = await _call_model(ctx)
     ctx["model_response"] = model_response
 
-    try:
-        egress_decision, ctx = await _EGRESS_GUARD.run(ctx)
-    except Exception:  # pragma: no cover - defensive path
-        _ARM_FAILURES["egress"] += 1
-        _emit_arm_failure("egress")
-        headers = _decision_headers(ingress_decision, {"action": "error"})
-        return JSONResponse({"error": "egress_failed"}, status_code=500, headers=headers)
+    if runtime.egress_enabled:
+        try:
+            egress_decision, ctx = await _EGRESS_GUARD.run(ctx)
+        except Exception:  # pragma: no cover - defensive path
+            _ARM_FAILURES["egress"] += 1
+            _emit_arm_failure("egress")
+            headers = _decision_headers(
+                ingress_decision, {"action": "error"}, mode=mode
+            )
+            return JSONResponse(
+                {"error": "egress_failed"}, status_code=500, headers=headers
+            )
+    else:
+        egress_decision = _EGRESS_GUARD.skipped()
 
-    headers = _decision_headers(ingress_decision, egress_decision)
+    if egress_decision.get("action") in {"deny", "block", "lock"}:
+        headers = _decision_headers(ingress_decision, egress_decision, mode=mode)
+        return JSONResponse({"error": "blocked"}, status_code=400, headers=headers)
+
+    headers = _decision_headers(ingress_decision, egress_decision, mode=mode)
     return JSONResponse(model_response, headers=headers)
 
 
