@@ -244,4 +244,36 @@ def is_ingress_degraded() -> bool:
     return get_arm_runtime().is_ingress_degraded()
 
 
-__all__ = ["ArmMode", "ArmRuntime", "ArmStatus", "get_arm_runtime", "is_ingress_degraded"]
+def current_guardrail_mode() -> str:
+    """Return the current guardrail mode as a response-safe string."""
+
+    try:
+        mode = get_arm_runtime().evaluate_mode()
+    except Exception:
+        return ArmMode.NORMAL.header_value
+
+    if isinstance(mode, ArmMode):
+        return mode.header_value
+
+    header_value = getattr(mode, "header_value", None)
+    if isinstance(header_value, str):
+        return header_value
+
+    value = getattr(mode, "value", None)
+    if isinstance(value, str):
+        return value.replace("_", "-")
+
+    if isinstance(mode, str):
+        return mode.replace("_", "-")
+
+    return ArmMode.NORMAL.header_value
+
+
+__all__ = [
+    "ArmMode",
+    "ArmRuntime",
+    "ArmStatus",
+    "current_guardrail_mode",
+    "get_arm_runtime",
+    "is_ingress_degraded",
+]
