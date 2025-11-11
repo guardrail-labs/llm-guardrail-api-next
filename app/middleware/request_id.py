@@ -43,11 +43,20 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         rid = request.headers.get(_HEADER) or str(uuid.uuid4())
         token = _REQUEST_ID.set(rid)
         try:
+            request.state.request_id = rid
+        except Exception:
+            pass
+        try:
+            request.scope["request_id"] = rid
+        except Exception:
+            pass
+        try:
             response: Response = await call_next(request)
         finally:
             # Always reset contextvar to avoid leakage across requests.
             _REQUEST_ID.reset(token)
 
         # Ensure header is present on the response.
-        response.headers.setdefault(_HEADER, rid)
+        if response.headers.get(_HEADER) is None:
+            response.headers[_HEADER] = rid
         return response
