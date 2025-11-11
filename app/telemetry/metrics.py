@@ -320,6 +320,23 @@ guardrail_egress_payload_bytes: HistogramLike = _mk_histogram(
     "Egress payload size in bytes.",
 )
 
+# Guardrail arm coordination metrics
+guardrail_arm_status: GaugeLike = _mk_gauge(
+    "guardrail_arm_status",
+    "Guardrail arm status indicator (1 when arm is in the given state).",
+    ["arm", "state"],
+)
+guardrail_arm_mode: GaugeLike = _mk_gauge(
+    "guardrail_arm_mode",
+    "Guardrail runtime coordination mode (1 for active mode).",
+    ["mode"],
+)
+guardrail_arm_transitions_total: CounterLike = _mk_counter(
+    "guardrail_arm_transitions_total",
+    "Total guardrail arm mode transitions.",
+    ["from", "to"],
+)
+
 # Streaming guard
 guardrail_stream_guard_chunks_total: CounterLike = _mk_counter(
     "guardrail_stream_guard_chunks_total",

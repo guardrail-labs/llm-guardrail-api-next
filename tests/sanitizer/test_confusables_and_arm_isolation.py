@@ -1,6 +1,7 @@
 """Tests for sanitizer helpers and arm isolation telemetry."""
 
 from app.runtime import router
+from app.runtime.arm import ArmMode
 from app.sanitizer import detect_confusables, normalize_unicode, sanitize_input
 
 
@@ -26,6 +27,8 @@ def test_detect_confusables_list_nonempty() -> None:
 def test_arm_failure_headers() -> None:
     router._ARM_FAILURES["ingress"] = 2
     router._ARM_FAILURES["egress"] = 1
-    headers = router._decision_headers({"action": "allow"}, {"action": "allow"})
+    headers = router._decision_headers(
+        {"action": "allow"}, {"action": "allow"}, mode=ArmMode.NORMAL
+    )
     assert headers["X-Guardrail-Arm-Failures-Ingress"] == "2"
     assert headers["X-Guardrail-Arm-Failures-Egress"] == "1"

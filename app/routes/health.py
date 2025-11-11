@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.observability.metrics import readyz_ok, readyz_redis_ok
+from app.runtime.arm import get_arm_runtime
 from app.services.detectors.ingress_pipeline import _enabled as _flag_enabled
 
 router = APIRouter(tags=["health"])
@@ -343,5 +344,31 @@ async def healthz() -> JSONResponse:
         "ok": True,
         "policy_version": _current_rules_version_safe(),
         "features": features,
+    }
+    return JSONResponse(payload)
+
+
+@router.get("/health/arms")
+async def health_arms() -> JSONResponse:
+    snapshot = get_arm_runtime().snapshot()
+    ingress_state = snapshot["ingress"]["state"]
+    egress_state = snapshot["egress"]["state"]
+
+    status = "ok"
+    if ingress_state == "degraded":
+        status = "degraded"
+    if ingress_state == "down" or egress_state == "down":
+        status = "fail"
+
+    payload = {
+        "status": status,
+        "ok": status == "ok",
+        "mode": snapshot["mode"],
+        "mode_header": snapshot["mode_header"],
+        "arms": {
+            "ingress": snapshot["ingress"],
+            "egress": snapshot["egress"],
+        },
+        "ingress_degradation_reason": snapshot["ingress_degradation_reason"],
     }
     return JSONResponse(payload)
