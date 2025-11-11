@@ -21,6 +21,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from app import settings
+from app.middleware.mode_header import install_mode_header
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
@@ -681,14 +682,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
     )
-    @app.middleware("http")
-    async def _guardrail_mode_header(
-        request: Request, call_next: RequestHandler
-    ) -> StarletteResponse:
-        mode = current_guardrail_mode()
-        response: StarletteResponse = await call_next(request)
-        ensure_guardrail_mode_header(response.headers, mode)
-        return response
+    # Install mode header middleware before any other add_middleware/routers.
+    install_mode_header(app)
 
     try:
         from app.security.rbac import RBACError

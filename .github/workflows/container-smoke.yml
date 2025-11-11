@@ -16,15 +16,15 @@ jobs:
       - name: Build image
         run: docker build -t guardrail-core:ci .
 
-      - name: Run container (read-only, nonroot) with health app
+      - name: Run container (read-only, nonroot) with API
         run: |
           mkdir -p "$PWD/tmp"
           docker run -d --rm \
             --read-only -v "$PWD/tmp":/tmp \
             -p 127.0.0.1:18080:8000 \
             --name core \
-            guardrail-core:ci \
-            python -m uvicorn ops.health_app:app --host 0.0.0.0 --port 8000
+            -e GUARDRAIL_DISABLE_AUTH=1 \
+            guardrail-core:ci
 
           ok=0
           for i in $(seq 1 30); do
@@ -48,6 +48,11 @@ jobs:
 
       - name: Curl healthz
         run: curl -fsS http://127.0.0.1:18080/healthz
+
+      - name: Smoke test (autodiscover chat path & assert headers)
+        run: |
+          chmod +x .github/scripts/smoke.sh
+          .github/scripts/smoke.sh
 
       - name: Stop
         if: always()
