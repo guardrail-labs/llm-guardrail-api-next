@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/wesmilam/llm-guardrail-api-next
+  repository: ghcr.io/guardrail-labs/llm-guardrail-api-next
   tag: latest
   pullPolicy: IfNotPresent
 
