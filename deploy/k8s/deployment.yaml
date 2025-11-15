@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: ghcr.io/wesmilam/llm-guardrail-api-next:latest
+          image: ghcr.io/guardrail-labs/llm-guardrail-api-next:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
