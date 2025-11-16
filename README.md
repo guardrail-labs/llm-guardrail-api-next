@@ -1,4 +1,4 @@
-# LLM Guardrail Core Runtime (v1.4.0)
+# LLM Guardrail Core Runtime (v1.5.0)
 
 **Guardrail Labs, LLC — Patent Pending.**  
 The Guardrail API is the **core runtime** behind the Guardrail firewall. It runs in-band with your LLM traffic to inspect ingress/egress prompts, enforce policy packs, and emit **HMAC-signed audit events** for observability. This repo contains the enforcement engine, REST API surface, and the foundational rule-execution pipeline. Deployment tooling, dashboards, and admin interfaces live in the **umbrella docs portal** (see links below).
@@ -22,17 +22,17 @@ Requires Python 3.11+. We test on 3.11 and 3.12.
 
 ## Docs & references
 
-Full product documentation lives in the Guardrail umbrella portal.
+Full product documentation lives in the Guardrail umbrella portal:
 
-Quickstart: coming soon
+https://guardrail-labs.github.io/llm-guardrail-api/
 
-Policy Packs: coming soon
+You’ll find:
 
-Confusables backlog (P1): coming soon
-
-API reference: coming soon
-
-Looking for deployment blueprints, dashboards, or advanced tuning guides? These also live in the umbrella portal so they stay in sync with managed platform releases.
+- Quickstart and local development guides
+- Policy pack workflows and examples
+- Confusables and Unicode hardening notes (P1 backlog)
+- API reference and integration patterns
+- Deployment blueprints, dashboards, and advanced tuning guides
 
 ## Contributing
 
