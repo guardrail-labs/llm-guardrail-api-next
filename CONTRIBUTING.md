@@ -37,7 +37,7 @@ bandit -q -r .
 pytest -q
 ```
 
-### Perf smoke (optional, but encouraged before release PRs)
+### Perf smoke 
 ```bash
 uv run python tools/perf/bench.py --smoke --json out-smoke.json
 uv run python tools/perf/compare.py --baseline out-baseline.json --candidate out-smoke.json
