@@ -1,145 +1,172 @@
-# LLM Guardrail Core Runtime (v1.5.0)
+# Guardrail Core Runtime
 
-**Guardrail Labs, LLC — Patent Pending.**  
-The Guardrail API is the **core runtime** behind the Guardrail firewall. It runs in-band with your LLM traffic to inspect ingress/egress prompts, enforce policy packs, and emit **HMAC-signed audit events** for observability. This repo contains the enforcement engine, REST API surface, and the foundational rule-execution pipeline. Deployment tooling, dashboards, and admin interfaces live in the **umbrella docs portal** (see links below).
+> Guardrail Labs, LLC — Patent Pending  
+> Core dual-arm enforcement engine for evaluating LLM prompts (ingress)
+> and responses (egress) across multiple modalities.
+
+The Guardrail Core Runtime is the open-source enforcement layer that sits
+between client applications and model providers. It evaluates prompts and
+responses according to policy packs, supports clarify-first workflows, and
+emits structured audit events.
+
+This repository contains the Core Runtime only.  
+Enterprise governance features, admin UI, and extended retention are provided
+by the proprietary Enterprise edition.
 
 ---
 
-## Run it locally
+## License
 
-```bash
-# Install dependencies (includes API runtime and shared rulepacks)
-uv sync           # or: pip install -e .[server]
+This repository is licensed under **Apache 2.0**.  
+See the `LICENSE` file for details.
 
-# Boot the ASGI server
-uv run python -m app.main
+---
 
-# Health probe
-curl -s http://127.0.0.1:8000/healthz
+## Features
+
+- Dual-arm architecture (independent ingress and egress evaluation)
+- Clarify-first handling for ambiguous or unclear intent
+- Non-execution integration with the optional Verifier service
+- Policy pack execution (safety, governance, regulatory templates)
+- Unicode and confusables normalization for text inputs
+- Multimodal support (text, images, audio, files, structured outputs)
+- REST API built with FastAPI
+- Structured audit logging
+
+Core is designed to be embedded into gateways, agents, or AI platforms as a
+governance and safety layer. It does not replace the underlying LLM.
+
+---
+
+## Getting Started (Local)
+
+These steps start Core in a simple development setup.
+
+### 1. Clone the repository
+```
+git clone https://github.com/guardrail-labs/llm-guardrail-api-next.git
+
+cd llm-guardrail-api-next
 ```
 
-Requires Python 3.11+. We test on 3.11 and 3.12.
+### 2. Create a virtual environment and install
+```
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -U pip
+pip install -e .[server]
+```
 
-## Docs & references
+### 3. Run the API with Uvicorn
+```
 
-Full product documentation lives in the Guardrail umbrella portal:
+### 3. Run the API with Uvicorn
 
-https://guardrail-labs.github.io/llm-guardrail-api/
 
-You’ll find:
+```
 
-- Quickstart and local development guides
-- Policy pack workflows and examples
-- Confusables and Unicode hardening notes (P1 backlog)
-- API reference and integration patterns
-- Deployment blueprints, dashboards, and advanced tuning guides
+Then open:
+
+- `http://127.0.0.1:8000/health` for a basic health check  
+- `http://127.0.0.1:8000/docs` for the interactive OpenAPI UI
+
+This mode is intended for development, testing, and experimentation.
+
+---
+
+## Basic Configuration
+
+Core is configured primarily via environment variables. Common examples:
+
+- `GUARDRAIL_ENV` – environment name (e.g., `dev`, `staging`)
+- `REDIS_URL` – Redis instance for idempotency, quotas, and DLQ
+- `POLICY_PACKS_DIR` – directory containing loaded policy packs
+- `LOG_LEVEL` – log verbosity
+
+In a containerized or Kubernetes setup, these variables are injected via your
+orchestrator’s environment/secret mechanisms.
+
+---
+
+## Policy Packs
+
+Core uses Policy Packs to determine how requests and responses are evaluated.
+
+Policy Packs:
+
+- are versioned and signed
+- define safety and governance rules
+- can be tenant- or environment-specific
+- may reference the Verifier for ambiguous intent
+
+For more on Policy Packs, refer to the umbrella docs and the
+`llm-guardrail-policy-packs` repository.
+
+---
+
+## Verifier Integration (Optional)
+
+The Core Runtime can call into the Guardrail Verifier service when a request
+appears ambiguous or high-risk.
+
+The Verifier:
+
+- performs non-execution classification
+- helps decide whether to proceed or ask for clarification
+- never executes user content
+
+If the Verifier still cannot classify intent, Core returns the request to the
+caller for clarification instead of guessing.
+
+---
+
+## Production Deployment
+
+For production environments, Core is typically run as:
+
+- a Docker container behind an API gateway, or
+- a Kubernetes Deployment exposed via Ingress or Gateway API
+
+Key requirements:
+
+- Redis for quotas, DLQ, rate limiting, idempotency
+- TLS termination at the gateway
+- Restricted network access to internal components
+- Observability wired into your metrics and logging stack
+
+For a higher-governance deployment with multi-tenancy, RBAC, and retention,
+use the Enterprise edition instead of Core alone.
+
+---
 
 ## Contributing
 
-Thanks for your interest in contributing! This section explains how to set up a dev environment, run checks locally, and submit changes that pass CI.
+Issues and pull requests are welcome for this repository.
 
-### Getting Started
+Before submitting:
 
-Fork the repo and create a feature branch from main.
+- run `ruff check .`
+- run `mypy .`
+- ensure tests pass (if present)
 
-Ensure you have Python 3.11+ and either uv (preferred) or pip.
+See the umbrella repository (`llm-guardrail-api`) for global documentation and
+project-wide contribution guidelines.
 
-Install dev deps:
+---
 
-```
-uv sync
-# or:
-pip install -e .[dev]
-```
+## Support
 
-Run the API locally:
+- General questions: `info@guardrailapi.com`
+- Security disclosures: `security@guardrailapi.com`
 
-```
-uv run uvicorn app.main:create_app --factory --reload --host 127.0.0.1 --port 8000
-curl -s http://127.0.0.1:8000/healthz
-```
+For Enterprise support and onboarding, contact:
 
-### Development checks (what CI enforces)
+- `enterprise@guardrailapi.com`
 
-```
-# Lint (ruff) and auto-fix trivial issues
-python -m ruff check --fix .
+---
 
-# Types (mypy) — uses repo config; tests are excluded
-python -m mypy --config-file mypy.ini --strict
+© Guardrail Labs LLC 2025. All rights reserved.
 
-# Unit tests
-pytest -q
 
-# Optional: security lints
-bandit -q -r .
-```
 
-### Perf smoke (optional, encouraged before release PRs)
 
-```
-uv run python tools/perf/bench.py --smoke --json out-smoke.json
-uv run python tools/perf/compare.py --baseline out-baseline.json --candidate out-smoke.json
-```
-
-See docs/perf-smoke.md.
-
-### Style & conventions
-
-Python style: enforced by ruff; target line length ≤ 100 chars.
-
-Typing: public functions should be typed; avoid ambiguous lambdas where mypy struggles.
-
-Security: don’t use assert for request validation; return explicit 4xx/5xx.
-
-Commits/PRs: keep changes scoped; include “What / Why / Risk / Verify” in PR descriptions.
-
-## CI & audits
-
-CI runs lint, type-checks, tests, and non-blocking repo audits.
-
-gitleaks and trufflehog findings are preserved as artifacts.
-
-GitHub Actions pinning audit produces unpinned-actions.{md,json}.
-
-See docs/repo-audits.md.
-
-## Enforcement posture (for contributors)
-
-The API enforces configured policies in-band around model I/O. When policies are active, disallowed outputs are intercepted and mitigated (block / clarify / redact) before returning to the client. Administrators must enable/maintain the appropriate packs.
-
-Read more in docs/security-model.md.
-
-## Enterprise tests (opt-in)
-
-Enterprise tests are gated and do not run on public CI by default.
-
-Local:
-
-```
-pip install fastapi pyyaml
-pytest -m enterprise --run-enterprise
-```
-
-CI runs on a self-hosted runner/image when labeled or manually dispatched.
-See docs/enterprise-tests.md.
-
-## Releases
-
-Maintainer steps live in:
-
-RELEASING.md → points to docs/release-checklist.md
-
-Draft notes stub: docs/release-notes-stub-rc1.md
-
-This repository currently uses manual tags (e.g., v1.4.0) to publish artifacts. If release automation is re-enabled later, this README will be updated.
-
-## Reporting security issues
-
-Please do not open public issues for vulnerabilities. Use GitHub Security Advisories or follow the process in SECURITY.md.
-
-## License
-
-Apache-2.0. See LICENSE.
-
-© Guardrail Labs, LLC. All rights reserved. Patent pending.
