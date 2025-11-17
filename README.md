@@ -58,12 +58,7 @@ pip install -e .[server]
 ```
 
 ### 3. Run the API with Uvicorn
-```
 
-### 3. Run the API with Uvicorn
-
-
-```
 
 Then open:
 
