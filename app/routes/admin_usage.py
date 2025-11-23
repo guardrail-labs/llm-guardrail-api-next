@@ -19,8 +19,8 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
 else:
     _SQLALCHEMY_MISSING = False
 
+from app.routes.admin_rbac import require_admin as require_admin_rbac
 from app.schemas.usage import UsageSummary
-from app.security.admin_auth import require_admin
 from app.services.decisions_store import (
     aggregate_usage_by_tenant,
     summarize_usage,
@@ -97,7 +97,7 @@ async def get_usage_by_tenant(
         description="Optional list of tenant IDs to filter on",
     ),
     session: AsyncSession = Depends(get_db_session),
-    _admin: None = Depends(require_admin),
+    _admin = Depends(require_admin_rbac),
 ) -> List[UsageSummary]:
     start, end = _resolve_period(period)
 
