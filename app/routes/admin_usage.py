@@ -1,64 +1,25 @@
 from __future__ import annotations
 
-import os
+import csv
+import io
+import re
 from datetime import datetime, timedelta, timezone
-from typing import AsyncIterator, List, Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 
-try:  # pragma: no cover - optional dependency
-    from sqlalchemy.ext.asyncio import (
-        AsyncEngine,
-        AsyncSession,
-        async_sessionmaker,
-        create_async_engine,
-    )
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    AsyncEngine = AsyncSession = async_sessionmaker = create_async_engine = None  # type: ignore[assignment]
-    _SQLALCHEMY_MISSING = True
-else:
-    _SQLALCHEMY_MISSING = False
-
+from app.dependencies.db import get_db_session
 from app.routes.admin_rbac import require_admin as require_admin_rbac
-from app.security.admin_auth import require_admin
 from app.schemas.usage import UsageSummary
+from app.security.admin_auth import require_admin
 from app.services.decisions_store import (
     aggregate_usage_by_tenant,
     summarize_usage,
 )
 
 router = APIRouter(tags=["admin-usage"])
-
-_async_engine: AsyncEngine | None = None
-_sessionmaker: async_sessionmaker[AsyncSession] | None = None
-
-
-def _resolve_async_dsn() -> str:
-    dsn = os.getenv("DECISIONS_DSN", "sqlite:///./data/decisions.db")
-    if dsn.startswith("sqlite+aiosqlite://") or dsn.startswith("postgresql+asyncpg://"):
-        return dsn
-    if dsn.startswith("sqlite://"):
-        return dsn.replace("sqlite://", "sqlite+aiosqlite://", 1)
-    if dsn.startswith("postgresql://"):
-        return dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return dsn
-
-
-def _get_sessionmaker() -> async_sessionmaker[AsyncSession]:
-    if _SQLALCHEMY_MISSING or async_sessionmaker is None or create_async_engine is None:
-        raise HTTPException(status_code=503, detail="SQLAlchemy async dependencies not installed")
-
-    global _async_engine, _sessionmaker
-    if _sessionmaker is None:
-        _async_engine = create_async_engine(_resolve_async_dsn(), future=True)
-        _sessionmaker = async_sessionmaker(_async_engine, expire_on_commit=False)
-    return _sessionmaker
-
-
-async def get_db_session() -> AsyncIterator[AsyncSession]:
-    sessionmaker = _get_sessionmaker()
-    async with sessionmaker() as session:
-        yield session
 
 
 def _resolve_period(period: str) -> tuple[datetime, datetime]:
@@ -80,6 +41,18 @@ def _resolve_period(period: str) -> tuple[datetime, datetime]:
     end = now
     start = end - timedelta(days=30)
     return start, end
+
+
+_SAFE_PERIOD_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+
+def _safe_period_label(period: str) -> str:
+    """
+    Sanitize period for use in filenames/headers.
+
+    Replaces any character outside [a-zA-Z0-9_-] with '_'.
+    """
+    return _SAFE_PERIOD_RE.sub("_", period)
 
 
 @router.get(
@@ -111,3 +84,62 @@ async def get_usage_by_tenant(
     )
 
     return summarize_usage(rows)
+
+
+@router.get(
+    "/admin/api/usage/export",
+    response_class=StreamingResponse,
+    summary="Export decision usage as CSV",
+)
+async def export_usage_csv(
+    period: str = Query(
+        "30d",
+        description="Time window, e.g. '7d', '30d', 'current_month'",
+    ),
+    tenant_ids: Optional[List[str]] = Query(
+        default=None,
+        alias="tenant_id",
+        description="Optional list of tenant IDs to filter on",
+    ),
+    session: AsyncSession = Depends(get_db_session),
+    _admin_ui = Depends(require_admin),
+    _admin_rbac = Depends(require_admin_rbac),
+) -> StreamingResponse:
+    start, end = _resolve_period(period)
+
+    rows = await aggregate_usage_by_tenant(
+        session,
+        start=start,
+        end=end,
+        tenant_ids=tenant_ids,
+    )
+    summaries = summarize_usage(rows)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        ["tenant_id", "environment", "total", "allow", "block", "clarify"]
+    )
+    for s in summaries:
+        writer.writerow(
+            [
+                s.tenant_id,
+                s.environment,
+                s.total,
+                s.allow,
+                s.block,
+                s.clarify,
+            ]
+        )
+
+    output.seek(0)
+
+    safe_label = _safe_period_label(period)
+    filename = f"guardrail-usage-{safe_label}.csv"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "text/csv; charset=utf-8",
+    }
+
+    return StreamingResponse(output, headers=headers, media_type="text/csv")
