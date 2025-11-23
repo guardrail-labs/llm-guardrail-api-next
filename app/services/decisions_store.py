@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable as IterableABC, Iterator
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypedDict, cast
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
 
 try:  # pragma: no cover - optional dependency resolution
     from sqlalchemy import and_, or_, select
@@ -40,6 +41,17 @@ class DecisionRecord(TypedDict, total=False):
 
 
 _DECISIONS: List[DecisionRecord] = []
+
+
+@dataclass
+class TenantUsageRow:
+    tenant_id: str
+    total_requests: int
+    allowed_requests: int
+    blocked_requests: int
+    total_tokens: int
+    first_seen_at: Optional[datetime]
+    last_seen_at: Optional[datetime]
 
 
 def record_decision(decision: DecisionRecord) -> None:
@@ -310,53 +322,97 @@ def _row_to_item(row: Any) -> Dict[str, Any]:
 async def aggregate_usage_by_tenant(
     session: Any,
     *,
-    start: datetime,
-    end: datetime,
-    tenant_ids: List[str] | None = None,
-) -> List[UsageRow]:
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant_ids: Optional[Iterable[str]] = None,
+) -> List[TenantUsageRow]:
     """
-    Aggregate decision counts by tenant, bot, and outcome between [start, end).
+    Aggregate decision traffic by tenant for billing / usage screens.
 
-    Uses the persisted `decisions` table (tenant, bot, outcome, ts).
-    Requires SQLAlchemy to be installed in the environment.
+    This is intentionally DB-backed only. When SQLAlchemy is not present, callers
+    should see a 503 via the dependency layer rather than use this function.
     """
+
     try:
-        from sqlalchemy import func, select  # type: ignore[import-untyped]
+        from sqlalchemy import case, func, literal, select  # type: ignore[import-untyped]
     except ModuleNotFoundError as exc:  # pragma: no cover
         raise RuntimeError(
             "SQLAlchemy is required to aggregate usage; "
             "install sqlalchemy to enable this feature."
         ) from exc
 
-    from app.models.decision import Decision
+    decision_model: Any = globals().get("Decision")
+    if decision_model is None:
+        try:
+            from app.models.decision import Decision as decision_model  # type: ignore[import-untyped]
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise RuntimeError("Decision model is unavailable for usage aggregation") from exc
+
+    tenant_column = getattr(decision_model, "tenant_id", None) or getattr(decision_model, "tenant", None)
+    created_column = getattr(decision_model, "created_at", None) or getattr(decision_model, "ts", None)
+    blocked_column = getattr(decision_model, "blocked", None)
+    decision_column = getattr(decision_model, "decision", None) or getattr(decision_model, "outcome", None)
+    tokens_column = getattr(decision_model, "total_tokens", None)
+
+    if tenant_column is None or created_column is None:
+        raise RuntimeError("Decision model missing required tenant or timestamp columns")
+
+    conditions: List[Any] = []
+    if start is not None:
+        conditions.append(created_column >= start)
+    if end is not None:
+        conditions.append(created_column < end)
+    if tenant_ids:
+        conditions.append(tenant_column.in_(list(tenant_ids)))
+
+    if blocked_column is not None:
+        allowed_expr = func.sum(case((blocked_column.is_(False), 1), else_=0))
+        blocked_expr = func.sum(case((blocked_column.is_(True), 1), else_=0))
+    elif decision_column is not None:
+        lowered_decision = func.lower(decision_column)
+        blocked_expr = func.sum(case((lowered_decision == "block", 1), else_=0))
+        allowed_expr = func.sum(case((lowered_decision != "block", 1), else_=0))
+    else:
+        allowed_expr = func.count()
+        blocked_expr = literal(0)
+
+    tokens_expr = (
+        func.coalesce(func.sum(tokens_column), 0) if tokens_column is not None else literal(0)
+    )
 
     stmt = (
         select(
-            Decision.tenant,
-            Decision.bot,
-            Decision.outcome,
-            func.count().label("count"),
+            tenant_column.label("tenant_id"),
+            func.count().label("total_requests"),
+            allowed_expr.label("allowed_requests"),
+            blocked_expr.label("blocked_requests"),
+            tokens_expr.label("total_tokens"),
+            func.min(created_column).label("first_seen_at"),
+            func.max(created_column).label("last_seen_at"),
         )
-        .where(Decision.ts >= start, Decision.ts < end)
-        .group_by(Decision.tenant, Decision.bot, Decision.outcome)
+        .where(and_(*conditions) if conditions else True)  # type: ignore[arg-type]
+        .group_by(tenant_column)
+        .order_by(tenant_column)
     )
 
-    if tenant_ids:
-        stmt = stmt.where(Decision.tenant.in_(tenant_ids))
-
     result = await session.execute(stmt)
+    rows: Sequence[Any] = result.fetchall()
 
-    rows: List[UsageRow] = []
-    for tenant, bot, outcome, count in result.all():
-        rows.append(
-            UsageRow(
-                tenant_id=tenant,
-                environment=bot,
-                decision=str(outcome),
-                count=int(count),
+    usage_rows: List[TenantUsageRow] = []
+    for row in rows:
+        usage_rows.append(
+            TenantUsageRow(
+                tenant_id=str(row.tenant_id),
+                total_requests=int(row.total_requests or 0),
+                allowed_requests=int(row.allowed_requests or 0),
+                blocked_requests=int(row.blocked_requests or 0),
+                total_tokens=int(row.total_tokens or 0),
+                first_seen_at=row.first_seen_at,
+                last_seen_at=row.last_seen_at,
             )
         )
-    return rows
+
+    return usage_rows
 
 
 def summarize_usage(rows: IterableABC[UsageRow]) -> List[UsageSummary]:
@@ -400,6 +456,7 @@ __all__ = [
     "record_decision",
     "iter_decisions",
     "reset_decisions",
+    "TenantUsageRow",
     "list_with_cursor",
     "aggregate_usage_by_tenant",
     "summarize_usage",
