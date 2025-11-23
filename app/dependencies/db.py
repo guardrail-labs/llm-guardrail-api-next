@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import AsyncGenerator, TYPE_CHECKING
+from typing import Any, AsyncGenerator, TYPE_CHECKING
 
 from fastapi import HTTPException
 

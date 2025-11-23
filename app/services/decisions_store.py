@@ -7,10 +7,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
 
 try:  # pragma: no cover - optional dependency resolution
-    from sqlalchemy import and_, or_, select
-    from sqlalchemy.sql import Select
+    from sqlalchemy import and_, case, or_, select
+    from sqlalchemy.sql import Select, func, literal
 except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
     and_ = cast(Any, None)
+    case = cast(Any, None)
+    func = cast(Any, None)
+    literal = cast(Any, None)
     or_ = cast(Any, None)
     select = cast(Any, None)
     Select = Any
@@ -49,6 +52,19 @@ class TenantUsageRow:
     total_requests: int
     allowed_requests: int
     blocked_requests: int
+    total_tokens: int
+    first_seen_at: Optional[datetime]
+    last_seen_at: Optional[datetime]
+
+
+@dataclass
+class TenantEnvUsageRow:
+    tenant_id: str
+    environment: str
+    total: int
+    allow: int
+    block: int
+    clarify: int
     total_tokens: int
     first_seen_at: Optional[datetime]
     last_seen_at: Optional[datetime]
@@ -325,39 +341,44 @@ async def aggregate_usage_by_tenant(
     start: Optional[datetime] = None,
     end: Optional[datetime] = None,
     tenant_ids: Optional[Iterable[str]] = None,
-) -> List[TenantUsageRow]:
+) -> List[TenantEnvUsageRow]:
     """
-    Aggregate decision traffic by tenant for billing / usage screens.
+    Aggregate decision traffic by tenant + environment for billing / usage screens.
 
     This is intentionally DB-backed only. When SQLAlchemy is not present, callers
     should see a 503 via the dependency layer rather than use this function.
     """
 
-    try:
-        from sqlalchemy import case, func, literal, select  # type: ignore[import-untyped]
-    except ModuleNotFoundError as exc:  # pragma: no cover
+    if (
+        select is None
+        or decisions_service is None
+        or case is None
+        or func is None
+        or literal is None
+    ):
         raise RuntimeError(
-            "SQLAlchemy is required to aggregate usage; "
-            "install sqlalchemy to enable this feature."
-        ) from exc
+            "Usage aggregation requires SQLAlchemy and decisions service",
+        )
 
-    decision_model: Any = globals().get("Decision")
-    if decision_model is None:
+    Decision: Any = getattr(decisions_service, "Decision", None)
+    if Decision is None:
         try:
-            from app.models.decision import Decision as decision_model  # type: ignore[import-untyped]
+            from app.models.decision import Decision as DecisionModel  # type: ignore[import-untyped]
+
+            Decision = DecisionModel
         except ModuleNotFoundError as exc:  # pragma: no cover
             raise RuntimeError("Decision model is unavailable for usage aggregation") from exc
 
-    tenant_column = getattr(decision_model, "tenant_id", None) or getattr(decision_model, "tenant", None)
-    created_column = getattr(decision_model, "created_at", None) or getattr(decision_model, "ts", None)
-    blocked_column = getattr(decision_model, "blocked", None)
-    decision_column = getattr(decision_model, "decision", None) or getattr(decision_model, "outcome", None)
-    tokens_column = getattr(decision_model, "total_tokens", None)
+    created_column = getattr(Decision, "created_at", None) or getattr(Decision, "ts", None)
+    tenant_column = getattr(Decision, "tenant_id", None) or getattr(Decision, "tenant", None)
+    environment_column = getattr(Decision, "environment", None) or getattr(Decision, "bot", None)
+    outcome_column = getattr(Decision, "outcome", None)
+    total_tokens_column = getattr(Decision, "total_tokens", None)
 
-    if tenant_column is None or created_column is None:
-        raise RuntimeError("Decision model missing required tenant or timestamp columns")
+    if created_column is None or tenant_column is None or environment_column is None or outcome_column is None:
+        raise RuntimeError("Decision model is missing required columns for usage aggregation")
 
-    conditions: List[Any] = []
+    conditions: list[Any] = []
     if start is not None:
         conditions.append(created_column >= start)
     if end is not None:
@@ -365,54 +386,44 @@ async def aggregate_usage_by_tenant(
     if tenant_ids:
         conditions.append(tenant_column.in_(list(tenant_ids)))
 
-    if blocked_column is not None:
-        allowed_expr = func.sum(case((blocked_column.is_(False), 1), else_=0))
-        blocked_expr = func.sum(case((blocked_column.is_(True), 1), else_=0))
-    elif decision_column is not None:
-        lowered_decision = func.lower(decision_column)
-        blocked_expr = func.sum(case((lowered_decision == "block", 1), else_=0))
-        allowed_expr = func.sum(case((lowered_decision != "block", 1), else_=0))
-    else:
-        allowed_expr = func.count()
-        blocked_expr = literal(0)
-
-    tokens_expr = (
-        func.coalesce(func.sum(tokens_column), 0) if tokens_column is not None else literal(0)
-    )
-
     stmt = (
         select(
             tenant_column.label("tenant_id"),
-            func.count().label("total_requests"),
-            allowed_expr.label("allowed_requests"),
-            blocked_expr.label("blocked_requests"),
-            tokens_expr.label("total_tokens"),
+            environment_column.label("environment"),
+            func.count(Decision.id).label("total"),
+            func.sum(case((outcome_column == "allow", 1), else_=0)).label("allow"),
+            func.sum(case((outcome_column == "block", 1), else_=0)).label("block"),
+            func.sum(case((outcome_column == "clarify", 1), else_=0)).label("clarify"),
+            (
+                func.coalesce(func.sum(total_tokens_column), 0)
+                if total_tokens_column is not None
+                else literal(0)
+            ).label("total_tokens"),
             func.min(created_column).label("first_seen_at"),
             func.max(created_column).label("last_seen_at"),
         )
         .where(and_(*conditions) if conditions else True)  # type: ignore[arg-type]
-        .group_by(tenant_column)
-        .order_by(tenant_column)
+        .group_by(tenant_column, environment_column)
+        .order_by(tenant_column, environment_column)
     )
 
     result = await session.execute(stmt)
     rows: Sequence[Any] = result.fetchall()
 
-    usage_rows: List[TenantUsageRow] = []
-    for row in rows:
-        usage_rows.append(
-            TenantUsageRow(
-                tenant_id=str(row.tenant_id),
-                total_requests=int(row.total_requests or 0),
-                allowed_requests=int(row.allowed_requests or 0),
-                blocked_requests=int(row.blocked_requests or 0),
-                total_tokens=int(row.total_tokens or 0),
-                first_seen_at=row.first_seen_at,
-                last_seen_at=row.last_seen_at,
-            )
+    return [
+        TenantEnvUsageRow(
+            tenant_id=row.tenant_id,
+            environment=row.environment,
+            total=int(row.total or 0),
+            allow=int(row.allow or 0),
+            block=int(row.block or 0),
+            clarify=int(row.clarify or 0),
+            total_tokens=int(row.total_tokens or 0),
+            first_seen_at=row.first_seen_at,
+            last_seen_at=row.last_seen_at,
         )
-
-    return usage_rows
+        for row in rows
+    ]
 
 
 def summarize_usage(rows: IterableABC[UsageRow]) -> List[UsageSummary]:
@@ -457,6 +468,7 @@ __all__ = [
     "iter_decisions",
     "reset_decisions",
     "TenantUsageRow",
+    "TenantEnvUsageRow",
     "list_with_cursor",
     "aggregate_usage_by_tenant",
     "summarize_usage",
