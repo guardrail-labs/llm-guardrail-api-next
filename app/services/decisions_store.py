@@ -1,35 +1,18 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable as IterableABC
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-try:  # pragma: no cover - optional dependency resolution
-    from sqlalchemy import and_, func, or_, select
-    from sqlalchemy.ext.asyncio import AsyncSession
-    from sqlalchemy.sql import Select
-except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
-    and_ = cast(Any, None)
-    func = cast(Any, None)
-    or_ = cast(Any, None)
-    select = cast(Any, None)
-    AsyncSession = Any
-    Select = Any
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
-try:  # pragma: no cover - optional dependency resolution
-    from app.models import Decision as _DecisionModel  # type: ignore[attr-defined]
-except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
-    Decision = cast(Any, None)
-else:
-    Decision = _DecisionModel if hasattr(_DecisionModel, "tenant_id") else cast(Any, None)
-
-try:  # pragma: no cover - optional dependency resolution
-    from app.services import decisions as decisions_service
-except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
-    decisions_service = None  # type: ignore[assignment]
-
+from app.models.decision import Decision
 from app.security.rbac import ScopeParam
 from app.schemas.usage import UsageRow, UsageSummary
+from app.services import decisions as decisions_service
 from app.utils.cursor import decode_cursor, encode_cursor
 
 Dir = Literal["next", "prev"]
@@ -281,7 +264,7 @@ def _row_to_item(row: Any) -> Dict[str, Any]:
 
 
 async def aggregate_usage_by_tenant(
-    session: "AsyncSession",
+    session: AsyncSession,
     *,
     start: datetime,
     end: datetime,
@@ -289,12 +272,8 @@ async def aggregate_usage_by_tenant(
 ) -> List[UsageRow]:
     """
     Aggregate decision counts by tenant, environment, and decision type
-    between [start, end).
+    between [start, end). Uses the persisted Decision table.
     """
-
-    if select is None or func is None or Decision is None:
-        raise RuntimeError("SQLAlchemy is required for usage aggregation")
-
     stmt = (
         select(
             Decision.tenant_id,
@@ -310,6 +289,7 @@ async def aggregate_usage_by_tenant(
         stmt = stmt.where(Decision.tenant_id.in_(tenant_ids))
 
     result = await session.execute(stmt)
+
     rows: List[UsageRow] = []
     for tenant_id, environment, decision, count in result.all():
         rows.append(
@@ -323,32 +303,37 @@ async def aggregate_usage_by_tenant(
     return rows
 
 
-def summarize_usage(rows: List[UsageRow]) -> List[UsageSummary]:
+def summarize_usage(rows: Iterable[UsageRow]) -> List[UsageSummary]:
     """
-    Collapse per-decision rows into per-tenant+environment totals.
+    Reduce per-decision UsageRow entries into per-tenant/environment summaries.
     """
-    by_key: Dict[Tuple[str, str], UsageSummary] = {}
+    summary: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(
+        lambda: {"allow": 0, "block": 0, "clarify": 0}
+    )
 
     for row in rows:
         key = (row.tenant_id, row.environment)
-        summary = by_key.get(key)
-        if summary is None:
-            summary = UsageSummary(
-                tenant_id=row.tenant_id,
-                environment=row.environment,
-                total=0,
-                allow=0,
-                block=0,
-                clarify=0,
+        counts = summary[key]
+        decision = row.decision.lower()
+        if decision == "allow":
+            counts["allow"] += row.count
+        elif decision == "block":
+            counts["block"] += row.count
+        elif decision == "clarify":
+            counts["clarify"] += row.count
+
+    result: List[UsageSummary] = []
+    for (tenant_id, environment), counts in summary.items():
+        total = counts["allow"] + counts["block"] + counts["clarify"]
+        result.append(
+            UsageSummary(
+                tenant_id=tenant_id,
+                environment=environment,
+                total=total,
+                allow=counts["allow"],
+                block=counts["block"],
+                clarify=counts["clarify"],
             )
-            by_key[key] = summary
+        )
 
-        summary.total += row.count
-        if row.decision == "allow":
-            summary.allow += row.count
-        elif row.decision == "block":
-            summary.block += row.count
-        elif row.decision == "clarify":
-            summary.clarify += row.count
-
-    return list(by_key.values())
+    return result
