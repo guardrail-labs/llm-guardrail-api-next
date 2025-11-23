@@ -225,6 +225,7 @@ def _fetch_decisions_sorted_desc(
     if select is None or decisions_service is None:
         raise RuntimeError("SQLAlchemy is required for decisions cursor pagination")
     table = decisions_service.decisions
+    effective_limit: Optional[int] = limit
     stmt: Select = select(table)
     tenant_values = _normalize_scope_values(tenant)
     bot_values = _normalize_scope_values(bot)
@@ -250,6 +251,8 @@ def _fetch_decisions_sorted_desc(
         request_col = getattr(table.c, "request_id", None)
         if request_col is not None:
             conditions.append(request_col == request_id)
+        else:
+            effective_limit = None
     if cursor is not None:
         ts_ms, cursor_id = cursor
         cursor_dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
@@ -269,7 +272,9 @@ def _fetch_decisions_sorted_desc(
             )
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    stmt = stmt.order_by(table.c.ts.desc(), table.c.id.desc()).limit(max(limit, 1))
+    stmt = stmt.order_by(table.c.ts.desc(), table.c.id.desc())
+    if effective_limit is not None:
+        stmt = stmt.limit(max(effective_limit, 1))
     with decisions_service._get_engine().begin() as conn:
         rows = list(conn.execute(stmt).mappings())
     return [_row_to_item(row) for row in rows]
