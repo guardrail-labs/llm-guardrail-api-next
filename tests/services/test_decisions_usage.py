@@ -39,7 +39,17 @@ async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncSession:
 
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     async with sessionmaker() as session:
-        monkeypatch.setattr(decisions_store, "Decision", Decision)
+        if decisions_store.decisions_service is not None:
+            # Patch the Decision model used by aggregate_usage_by_tenant
+            monkeypatch.setattr(
+                decisions_store.decisions_service,
+                "Decision",
+                Decision,
+                raising=False,
+            )
+        else:
+            # Fallback for environments where decisions_service is absent
+            monkeypatch.setattr(decisions_store, "Decision", Decision, raising=False)
         yield session
         await session.rollback()
 

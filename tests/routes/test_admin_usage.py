@@ -14,6 +14,8 @@ from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.dependencies.auth import AdminAuthDependency
+from app.dependencies.db import get_db_session
 from app.main import create_app
 from app.routes import admin_usage
 from app.services import decisions_store
@@ -61,7 +63,12 @@ def client_with_db(db_session: AsyncSession) -> TestClient:
     async def _override_db_session() -> AsyncSession:
         yield db_session
 
-    app.dependency_overrides[admin_usage.get_db_session] = _override_db_session
+    # Bypass admin RBAC so usage endpoints hit the DB-backed logic in tests
+    def _allow_admin() -> None:
+        return None
+
+    app.dependency_overrides[get_db_session] = _override_db_session
+    app.dependency_overrides[AdminAuthDependency] = _allow_admin
 
     with TestClient(app) as client:
         yield client
