@@ -5,13 +5,23 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 try:  # pragma: no cover - optional dependency resolution
-    from sqlalchemy import and_, or_, select
+    from sqlalchemy import and_, func, or_, select
+    from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.sql import Select
 except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
     and_ = cast(Any, None)
+    func = cast(Any, None)
     or_ = cast(Any, None)
     select = cast(Any, None)
+    AsyncSession = Any
     Select = Any
+
+try:  # pragma: no cover - optional dependency resolution
+    from app.models import Decision as _DecisionModel  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
+    Decision = cast(Any, None)
+else:
+    Decision = _DecisionModel if hasattr(_DecisionModel, "tenant_id") else cast(Any, None)
 
 try:  # pragma: no cover - optional dependency resolution
     from app.services import decisions as decisions_service
@@ -19,6 +29,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missi
     decisions_service = None  # type: ignore[assignment]
 
 from app.security.rbac import ScopeParam
+from app.schemas.usage import UsageRow, UsageSummary
 from app.utils.cursor import decode_cursor, encode_cursor
 
 Dir = Literal["next", "prev"]
@@ -267,3 +278,77 @@ def _row_to_item(row: Any) -> Dict[str, Any]:
         dt = ts_val.astimezone(timezone.utc)
         item["ts_ms"] = int(dt.timestamp() * 1000)
     return item
+
+
+async def aggregate_usage_by_tenant(
+    session: "AsyncSession",
+    *,
+    start: datetime,
+    end: datetime,
+    tenant_ids: List[str] | None = None,
+) -> List[UsageRow]:
+    """
+    Aggregate decision counts by tenant, environment, and decision type
+    between [start, end).
+    """
+
+    if select is None or func is None or Decision is None:
+        raise RuntimeError("SQLAlchemy is required for usage aggregation")
+
+    stmt = (
+        select(
+            Decision.tenant_id,
+            Decision.environment,
+            Decision.decision,
+            func.count().label("count"),
+        )
+        .where(Decision.created_at >= start, Decision.created_at < end)
+        .group_by(Decision.tenant_id, Decision.environment, Decision.decision)
+    )
+
+    if tenant_ids:
+        stmt = stmt.where(Decision.tenant_id.in_(tenant_ids))
+
+    result = await session.execute(stmt)
+    rows: List[UsageRow] = []
+    for tenant_id, environment, decision, count in result.all():
+        rows.append(
+            UsageRow(
+                tenant_id=tenant_id,
+                environment=environment,
+                decision=str(decision),
+                count=int(count),
+            )
+        )
+    return rows
+
+
+def summarize_usage(rows: List[UsageRow]) -> List[UsageSummary]:
+    """
+    Collapse per-decision rows into per-tenant+environment totals.
+    """
+    by_key: Dict[Tuple[str, str], UsageSummary] = {}
+
+    for row in rows:
+        key = (row.tenant_id, row.environment)
+        summary = by_key.get(key)
+        if summary is None:
+            summary = UsageSummary(
+                tenant_id=row.tenant_id,
+                environment=row.environment,
+                total=0,
+                allow=0,
+                block=0,
+                clarify=0,
+            )
+            by_key[key] = summary
+
+        summary.total += row.count
+        if row.decision == "allow":
+            summary.allow += row.count
+        elif row.decision == "block":
+            summary.block += row.count
+        elif row.decision == "clarify":
+            summary.clarify += row.count
+
+    return list(by_key.values())
