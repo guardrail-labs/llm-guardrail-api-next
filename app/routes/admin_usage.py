@@ -20,16 +20,7 @@ else:
         AsyncSession = Any  # type: ignore[assignment]
         _SQLALCHEMY_MISSING = True
 
-try:
-    from app.dependencies.session import get_db_session
-except ModuleNotFoundError:  # pragma: no cover - fallback when dependency module missing
-    async def get_db_session() -> Any:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=503,
-            detail="Database session dependency unavailable",
-        )
+from app.dependencies.session import get_db_session
 
 from app.routes.admin_rbac import require_admin as require_admin_rbac
 from app.schemas.usage import UsageSummary
