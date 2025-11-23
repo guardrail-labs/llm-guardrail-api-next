@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Optional
+
 from app.pydantic_base import AppBaseModel
 
 
@@ -17,6 +20,9 @@ class UsageSummary(AppBaseModel):
     allow: int
     block: int
     clarify: int
+    total_tokens: int = 0
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
 
 
 __all__ = ["UsageRow", "UsageSummary"]
