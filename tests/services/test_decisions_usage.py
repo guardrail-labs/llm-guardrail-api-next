@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -13,11 +14,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.schemas.usage import UsageRow, UsageSummary  # noqa: E402
 from app.services import decisions_store  # noqa: E402
-from app.services.decisions_store import (  # noqa: E402
-    TenantUsageRow,
-    aggregate_usage_by_tenant,
-    summarize_usage,
-)
+from app.services.decisions_store import aggregate_usage_by_tenant, summarize_usage  # noqa: E402
 
 
 class Base(DeclarativeBase):
@@ -89,15 +86,17 @@ async def test_aggregate_usage_by_tenant_basic(db_session: AsyncSession) -> None
     )
 
     assert rows
-    keyed: dict[str, TenantUsageRow] = {r.tenant_id: r for r in rows}
-    assert keyed["t1"].total_requests == 2
-    assert keyed["t1"].allowed_requests == 1
-    assert keyed["t1"].blocked_requests == 1
-    assert keyed["t1"].total_tokens == 0
-    assert keyed["t2"].total_requests == 1
-    assert keyed["t2"].allowed_requests == 1
-    assert keyed["t2"].blocked_requests == 0
-    assert keyed["t2"].total_tokens == 0
+    keyed = {(r.tenant_id, r.environment): r for r in rows}
+    assert keyed[("t1", "prod")].total == 2
+    assert keyed[("t1", "prod")].allow == 1
+    assert keyed[("t1", "prod")].block == 1
+    assert keyed[("t1", "prod")].clarify == 0
+    assert keyed[("t1", "prod")].total_tokens == 0
+    assert keyed[("t2", "staging")].total == 1
+    assert keyed[("t2", "staging")].allow == 0
+    assert keyed[("t2", "staging")].block == 0
+    assert keyed[("t2", "staging")].clarify == 1
+    assert keyed[("t2", "staging")].total_tokens == 0
 
 
 @pytest.mark.asyncio
@@ -134,6 +133,54 @@ async def test_aggregate_usage_by_tenant_filter(db_session: AsyncSession) -> Non
 
     assert len(rows) == 1
     assert rows[0].tenant_id == "t1"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_usage_with_legacy_decision_column(
+    monkeypatch: pytest.MonkeyPatch, db_session: AsyncSession
+) -> None:
+    class LegacyDecision(Decision):
+        __tablename__ = "legacy_decisions"
+
+    # Swap in the legacy model that exposes a ``decision`` column instead of outcome.
+    monkeypatch.setattr(decisions_store, "decisions_service", types.SimpleNamespace(Decision=LegacyDecision))
+    await db_session.run_sync(LegacyDecision.__table__.create)
+
+    db_session.add_all(
+        [
+            LegacyDecision(
+                id="l1",
+                tenant_id="legacy",
+                environment="prod",
+                decision="allow",
+                created_at=datetime.now(timezone.utc),
+            ),
+            LegacyDecision(
+                id="l2",
+                tenant_id="legacy",
+                environment="prod",
+                decision="block",
+                created_at=datetime.now(timezone.utc),
+            ),
+            LegacyDecision(
+                id="l3",
+                tenant_id="legacy",
+                environment="prod",
+                decision="clarify",
+                created_at=datetime.now(timezone.utc),
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await aggregate_usage_by_tenant(db_session)
+    keyed = {(r.tenant_id, r.environment): r for r in rows}
+    legacy = keyed[("legacy", "prod")]
+
+    assert legacy.allow == 1
+    assert legacy.block == 1
+    assert legacy.clarify == 1
+    assert legacy.total == 3
 
 
 def test_summarize_usage_rollup() -> None:
