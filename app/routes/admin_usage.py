@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime
 from typing import Any, List, Optional
 
@@ -7,30 +9,27 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.dependencies.auth import AdminAuthDependency
 from app.dependencies.db import get_db_session
-from app.routes.admin_rbac import require_admin as require_admin_rbac
-from app.security.admin_auth import require_admin
 from app.services import decisions_store
 
 router = APIRouter(
     prefix="/admin/api/usage",
     tags=["admin-usage"],
-    dependencies=[Depends(require_admin), Depends(require_admin_rbac)],
+    dependencies=[Depends(AdminAuthDependency)],
 )
 
 
-class TenantUsage(BaseModel):
-    tenant_id: str = Field(..., description="Tenant identifier")
-    total_requests: int = Field(..., ge=0)
-    allowed_requests: int = Field(..., ge=0)
-    blocked_requests: int = Field(..., ge=0)
+class TenantUsageSummary(BaseModel):
+    tenant_id: str
+    environment: str
+    total: int = Field(..., ge=0)
+    allow: int = Field(..., ge=0)
+    block: int = Field(..., ge=0)
+    clarify: int = Field(..., ge=0)
     total_tokens: int = Field(..., ge=0)
     first_seen_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
-
-
-class TenantUsageList(BaseModel):
-    items: List[TenantUsage]
 
 
 def _parse_iso8601_or_none(value: Optional[str]) -> Optional[datetime]:
@@ -47,8 +46,8 @@ def _parse_iso8601_or_none(value: Optional[str]) -> Optional[datetime]:
 
 @router.get(
     "/by-tenant",
-    response_model=TenantUsageList,
-    summary="List usage aggregated by tenant",
+    response_model=List[TenantUsageSummary],
+    summary="List usage aggregated by tenant and environment",
 )
 async def get_usage_by_tenant(
     start: Optional[str] = Query(
@@ -64,7 +63,7 @@ async def get_usage_by_tenant(
         description="Optional tenant_id filter; if omitted, all tenants are returned.",
     ),
     session: Any = Depends(get_db_session),
-) -> TenantUsageList:
+) -> List[TenantUsageSummary]:
     """
     Return aggregated usage per tenant for the admin Billing & Usage screen.
 
@@ -83,20 +82,20 @@ async def get_usage_by_tenant(
         tenant_ids=tenant_ids,
     )
 
-    return TenantUsageList(
-        items=[
-            TenantUsage(
-                tenant_id=row.tenant_id,
-                total_requests=row.total_requests,
-                allowed_requests=row.allowed_requests,
-                blocked_requests=row.blocked_requests,
-                total_tokens=row.total_tokens,
-                first_seen_at=row.first_seen_at,
-                last_seen_at=row.last_seen_at,
-            )
-            for row in rows
-        ]
-    )
+    return [
+        TenantUsageSummary(
+            tenant_id=row.tenant_id,
+            environment=row.environment,
+            total=row.total,
+            allow=row.allow,
+            block=row.block,
+            clarify=row.clarify,
+            total_tokens=row.total_tokens,
+            first_seen_at=row.first_seen_at,
+            last_seen_at=row.last_seen_at,
+        )
+        for row in rows
+    ]
 
 
 @router.get(
@@ -121,9 +120,6 @@ async def export_usage_by_tenant_csv(
     """
     Export aggregated usage by tenant as CSV for offline billing / analysis.
     """
-    import csv
-    import io
-
     start_dt = _parse_iso8601_or_none(start)
     end_dt = _parse_iso8601_or_none(end)
     tenant_ids = [tenant_id] if tenant_id else None
@@ -141,9 +137,11 @@ async def export_usage_by_tenant_csv(
     writer.writerow(
         [
             "tenant_id",
-            "total_requests",
-            "allowed_requests",
-            "blocked_requests",
+            "environment",
+            "total",
+            "allow",
+            "block",
+            "clarify",
             "total_tokens",
             "first_seen_at",
             "last_seen_at",
@@ -154,9 +152,11 @@ async def export_usage_by_tenant_csv(
         writer.writerow(
             [
                 row.tenant_id,
-                row.total_requests,
-                row.allowed_requests,
-                row.blocked_requests,
+                row.environment,
+                row.total,
+                row.allow,
+                row.block,
+                row.clarify,
                 row.total_tokens,
                 row.first_seen_at.isoformat() if row.first_seen_at else "",
                 row.last_seen_at.isoformat() if row.last_seen_at else "",
