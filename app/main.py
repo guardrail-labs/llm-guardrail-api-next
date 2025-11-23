@@ -830,6 +830,12 @@ def create_app() -> FastAPI:
         app.include_router(admin_me.router)
     except Exception as exc:
         log.warning("Admin /me route unavailable: %s", exc)
+    try:
+        from app.routes import admin_usage
+    except Exception as exc:
+        _log.debug("import admin_usage failed: %s", exc)
+    else:
+        _best_effort("include admin_usage", lambda: app.include_router(admin_usage.router))
     # Starlette executes middleware in reverse registration order.
     # Desired runtime ingress order:
     #   PathGuard -> HeaderCanonicalize -> HeaderLimits -> DuplicateHeaderGuard
