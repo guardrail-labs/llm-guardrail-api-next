@@ -1,34 +1,15 @@
 from __future__ import annotations
 
-import csv
-import io
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-
-_SQLALCHEMY_MISSING = False
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession  # pragma: no cover
-else:
-    try:
-        from sqlalchemy.ext.asyncio import AsyncSession  # type: ignore[assignment]
-    except ModuleNotFoundError:
-        AsyncSession = Any  # type: ignore[assignment]
-        _SQLALCHEMY_MISSING = True
-
-from app.dependencies.session import get_db_session
 
 from app.routes.admin_rbac import require_admin as require_admin_rbac
 from app.schemas.usage import UsageSummary
 from app.security.admin_auth import require_admin
-from app.services.decisions_store import (
-    aggregate_usage_by_tenant,
-    summarize_usage,
-)
 
 router = APIRouter(tags=["admin-usage"])
 
@@ -81,31 +62,13 @@ async def get_usage_by_tenant(
         alias="tenant_id",
         description="Optional list of tenant IDs to filter on",
     ),
-    session: "AsyncSession" = Depends(get_db_session),
     _admin_ui = Depends(require_admin),
     _admin_rbac = Depends(require_admin_rbac),
 ) -> List[UsageSummary]:
-    if _SQLALCHEMY_MISSING:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Usage aggregation requires SQLAlchemy; "
-                "install it to enable this endpoint."
-            ),
-        )
-
-    start, end = _resolve_period(period)
-
-    rows = await aggregate_usage_by_tenant(
-        session,
-        start=start,
-        end=end,
-        tenant_ids=tenant_ids,
+    raise HTTPException(
+        status_code=503,
+        detail="Usage aggregation is not yet wired to a database session in this build.",
     )
-
-    return summarize_usage(rows)
 
 
 @router.get(
@@ -123,56 +86,10 @@ async def export_usage_csv(
         alias="tenant_id",
         description="Optional list of tenant IDs to filter on",
     ),
-    session: "AsyncSession" = Depends(get_db_session),
     _admin_ui = Depends(require_admin),
     _admin_rbac = Depends(require_admin_rbac),
 ) -> StreamingResponse:
-    if _SQLALCHEMY_MISSING:
-        from fastapi import HTTPException
-
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Usage aggregation requires SQLAlchemy; "
-                "install it to enable this endpoint."
-            ),
-        )
-
-    start, end = _resolve_period(period)
-
-    rows = await aggregate_usage_by_tenant(
-        session,
-        start=start,
-        end=end,
-        tenant_ids=tenant_ids,
+    raise HTTPException(
+        status_code=503,
+        detail="Usage export is not yet wired to a database session in this build.",
     )
-    summaries = summarize_usage(rows)
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
-        ["tenant_id", "environment", "total", "allow", "block", "clarify"]
-    )
-    for s in summaries:
-        writer.writerow(
-            [
-                s.tenant_id,
-                s.environment,
-                s.total,
-                s.allow,
-                s.block,
-                s.clarify,
-            ]
-        )
-
-    output.seek(0)
-
-    safe_label = _safe_period_label(period)
-    filename = f"guardrail-usage-{safe_label}.csv"
-
-    headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Content-Type": "text/csv; charset=utf-8",
-    }
-
-    return StreamingResponse(output, headers=headers, media_type="text/csv")
