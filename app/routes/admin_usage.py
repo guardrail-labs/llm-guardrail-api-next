@@ -4,13 +4,33 @@ import csv
 import io
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Any, List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies.db import get_db_session
+_SQLALCHEMY_MISSING = False
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession  # pragma: no cover
+else:
+    try:
+        from sqlalchemy.ext.asyncio import AsyncSession  # type: ignore[assignment]
+    except ModuleNotFoundError:
+        AsyncSession = Any  # type: ignore[assignment]
+        _SQLALCHEMY_MISSING = True
+
+try:
+    from app.dependencies.session import get_db_session
+except ModuleNotFoundError:  # pragma: no cover - fallback when dependency module missing
+    async def get_db_session() -> Any:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail="Database session dependency unavailable",
+        )
+
 from app.routes.admin_rbac import require_admin as require_admin_rbac
 from app.schemas.usage import UsageSummary
 from app.security.admin_auth import require_admin
@@ -70,10 +90,21 @@ async def get_usage_by_tenant(
         alias="tenant_id",
         description="Optional list of tenant IDs to filter on",
     ),
-    session: AsyncSession = Depends(get_db_session),
+    session: "AsyncSession" = Depends(get_db_session),
     _admin_ui = Depends(require_admin),
     _admin_rbac = Depends(require_admin_rbac),
 ) -> List[UsageSummary]:
+    if _SQLALCHEMY_MISSING:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Usage aggregation requires SQLAlchemy; "
+                "install it to enable this endpoint."
+            ),
+        )
+
     start, end = _resolve_period(period)
 
     rows = await aggregate_usage_by_tenant(
@@ -101,10 +132,21 @@ async def export_usage_csv(
         alias="tenant_id",
         description="Optional list of tenant IDs to filter on",
     ),
-    session: AsyncSession = Depends(get_db_session),
+    session: "AsyncSession" = Depends(get_db_session),
     _admin_ui = Depends(require_admin),
     _admin_rbac = Depends(require_admin_rbac),
 ) -> StreamingResponse:
+    if _SQLALCHEMY_MISSING:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Usage aggregation requires SQLAlchemy; "
+                "install it to enable this endpoint."
+            ),
+        )
+
     start, end = _resolve_period(period)
 
     rows = await aggregate_usage_by_tenant(
