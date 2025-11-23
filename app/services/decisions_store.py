@@ -372,9 +372,11 @@ async def aggregate_usage_by_tenant(
     created_column = getattr(Decision, "created_at", None) or getattr(Decision, "ts", None)
     tenant_column = getattr(Decision, "tenant_id", None) or getattr(Decision, "tenant", None)
     environment_column = getattr(Decision, "environment", None) or getattr(Decision, "bot", None)
-    outcome_column = getattr(Decision, "outcome", None)
+    outcome_column = getattr(Decision, "outcome", None) or getattr(Decision, "decision", None)
     total_tokens_column = getattr(Decision, "total_tokens", None)
 
+    if tenant_column is None or created_column is None:
+        raise RuntimeError("Decision model missing required tenant or timestamp columns")
     if created_column is None or tenant_column is None or environment_column is None or outcome_column is None:
         raise RuntimeError("Decision model is missing required columns for usage aggregation")
 
