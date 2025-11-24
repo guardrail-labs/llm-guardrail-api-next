@@ -13,34 +13,53 @@ permissions:
 jobs:
   python:
     runs-on: ubuntu-latest
+
+    # Only run the Python publish job if a PyPI token is defined
+    if: ${{ secrets.PYPI_API_TOKEN != '' }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - run: pip install build twine
-      - run: python -m build
+
+      - name: Build Python package
+        run: python -m build
         working-directory: clients/python
-      - if: ${{ secrets.PYPI_API_TOKEN != '' }}
+
+      - name: Publish Python package to PyPI
         env:
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
           TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: python -m twine upload --non-interactive dist/*
         working-directory: clients/python
 
   typescript:
     runs-on: ubuntu-latest
+
+    # Only run the TypeScript publish job if an NPM token is defined
+    if: ${{ secrets.NPM_TOKEN != '' }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
-      - run: npm install
+
+      - name: Install dependencies
+        run: npm install
         working-directory: clients/typescript
-      - run: npm run build
+
+      - name: Build TypeScript SDK
+        run: npm run build
         working-directory: clients/typescript
-      - if: ${{ secrets.NPM_TOKEN != '' }}
+
+      - name: Publish TypeScript SDK to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
