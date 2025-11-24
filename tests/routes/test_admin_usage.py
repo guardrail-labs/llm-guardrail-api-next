@@ -10,15 +10,15 @@ from starlette.testclient import TestClient
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("aiosqlite")
 
-from sqlalchemy import DateTime, Integer, String, case, func
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import DateTime, Integer, String, case, func  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column  # noqa: E402
 
-from app.dependencies.auth import AdminAuthDependency
-from app.dependencies.db import get_db_session
-from app.main import create_app
-from app.routes import admin_usage
-from app.services import decisions_store
+from app.dependencies.auth import AdminAuthDependency  # noqa: E402
+from app.dependencies.db import get_db_session  # noqa: E402
+from app.main import create_app  # noqa: E402
+from app.routes import admin_usage  # noqa: E402
+from app.services import decisions_store  # noqa: E402e
 
 
 class Base(DeclarativeBase):
