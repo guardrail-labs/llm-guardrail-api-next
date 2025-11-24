@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable as IterableABC, Iterator
 from collections import defaultdict
+from collections.abc import Iterable as IterableABC, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
@@ -50,11 +50,15 @@ def _get_decision_model() -> Any:
     Decision: Any = getattr(decisions_service, "Decision", None) if decisions_service else None
     if Decision is None:
         try:
-            from app.models.decision import Decision as DecisionModel  # type: ignore[import-untyped]
+            from app.models.decision import (
+                Decision as DecisionModel,  # type: ignore[import-untyped]
+            )
 
             Decision = DecisionModel
         except ModuleNotFoundError as exc:  # pragma: no cover
-            raise RuntimeError("Decision model is unavailable for usage aggregation") from exc
+            raise RuntimeError(
+                "Decision model is unavailable for usage aggregation",
+            ) from exc
 
     return Decision
 
@@ -79,7 +83,9 @@ def _resolve_decision_columns() -> Tuple[Any, Any, Any, Any, Any, Any]:
         or environment_column is None
         or outcome_column is None
     ):
-        raise RuntimeError("Decision model is missing required columns for usage aggregation")
+        raise RuntimeError(
+            "Decision model is missing required columns for usage aggregation",
+        )
 
     return (
         Decision,
@@ -171,12 +177,7 @@ def list_with_cursor(
     outcome: Optional[str] = None,
     request_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
-    """Return a page of decisions ordered by ``(ts_ms DESC, id DESC)``.
-
-    The ``since_ts_ms``, ``outcome``, and ``request_id`` filters are applied
-    against the ordered results before the cursor windowing step so the
-    returned page aligns with the cursor semantics.
-    """
+    """Return a page of decisions ordered by ``(ts_ms DESC, id DESC)``."""
 
     safe_limit = max(1, min(int(limit), 500))
     decoded: Optional[Tuple[int, str]] = None
@@ -310,13 +311,16 @@ def _fetch_decisions_sorted_desc(
 ) -> List[Dict[str, Any]]:
     if select is None or decisions_service is None:
         raise RuntimeError("SQLAlchemy is required for decisions cursor pagination")
+
     table = decisions_service.decisions
     effective_limit: Optional[int] = limit
     stmt: Select = select(table)
+
     tenant_values = _normalize_scope_values(tenant)
     bot_values = _normalize_scope_values(bot)
     if tenant_values == [] or bot_values == []:
         return []
+
     conditions = []
     if tenant_values:
         if len(tenant_values) == 1:
@@ -347,20 +351,22 @@ def _fetch_decisions_sorted_desc(
                 or_(
                     table.c.ts < cursor_dt,
                     and_(table.c.ts == cursor_dt, table.c.id < cursor_id),
-                )
+                ),
             )
         else:
             conditions.append(
                 or_(
                     table.c.ts > cursor_dt,
                     and_(table.c.ts == cursor_dt, table.c.id > cursor_id),
-                )
+                ),
             )
+
     if conditions:
         stmt = stmt.where(and_(*conditions))
     stmt = stmt.order_by(table.c.ts.desc(), table.c.id.desc())
     if effective_limit is not None:
         stmt = stmt.limit(max(effective_limit, 1))
+
     with decisions_service._get_engine().begin() as conn:
         rows = list(conn.execute(stmt).mappings())
     return [_row_to_item(row) for row in rows]
@@ -492,8 +498,9 @@ async def aggregate_usage_summary(
         select is None
         or decisions_service is None
         or sa_case is None
+        or func is None
         or literal is None
-    ):  # type: ignore[truthy-function]
+    ):
         raise RuntimeError("Usage aggregation requires SQLAlchemy and decisions service")
 
     (
@@ -505,7 +512,6 @@ async def aggregate_usage_summary(
         total_tokens_column,
     ) = _resolve_decision_columns()
 
-    func = decisions_service.func
     case = sa_case
 
     conditions: list[Any] = []
@@ -557,7 +563,7 @@ def summarize_usage(rows: IterableABC[UsageRow]) -> List[UsageSummary]:
     Reduce UsageRow entries into per-tenant/environment summaries.
     """
     summary: Dict[Tuple[str, str], Dict[str, int]] = defaultdict(
-        lambda: {"allow": 0, "block": 0, "clarify": 0}
+        lambda: {"allow": 0, "block": 0, "clarify": 0},
     )
 
     for row in rows:
@@ -582,7 +588,7 @@ def summarize_usage(rows: IterableABC[UsageRow]) -> List[UsageSummary]:
                 allow=counts["allow"],
                 block=counts["block"],
                 clarify=counts["clarify"],
-            )
+            ),
         )
 
     return result
