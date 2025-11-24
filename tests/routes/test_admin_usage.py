@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("aiosqlite")
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, Integer, String, case, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -47,7 +47,7 @@ async def db_session(monkeypatch: pytest.MonkeyPatch) -> AsyncSession:
         monkeypatch.setattr(
             decisions_store,
             "decisions_service",
-            types.SimpleNamespace(Decision=Decision),
+            types.SimpleNamespace(Decision=Decision, func=func, case=case),
             raising=False,
         )
         yield session
@@ -180,6 +180,69 @@ async def test_get_usage_by_tenant_filtered(client_with_db: TestClient, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_get_usage_summary(client_with_db: TestClient, db_session: AsyncSession) -> None:
+    _seed_decisions(db_session)
+    await db_session.commit()
+
+    resp = client_with_db.get("/admin/api/usage/summary", params={"period": "30d"})
+    assert resp.status_code == 200
+    data = resp.json()
+
+    expected_keys = {
+        "period",
+        "tenant",
+        "total",
+        "allow",
+        "block",
+        "clarify",
+        "total_tokens",
+        "tenant_count",
+        "environment_count",
+        "first_seen_at",
+        "last_seen_at",
+    }
+    assert set(data.keys()) == expected_keys
+    assert data["period"] == "30d"
+    assert data["tenant"] is None
+    assert data["total"] == data["allow"] + data["block"] + data["clarify"]
+
+    assert data["total"] == 4
+    assert data["allow"] == 2
+    assert data["block"] == 1
+    assert data["clarify"] == 1
+    assert data["total_tokens"] == 185
+    assert data["tenant_count"] == 2
+    assert data["environment_count"] == 2
+
+    first_seen = datetime.fromisoformat(data["first_seen_at"])
+    last_seen = datetime.fromisoformat(data["last_seen_at"])
+    assert first_seen < last_seen
+
+
+@pytest.mark.asyncio
+async def test_get_usage_summary_filtered(
+    client_with_db: TestClient, db_session: AsyncSession
+) -> None:
+    _seed_decisions(db_session)
+    await db_session.commit()
+
+    resp = client_with_db.get(
+        "/admin/api/usage/summary", params={"period": "30d", "tenant_id": "acme"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["tenant"] == "acme"
+    assert data["total"] == 3
+    assert data["allow"] == 1
+    assert data["block"] == 1
+    assert data["clarify"] == 1
+    assert data["total_tokens"] == 175
+    assert data["tenant_count"] == 1
+    assert data["environment_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_export_usage_csv(client_with_db: TestClient, db_session: AsyncSession) -> None:
     _seed_decisions(db_session)
     await db_session.commit()
@@ -235,8 +298,9 @@ async def test_usage_endpoints_unavailable(monkeypatch: pytest.MonkeyPatch) -> N
     with TestClient(app) as client:
         resp1 = client.get("/admin/api/usage/by-tenant")
         resp2 = client.get("/admin/api/usage/export")
+        resp3 = client.get("/admin/api/usage/summary")
 
-    for resp in (resp1, resp2):
+    for resp in (resp1, resp2, resp3):
         assert resp.status_code == 503
         assert "usage metrics" in resp.json()["detail"]
 
@@ -258,6 +322,8 @@ async def test_get_usage_by_tenant_requires_admin(
     with TestClient(app) as client:
         resp1 = client.get("/admin/api/usage/by-tenant")
         resp2 = client.get("/admin/api/usage/export")
+        resp3 = client.get("/admin/api/usage/summary")
 
     assert resp1.status_code in (401, 403)
     assert resp2.status_code in (401, 403)
+    assert resp3.status_code in (401, 403)
