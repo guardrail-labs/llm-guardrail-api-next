@@ -8,7 +8,6 @@ from app.services.decisions import _finalize_decision  # noqa: E402
 from app.services.mitigation_store import reset_for_tests, set_mode  # noqa: E402
 
 
-
 class Dummy:
     def __init__(self, mitigation: str):
         self.mitigation = mitigation
