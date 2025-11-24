@@ -14,9 +14,6 @@ jobs:
   python:
     runs-on: ubuntu-latest
 
-    # Only run the Python publish job if a PyPI token is defined
-    if: ${{ secrets.PYPI_API_TOKEN != '' }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +27,8 @@ jobs:
         run: python -m build
         working-directory: clients/python
 
-      - name: Publish Python package to PyPI
+      - name: Publish Python SDK to PyPI
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -39,9 +37,6 @@ jobs:
 
   typescript:
     runs-on: ubuntu-latest
-
-    # Only run the TypeScript publish job if an NPM token is defined
-    if: ${{ secrets.NPM_TOKEN != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +55,7 @@ jobs:
         working-directory: clients/typescript
 
       - name: Publish TypeScript SDK to npm
+        if: ${{ secrets.NPM_TOKEN != '' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
