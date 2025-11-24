@@ -11,14 +11,18 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("aiosqlite")
 
 from sqlalchemy import DateTime, Integer, String, case, func  # noqa: E402
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column  # noqa: E402
 
 from app.dependencies.auth import AdminAuthDependency  # noqa: E402
 from app.dependencies.db import get_db_session  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.routes import admin_usage  # noqa: E402
-from app.services import decisions_store  # noqa: E402e
+from app.services import decisions_store  # noqa: E402
 
 
 class Base(DeclarativeBase):

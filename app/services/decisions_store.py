@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
 
 try:  # pragma: no cover - optional dependency resolution
-    from sqlalchemy import and_, or_, select, case as sa_case
+    from sqlalchemy import and_, case as sa_case, or_, select
     from sqlalchemy.sql import Select, func, literal
 except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
     and_ = cast(Any, None)
@@ -23,8 +23,8 @@ try:  # pragma: no cover - optional dependency resolution
 except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
     decisions_service = None  # type: ignore[assignment]
 
-from app.security.rbac import ScopeParam
 from app.schemas.usage import UsageRow, UsageSummary
+from app.security.rbac import ScopeParam
 from app.utils.cursor import decode_cursor, encode_cursor
 
 

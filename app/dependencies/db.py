@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator, TYPE_CHECKING
+from typing import TYPE_CHECKING, AsyncGenerator
 
 from fastapi import HTTPException
 
 try:  # pragma: no cover - optional dependency resolution
     from sqlalchemy.ext.asyncio import AsyncSession
+
     from app.db.session import get_session  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # pragma: no cover - DB not configured
     AsyncSession = None  # type: ignore[assignment]
     get_session = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:  # pragma: no cover
-    from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+    pass
 
 
 async def get_db_session() -> AsyncGenerator["AsyncSession", None]:

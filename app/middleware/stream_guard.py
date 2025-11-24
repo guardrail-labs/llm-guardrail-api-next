@@ -161,7 +161,7 @@ class StreamingGuard:
         # Pull until we have something to emit or source ends.
         while True:
             try:
-                chunk = await anext(self._ait)
+                chunk = await self._ait.__anext__()
             except StopAsyncIteration:
                 self._done = True
                 self._apply_redactions()

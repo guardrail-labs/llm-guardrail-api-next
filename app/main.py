@@ -21,14 +21,13 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 
 from app import settings
-from app.middleware.mode_header import install_mode_header
 from app.middleware.admin_session import AdminSessionMiddleware
 from app.middleware.egress_output_inspect import EgressOutputInspectMiddleware
 from app.middleware.egress_redact import EgressRedactMiddleware
 from app.middleware.egress_timing import EgressTimingMiddleware
 from app.middleware.guardrail_mode import (
-    ensure_guardrail_mode_header,
     current_guardrail_mode,
+    ensure_guardrail_mode_header,
 )
 from app.middleware.header_canonicalize import HeaderCanonicalizeMiddleware
 from app.middleware.idempotency import IdempotencyMiddleware
@@ -51,6 +50,7 @@ from app.middleware.ingress_unicode_sanitizer import (
     IngressUnicodeSanitizerMiddleware,
 )
 from app.middleware.latency_instrument import LatencyMiddleware
+from app.middleware.mode_header import install_mode_header
 from app.middleware.multimodal_middleware import MultimodalGateMiddleware
 from app.middleware.quota import QuotaMiddleware
 from app.middleware.request_id import RequestIDMiddleware, get_request_id
