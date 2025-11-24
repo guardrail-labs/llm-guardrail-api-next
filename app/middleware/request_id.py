@@ -40,23 +40,42 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         call_next: RequestResponseEndpoint,
     ) -> Response:
         # Ingest or generate.
-        rid = request.headers.get(_HEADER) or str(uuid.uuid4())
+        raw_header = request.headers.get(_HEADER)
+
+        if raw_header is None:
+            # No header provided: generate a new ID.
+            rid = str(uuid.uuid4())
+        else:
+            # Header provided: normalize for internal use.
+            trimmed = raw_header.strip()
+            if trimmed:
+                rid = trimmed
+            else:
+                # Header is all whitespace; fall back to generated ID.
+                rid = str(uuid.uuid4())
+
         token = _REQUEST_ID.set(rid)
         try:
-            request.state.request_id = rid
-        except Exception:
-            pass
-        try:
-            request.scope["request_id"] = rid
-        except Exception:
-            pass
-        try:
+            try:
+                request.state.request_id = rid
+            except Exception:
+                pass
+            try:
+                request.scope["request_id"] = rid
+            except Exception:
+                pass
             response: Response = await call_next(request)
         finally:
             # Always reset contextvar to avoid leakage across requests.
             _REQUEST_ID.reset(token)
 
-        # Ensure header is present on the response.
+        # Ensure header is present on the response:
+        # - If the client sent a header, leave it exactly as-is.
+        # - Otherwise, emit the normalized/generated ID.
         if response.headers.get(_HEADER) is None:
-            response.headers[_HEADER] = rid
+            if raw_header is not None:
+                response.headers[_HEADER] = raw_header
+            else:
+                response.headers[_HEADER] = rid
+
         return response
