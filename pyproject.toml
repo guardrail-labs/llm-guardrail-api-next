@@ -38,6 +38,7 @@ dev = [
   "types-redis",
   "types-requests",
   "types-PyYAML",
+  "beautifulsoup4>=4.12.3",
 ]
 
 [tool.pytest.ini_options]

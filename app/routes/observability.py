@@ -26,15 +26,13 @@ def list_clarifications(
     tenant: Optional[str] = Query(
         None,
         description=(
-            "Filter clarifications for a specific tenant. "
-            "Scoped tokens must provide this filter."
+            "Filter clarifications for a specific tenant. Scoped tokens must provide this filter."
         ),
     ),
     bot: Optional[str] = Query(
         None,
         description=(
-            "Optional bot filter. "
-            "Scoped tokens must provide this when their bot scope is limited."
+            "Optional bot filter. Scoped tokens must provide this when their bot scope is limited."
         ),
     ),
     limit: int = Query(
