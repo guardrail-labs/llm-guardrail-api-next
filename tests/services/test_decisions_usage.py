@@ -8,11 +8,11 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("aiosqlite")
 
-from sqlalchemy import DateTime, String
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import DateTime, String  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column  # noqa: E402
 
-from app.schemas.usage import UsageRow, UsageSummary  # noqa: E402
+from app.schemas.usage import UsageRow  # noqa: E402
 from app.services import decisions_store  # noqa: E402
 from app.services.decisions_store import aggregate_usage_by_tenant, summarize_usage  # noqa: E402
 
