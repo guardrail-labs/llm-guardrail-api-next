@@ -492,7 +492,6 @@ async def aggregate_usage_summary(
         select is None
         or decisions_service is None
         or sa_case is None
-        or func is None
         or literal is None
     ):  # type: ignore[truthy-function]
         raise RuntimeError("Usage aggregation requires SQLAlchemy and decisions service")
