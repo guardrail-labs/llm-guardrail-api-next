@@ -7,14 +7,14 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, TypedDict, cast
 
 try:  # pragma: no cover - optional dependency resolution
-    from sqlalchemy import and_, case, or_, select
+    from sqlalchemy import and_, or_, select, case as sa_case
     from sqlalchemy.sql import Select, func, literal
 except ModuleNotFoundError:  # pragma: no cover - fallback when SQLAlchemy missing
     and_ = cast(Any, None)
-    case = cast(Any, None)
     func = cast(Any, None)
     literal = cast(Any, None)
     or_ = cast(Any, None)
+    sa_case = cast(Any, None)
     select = cast(Any, None)
     Select = Any
 
@@ -405,7 +405,7 @@ async def aggregate_usage_by_tenant(
     if (
         select is None
         or decisions_service is None
-        or case is None
+        or sa_case is None
         or func is None
         or literal is None
     ):
@@ -421,6 +421,8 @@ async def aggregate_usage_by_tenant(
         outcome_column,
         total_tokens_column,
     ) = _resolve_decision_columns()
+
+    case = sa_case
 
     conditions: list[Any] = []
     if start is not None:
@@ -484,7 +486,7 @@ async def aggregate_usage_summary(
     if (
         select is None
         or decisions_service is None
-        or case is None
+        or sa_case is None
         or func is None
         or literal is None
     ):  # type: ignore[truthy-function]
@@ -500,7 +502,7 @@ async def aggregate_usage_summary(
     ) = _resolve_decision_columns()
 
     func = decisions_service.func
-    case = decisions_service.case
+    case = sa_case
 
     conditions: list[Any] = []
     if start is not None:
