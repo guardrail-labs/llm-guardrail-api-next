@@ -28,8 +28,8 @@ _ZERO_WIDTH_PATTERN = re.compile(r"[\u200B-\u200F\uFEFF]")
 _CONFUSABLE_MAP: dict[str, str] = {
     "\u0430": "a",  # Cyrillic small 'a'
     "\u0410": "A",  # Cyrillic capital 'A'
-    "\u043E": "o",  # Cyrillic small 'o'
-    "\u041E": "O",  # Cyrillic capital 'O'
+    "\u043e": "o",  # Cyrillic small 'o'
+    "\u041e": "O",  # Cyrillic capital 'O'
 }
 
 _FALLBACK_CONFUSABLES = set(_CONFUSABLE_MAP.keys())
