@@ -46,6 +46,46 @@ class DecisionRecord(TypedDict, total=False):
 _DECISIONS: List[DecisionRecord] = []
 
 
+def _get_decision_model() -> Any:
+    Decision: Any = getattr(decisions_service, "Decision", None) if decisions_service else None
+    if Decision is None:
+        try:
+            from app.models.decision import Decision as DecisionModel  # type: ignore[import-untyped]
+
+            Decision = DecisionModel
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise RuntimeError("Decision model is unavailable for usage aggregation") from exc
+
+    return Decision
+
+
+def _resolve_decision_columns() -> Tuple[Any, Any, Any, Any, Any, Any]:
+    if decisions_service is None:
+        raise RuntimeError("Usage aggregation requires SQLAlchemy and decisions service")
+
+    Decision = _get_decision_model()
+
+    created_column = getattr(Decision, "created_at", None) or getattr(Decision, "ts", None)
+    tenant_column = getattr(Decision, "tenant_id", None) or getattr(Decision, "tenant", None)
+    environment_column = getattr(Decision, "environment", None) or getattr(Decision, "bot", None)
+    outcome_column = getattr(Decision, "outcome", None) or getattr(Decision, "decision", None)
+    total_tokens_column = getattr(Decision, "total_tokens", None)
+
+    if tenant_column is None or created_column is None:
+        raise RuntimeError("Decision model missing required tenant or timestamp columns")
+    if created_column is None or tenant_column is None or environment_column is None or outcome_column is None:
+        raise RuntimeError("Decision model is missing required columns for usage aggregation")
+
+    return (
+        Decision,
+        created_column,
+        tenant_column,
+        environment_column,
+        outcome_column,
+        total_tokens_column,
+    )
+
+
 @dataclass
 class TenantUsageRow:
     tenant_id: str
@@ -66,6 +106,19 @@ class TenantEnvUsageRow:
     block: int
     clarify: int
     total_tokens: int
+    first_seen_at: Optional[datetime]
+    last_seen_at: Optional[datetime]
+
+
+@dataclass
+class UsagePeriodSummaryRow:
+    total: int
+    allow: int
+    block: int
+    clarify: int
+    total_tokens: int
+    tenant_count: int
+    environment_count: int
     first_seen_at: Optional[datetime]
     last_seen_at: Optional[datetime]
 
@@ -360,25 +413,14 @@ async def aggregate_usage_by_tenant(
             "Usage aggregation requires SQLAlchemy and decisions service",
         )
 
-    Decision: Any = getattr(decisions_service, "Decision", None)
-    if Decision is None:
-        try:
-            from app.models.decision import Decision as DecisionModel  # type: ignore[import-untyped]
-
-            Decision = DecisionModel
-        except ModuleNotFoundError as exc:  # pragma: no cover
-            raise RuntimeError("Decision model is unavailable for usage aggregation") from exc
-
-    created_column = getattr(Decision, "created_at", None) or getattr(Decision, "ts", None)
-    tenant_column = getattr(Decision, "tenant_id", None) or getattr(Decision, "tenant", None)
-    environment_column = getattr(Decision, "environment", None) or getattr(Decision, "bot", None)
-    outcome_column = getattr(Decision, "outcome", None) or getattr(Decision, "decision", None)
-    total_tokens_column = getattr(Decision, "total_tokens", None)
-
-    if tenant_column is None or created_column is None:
-        raise RuntimeError("Decision model missing required tenant or timestamp columns")
-    if created_column is None or tenant_column is None or environment_column is None or outcome_column is None:
-        raise RuntimeError("Decision model is missing required columns for usage aggregation")
+    (
+        Decision,
+        created_column,
+        tenant_column,
+        environment_column,
+        outcome_column,
+        total_tokens_column,
+    ) = _resolve_decision_columns()
 
     conditions: list[Any] = []
     if start is not None:
@@ -428,6 +470,82 @@ async def aggregate_usage_by_tenant(
     ]
 
 
+async def aggregate_usage_summary(
+    session: Any,
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    tenant_ids: Optional[Iterable[str]] = None,
+) -> UsagePeriodSummaryRow:
+    """
+    Aggregate decision traffic for a period (optionally scoped to specific tenants).
+    """
+
+    if (
+        select is None
+        or decisions_service is None
+        or case is None
+        or func is None
+        or literal is None
+    ):  # type: ignore[truthy-function]
+        raise RuntimeError("Usage aggregation requires SQLAlchemy and decisions service")
+
+    (
+        _Decision,
+        created_column,
+        tenant_column,
+        environment_column,
+        outcome_column,
+        total_tokens_column,
+    ) = _resolve_decision_columns()
+
+    func = decisions_service.func
+    case = decisions_service.case
+
+    conditions: list[Any] = []
+    if start is not None:
+        conditions.append(created_column >= start)
+    if end is not None:
+        conditions.append(created_column < end)
+    if tenant_ids:
+        conditions.append(tenant_column.in_(list(tenant_ids)))
+
+    total_tokens_expr = (
+        func.coalesce(func.sum(total_tokens_column), 0)
+        if total_tokens_column is not None
+        else literal(0)
+    )
+
+    stmt = (
+        select(
+            func.count().label("total"),
+            func.sum(case((outcome_column == "allow", 1), else_=0)).label("allow"),
+            func.sum(case((outcome_column == "block", 1), else_=0)).label("block"),
+            func.sum(case((outcome_column == "clarify", 1), else_=0)).label("clarify"),
+            total_tokens_expr.label("total_tokens"),
+            func.count(func.distinct(tenant_column)).label("tenant_count"),
+            func.count(func.distinct(environment_column)).label("environment_count"),
+            func.min(created_column).label("first_seen_at"),
+            func.max(created_column).label("last_seen_at"),
+        ).where(and_(*conditions) if conditions else True)  # type: ignore[arg-type]
+    )
+
+    result = await session.execute(stmt)
+    row = result.one()
+
+    return UsagePeriodSummaryRow(
+        total=int(row.total or 0),
+        allow=int(row.allow or 0),
+        block=int(row.block or 0),
+        clarify=int(row.clarify or 0),
+        total_tokens=int(row.total_tokens or 0),
+        tenant_count=int(row.tenant_count or 0),
+        environment_count=int(row.environment_count or 0),
+        first_seen_at=row.first_seen_at,
+        last_seen_at=row.last_seen_at,
+    )
+
+
 def summarize_usage(rows: IterableABC[UsageRow]) -> List[UsageSummary]:
     """
     Reduce UsageRow entries into per-tenant/environment summaries.
@@ -471,8 +589,10 @@ __all__ = [
     "reset_decisions",
     "TenantUsageRow",
     "TenantEnvUsageRow",
+    "UsagePeriodSummaryRow",
     "list_with_cursor",
     "aggregate_usage_by_tenant",
+    "aggregate_usage_summary",
     "summarize_usage",
 ]
 
