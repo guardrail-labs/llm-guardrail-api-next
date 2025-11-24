@@ -47,4 +47,8 @@ class AdminUsagePeriodSummary(BaseModel):
     last_seen_at: Optional[datetime] = None
 
 
-__all__ = ["UsageRow", "UsageSummary", "AdminUsagePeriodSummary"]
+class AdminUsageSummary(AdminUsagePeriodSummary):
+    """Backward-compatible alias for the admin usage summary payload."""
+
+
+__all__ = ["UsageRow", "UsageSummary", "AdminUsagePeriodSummary", "AdminUsageSummary"]

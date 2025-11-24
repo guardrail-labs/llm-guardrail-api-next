@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.dependencies.auth import AdminAuthDependency
 from app.dependencies.db import get_db_session
-from app.schemas.usage import AdminUsagePeriodSummary
+from app.schemas.usage import AdminUsageSummary
 from app.services import decisions_store
 
 router = APIRouter(
@@ -198,7 +198,7 @@ async def export_usage_by_tenant_csv(
 
 @router.get(
     "/summary",
-    response_model=AdminUsagePeriodSummary,
+    response_model=AdminUsageSummary,
     summary="Summarize usage for a billing period",
 )
 async def get_usage_summary(
@@ -206,12 +206,12 @@ async def get_usage_summary(
         "30d",
         description="Period key (e.g. '7d', '30d', 'current_month').",
     ),
-    tenant_id: Optional[str] = Query(
+    tenant_id: str | None = Query(
         None,
-        description="Optional tenant_id filter; if omitted, all tenants in the period are included.",
+        description="Optional tenant_id filter; if omitted, all tenants are included.",
     ),
     session: Any = Depends(get_db_session),
-) -> AdminUsagePeriodSummary:
+) -> AdminUsageSummary:
     """
     Return a single summary object for the given billing period, optionally scoped
     to a single tenant.
@@ -228,7 +228,7 @@ async def get_usage_summary(
         tenant_ids=tenant_ids,
     )
 
-    return AdminUsagePeriodSummary(
+    return AdminUsageSummary(
         period=period,
         tenant=tenant_id,
         total=row.total,
