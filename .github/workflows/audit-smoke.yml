@@ -1,8 +1,10 @@
 name: audit-smoke
+
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -59,6 +61,7 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
+
           sign() {
             # args: ts, body
             python - "$1" "$2" <<'PY'
@@ -129,6 +132,7 @@ PY
             -H "X-Idempotency-Key: demo-key-2" \
             --data "$BAD")
           test "$code" = "400" || { echo "expected 400 on bad json, got $code"; exit 1; }
+
           # --- good retry with same idempotency key should succeed (200) ---
           GOOD='{"event":"ok","request_id":"demo-3","direction":"ingress","ts":'$(date +%s)'}'
           TS4="$(date +%s)"
