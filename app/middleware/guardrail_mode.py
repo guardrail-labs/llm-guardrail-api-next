@@ -108,9 +108,7 @@ class GuardrailModeMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp) -> None:
         super().__init__(app)
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         mode = current_guardrail_mode()
         response = await call_next(request)
         ensure_guardrail_mode_header(response.headers, mode)

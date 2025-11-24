@@ -32,4 +32,3 @@ async def get_db_session() -> AsyncGenerator["AsyncSession", None]:
 
     async with get_session() as session:
         yield session  # type: ignore[misc]
-

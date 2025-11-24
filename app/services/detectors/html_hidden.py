@@ -59,8 +59,7 @@ _FALLBACK_CLASS_HIDDEN_RE = re.compile(
     re.I,
 )
 _FALLBACK_WHITE_ON_WHITE_RE = re.compile(
-    r"(?i)color\s*:\s*(#fff(?:fff)?|white)"
-    r".*background(?:-color)?\s*:\s*(#fff(?:fff)?|white)"
+    r"(?i)color\s*:\s*(#fff(?:fff)?|white)" r".*background(?:-color)?\s*:\s*(#fff(?:fff)?|white)"
 )
 
 # ----------------------------- utils -----------------------------------------

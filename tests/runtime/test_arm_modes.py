@@ -67,9 +67,7 @@ def test_egress_blocks_in_egress_only_mode(monkeypatch: pytest.MonkeyPatch) -> N
         async def run(self, ctx: dict[str, object]) -> tuple[dict[str, str], dict[str, object]]:
             return {"action": "block", "reason": "policy"}, ctx
 
-    monkeypatch.setattr(
-        runtime_router_module, "_EGRESS_GUARD", _BlockingEgress(), raising=False
-    )
+    monkeypatch.setattr(runtime_router_module, "_EGRESS_GUARD", _BlockingEgress(), raising=False)
 
     resp = client.post("/chat/completions", json={"text": "hello"})
     assert resp.status_code == 400
@@ -102,9 +100,9 @@ def test_mode_recovers_and_metrics_track_transitions() -> None:
     assert after_ne == pytest.approx(before_ne + 1.0)
     assert after_en == pytest.approx(before_en + 1.0)
 
-    assert _metric_value(
-        metrics.guardrail_arm_mode.labels(ArmMode.NORMAL.value)
-    ) == pytest.approx(1.0)
+    assert _metric_value(metrics.guardrail_arm_mode.labels(ArmMode.NORMAL.value)) == pytest.approx(
+        1.0
+    )
     assert _metric_value(
         metrics.guardrail_arm_mode.labels(ArmMode.EGRESS_ONLY.value)
     ) == pytest.approx(0.0)

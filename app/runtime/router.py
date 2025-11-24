@@ -86,9 +86,7 @@ async def chat_completions(request: Request) -> JSONResponse:
             fail_open = getattr(SETTINGS, "INGRESS_FAIL_OPEN_STRICT", False)
             if not fail_open:
                 egress_decision = _EGRESS_GUARD.skipped()
-                headers = _decision_headers(
-                    {"action": "error"}, egress_decision, mode=mode
-                )
+                headers = _decision_headers({"action": "error"}, egress_decision, mode=mode)
                 return JSONResponse(
                     {"error": "ingress_failed"},
                     status_code=500,
@@ -117,12 +115,8 @@ async def chat_completions(request: Request) -> JSONResponse:
         except Exception:  # pragma: no cover - defensive path
             _ARM_FAILURES["egress"] += 1
             _emit_arm_failure("egress")
-            headers = _decision_headers(
-                ingress_decision, {"action": "error"}, mode=mode
-            )
-            return JSONResponse(
-                {"error": "egress_failed"}, status_code=500, headers=headers
-            )
+            headers = _decision_headers(ingress_decision, {"action": "error"}, mode=mode)
+            return JSONResponse({"error": "egress_failed"}, status_code=500, headers=headers)
     else:
         egress_decision = _EGRESS_GUARD.skipped()
 

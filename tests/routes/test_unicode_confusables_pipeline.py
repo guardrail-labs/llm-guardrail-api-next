@@ -39,7 +39,7 @@ def test_confusable_detection_pipeline(tmp_path, monkeypatch) -> None:
     app = app_main.create_app()
     client = TestClient(app)
 
-    payload = {"text": "pa\u200Bss Ａ"}
+    payload = {"text": "pa\u200bss Ａ"}
     resp = client.post("/guardrail/evaluate", json=payload)
     assert resp.status_code == 200
 

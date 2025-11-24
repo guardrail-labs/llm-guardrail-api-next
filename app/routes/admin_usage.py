@@ -188,11 +188,7 @@ async def export_usage_by_tenant_csv(
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
-        headers={
-            "Content-Disposition": (
-                'attachment; filename="guardrail-usage-by-tenant.csv"'
-            )
-        },
+        headers={"Content-Disposition": ('attachment; filename="guardrail-usage-by-tenant.csv"')},
     )
 
 
@@ -241,4 +237,3 @@ async def get_usage_summary(
         first_seen_at=row.first_seen_at,
         last_seen_at=row.last_seen_at,
     )
-

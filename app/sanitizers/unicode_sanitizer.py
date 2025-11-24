@@ -86,6 +86,7 @@ def detect_unicode_anomalies(text: str) -> List[Finding]:
 
     return findings
 
+
 # Zero-width & formatting controls (incl. soft hyphen, BOM, word-joiner)
 # and bidi override/embedding/isolate controls.
 _ZERO_WIDTH = (

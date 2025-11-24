@@ -6,7 +6,7 @@ def _extract_types(text: str) -> set[str]:
 
 
 def test_detect_zero_width() -> None:
-    text = "pa\u200Bss"
+    text = "pa\u200bss"
     findings = detect_unicode_anomalies(text)
     assert any(f["type"] == "zero_width" and f["span"] == (2, 3) for f in findings)
     assert any(f["codepoint"] == "U+200B" for f in findings)

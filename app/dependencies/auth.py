@@ -16,4 +16,3 @@ def AdminAuthDependency(request: Request) -> None:
 
 
 __all__ = ["AdminAuthDependency"]
-

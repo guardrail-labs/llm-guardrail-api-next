@@ -153,7 +153,9 @@ async def test_aggregate_usage_with_legacy_decision_column(
         __tablename__ = "legacy_decisions"
 
     # Swap in the legacy model that exposes a ``decision`` column instead of outcome.
-    monkeypatch.setattr(decisions_store, "decisions_service", types.SimpleNamespace(Decision=LegacyDecision))
+    monkeypatch.setattr(
+        decisions_store, "decisions_service", types.SimpleNamespace(Decision=LegacyDecision)
+    )
     await db_session.run_sync(LegacyDecision.__table__.create)
 
     db_session.add_all(

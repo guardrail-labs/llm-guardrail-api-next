@@ -41,7 +41,9 @@ class AdminUsagePeriodSummary(BaseModel):
     total_tokens: int = Field(..., ge=0)
 
     tenant_count: int = Field(..., ge=0, description="Distinct tenant count in this period")
-    environment_count: int = Field(..., ge=0, description="Distinct environment count in this period")
+    environment_count: int = Field(
+        ..., ge=0, description="Distinct environment count in this period"
+    )
 
     first_seen_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None

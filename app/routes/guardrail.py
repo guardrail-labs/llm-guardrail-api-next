@@ -153,6 +153,7 @@ def _inspect_unicode_findings(text: str) -> Tuple[str, Optional[Dict[str, Any]]]
     }
     return normalized, summary
 
+
 _BLOCK_DECISIONS = {"block", "block_input_only", "deny", "lock"}
 
 
@@ -2272,7 +2273,7 @@ async def guardrail_evaluate_multipart(request: Request):
 
     if settings.SANITIZER_CONFUSABLES_ENABLED and combined_text:
         combined_text, unicode_findings_summary_mp = _inspect_unicode_findings(combined_text)
-        
+
     if settings.UNICODE_SANITIZER_ENABLED and combined_text:
         unicode_cfg = UnicodeSanitizerCfg(
             normalize_only=False,

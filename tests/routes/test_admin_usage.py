@@ -172,7 +172,9 @@ async def test_get_usage_by_tenant_happy_path(
 
 
 @pytest.mark.asyncio
-async def test_get_usage_by_tenant_filtered(client_with_db: TestClient, db_session: AsyncSession) -> None:
+async def test_get_usage_by_tenant_filtered(
+    client_with_db: TestClient, db_session: AsyncSession
+) -> None:
     _seed_decisions(db_session)
     await db_session.commit()
 
@@ -225,9 +227,7 @@ async def test_get_usage_summary(client_with_db: TestClient, db_session: AsyncSe
     assert first_seen < last_seen
 
 
-def test_admin_usage_summary_basic(
-    client_with_db: TestClient, seeded_decisions: None
-) -> None:
+def test_admin_usage_summary_basic(client_with_db: TestClient, seeded_decisions: None) -> None:
     resp = client_with_db.get("/admin/api/usage/summary?period=30d")
     assert resp.status_code == 200
     data = resp.json()

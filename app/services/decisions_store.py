@@ -73,7 +73,12 @@ def _resolve_decision_columns() -> Tuple[Any, Any, Any, Any, Any, Any]:
 
     if tenant_column is None or created_column is None:
         raise RuntimeError("Decision model missing required tenant or timestamp columns")
-    if created_column is None or tenant_column is None or environment_column is None or outcome_column is None:
+    if (
+        created_column is None
+        or tenant_column is None
+        or environment_column is None
+        or outcome_column is None
+    ):
         raise RuntimeError("Decision model is missing required columns for usage aggregation")
 
     return (
@@ -597,4 +602,3 @@ __all__ = [
     "aggregate_usage_summary",
     "summarize_usage",
 ]
-

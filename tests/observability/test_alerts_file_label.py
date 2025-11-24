@@ -14,6 +14,6 @@ def test_alerts_use_family_deny_and_no_duplicate_expr():
     )
     assert block, "Could not find GuardrailBlockRateHigh rule block"
     expr_count = len(re.findall(r"\n\s*expr:", block[0]))
-    assert expr_count == 1, (
-        f"Expected exactly one expr in GuardrailBlockRateHigh, found {expr_count}"
-    )
+    assert (
+        expr_count == 1
+    ), f"Expected exactly one expr in GuardrailBlockRateHigh, found {expr_count}"

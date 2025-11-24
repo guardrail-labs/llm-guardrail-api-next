@@ -110,8 +110,7 @@ def _report_failure(
     ]
     if discovery_attempts:
         message_lines.append(
-            "OpenAPI discovery attempts: "
-            + json.dumps(discovery_attempts, indent=2)
+            "OpenAPI discovery attempts: " + json.dumps(discovery_attempts, indent=2)
         )
     print("\n".join(message_lines), file=sys.stderr)
     sys.exit(1)
@@ -122,9 +121,7 @@ def main() -> None:
     prefix = _normalized_prefix(os.getenv("API_PREFIX", "/v1"))
     payload: Dict[str, Any] = {
         "model": os.getenv("SMOKE_MODEL", "demo"),
-        "messages": [
-            {"role": "user", "content": os.getenv("SMOKE_MESSAGE", "hello")}
-        ],
+        "messages": [{"role": "user", "content": os.getenv("SMOKE_MESSAGE", "hello")}],
     }
 
     headers = _build_headers()
@@ -135,9 +132,7 @@ def main() -> None:
     target_path = _prefixed_path(prefix, "/chat/completions")
 
     with httpx.Client(timeout=timeout) as client:
-        discovered_path, discovery_attempts = _attempt_openapi_discovery(
-            client, base, prefix
-        )
+        discovered_path, discovery_attempts = _attempt_openapi_discovery(client, base, prefix)
         if discovered_path:
             target_path = discovered_path
 

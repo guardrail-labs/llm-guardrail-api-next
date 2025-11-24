@@ -195,9 +195,7 @@ class ArmRuntime:
                 target = ArmMode.NORMAL
 
             if target != self._mode:
-                metrics.guardrail_arm_transitions_total.labels(
-                    self._mode.value, target.value
-                ).inc()
+                metrics.guardrail_arm_transitions_total.labels(self._mode.value, target.value).inc()
                 self._mode = target
 
             self._update_metrics_locked()
@@ -225,9 +223,7 @@ class ArmRuntime:
                 1.0 if egress_state == state else 0.0
             )
         for mode in ArmMode:
-            metrics.guardrail_arm_mode.labels(mode.value).set(
-                1.0 if self._mode == mode else 0.0
-            )
+            metrics.guardrail_arm_mode.labels(mode.value).set(1.0 if self._mode == mode else 0.0)
 
 
 _runtime: ArmRuntime | None = None

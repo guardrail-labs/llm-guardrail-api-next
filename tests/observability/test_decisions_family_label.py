@@ -15,9 +15,9 @@ def test_guardrail_decisions_metric_uses_family_label() -> None:
     body = m.text
 
     assert "guardrail_decisions_total" in body
-    assert 'family="' in body, (
-        f"Expected 'family' label for guardrail_decisions_total; got:\n{body[:2000]}"
-    )
+    assert (
+        'family="' in body
+    ), f"Expected 'family' label for guardrail_decisions_total; got:\n{body[:2000]}"
     assert "guardrail_decisions_total{family=" in body
     for line in body.splitlines():
         if line.startswith("guardrail_decisions_total{"):

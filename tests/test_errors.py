@@ -52,9 +52,7 @@ def test_404_has_code_and_request_id():
     assert "X-Request-ID" in r.headers
     assert "X-Guardrail-Mode" in r.headers
     rid_headers = [
-        name
-        for name, _ in r.headers.raw
-        if name.decode("latin-1").lower() == "x-request-id"
+        name for name, _ in r.headers.raw if name.decode("latin-1").lower() == "x-request-id"
     ]
     assert len(rid_headers) == 1
 
