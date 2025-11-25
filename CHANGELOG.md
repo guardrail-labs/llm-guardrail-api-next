@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/guardrail-labs/llm-guardrail-api-next/compare/v1.5.0...v1.6.0) (2025-11-25)
+
+
+### Features
+
+* expose billing and admin usage metrics in core ([41896c6](https://github.com/guardrail-labs/llm-guardrail-api-next/commit/41896c6626bc528dee1907f46716e5be23705d1f))
+
 ## [1.5.0](https://github.com/WesMilam/llm-guardrail-api-next/compare/v1.4.0...v1.5.0) (2025-11-11)
 
 
