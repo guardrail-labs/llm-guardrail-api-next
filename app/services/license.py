@@ -27,9 +27,7 @@ class LicenseStatus:
             "status": self.status.value,
             "plan": self.plan,
             "message": self.message,
-            "last_checked_at": (
-                self.last_checked_at.isoformat() if self.last_checked_at else None
-            ),
+            "last_checked_at": (self.last_checked_at.isoformat() if self.last_checked_at else None),
         }
 
 
