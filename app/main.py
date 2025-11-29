@@ -68,6 +68,7 @@ from app.services.bindings.utils import (
     read_policy_version as _read_policy_version,
 )
 from app.services.compliance.registry import ComplianceRegistry
+from app.services.license import initialize_license_from_env
 from app.services.redis_runtime import runtime_warmup
 from app.telemetry.tracing import TracingMiddleware
 
@@ -320,6 +321,7 @@ def _include_all_route_modules(app: FastAPI) -> int:
                 "app.routes.admin_rulepacks",
                 "app.routes.admin_ui",
                 "app.routes.health",
+                "app.routes.license",
             }:
                 visited.add(name)
                 continue
@@ -682,6 +684,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
     )
+    initialize_license_from_env(settings.settings.guardrail_license_key)
     # Install mode header middleware before any other add_middleware/routers.
     install_mode_header(app)
 
@@ -704,6 +707,12 @@ def create_app() -> FastAPI:
         app.include_router(health.router)
     except Exception as exc:
         log.warning("Health routes unavailable: %s", exc)
+    try:
+        from app.routes import license as license_routes
+
+        app.include_router(license_routes.router)
+    except Exception as exc:
+        log.warning("License routes unavailable: %s", exc)
     app.include_router(admin_scope_router)
     try:
         from app.routes.admin_idempotency import router as admin_idempotency_router
