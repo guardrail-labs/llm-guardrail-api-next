@@ -229,6 +229,18 @@ class Settings(BaseSettings):
         "dev",
         validation_alias=AliasChoices("APP_ENV"),
     )
+    guardrail_license_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GUARDRAIL_LICENSE_KEY"),
+    )
+    license_verify_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LICENSE_VERIFY_URL"),
+    )
+    license_verify_timeout_seconds: int = Field(
+        default=5,
+        validation_alias=AliasChoices("LICENSE_VERIFY_TIMEOUT_SECONDS"),
+    )
     idempotency: IdempotencySettings = Field(
         default_factory=_default_idempotency_settings,
     )
