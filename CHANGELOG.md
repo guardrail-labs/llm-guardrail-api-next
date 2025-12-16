@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/guardrail-labs/llm-guardrail-api-next/compare/v1.6.0...v1.6.1) (2025-12-16)
+
+
+### Documentation
+
+* fix case-collision; rename Quickstart.md to STACK_QUICKSTART.md ([accb093](https://github.com/guardrail-labs/llm-guardrail-api-next/commit/accb0937f40811107f752b326a76d71f54e0f6f1))
+
 ## [1.6.0](https://github.com/guardrail-labs/llm-guardrail-api-next/compare/v1.5.0...v1.6.0) (2025-11-25)
 
 
