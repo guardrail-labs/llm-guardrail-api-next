@@ -34,7 +34,7 @@ rules:
     # keep secrets deny (existing behavior)
     - id: deny.secrets
       reason: "Secret leakage (keys/passwords)"
-      pattern: "(?i)\\b(api[_-]?key|password|secret[_-]?key|token)\\b"
+      pattern: "(?i)\\b(api(?:\\s*|[_-])key|password|secret(?:\\s*|[_-])key|token)\\b"
       action: "block_input_only"
 
   allow: []
