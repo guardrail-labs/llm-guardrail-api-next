@@ -43,7 +43,7 @@ def test_format_based_secrets_blocked() -> None:
     assert res["action"] == "block_input_only"
     assert _has_rule("deny.secrets.jwt", res)
 
-    aws_key = "AKIA1234567890ABCD"
+    aws_key = "AKIA1234567890ABCDEF"
     res = _run_eval(aws_key)
     assert res["action"] == "block_input_only"
     assert _has_rule("deny.secrets.aws_access_key_id", res)
