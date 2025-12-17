@@ -1,47 +1,18 @@
 meta:
   name: base
-  version: 2
+  version: 1
   tags: [default]
-
 settings:
   ingress:
     sampling_pct: 1.0
   egress:
-    redact_enabled: true
-
+    redact_enabled: false
 rules:
-  # DENY = unsafe intent (block before the model runs)
   deny:
-    # --- violence / wrongdoing facilitation ---
-    - id: deny.violence.bomb
-      reason: "Violent wrongdoing facilitation (explosives)"
-      pattern: "\\b(make|build|construct|assemble|create)\\b.{0,80}\\b(bomb|ied|explosive|detonator|grenade)\\b"
-      flags: ["i"]
+    - id: deny.secrets
+      reason: "Secret leakage (keys/passwords)"
+      pattern: "(?i)\\b(api[_-]?key|password|secret[_-]?key|token)\\b"
       action: "block_input_only"
-
-    - id: deny.violence.poison
-      reason: "Violent wrongdoing facilitation (poisoning)"
-      pattern: "\\b(poison|toxicant|ricin|cyanide|arsenic|fentanyl)\\b|\\b(how to|most effective way|best way)\\b.{0,80}\\b(poison|kill|harm)\\b"
-      flags: ["i"]
-      action: "block_input_only"
-
-    - id: deny.violence.weapon
-      reason: "Violent wrongdoing facilitation (weapons)"
-      pattern: "\\b(make|build|construct|assemble)\\b.{0,80}\\b(weapon|silencer|suppressor|ghost gun|firearm)\\b"
-      flags: ["i"]
-      action: "block_input_only"
-
-  # ALLOW = reserved (optional)
   allow: []
-
-  # REDACT = sensitive strings (sanitization; does NOT deny by itself)
-  # Note: your app already does additional conservative redaction in sanitize_text(),
-  # but keeping these here ensures pack-driven behavior stays consistent.
-  redact:
-    - id: redact.secrets.api_key_words
-      reason: "Credential indicators"
-      pattern: "\\b(api[_-]?key|password|secret[_-]?key|token)\\b"
-      flags: ["i"]
-      replacement: "[REDACTED:CREDENTIAL]"
-
+  redact: []
   verifiers: []
