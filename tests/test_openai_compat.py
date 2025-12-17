@@ -87,6 +87,7 @@ def test_self_harm_supportive_response(monkeypatch):
     data = r.json()
     assert data["choices"][0]["message"]["content"].lower().startswith("i'm really sorry")
     assert r.headers.get("X-Guardrail-Ingress-Action") == "block_input_only"
+    assert r.headers.get("X-Guardrail-Decision") == "block_input_only"
     assert "self_harm_support" in (r.headers.get("X-Guardrail-Reason-Hints") or "")
 
 
@@ -112,6 +113,7 @@ def test_revenge_request_refused(monkeypatch):
     data = r.json()
     assert "revenge" in data["choices"][0]["message"]["content"].lower()
     assert r.headers.get("X-Guardrail-Ingress-Action") == "block_input_only"
+    assert r.headers.get("X-Guardrail-Decision") == "block_input_only"
     assert "harassment_refusal" in (r.headers.get("X-Guardrail-Reason-Hints") or "")
 
 
@@ -139,3 +141,36 @@ def test_attachment_boundary_response(monkeypatch):
     assert "i'm just software" in message or "i'm just" in message
     assert r.headers.get("X-Guardrail-Ingress-Action") == "block_input_only"
     assert "attachment_boundary" in (r.headers.get("X-Guardrail-Reason-Hints") or "")
+
+
+def test_workplace_conflict_clarify(monkeypatch):
+    c = _client(monkeypatch)
+    headers = {
+        "X-API-Key": "k",
+        "X-Tenant-ID": "acme",
+        "X-Bot-ID": "assistant-1",
+        "Content-Type": "application/json",
+    }
+
+    r = c.post(
+        "/v1/chat/completions",
+        json={
+            "model": "demo",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "How do I handle a coworker who keeps undermining me at work?",
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    content = data["choices"][0]["message"]["content"].lower()
+    assert "more context" in content
+    assert "hr" in content
+    assert r.headers.get("X-Guardrail-Ingress-Action") == "clarify"
+    assert r.headers.get("X-Guardrail-Decision") == "clarify"
+    assert "clarify.workplace_conflict" in (r.headers.get("X-Guardrail-Reason-Hints") or "")
