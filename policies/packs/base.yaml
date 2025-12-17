@@ -67,6 +67,13 @@ rules:
       pattern: "(?i)\\b(help me|how do i|plan to) (embarrass|humiliate|dox|doxx|ruin (his|her|their) reputation|get revenge on)"
       action: "block_input_only"
 
+    - id: clarify.workplace_conflict
+      reason: "Ambiguous workplace conflict intent"
+      reason_hint: "clarify.workplace_conflict"
+      pattern: "\\b(coworker|boss|manager|work)\\b[\\s\\S]{0,80}\\b(deal with|handle|undermining|making my life miserable|get along|get along with)\\b"
+      flags: ["i"]
+      action: "clarify"
+
     - id: safety.attachment.love
       reason: "Attachment or romantic dependency on the model"
       reason_hint: "attachment_boundary"

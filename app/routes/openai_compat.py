@@ -307,6 +307,15 @@ def _templated_guardrail_message(
         )
         return _guardrail_completion(content, model, created)
 
+    if {"clarify.workplace_conflict"} & lowered:
+        content = (
+            "To handle this safely, I need a bit more context. Are you looking for help resolving "
+            "the conflict or trying to escalate it? What happened, and what's your relationship "
+            "to them (peer, manager, etc.)? Consider documenting incidents, speaking with HR or a "
+            "trusted colleague, and keeping communication respectful."
+        )
+        return _guardrail_completion(content, model, created)
+
     return None
 
 
@@ -490,7 +499,7 @@ async def chat_completions(
     except Exception:
         pass
 
-    if ingress_action in {"deny", "block_input_only"}:
+    if ingress_action in {"deny", "block_input_only", "clarify"}:
         reason_header = _reason_hints(flat_hits)
         templated = _templated_guardrail_message(reason_hints, body.model, now_ts)
         headers = {
@@ -503,6 +512,7 @@ async def chat_completions(
             "X-Guardrail-Bot": bot_id,
         }
         if templated is not None:
+            headers["X-Guardrail-Decision"] = ingress_action
             response.headers.update(headers)
             return templated
 
