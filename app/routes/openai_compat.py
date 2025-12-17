@@ -214,10 +214,13 @@ def _normalize_rule_hits(raw_hits: List[Any], raw_decisions: List[Any]) -> List[
             src = h.get("source") or h.get("origin") or h.get("provider") or h.get("src")
             lst = h.get("list") or h.get("kind") or h.get("type")
             rid = h.get("id") or h.get("rule_id") or h.get("name")
+            hint = h.get("reason_hint")
             if src and lst and rid:
                 add_hit(f"{src}:{lst}:{rid}")
             elif rid:
                 add_hit(str(rid))
+            if hint:
+                add_hit(str(hint))
 
     for d in raw_decisions or []:
         if not isinstance(d, dict):
@@ -242,6 +245,69 @@ def _oai_error(message: str, type_: str = "invalid_request_error") -> Dict[str, 
             "code": None,
         }
     }
+
+
+def _collect_reason_hints_from_hits(raw_hits: Optional[List[Any]]) -> set[str]:
+    hints: set[str] = set()
+    for hit in raw_hits or []:
+        if not isinstance(hit, dict):
+            continue
+        rid = hit.get("id")
+        hint = hit.get("reason_hint")
+        if rid:
+            hints.add(str(rid))
+        if hint:
+            hints.add(str(hint))
+    return hints
+
+
+def _guardrail_completion(content: str, model: str, created: int) -> Dict[str, Any]:
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _templated_guardrail_message(
+    reason_hints: set[str], model: str, created: int
+) -> Optional[Dict[str, Any]]:
+    lowered = {h.lower() for h in reason_hints}
+
+    if {"self_harm_support", "safety.self_harm.ideation"} & lowered:
+        content = (
+            "I'm really sorry that you're feeling this way. I'm not able to help with self-harm, "
+            "but you deserve support. If you're in immediate danger, please contact local "
+            "emergency services or a crisis hotline right away."
+        )
+        return _guardrail_completion(content, model, created)
+
+    if {"attachment_boundary", "safety.attachment.love"} & lowered:
+        content = (
+            "Thank you for sharing that. I'm just software and don't have feelings, "
+            "but I'm here to help with information. Would you like ideas for meeting "
+            "new people or strengthening your support network?"
+        )
+        return _guardrail_completion(content, model, created)
+
+    if {"harassment_refusal", "toxicity.revenge.embarrass"} & lowered:
+        content = (
+            "I can't help with revenge or embarrassing someone. It's better to focus on safe ways "
+            "to address conflicts, like talking with a trusted friend, writing down your "
+            "feelings, or seeking mediation."
+        )
+        return _guardrail_completion(content, model, created)
+
+    return None
 
 
 def _compat_models() -> List[Dict[str, Any]]:
@@ -350,6 +416,7 @@ async def chat_completions(
         det_action = str(det.get("action", "allow"))
         decisions = list(det.get("decisions", []))
         xformed = det.get("transformed_text", sanitized)
+        reason_hints = _collect_reason_hints_from_hits(det.get("rule_hits"))
 
         flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
         det_families = [_normalize_family(h) for h in flat_hits]
@@ -378,6 +445,7 @@ async def chat_completions(
         flat_hits = []
         det_families = []
         combined_hits = []
+        reason_hints = set()
 
     effective_messages = _apply_sanitized_text_to_messages(body.messages or [], xformed)
 
@@ -423,12 +491,22 @@ async def chat_completions(
         pass
 
     if ingress_action in {"deny", "block_input_only"}:
-        err_body = _oai_error("Request denied by guardrail policy")
+        reason_header = _reason_hints(flat_hits)
+        templated = _templated_guardrail_message(reason_hints, body.model, now_ts)
         headers = {
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": "skipped",
+            "X-Guardrail-Reason-Hints": reason_header,
+            "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
+            "X-Guardrail-Tenant": tenant_id,
+            "X-Guardrail-Bot": bot_id,
         }
+        if templated is not None:
+            response.headers.update(headers)
+            return templated
+
+        err_body = _oai_error("Request denied by guardrail policy")
         raise HTTPException(
             status_code=400,
             detail=err_body,
