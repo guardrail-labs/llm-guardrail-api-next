@@ -28,7 +28,10 @@ _RULES_PATH: Optional[Path] = None
 _RULES_MTIME: Optional[float] = None
 
 # Compiled rule caches (legacy heuristics)
-_COMPILED_RULES: Dict[str, List[Pattern[str]]] = {
+# Compiled patterns paired with optional rule metadata: (regex, id, action)
+RulePattern = Tuple[Pattern[str], Optional[str], Optional[str]]
+
+_COMPILED_RULES: Dict[str, List[RulePattern]] = {
     "secrets": [],
     "unsafe": [],
     "gray": [],
@@ -281,18 +284,18 @@ def _compile_rules_from_dict(
     global _COMPILED_RULES, _REDACTIONS, _RULES_VERSION
     with _RULE_LOCK:
         # --- Secrets (sample subset) ---
-        secrets: List[Pattern[str]] = [
-            re.compile(r"sk-[A-Za-z0-9]{16,}"),  # OpenAI-style key
-            re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS access key id
+        secrets: List[RulePattern] = [
+            (re.compile(r"sk-[A-Za-z0-9]{16,}"), None, None),  # OpenAI-style key
+            (re.compile(r"AKIA[0-9A-Z]{16}"), None, None),  # AWS access key id
         ]
         pk_marker = r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        secrets.append(re.compile(pk_marker))
+        secrets.append((re.compile(pk_marker), None, None))
 
         # --- Unsafe (deny rules) ---
-        unsafe: List[Pattern[str]] = [
+        unsafe: List[RulePattern] = [
             # sensible defaults in absence of yaml
-            re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I),
-            re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I),
+            (re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I), None, None),
+            (re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I), None, None),
         ]
 
         # If yaml provided, replace/extend unsafe with deny list
@@ -308,13 +311,23 @@ def _compile_rules_from_dict(
                 for fl in item.get("flags") or []:
                     if isinstance(fl, str) and fl.lower() == "i":
                         flags |= re.IGNORECASE
-                unsafe.append(re.compile(pat, flags))
+                rule_id = item.get("id")
+                rule_action = item.get("action")
+                unsafe.append(
+                    (
+                        re.compile(pat, flags),
+                        str(rule_id).strip() if isinstance(rule_id, (str, int)) else None,
+                        str(rule_action).strip().lower()
+                        if isinstance(rule_action, str) and rule_action.strip()
+                        else None,
+                    )
+                )
 
         # --- Gray area (likely jailbreaks / intent unclear) ---
-        gray: List[Pattern[str]] = [
-            re.compile(r"\bignore\s+previous\s+instructions\b", re.I),
-            re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I),
-            re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I),
+        gray: List[RulePattern] = [
+            (re.compile(r"\bignore\s+previous\s+instructions\b", re.I), None, None),
+            (re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I), None, None),
+            (re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I), None, None),
         ]
 
         _COMPILED_RULES = {"secrets": secrets, "unsafe": unsafe, "gray": gray}
@@ -475,9 +488,14 @@ def rule_hits(text: str) -> List[Dict[str, Any]]:
     _maybe_autoreload()
     hits: List[Dict[str, Any]] = []
     for tag, patterns in _COMPILED_RULES.items():
-        for rx in patterns:
+        for rx, rule_id, action in patterns:
             if rx.search(text):
-                hits.append({"tag": tag, "pattern": rx.pattern})
+                hit: Dict[str, Any] = {"tag": tag, "pattern": rx.pattern}
+                if rule_id:
+                    hit["id"] = rule_id
+                if action:
+                    hit["action"] = action
+                hits.append(hit)
     return hits
 
 
@@ -499,6 +517,19 @@ def score_and_decide(text: str, hits: List[Dict[str, Any]]) -> Tuple[str, int]:
     """
     score = 0
     tags = {h.get("tag") for h in hits}
+    actions = [str(h.get("action") or "").lower() for h in hits if h.get("action")]
+
+    if actions:
+        if "block_input_only" in actions:
+            return "block_input_only", 100
+        if "deny" in actions or "block" in actions:
+            return "deny", 100
+        if "clarify" in actions:
+            return "clarify", 40
+        if "sanitize" in actions:
+            return "sanitize", 50
+        if "allow" in actions:
+            return "allow", score
 
     if "unsafe" in tags:
         score += 100

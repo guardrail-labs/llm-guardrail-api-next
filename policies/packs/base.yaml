@@ -31,10 +31,28 @@ rules:
       flags: ["i"]
       action: "block_input_only"
 
-    # keep secrets deny (existing behavior)
-    - id: deny.secrets
-      reason: "Secret leakage (keys/passwords)"
-      pattern: "(?i)\\b(api(?:\\s*|[_-])key|password|secret(?:\\s*|[_-])key|token)\\b"
+    - id: deny.secrets.pem_private_key
+      reason: "Secret leakage (private key material)"
+      pattern: "-----BEGIN[\\s\\S]{0,40}PRIVATE KEY-----"
+      flags: ["i"]
+      action: "block_input_only"
+
+    - id: deny.secrets.github_token
+      reason: "Secret leakage (GitHub token)"
+      pattern: "\\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\\b|\\bgithub_pat_[A-Za-z0-9_]{20,}\\b"
+      flags: ["i"]
+      action: "block_input_only"
+
+    - id: deny.secrets.jwt
+      reason: "Secret leakage (JWT token)"
+      pattern: "\\beyJ[A-Za-z0-9_\\-]{5,}\\.[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}\\b"
+      flags: ["i"]
+      action: "block_input_only"
+
+    - id: deny.secrets.aws_access_key_id
+      reason: "Secret leakage (AWS access key id)"
+      pattern: "\\b(AKIA|ASIA)[0-9A-Z]{16}\\b"
+      flags: ["i"]
       action: "block_input_only"
 
   allow: []
