@@ -15,19 +15,19 @@ rules:
     # --- violence / wrongdoing facilitation ---
     - id: deny.violence.bomb
       reason: "Violent wrongdoing facilitation (explosives)"
-      pattern: "\\b(make|build|construct|assemble|create)\\b.{0,80}\\b(bomb|ied|explosive|detonator|grenade)\\b"
+      pattern: "\\b(make|build|construct|assemble|create)\\b[\\s\\S]{0,80}\\b(bomb|ied|explosive|detonator|grenade)\\b"
       flags: ["i"]
       action: "block_input_only"
 
     - id: deny.violence.poison
       reason: "Violent wrongdoing facilitation (poisoning)"
-      pattern: "\\b(poison|toxicant|ricin|cyanide|arsenic|fentanyl)\\b|\\b(how to|most effective way|best way)\\b.{0,80}\\b(poison|kill|harm)\\b"
+      pattern: "\\b(poison|toxicant|ricin|cyanide|arsenic|fentanyl)\\b|\\b(how to|most effective way|best way)\\b[\\s\\S]{0,80}\\b(poison|kill|harm)\\b"
       flags: ["i"]
       action: "block_input_only"
 
     - id: deny.violence.weapon
       reason: "Violent wrongdoing facilitation (weapons)"
-      pattern: "\\b(make|build|construct|assemble)\\b.{0,80}\\b(weapon|silencer|suppressor|ghost gun|firearm)\\b"
+      pattern: "\\b(make|build|construct|assemble)\\b[\\s\\S]{0,80}\\b(weapon|silencer|suppressor|ghost gun|firearm)\\b"
       flags: ["i"]
       action: "block_input_only"
 
