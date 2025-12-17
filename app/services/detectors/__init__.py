@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from app.services.policy import apply_policies
+from app.services.text_normalization import normalize_text_for_policy
 
 from .pdf_hidden import sanitize_for_downstream as pdf_sanitize_for_downstream
 
-__all__ = ["evaluate_prompt", "pdf_sanitize_for_downstream"]
+__all__ = ["evaluate_prompt", "normalize_text_for_policy", "pdf_sanitize_for_downstream"]
 
 
 def evaluate_prompt(text: str) -> Dict[str, Any]:
@@ -21,7 +22,8 @@ def evaluate_prompt(text: str) -> Dict[str, Any]:
       - rule_hits: list[dict] of {"tag","pattern"}
       - decisions: list[dict] (empty here; routes may extend)
     """
-    res = apply_policies(text)
+    normalized = normalize_text_for_policy(text)
+    res = apply_policies(text, normalized_text=normalized)
     return {
         "action": res.get("action", "allow"),
         "transformed_text": res.get("sanitized_text", text),

@@ -13,6 +13,7 @@ from app.models.verifier import VerifierInput
 from app.services import runtime_flags, verifier_client as vcli
 from app.services.config_store import get_policy_packs
 from app.services.policy_packs import merge_packs
+from app.services.text_normalization import normalize_text_for_policy
 
 # Thread-safe counters and rule storage
 _RULE_LOCK = threading.RLock()
@@ -29,13 +30,16 @@ _RULES_MTIME: Optional[float] = None
 
 # Compiled rule caches (legacy heuristics)
 # Compiled patterns paired with optional rule metadata: (regex, id, action)
-RulePattern = Tuple[Pattern[str], Optional[str], Optional[str]]
+RulePattern = Tuple[Pattern[str], Optional[str], Optional[str], Optional[str]]
 
 _COMPILED_RULES: Dict[str, List[RulePattern]] = {
     "secrets": [],
     "unsafe": [],
     "gray": [],
 }
+
+_RULE_REASON_HINTS: Dict[str, str] = {}
+_RULE_ACTIONS: Dict[str, str] = {}
 
 # Redaction patterns: (compiled_regex, replacement_label)
 _REDACTIONS: List[Tuple[Pattern[str], str]] = []
@@ -281,26 +285,31 @@ def _compile_rules_from_dict(
     cfg: Optional[Dict[str, Any]], *, version: Optional[str] = None
 ) -> None:
     """Compile rules using an optional yaml dict. Merge with built-ins."""
-    global _COMPILED_RULES, _REDACTIONS, _RULES_VERSION
+    global _COMPILED_RULES, _REDACTIONS, _RULES_VERSION, _RULE_REASON_HINTS, _RULE_ACTIONS
     with _RULE_LOCK:
+        _RULE_REASON_HINTS = {}
+        _RULE_ACTIONS = {}
         # --- Secrets (sample subset) ---
         secrets: List[RulePattern] = [
-            (re.compile(r"sk-[A-Za-z0-9]{16,}"), None, None),  # OpenAI-style key
-            (re.compile(r"AKIA[0-9A-Z]{16}"), None, None),  # AWS access key id
+            (re.compile(r"sk-[A-Za-z0-9]{16,}"), None, None, None),  # OpenAI-style key
+            (re.compile(r"AKIA[0-9A-Z]{16}"), None, None, None),  # AWS access key id
         ]
         pk_marker = r"(?:-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----)"
-        secrets.append((re.compile(pk_marker), None, None))
+        secrets.append((re.compile(pk_marker), None, None, None))
 
         # --- Unsafe (deny rules) ---
         unsafe: List[RulePattern] = [
             # sensible defaults in absence of yaml
-            (re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I), None, None),
-            (re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I), None, None),
+            (re.compile(r"\b(hack|exploit).*(wifi|router|wpa2)", re.I), None, None, None),
+            (re.compile(r"\b(make|build).*(bomb|weapon|explosive)", re.I), None, None, None),
         ]
 
         # If yaml provided, replace/extend unsafe with deny list
         if cfg and isinstance(cfg.get("deny"), list):
             unsafe = []
+            _RULE_REASON_HINTS = {}
+            _RULE_ACTIONS = {}
+
             for item in cfg["deny"]:
                 if not isinstance(item, dict):
                     continue
@@ -313,6 +322,17 @@ def _compile_rules_from_dict(
                         flags |= re.IGNORECASE
                 rule_id = item.get("id")
                 rule_action = item.get("action")
+                reason_hint = item.get("reason_hint")
+                if rule_id:
+                    rid = str(rule_id).strip()
+                    if rid:
+                        _RULE_ACTIONS[rid] = (
+                            str(rule_action).strip().lower()
+                            if isinstance(rule_action, str) and rule_action.strip()
+                            else None
+                        ) or "block_input_only"
+                        if isinstance(reason_hint, str) and reason_hint.strip():
+                            _RULE_REASON_HINTS[rid] = reason_hint.strip()
                 unsafe.append(
                     (
                         re.compile(pat, flags),
@@ -320,14 +340,17 @@ def _compile_rules_from_dict(
                         str(rule_action).strip().lower()
                         if isinstance(rule_action, str) and rule_action.strip()
                         else None,
+                        reason_hint.strip()
+                        if isinstance(reason_hint, str) and reason_hint.strip()
+                        else None,
                     )
                 )
 
         # --- Gray area (likely jailbreaks / intent unclear) ---
         gray: List[RulePattern] = [
-            (re.compile(r"\bignore\s+previous\s+instructions\b", re.I), None, None),
-            (re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I), None, None),
-            (re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I), None, None),
+            (re.compile(r"\bignore\s+previous\s+instructions\b", re.I), None, None, None),
+            (re.compile(r"\bpretend\s+to\s+be\s+DAN\b", re.I), None, None, None),
+            (re.compile(r"\bthis\s+is\s+for\s+education\s+only\b", re.I), None, None, None),
         ]
 
         _COMPILED_RULES = {"secrets": secrets, "unsafe": unsafe, "gray": gray}
@@ -488,14 +511,92 @@ def rule_hits(text: str) -> List[Dict[str, Any]]:
     _maybe_autoreload()
     hits: List[Dict[str, Any]] = []
     for tag, patterns in _COMPILED_RULES.items():
-        for rx, rule_id, action in patterns:
+        for rx, rule_id, action, reason_hint in patterns:
             if rx.search(text):
                 hit: Dict[str, Any] = {"tag": tag, "pattern": rx.pattern}
                 if rule_id:
                     hit["id"] = rule_id
                 if action:
                     hit["action"] = action
+                if reason_hint:
+                    hit["reason_hint"] = reason_hint
                 hits.append(hit)
+    return hits
+
+
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+_POISON_INSTRUCTION_RE = re.compile(
+    r"\b(how to|detail how to|step by step|instructions|most effective way|best way)\b",
+    re.I,
+)
+_POISON_DICT: Tuple[str, ...] = (
+    "poison",
+    "detonator",
+    "grenade",
+    "ricin",
+    "cyanide",
+    "arsenic",
+    "fentanyl",
+)
+
+
+def _rule_metadata(rule_id: str) -> Tuple[Optional[str], Optional[str]]:
+    return _RULE_ACTIONS.get(rule_id), _RULE_REASON_HINTS.get(rule_id)
+
+
+def _edit_distance(a: str, b: str, limit: int) -> int:
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+
+    if len(a) == len(b) and len(a) > 1:
+        for i in range(len(a) - 1):
+            if a[i] != b[i] and a[i] == b[i + 1] and a[i + 1] == b[i]:
+                if a[:i] == b[:i] and a[i + 2 :] == b[i + 2 :]:
+                    return 1
+
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i]
+        min_row = i
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            val = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            cur.append(val)
+            if val < min_row:
+                min_row = val
+        if min_row > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def _fuzzy_dict_hits(text: str, dictionary: Tuple[str, ...]) -> List[str]:
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(text) if t]
+    matches: List[str] = []
+    for tok in tokens:
+        for term in dictionary:
+            limit = 2 if len(term) >= 8 else 1
+            if _edit_distance(tok, term, limit) <= limit:
+                matches.append(term)
+                break
+    return matches
+
+
+def _augment_hits_with_fuzzy(text: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    poison_hit = any(h.get("id") == "deny.violence.poison" for h in hits)
+    if not poison_hit and _POISON_INSTRUCTION_RE.search(text):
+        fuzzy_matches = _fuzzy_dict_hits(text, _POISON_DICT)
+        if fuzzy_matches:
+            action, reason_hint = _rule_metadata("deny.violence.poison")
+            hit: Dict[str, Any] = {
+                "tag": "unsafe",
+                "pattern": "fuzzy:poison_terms",
+                "id": "deny.violence.poison",
+                "action": action or "block_input_only",
+            }
+            if reason_hint:
+                hit["reason_hint"] = reason_hint
+            hits.append(hit)
     return hits
 
 
@@ -546,7 +647,7 @@ def score_and_decide(text: str, hits: List[Dict[str, Any]]) -> Tuple[str, int]:
     return "allow", score
 
 
-def apply_policies(text: str) -> Dict[str, Any]:
+def apply_policies(text: str, *, normalized_text: Optional[str] = None) -> Dict[str, Any]:
     """
     Full ingress policy pass for base:
 
@@ -554,8 +655,12 @@ def apply_policies(text: str) -> Dict[str, Any]:
       - score & choose action
       - apply redactions (if any)
     """
-    hits = rule_hits(text)
-    action, risk = score_and_decide(text, hits)
+    _maybe_autoreload()
+
+    normalized = normalized_text or normalize_text_for_policy(text)
+    hits = rule_hits(normalized)
+    hits = _augment_hits_with_fuzzy(normalized, hits)
+    action, risk = score_and_decide(normalized, hits)
     sanitized, redactions = _apply_redactions(text)
     return {
         "action": action,
