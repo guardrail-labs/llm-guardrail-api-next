@@ -11,9 +11,13 @@ const DECISION_HEADERS = [
   "x-guardrail-decision",
   "x-guardrail-mode",
   "x-guardrail-incident-id",
-  "x-guardrail-rule-ids",
   "x-guardrail-policy-version",
   "x-request-id",
+  "x-guardrail-reason-hints",
+  "x-guardrail-ingress-action",
+  "x-guardrail-egress-action",
+  "x-guardrail-ingress-redactions",
+  "x-guardrail-rule-ids",
 ];
 
 const setDecisionBadge = (decision) => {
@@ -27,7 +31,7 @@ const setStatus = (status) => {
 };
 
 const setAssistantMessage = (message) => {
-  assistantEl.textContent = message || "(no assistant message in response)";
+  assistantEl.textContent = message || "(none)";
 };
 
 const formatHeaders = (headers) => {
