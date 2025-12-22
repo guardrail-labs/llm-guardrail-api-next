@@ -193,7 +193,7 @@ def _blen(s: Optional[str]) -> int:
 
 
 def _family_for(action: str, redactions: int) -> str:
-    if action == "deny":
+    if action in {"deny", "block", "block_input_only", "lock"}:
         return "block"
     if redactions > 0:
         return "sanitize"
@@ -458,8 +458,8 @@ async def chat_completions(
 
     effective_messages = _apply_sanitized_text_to_messages(body.messages or [], xformed)
 
-    if det_action == "deny":
-        ingress_action = "deny"
+    if det_action in {"deny", "block", "block_input_only"}:
+        ingress_action = "block_input_only"
     elif redaction_count:
         ingress_action = "allow"
     else:
@@ -510,9 +510,9 @@ async def chat_completions(
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
             "X-Guardrail-Tenant": tenant_id,
             "X-Guardrail-Bot": bot_id,
+            "X-Guardrail-Decision": ingress_action,
         }
         if templated is not None:
-            headers["X-Guardrail-Decision"] = ingress_action
             response.headers.update(headers)
             return templated
 

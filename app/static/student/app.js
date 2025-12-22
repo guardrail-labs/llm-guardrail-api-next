@@ -80,8 +80,15 @@ const requestEvaluation = async (prompt) => {
   }
 
   const decisionHeader = response.headers.get("x-guardrail-decision") || "";
-  const decision =
-    decisionHeader || (data && (data.decision || data.action)) || "";
+  const bodyDecision = data && (data.decision || data.action);
+  let decision = decisionHeader || bodyDecision || "";
+  if (response.status >= 400) {
+    const normalizedDecision = (decision || "").toLowerCase();
+    const errorMessage = (data?.error?.message || "").toLowerCase();
+    if (!normalizedDecision || normalizedDecision === "allow") {
+      decision = errorMessage.includes("guardrail policy") ? "block" : "error";
+    }
+  }
   setDecisionBadge(decision);
   setStatus(`${response.status} ${response.statusText}`.trim());
   headersEl.textContent = formatHeaders(response.headers);
