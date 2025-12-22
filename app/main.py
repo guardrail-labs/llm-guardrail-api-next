@@ -685,6 +685,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
     )
+    app.mount("/static", StaticFiles(directory="app/static"), name="static")
     app.mount("/student/static", StaticFiles(directory="app/static/student"), name="student-static")
     initialize_license_from_env(settings.settings.guardrail_license_key)
     # Install mode header middleware before any other add_middleware/routers.
