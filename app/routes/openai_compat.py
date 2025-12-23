@@ -17,7 +17,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.services.audit import emit_audit_event
@@ -517,11 +517,7 @@ async def chat_completions(
             return templated
 
         err_body = _oai_error("Request denied by guardrail policy")
-        raise HTTPException(
-            status_code=400,
-            detail=err_body,
-            headers=headers,
-        )
+        return JSONResponse(status_code=400, content=err_body, headers=headers)
 
     # ---------- Streaming path ----------
     if body.stream:
