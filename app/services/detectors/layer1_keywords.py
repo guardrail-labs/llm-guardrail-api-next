@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Mapping, Tuple
+from typing import Dict, Iterable, List, Mapping, Tuple
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -105,9 +105,7 @@ _TOKEN_EXCLUSIONS: Dict[str, Tuple[str, ...]] = {
 
 
 def layer1_keyword_hits(normalized_text: str) -> Dict[str, List[str]]:
-    tokens = _tokenize(normalized_text)
-    tokens = [_MISSPELLINGS.get(token, token) for token in tokens]
-    token_set = set(tokens)
+    token_occurrences = _token_occurrences(normalized_text)
     padded = f" {normalized_text} " if normalized_text else " "
 
     hits: Dict[str, List[str]] = {}
@@ -122,7 +120,11 @@ def layer1_keyword_hits(normalized_text: str) -> Dict[str, List[str]]:
 
         for token in rules.get("tokens", ()):
             token_norm = token.lower()
-            if token_norm in token_set and not _token_excluded(token_norm, padded):
+            occurrences = token_occurrences.get(token_norm, [])
+            if not occurrences:
+                continue
+            exclusion_spans = _exclusion_spans_for_token(token_norm, normalized_text)
+            if any(not _span_overlaps_any(span, exclusion_spans) for span in occurrences):
                 matched.add(token_norm)
 
         if matched:
@@ -145,15 +147,29 @@ def layer1_keyword_decisions(normalized_text: str) -> List[Dict[str, object]]:
     return decisions
 
 
-def _tokenize(text: str) -> List[str]:
-    return _TOKEN_RE.findall(text or "")
+def _token_occurrences(text: str) -> Dict[str, List[Tuple[int, int]]]:
+    occurrences: Dict[str, List[Tuple[int, int]]] = {}
+    for match in _TOKEN_RE.finditer(text or ""):
+        token = _MISSPELLINGS.get(match.group(), match.group())
+        occurrences.setdefault(token, []).append((match.start(), match.end()))
+    return occurrences
 
 
-def _token_excluded(token: str, padded_text: str) -> bool:
+def _exclusion_spans_for_token(token: str, text: str) -> List[Tuple[int, int]]:
     exclusions = _TOKEN_EXCLUSIONS.get(token)
     if not exclusions:
-        return False
-    return any(f" {phrase} " in padded_text for phrase in exclusions)
+        return []
+    spans: List[Tuple[int, int]] = []
+    for phrase in exclusions:
+        spans.extend(
+            (match.start(), match.end()) for match in re.finditer(re.escape(phrase), text or "")
+        )
+    return spans
+
+
+def _span_overlaps_any(span: Tuple[int, int], exclusions: Iterable[Tuple[int, int]]) -> bool:
+    start, end = span
+    return any(not (end <= ex_start or start >= ex_end) for ex_start, ex_end in exclusions)
 
 
 __all__ = ["layer1_keyword_decisions", "layer1_keyword_hits"]

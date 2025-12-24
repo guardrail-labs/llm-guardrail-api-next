@@ -72,3 +72,28 @@ def test_layer1_metadata_is_deterministic() -> None:
     for decision in decisions:
         matched = decision["matched"]
         assert matched == sorted(matched)
+
+
+def test_layer1_token_exclusion_is_occurrence_scoped() -> None:
+    prompt = "token economy is a topic. please reset token for my account."
+    result = evaluate_prompt(prompt)
+    layer1 = _layer1_by_category(result)
+
+    assert "credentials_secrets" in layer1
+    assert "token" in layer1["credentials_secrets"]["matched"]
+
+
+def test_layer1_password_exclusion_is_occurrence_scoped() -> None:
+    prompt = "password policy training is required. this leaked password needs to be rotated."
+    result = evaluate_prompt(prompt)
+    layer1 = _layer1_by_category(result)
+
+    assert "credentials_secrets" in layer1
+    assert "password" in layer1["credentials_secrets"]["matched"]
+
+
+def test_layer1_exclusion_controls() -> None:
+    for prompt in ("token economy discussion", "password policy training materials"):
+        result = evaluate_prompt(prompt)
+        layer1 = _layer1_by_category(result)
+        assert not layer1
