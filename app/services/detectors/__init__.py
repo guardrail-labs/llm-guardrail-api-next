@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from app.services.intent.layer2 import Layer2Config, score_intent
 from app.services.policy import apply_policies
 from app.services.text_normalization import normalize_text_for_policy
 
@@ -24,12 +25,29 @@ def evaluate_prompt(text: str) -> Dict[str, Any]:
     """
     normalized = normalize_text_for_policy(text)
     res = apply_policies(text, normalized_text=normalized)
+    decisions = cast_list_of_dict(res.get("decisions", []))
+    risk_score = int(res.get("risk_score", 0))
+
+    layer2_cfg = Layer2Config.from_settings()
+    if layer2_cfg.enabled:
+        layer2_result = score_intent(text, layer2_cfg)
+        risk_score += layer2_result.score
+        decisions.append(
+            {
+                "source": "layer2_intent",
+                "score": layer2_result.score,
+                "bucket_hits": layer2_result.bucket_hits,
+                "pair_hits": layer2_result.pair_hits,
+                "typo_hits": layer2_result.typo_hits,
+                "signals": layer2_result.signals,
+            }
+        )
     return {
         "action": res.get("action", "allow"),
         "transformed_text": res.get("sanitized_text", text),
-        "risk_score": int(res.get("risk_score", 0)),
+        "risk_score": risk_score,
         "rule_hits": list(res.get("hits", [])),
-        "decisions": cast_list_of_dict(res.get("decisions", [])),
+        "decisions": decisions,
     }
 
 
