@@ -46,6 +46,99 @@ UNICODE_BLOCK_ON_BIDI: bool = _env_bool("UNICODE_BLOCK_ON_BIDI", True)
 UNICODE_BLOCK_ON_MIXED_SCRIPT: bool = _env_bool("UNICODE_BLOCK_ON_MIXED_SCRIPT", True)
 UNICODE_EMOJI_RATIO_WARN: float = float(os.getenv("UNICODE_EMOJI_RATIO_WARN", "0.5") or "0.5")
 
+
+def _json_env_dict(name: str, default: dict[str, Any]) -> dict[str, Any]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if not text:
+        return default
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
+    if isinstance(parsed, dict):
+        return parsed
+    return default
+
+
+def _json_env_list(name: str, default: list[Any]) -> list[Any]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip()
+    if not text:
+        return default
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, (tuple, set)):
+        return list(parsed)
+    if isinstance(parsed, str):
+        return [item.strip() for item in parsed.split(",") if item.strip()]
+    return default
+
+
+_LAYER2_BUCKET_VOCAB_DEFAULT: dict[str, list[str]] = {
+    "violence_harm": ["kill", "harm", "poison", "stab", "bomb", "body"],
+    "concealment_evasion": [
+        "hide",
+        "dispose",
+        "bury",
+        "clean",
+        "alibi",
+        "no trace",
+        "undetected",
+        "evidence",
+    ],
+    "illicit_markets": ["dark web", "onion", "tor", "marketplace", "vendor", "escrow"],
+    "illicit_content": [
+        "illegal",
+        "banned",
+        "forbidden",
+        "contraband",
+        "rare content",
+        "exclusive",
+    ],
+    "credentials_secrets": ["api key", "apikey", "token", "password", "credential", "secret"],
+    "malware_intrusion": ["exploit", "payload", "backdoor", "ransomware", "keylogger"],
+}
+_LAYER2_PAIR_WEIGHTS_DEFAULT: dict[str, float] = {
+    "credentials_secrets|malware_intrusion": 10.0,
+    "illicit_markets|illicit_content": 20.0,
+    "violence_harm|concealment_evasion": 35.0,
+}
+_LAYER2_TYPO_SENSITIVE_TOKENS_DEFAULT = [
+    "password",
+    "token",
+    "apikey",
+    "credential",
+    "exploit",
+    "ransomware",
+    "keylogger",
+]
+
+LAYER2_INTENT_ENABLED: bool = _env_bool("LAYER2_INTENT_ENABLED", True)
+LAYER2_BUCKET_VOCAB: dict[str, list[str]] = cast(
+    dict[str, list[str]],
+    _json_env_dict("LAYER2_BUCKET_VOCAB", _LAYER2_BUCKET_VOCAB_DEFAULT),
+)
+LAYER2_PAIR_WEIGHTS: dict[str, float] = cast(
+    dict[str, float],
+    _json_env_dict("LAYER2_PAIR_WEIGHTS", _LAYER2_PAIR_WEIGHTS_DEFAULT),
+)
+LAYER2_TYPO_SENSITIVE_TOKENS: list[str] = cast(
+    list[str],
+    _json_env_list("LAYER2_TYPO_SENSITIVE_TOKENS", _LAYER2_TYPO_SENSITIVE_TOKENS_DEFAULT),
+)
+LAYER2_TYPO_MIN_RATIO: float = float(os.getenv("LAYER2_TYPO_MIN_RATIO", "0.85") or "0.85")
+LAYER2_SCORE_SCALE: float = float(os.getenv("LAYER2_SCORE_SCALE", "1.0") or "1.0")
+LAYER2_MAX_SCORE: int = int(os.getenv("LAYER2_MAX_SCORE", "100") or "100")
+
 # Guardrail arm coordination defaults
 ARM_INGRESS_ENABLED: bool = _env_bool("ARM_INGRESS_ENABLED", True)
 ARM_EGRESS_ENABLED: bool = _env_bool("ARM_EGRESS_ENABLED", True)
