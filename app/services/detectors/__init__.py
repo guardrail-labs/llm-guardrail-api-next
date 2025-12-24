@@ -4,8 +4,10 @@ from typing import Any, Dict, List
 
 from app.services.intent.layer2 import Layer2Config, score_intent
 from app.services.policy import apply_policies
+from app.services.text.normalize import normalize_for_matching
 from app.services.text_normalization import normalize_text_for_policy
 
+from .layer1_keywords import layer1_keyword_decisions
 from .pdf_hidden import sanitize_for_downstream as pdf_sanitize_for_downstream
 
 __all__ = ["evaluate_prompt", "normalize_text_for_policy", "pdf_sanitize_for_downstream"]
@@ -23,9 +25,11 @@ def evaluate_prompt(text: str) -> Dict[str, Any]:
       - rule_hits: list[dict] of {"tag","pattern"}
       - decisions: list[dict] (empty here; routes may extend)
     """
-    normalized = normalize_text_for_policy(text)
-    res = apply_policies(text, normalized_text=normalized)
+    normalized_policy = normalize_text_for_policy(text)
+    res = apply_policies(text, normalized_text=normalized_policy)
     decisions = cast_list_of_dict(res.get("decisions", []))
+    normalized_matching = normalize_for_matching(text)
+    decisions.extend(layer1_keyword_decisions(normalized_matching))
     risk_score = int(res.get("risk_score", 0))
 
     layer2_cfg = Layer2Config.from_settings()
