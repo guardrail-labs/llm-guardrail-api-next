@@ -97,3 +97,12 @@ def test_layer1_exclusion_controls() -> None:
         result = evaluate_prompt(prompt)
         layer1 = _layer1_by_category(result)
         assert not layer1
+
+
+def test_layer1_exclusion_does_not_match_suffixes() -> None:
+    prompt = "password policies were leaked"
+    result = evaluate_prompt(prompt)
+    layer1 = _layer1_by_category(result)
+
+    assert "credentials_secrets" in layer1
+    assert "password" in layer1["credentials_secrets"]["matched"]

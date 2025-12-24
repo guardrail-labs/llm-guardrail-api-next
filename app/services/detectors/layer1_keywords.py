@@ -160,10 +160,17 @@ def _exclusion_spans_for_token(token: str, text: str) -> List[Tuple[int, int]]:
     if not exclusions:
         return []
     spans: List[Tuple[int, int]] = []
+    text = text or ""
+    padded = f" {text} "
     for phrase in exclusions:
-        spans.extend(
-            (match.start(), match.end()) for match in re.finditer(re.escape(phrase), text or "")
-        )
+        needle = f" {phrase} "
+        start = 0
+        while True:
+            idx = padded.find(needle, start)
+            if idx == -1:
+                break
+            spans.append((idx, idx + len(phrase)))
+            start = idx + 1
     return spans
 
 
