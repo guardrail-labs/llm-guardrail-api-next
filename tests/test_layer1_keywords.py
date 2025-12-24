@@ -16,6 +16,17 @@ def _layer1_by_category(result: dict) -> dict[str, dict]:
     return {d["category"]: d for d in decisions}
 
 
+def _layer1_hits(result: dict) -> list[dict]:
+    return [d for d in result.get("decisions", []) if d.get("source") == "layer1_keywords"]
+
+
+def _layer1_matched_tokens(result: dict) -> set[str]:
+    matched: set[str] = set()
+    for decision in _layer1_hits(result):
+        matched.update(decision.get("matched", []))
+    return matched
+
+
 def test_normalize_for_matching_collapses_punctuation() -> None:
     text = '  API-Key:\t"ABC-123"  '
     assert normalize_for_matching(text) == "api key abc 123"
@@ -97,3 +108,31 @@ def test_layer1_exclusion_controls() -> None:
         result = evaluate_prompt(prompt)
         layer1 = _layer1_by_category(result)
         assert not layer1
+
+
+def test_layer1_exclusion_punctuation_boundary() -> None:
+    prompts = _load_prompts()
+    result = evaluate_prompt(prompts["exclusion_punct_boundary"])
+
+    assert "password" not in _layer1_matched_tokens(result)
+
+
+def test_layer1_exclusion_plural_suffix_not_matched() -> None:
+    prompts = _load_prompts()
+    result = evaluate_prompt(prompts["exclusion_plural_not_match"])
+
+    assert "password" in _layer1_matched_tokens(result)
+
+
+def test_layer1_exclusion_mixed_prompt_allows_real_hit() -> None:
+    prompts = _load_prompts()
+    result = evaluate_prompt(prompts["exclusion_mixed_prompt_allows_real_hit"])
+
+    assert "password" in _layer1_matched_tokens(result)
+
+
+def test_layer1_exclusion_plain_control() -> None:
+    prompts = _load_prompts()
+    result = evaluate_prompt(prompts["control_exclusion_plain"])
+
+    assert "password" not in _layer1_matched_tokens(result)
