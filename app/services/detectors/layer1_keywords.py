@@ -156,21 +156,28 @@ def _token_occurrences(text: str) -> Dict[str, List[Tuple[int, int]]]:
 
 
 def _exclusion_spans_for_token(token: str, text: str) -> List[Tuple[int, int]]:
+    """
+    Return exclusion spans for a token using boundary-safe phrase matching.
+
+    Boundary semantics:
+    - Exclusion phrases match only when NOT immediately preceded/followed by [a-z0-9].
+      This treats whitespace, punctuation, and start/end as valid boundaries.
+    - Prevents substring/suffix matches (e.g., "password policies" won't match "password policy").
+    """
     exclusions = _TOKEN_EXCLUSIONS.get(token)
     if not exclusions:
         return []
-    spans: List[Tuple[int, int]] = []
+
     text = text or ""
-    padded = f" {text} "
+    spans: List[Tuple[int, int]] = []
+
+    # Use [a-z0-9] boundaries because our normalized text/token space is constrained to these.
+    # This avoids surprises from \w (underscore) and keeps behavior consistent with tokenization.
     for phrase in exclusions:
-        needle = f" {phrase} "
-        start = 0
-        while True:
-            idx = padded.find(needle, start)
-            if idx == -1:
-                break
-            spans.append((idx, idx + len(phrase)))
-            start = idx + 1
+        phrase_norm = phrase.lower()
+        pattern = re.compile(rf"(?<![a-z0-9]){re.escape(phrase_norm)}(?![a-z0-9])")
+        spans.extend((m.start(), m.end()) for m in pattern.finditer(text))
+
     return spans
 
 
