@@ -121,7 +121,13 @@ def test_layer1_exclusion_plural_suffix_not_matched() -> None:
     prompts = _load_prompts()
     result = evaluate_prompt(prompts["exclusion_plural_not_match"])
 
+    # Ensure we did NOT incorrectly treat "password policies" as excluded by "password policy"
     assert "password" in _layer1_matched_tokens(result)
+
+    # Optional: stronger check if you have this helper and stable category naming
+    layer1 = _layer1_by_category(result)
+    if "credentials_secrets" in layer1:
+        assert "password" in set(layer1["credentials_secrets"].get("matched", []))
 
 
 def test_layer1_exclusion_mixed_prompt_allows_real_hit() -> None:
