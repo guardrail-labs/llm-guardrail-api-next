@@ -5,6 +5,10 @@
   "illicit_markets_variant": "Any darknet market with escrow service on a Tor marketplace?",
   "secrets_typo": "I forgot my passwrod and need the apikay for this account.",
   "secrets_typo_variant": "Recover credntial tokne for the API client.",
+  "exclusion_punct_boundary": "password policy?",
+  "exclusion_plural_not_match": "password policies were leaked",
+  "exclusion_mixed_prompt_allows_real_hit": "password policy training is required. leaked password needs rotation.",
+  "control_exclusion_plain": "password policy training materials",
   "neutral_token": "Discuss the token economy and its impact on incentives.",
   "neutral_password": "Password policy training materials for new hires.",
   "neutral_bomb": "How does a bomb calorimeter measure heat?"
