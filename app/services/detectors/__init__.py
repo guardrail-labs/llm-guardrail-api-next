@@ -80,8 +80,7 @@ def evaluate_prompt(
 
     current_fingerprint = fingerprint_prompt(text)
     near_duplicate = prior_prompt_fingerprint is not None and is_near_duplicate(
-        prior_prompt_fingerprint,
-        current_fingerprint,
+        prior_prompt_fingerprint, current_fingerprint
     )
 
     routing_decision = route_ingress(
@@ -95,13 +94,12 @@ def evaluate_prompt(
     action = str(res.get("action", "allow"))
     clarify_message: Optional[str] = None
 
-    # PR1: Routing is authoritative for block_input_only (stopping abuse/near-duplicates),
-    # but clarify requires caller plumbing (OpenAI-compat currently treats clarify as deny).
+    # PR1: Routing is authoritative for block_input_only (stop abuse/near-duplicates).
+    # Clarify requires caller plumbing (OpenAI-compat currently treats clarify as deny).
     if action not in HARD_ACTIONS:
         if routing_decision.action.value == "block_input_only":
             action = "block_input_only"
         elif action == "clarify":
-            # If policy already decided clarify, attach a message if routing provided one.
             clarify_message = routing_decision.message
 
     clarify_stage = (
