@@ -42,7 +42,7 @@ def evaluate_prompt(
       - rule_hits: list[dict] of {"tag","pattern"}
       - decisions: list[dict] (routes may extend)
       - routing: dict with routing metadata
-      - clarify_message: str | None (user-facing prompt when action == "clarify")
+      - clarify_message: str | None
     """
     normalized_policy = normalize_text_for_policy(text)
     res = apply_policies(text, normalized_text=normalized_policy)
@@ -95,13 +95,14 @@ def evaluate_prompt(
     action = str(res.get("action", "allow"))
     clarify_message: Optional[str] = None
 
-    # Apply routing decisions only when policy is not already in a hard terminal state.
+    # PR1: Routing is authoritative for block_input_only (stopping abuse/near-duplicates),
+    # but clarify requires caller plumbing (OpenAI-compat currently treats clarify as deny).
     if action not in HARD_ACTIONS:
-        if routing_decision.action.value == "clarify":
-            action = "clarify"
-            clarify_message = routing_decision.message
-        elif routing_decision.action.value == "block_input_only":
+        if routing_decision.action.value == "block_input_only":
             action = "block_input_only"
+        elif action == "clarify":
+            # If policy already decided clarify, attach a message if routing provided one.
+            clarify_message = routing_decision.message
 
     clarify_stage = (
         routing_decision.clarify_stage.value
@@ -127,5 +128,5 @@ def evaluate_prompt(
 
 def cast_list_of_dict(val: Any) -> List[Dict[str, Any]]:
     if isinstance(val, list) and all(isinstance(x, dict) for x in val):
-        return val  # already normalized
+        return val
     return []
