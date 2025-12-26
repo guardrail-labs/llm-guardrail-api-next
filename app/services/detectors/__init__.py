@@ -75,9 +75,22 @@ def evaluate_prompt(
     )
     action = res.get("action", "allow")
     clarify_message = None
-    if action not in {"deny", "block", "block_input_only", "lock"}:
+    
+    HARD_ACTIONS = {
+        "deny",
+        "block",
+        "block_input_only",
+        "lock",
+        "execute_locked",
+        "full_quarantine",
+    }
+    
+    if action not in HARD_ACTIONS:
         if routing_decision.action.value == "clarify":
+            action = "clarify"
             clarify_message = routing_decision.message
+        elif routing_decision.action.value == "block_input_only":
+            action = "block_input_only"
     return {
         "action": action,
         "transformed_text": res.get("sanitized_text", text),
