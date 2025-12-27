@@ -278,6 +278,37 @@ def _guardrail_completion(content: str, model: str, created: int) -> Dict[str, A
     }
 
 
+def _guardrail_text_completion(content: str, model: str, created: int) -> Dict[str, Any]:
+    return {
+        "id": f"cmpl-{uuid.uuid4().hex[:12]}",
+        "object": "text_completion",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "text": content,
+                "finish_reason": "stop",
+                "logprobs": None,
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _routing_metadata(det: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "action": det.get("action"),
+        "clarify_message": det.get("clarify_message"),
+        "risk_score": det.get("risk_score"),
+        "rule_hits": det.get("rule_hits", []),
+        "prompt_fingerprint": det.get("prompt_fingerprint"),
+        "near_duplicate": det.get("near_duplicate"),
+        "attempt_count": det.get("attempt_count"),
+        "incident_id": det.get("incident_id"),
+    }
+
+
 def _templated_guardrail_message(
     reason_hints: set[str], model: str, created: int
 ) -> Optional[Dict[str, Any]]:
@@ -426,6 +457,7 @@ async def chat_completions(
         decisions = list(det.get("decisions", []))
         xformed = det.get("transformed_text", sanitized)
         reason_hints = _collect_reason_hints_from_hits(det.get("rule_hits"))
+        routing_meta = _routing_metadata(det)
 
         flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
         det_families = [_normalize_family(h) for h in flat_hits]
@@ -455,6 +487,18 @@ async def chat_completions(
         det_families = []
         combined_hits = []
         reason_hints = set()
+        routing_meta = _routing_metadata(
+            {
+                "action": det_action,
+                "clarify_message": None,
+                "risk_score": 0,
+                "rule_hits": [],
+                "prompt_fingerprint": content_fingerprint(joined),
+                "near_duplicate": False,
+                "attempt_count": 0,
+                "incident_id": "",
+            }
+        )
 
     effective_messages = _apply_sanitized_text_to_messages(body.messages or [], xformed)
 
@@ -478,6 +522,8 @@ async def chat_completions(
             ingress_meta["ingress_fail_open"] = True
             if fail_open_reason:
                 ingress_meta["ingress_fail_open_reason"] = fail_open_reason[:256]
+        if routing_meta:
+            ingress_meta["routing"] = routing_meta
 
         emit_audit_event(
             {
@@ -515,6 +561,18 @@ async def chat_completions(
         if templated is not None:
             response.headers.update(headers)
             return templated
+
+        if ingress_action == "clarify":
+            clarify_message = det.get("clarify_message") or "Could you provide more context?"
+            response.headers.update(headers)
+            return _guardrail_completion(clarify_message, body.model, now_ts)
+
+        if ingress_action == "block_input_only":
+            refusal_message = det.get("refusal_message") or (
+                "I can’t help with that. Please try a different request."
+            )
+            response.headers.update(headers)
+            return _guardrail_completion(refusal_message, body.model, now_ts)
 
         err_body = _oai_error("Request denied by guardrail policy")
         return JSONResponse(status_code=400, content=err_body, headers=headers)
@@ -661,6 +719,7 @@ async def chat_completions(
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
             "X-Guardrail-Tenant": tenant_id,
             "X-Guardrail-Bot": bot_id,
+            "X-Guardrail-Decision": ingress_action,
             # Reason hits & egress redactions finalize at end; keep parity with empties during SSE.
             "X-Guardrail-Reason-Hints": "",
             "X-Guardrail-Egress-Redactions": "0",
@@ -770,6 +829,7 @@ async def chat_completions(
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
+    response.headers["X-Guardrail-Decision"] = ingress_action
     response.headers["X-Request-ID"] = req_id
     if strict_egress:
         response.headers["X-Guardrail-Egress-Mode"] = "strict"
@@ -826,9 +886,10 @@ async def images_generations(
 
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
+    routing_meta = _routing_metadata(det)
     flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
 
-    if det_action == "deny":
+    if det_action in {"deny", "block", "block_input_only"}:
         fam = _family_for("deny", 0)
         inc_decision_family(fam)
         inc_ingress_family(fam)
@@ -851,6 +912,7 @@ async def images_generations(
                     "meta": {
                         "endpoint": "images/generations",
                         "client": get_client_meta(request),
+                        "routing": routing_meta,
                     },
                 }
             )
@@ -860,6 +922,7 @@ async def images_generations(
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": "deny",
             "X-Guardrail-Egress-Action": "skipped",
+            "X-Guardrail-Decision": "block_input_only",
         }
         raise HTTPException(
             status_code=400,
@@ -892,6 +955,7 @@ async def images_generations(
                 "meta": {
                     "endpoint": "images/generations",
                     "client": get_client_meta(request),
+                    "routing": routing_meta,
                 },
             }
         )
@@ -933,6 +997,7 @@ async def images_generations(
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
+    response.headers["X-Guardrail-Decision"] = "allow"
 
     return {"created": now_ts, "data": data}
 
@@ -972,9 +1037,10 @@ async def images_edits(
 
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
+    routing_meta = _routing_metadata(det)
     flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
 
-    if det_action == "deny":
+    if det_action in {"deny", "block", "block_input_only"}:
         fam = _family_for("deny", 0)
         inc_decision_family(fam)
         inc_ingress_family(fam)
@@ -997,6 +1063,7 @@ async def images_edits(
                     "meta": {
                         "endpoint": "images/edits",
                         "client": get_client_meta(request),
+                        "routing": routing_meta,
                     },
                 }
             )
@@ -1006,6 +1073,7 @@ async def images_edits(
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": "deny",
             "X-Guardrail-Egress-Action": "skipped",
+            "X-Guardrail-Decision": "block_input_only",
         }
         raise HTTPException(
             status_code=400,
@@ -1038,6 +1106,7 @@ async def images_edits(
                 "meta": {
                     "endpoint": "images/edits",
                     "client": get_client_meta(request),
+                    "routing": routing_meta,
                 },
             }
         )
@@ -1079,6 +1148,7 @@ async def images_edits(
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
+    response.headers["X-Guardrail-Decision"] = "allow"
 
     return {"created": now_ts, "data": data}
 
@@ -1118,9 +1188,10 @@ async def images_variations(
 
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
+    routing_meta = _routing_metadata(det)
     flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
 
-    if det_action == "deny":
+    if det_action in {"deny", "block", "block_input_only"}:
         fam = _family_for("deny", 0)
         inc_decision_family(fam)
         inc_ingress_family(fam)
@@ -1143,6 +1214,7 @@ async def images_variations(
                     "meta": {
                         "endpoint": "images/variations",
                         "client": get_client_meta(request),
+                        "routing": routing_meta,
                     },
                 }
             )
@@ -1152,6 +1224,7 @@ async def images_variations(
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": "deny",
             "X-Guardrail-Egress-Action": "skipped",
+            "X-Guardrail-Decision": "block_input_only",
         }
         raise HTTPException(
             status_code=400,
@@ -1184,6 +1257,7 @@ async def images_variations(
                 "meta": {
                     "endpoint": "images/variations",
                     "client": get_client_meta(request),
+                    "routing": routing_meta,
                 },
             }
         )
@@ -1225,6 +1299,7 @@ async def images_variations(
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
+    response.headers["X-Guardrail-Decision"] = "allow"
 
     return {"created": now_ts, "data": data}
 
@@ -1597,12 +1672,13 @@ async def completions(
     det = evaluate_prompt(sanitized)
     det_action = str(det.get("action", "allow"))
     xformed = det.get("transformed_text", sanitized)
+    routing_meta = _routing_metadata(det)
     flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], det.get("decisions", []) or [])
     det_families = [_normalize_family(h) for h in flat_hits]
     combined_hits = sorted({*(families or []), *det_families})
 
-    if det_action == "deny":
-        ingress_action = "deny"
+    if det_action in {"deny", "block", "block_input_only"}:
+        ingress_action = "block_input_only"
     elif redaction_count:
         ingress_action = "allow"
     else:
@@ -1616,6 +1692,12 @@ async def completions(
         inc_redaction("sanitize", direction="ingress", amount=float(redaction_count))
 
     try:
+        meta: Dict[str, Any] = {
+            "endpoint": "completions",
+            "client": get_client_meta(request),
+        }
+        if routing_meta:
+            meta["routing"] = routing_meta
         emit_audit_event(
             {
                 "ts": None,
@@ -1630,22 +1712,27 @@ async def completions(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {
-                    "endpoint": "completions",
-                    "client": get_client_meta(request),
-                },
+                "meta": meta,
             }
         )
     except Exception:
         pass
 
-    if ingress_action == "deny":
-        err_body = _oai_error("Request denied by guardrail policy")
+    if ingress_action in {"deny", "block_input_only"}:
         headers = {
             "X-Guardrail-Policy-Version": policy_version,
             "X-Guardrail-Ingress-Action": ingress_action,
             "X-Guardrail-Egress-Action": "skipped",
+            "X-Guardrail-Decision": ingress_action,
         }
+        if ingress_action == "block_input_only":
+            refusal_message = det.get("refusal_message") or (
+                "I can’t help with that. Please try a different request."
+            )
+            response.headers.update(headers)
+            return _guardrail_text_completion(refusal_message, body.model, now_ts)
+
+        err_body = _oai_error("Request denied by guardrail policy")
         raise HTTPException(
             status_code=400,
             detail=err_body,
@@ -1731,6 +1818,7 @@ async def completions(
             "X-Guardrail-Ingress-Redactions": str(int(redaction_count or 0)),
             "X-Guardrail-Tenant": tenant_id,
             "X-Guardrail-Bot": bot_id,
+            "X-Guardrail-Decision": ingress_action,
             # We’re chunking a precomputed string here; still keep hints empty for consistency.
             "X-Guardrail-Reason-Hints": "",
         }
@@ -1753,5 +1841,6 @@ async def completions(
     response.headers["X-Guardrail-Ingress-Redactions"] = str(int(redaction_count or 0))
     response.headers["X-Guardrail-Tenant"] = tenant_id
     response.headers["X-Guardrail-Bot"] = bot_id
+    response.headers["X-Guardrail-Decision"] = ingress_action
 
     return resp

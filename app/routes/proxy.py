@@ -183,12 +183,22 @@ async def proxy_chat(
     det_action = str(det.get("action", "allow"))
     decisions = list(det.get("decisions", []))
     xformed = det.get("transformed_text", sanitized)
+    routing_meta = {
+        "action": det.get("action"),
+        "clarify_message": det.get("clarify_message"),
+        "risk_score": det.get("risk_score"),
+        "rule_hits": det.get("rule_hits", []),
+        "prompt_fingerprint": det.get("prompt_fingerprint"),
+        "near_duplicate": det.get("near_duplicate"),
+        "attempt_count": det.get("attempt_count"),
+        "incident_id": det.get("incident_id"),
+    }
 
     flat_hits = _normalize_rule_hits(det.get("rule_hits", []) or [], decisions)
     det_families = [_normalize_family(h) for h in flat_hits]
     combined_hits = sorted({*(families or []), *det_families})
 
-    if det_action == "deny":
+    if det_action in {"deny", "block", "block_input_only"}:
         ingress_action = "deny"
     elif redaction_count:
         ingress_action = "allow"
@@ -201,6 +211,9 @@ async def proxy_chat(
 
     # Audit ingress
     try:
+        meta: Dict[str, Any] = {}
+        if routing_meta:
+            meta["routing"] = routing_meta
         emit_audit_event(
             {
                 "ts": None,
@@ -218,7 +231,7 @@ async def proxy_chat(
                 "hash_fingerprint": content_fingerprint(joined),
                 "payload_bytes": int(_blen(joined)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {},
+                "meta": meta,
             }
         )
     except Exception:

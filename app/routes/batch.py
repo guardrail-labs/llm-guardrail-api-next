@@ -206,6 +206,16 @@ async def batch_evaluate(
         det = evaluate_prompt(sanitized)
         decisions = list(det.get("decisions", []))
         xformed = det.get("transformed_text", sanitized)
+        routing_meta = {
+            "action": det.get("action"),
+            "clarify_message": det.get("clarify_message"),
+            "risk_score": det.get("risk_score"),
+            "rule_hits": det.get("rule_hits", []),
+            "prompt_fingerprint": det.get("prompt_fingerprint"),
+            "near_duplicate": det.get("near_duplicate"),
+            "attempt_count": det.get("attempt_count"),
+            "incident_id": det.get("incident_id"),
+        }
 
         # flatten detector hits to strings then normalize to families
         det_hits_raw = det.get("rule_hits", []) or []
@@ -215,7 +225,7 @@ async def batch_evaluate(
         combined_hits = sorted({*(families or []), *det_families})
 
         det_action = str(det.get("action", "allow"))
-        if det_action == "deny":
+        if det_action in {"deny", "block", "block_input_only"}:
             action = "deny"
         elif redaction_count:
             action = "allow"
@@ -236,6 +246,8 @@ async def batch_evaluate(
         if hidden_reasons:
             decisions.append({"source": "hidden_text", "type": "html", "matches": hidden_reasons})
             header_hidden_reasons.extend(hidden_reasons)
+        if routing_meta:
+            decisions.append({"source": "routing", "decision": routing_meta})
 
         # optional verifier (unclear intent path)
         if do_verify:
@@ -284,6 +296,9 @@ async def batch_evaluate(
 
         # audit
         try:
+            meta: Dict[str, Any] = {}
+            if routing_meta:
+                meta["routing"] = routing_meta
             event: Dict[str, Any] = {
                 "ts": None,
                 "tenant_id": tenant_id,
@@ -300,7 +315,7 @@ async def batch_evaluate(
                 "hash_fingerprint": fp_all,
                 "payload_bytes": int(_blen(text_in)),
                 "sanitized_bytes": int(_blen(xformed)),
-                "meta": {},
+                "meta": meta,
             }
             if hidden_reasons:
                 event["hidden_text"] = {"format": "html", "reasons": hidden_reasons}

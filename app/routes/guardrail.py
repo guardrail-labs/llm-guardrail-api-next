@@ -46,6 +46,7 @@ from app.services.threat_feed import (
 )
 from app.services import runtime_flags
 from app.services.clarify import make_incident_id, respond_with_clarify, INCIDENT_HEADER
+from app.services.clarify_routing import stage_message, track_attempt
 from app.services.rulepacks_engine import ingress_should_block, ingress_mode
 from app.services.fingerprint import fingerprint
 from app.services import escalation as esc
@@ -781,6 +782,33 @@ def _merge_headers(base: Dict[str, str], extra: Optional[Dict[str, str]]) -> Dic
     return base
 
 
+def _routing_decision(
+    action: str,
+    rule_hits: Dict[str, List[str]],
+    prompt_fingerprint: str,
+) -> Dict[str, Any]:
+    normalized_action = action
+    if normalized_action in {"deny", "block"}:
+        normalized_action = "block_input_only"
+    clarify_candidate = normalized_action == "clarify"
+    attempt_count, near_duplicate = track_attempt(
+        prompt_fingerprint, increment=clarify_candidate
+    )
+    clarify_stage = 2 if near_duplicate or attempt_count > 1 else 1
+    clarify_message = stage_message(clarify_stage) if clarify_candidate else None
+
+    return {
+        "action": normalized_action,
+        "clarify_message": clarify_message,
+        "risk_score": 0,
+        "rule_hits": _rule_ids_from_hits(rule_hits),
+        "prompt_fingerprint": prompt_fingerprint,
+        "near_duplicate": near_duplicate,
+        "attempt_count": attempt_count,
+        "incident_id": "",
+    }
+
+
 def _respond_action(
     action: str,
     transformed_text: str,
@@ -796,6 +824,7 @@ def _respond_action(
     mitigation_modes: Optional[Dict[str, bool]] = None,
     mitigation_forced: Optional[str] = None,
     decision_override: Optional[str] = None,
+    routing_meta: Optional[Dict[str, Any]] = None,
 ) -> JSONResponse:
     fam = "allow" if action == "allow" else "deny"
     _maybe_metric("inc_decisions_total", fam)
@@ -807,6 +836,8 @@ def _respond_action(
         for tag, count in modalities.items():
             if count > 0:
                 decisions.append({"type": "modality", "tag": tag, "count": count})
+    if routing_meta:
+        decisions.append({"type": "routing", "info": routing_meta})
 
     body: Dict[str, Any] = {
         "request_id": request_id,
@@ -1712,6 +1743,10 @@ async def guardrail_evaluate(request: Request):
             "shadow_rule_ids": shadow_rule_ids_list,
             # latency_ms can be added here if you track it on request.state.*
         }
+        if isinstance(policy_result, Mapping):
+            routing_payload = policy_result.get("routing")
+            if isinstance(routing_payload, Mapping):
+                event_payload["routing"] = dict(routing_payload)
         if unicode_annotation:
             event_payload["unicode"] = unicode_annotation
         if unicode_findings_summary:
@@ -2211,6 +2246,8 @@ async def guardrail_evaluate(request: Request):
         mitigation_forced = "block"
         decision_override = "block"
     base_decision["action"] = action
+    routing_meta = _routing_decision(action, policy_hits, prompt_hash_val or "")
+    base_decision["routing"] = routing_meta
     resp = _respond_action(
         action,
         redacted,
@@ -2225,6 +2262,7 @@ async def guardrail_evaluate(request: Request):
         mitigation_modes=mitigation_modes,
         mitigation_forced=mitigation_forced,
         decision_override=decision_override,
+        routing_meta=routing_meta,
     )
     return finalize_response(
         resp,
@@ -2552,6 +2590,8 @@ async def guardrail_evaluate_multipart(request: Request):
         mitigation_forced = "block"
         decision_override = "block"
     base_decision["action"] = action
+    routing_meta = _routing_decision(action, policy_hits, prompt_hash_val or "")
+    base_decision["routing"] = routing_meta
     resp = _respond_action(
         action,
         redacted,
@@ -2566,6 +2606,7 @@ async def guardrail_evaluate_multipart(request: Request):
         mitigation_modes=mitigation_modes,
         mitigation_forced=mitigation_forced,
         decision_override=decision_override,
+        routing_meta=routing_meta,
     )
     finalized = _finalize_ingress_response(
         resp,

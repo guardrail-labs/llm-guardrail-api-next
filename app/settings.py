@@ -45,6 +45,11 @@ SANITIZER_CONFUSABLES_ENABLED: bool = _env_bool("SANITIZER_CONFUSABLES_ENABLED",
 UNICODE_BLOCK_ON_BIDI: bool = _env_bool("UNICODE_BLOCK_ON_BIDI", True)
 UNICODE_BLOCK_ON_MIXED_SCRIPT: bool = _env_bool("UNICODE_BLOCK_ON_MIXED_SCRIPT", True)
 UNICODE_EMOJI_RATIO_WARN: float = float(os.getenv("UNICODE_EMOJI_RATIO_WARN", "0.5") or "0.5")
+ENABLE_INGRESS_CLARIFY_ROUTING: bool = _env_bool("ENABLE_INGRESS_CLARIFY_ROUTING", False)
+MAX_CLARIFY_ATTEMPTS: int = max(1, int(os.getenv("MAX_CLARIFY_ATTEMPTS", "2") or "2"))
+CLARIFY_ATTEMPT_TTL_SECONDS: int = max(
+    1, int(os.getenv("CLARIFY_ATTEMPT_TTL_SECONDS", "900") or "900")
+)
 
 
 def _json_env_dict(name: str, default: dict[str, Any]) -> dict[str, Any]:

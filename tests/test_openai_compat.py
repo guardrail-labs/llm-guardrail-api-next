@@ -194,10 +194,12 @@ def test_denied_prompt_headers(monkeypatch):
         headers=headers,
     )
 
-    assert r.status_code == 400, r.text
+    assert r.status_code == 200, r.text
     data = r.json()
-    assert data["error"]["message"] == "Request denied by guardrail policy"
-    assert r.headers.get("X-Guardrail-Decision") in {"block", "block_input_only"}
+    content = data["choices"][0]["message"]["content"].lower()
+    assert "policy" not in content
+    assert "guardrail" not in content
+    assert r.headers.get("X-Guardrail-Decision") == "block_input_only"
     assert r.headers.get("X-Guardrail-Ingress-Action") == "block_input_only"
     assert r.headers.get("X-Guardrail-Egress-Action") == "skipped"
     assert r.headers.get("X-Guardrail-Reason-Hints") is not None
