@@ -52,6 +52,7 @@ def track_attempt(
     entry = _STATE.get(prompt_fingerprint)
 
     if entry and ts - entry.updated_at > ttl:
+        del _STATE[prompt_fingerprint]   # cleanup
         entry = None
 
     near_duplicate = bool(entry and entry.prompt_fingerprint == prompt_fingerprint)
