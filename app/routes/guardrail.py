@@ -791,9 +791,7 @@ def _routing_decision(
     if normalized_action in {"deny", "block"}:
         normalized_action = "block_input_only"
     clarify_candidate = normalized_action == "clarify"
-    attempt_count, near_duplicate = track_attempt(
-        prompt_fingerprint, increment=clarify_candidate
-    )
+    attempt_count, near_duplicate = track_attempt(prompt_fingerprint, increment=clarify_candidate)
     clarify_stage = 2 if near_duplicate or attempt_count > 1 else 1
     clarify_message = stage_message(clarify_stage) if clarify_candidate else None
 
